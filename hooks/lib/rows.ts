@@ -17,8 +17,18 @@ import { ACCENT, boundaryColour, boundaryLabel, STATUS_COLOURS } from './palette
 export type Press = { id: string; label: string; hotkey?: string }
 /** A one-line text field: drawn as an Input keyed `id`, holding `value`. */
 export type Field = { id: string; value: string; placeholder: string }
-export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; press?: Press; field?: Field }
-export type Row = { key: string; segments: Segment[] }
+/**
+ * How a segment draws as cells of a terminal `Raster` instead of as text:
+ * each of its cells shows `glyph` on the background `bg` (`#rrggbb`).
+ */
+export type Cell = { glyph: string; bg: string }
+export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; press?: Press; field?: Field; cell?: Cell }
+/**
+ * One line of the pane. Consecutive rows with the same `raster` key form a
+ * grid the terminal may draw as one `Raster`; every surface can draw their
+ * segments as text instead.
+ */
+export type Row = { key: string; segments: Segment[]; raster?: string }
 
 export const BAR_MIN = 4
 /** The longest bar drawn: a wider column leaves the rest of it empty. */
@@ -53,6 +63,8 @@ export const spaces = (n: number): string => ' '.repeat(Math.max(0, n))
 export const padEnd = (text: string, width: number): string => text + spaces(width - cells(text))
 export const padStart = (text: string, width: number): string => spaces(width - cells(text)) + text
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+/** A count with thousands separated: 7,878. */
+export const grouped = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
 export const baseName = (path: string): string => path.slice(path.lastIndexOf('/') + 1)
 
 /** A file and line as the pane prints a place: the file's own name, then the line. */

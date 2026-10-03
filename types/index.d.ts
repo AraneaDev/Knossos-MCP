@@ -104,6 +104,26 @@ export type Dashboard = {
   largest_files?: { path: string; language: string; lines: number }[]
   /** `truncated` when the check stopped at its edge or time limit, so `total` is a floor. */
   policy?: { status: string; total: number; truncated: boolean; truncation_reasons: string[]; items: PolicyViolation[] }
+  boundary_matrix?: BoundaryMatrix
+}
+
+/**
+ * How much each boundary depends on each other one: `cells[from][to]` counts
+ * the dependency edges from a component labelled `boundaries[from]` to one
+ * labelled `boundaries[to]`. `forbidden` lists the [from, to] cells a declared
+ * policy forbids; `truncated` when the count stopped at its edge or time
+ * limit, so the cells are floors; `boundaries_truncated` when more boundaries
+ * label components than the axes hold.
+ */
+export type BoundaryMatrix = {
+  boundaries: string[]
+  members: number[]
+  boundaries_truncated: boolean
+  cells: number[][]
+  forbidden: [number, number][]
+  edges: number
+  truncated: boolean
+  truncation_reasons: string[]
 }
 
 /** A component on the other end of some relationships: how many of them, and its boundary. */
@@ -174,10 +194,25 @@ export type Rescan = {
   status: 'ok' | 'not-allowed' | 'missing' | 'unscanned' | 'scan-failed' | 'error' | 'no-binary'
   snapshot_id?: string | null
   reason?: string | null
+  /** With `not-allowed`: the root to allow and the roots file the refusal read. */
+  refused_root?: string | null
+  roots_file?: string | null
 }
 
-/** The pane's rescan: running, or failed with why (null when knossos said nothing). */
-export type RescanState = { phase: 'idle' | 'scanning' | 'failed'; reason: string | null }
+/**
+ * The pane's rescan: running, or failed with why (null when knossos said
+ * nothing). `refusedRoot` is the root a `not-allowed` answer named.
+ */
+export type RescanState = { phase: 'idle' | 'scanning' | 'failed'; reason: string | null; refusedRoot?: string | null }
+
+/** The `allow-root` subcommand's answer: the root granted and the roots file it now stands in. */
+export type AllowRoot = { status?: 'no-binary'; path?: string; roots_file?: string; added?: boolean }
+
+/**
+ * The pane's allow-root action for `root`: asking the person to confirm, then
+ * running, then done or failed with why. `idle` draws only the offer.
+ */
+export type AllowState = { phase: 'idle' | 'confirming' | 'running' | 'done' | 'failed'; root: string | null; reason: string | null }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -189,6 +224,7 @@ declare module 'claude-code' {
       detail: DetailState | null
       refresh: RefreshState
       rescan: RescanState
+      allow: AllowState
     }
   }
 }

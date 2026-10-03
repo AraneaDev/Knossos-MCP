@@ -3,14 +3,15 @@ import type { Elements, EngineInterface, Register, RenderSurface, Timer } from '
 
 import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
-import { parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './lib/envelopes'
+import { parseAllowRoot, parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { TurnBrief } from './lib/envelopes'
-import { CONTENT_MAX, detailInput, listFor, paneInput, paneRows, paneStatus, SORTS, TABS } from './lib/layout'
+import { allowInput, askPrompt, CONTENT_MAX, detailInput, emptyRows, listFor, paneInput, paneRows, paneStatus, refusedRoot, rowWidth, SORTS, subjectOf, TABS } from './lib/layout'
 import type { Openable, PaneInput, Row } from './lib/layout'
 import { editNote, fanInIndex, violationNote } from './lib/notes'
 import { relativise } from './lib/paths'
+import { rasterOf } from './lib/raster'
 import { SingleFlight } from './lib/scheduler'
-import type { DetailState, Inspected, KnossosView, PaneTab, RefreshState, RescanState } from '../types'
+import type { AllowState, DetailState, Inspected, KnossosView, PaneTab, RefreshState, RescanState } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -26,6 +27,8 @@ const DASHBOARD_TIMEOUT_MS = 35_000
 const DETAIL_TIMEOUT_MS = 20_000
 /** The wrapper bounds a rescan at 60 s, as a turn brief. */
 const RESCAN_TIMEOUT_MS = 70_000
+/** The wrapper bounds allow-root at 15 s. */
+const ALLOW_TIMEOUT_MS = 20_000
 const USAGE = 'Usage: /knossos-pane to toggle the architecture pane; /knossos-pane inspect <component> to open it on one component.'
 /** formatAge's finest step is a second; the tick redraws only when the text would change. */
 const AGE_TICK_MS = 1_000
@@ -49,6 +52,7 @@ const view = atom({ plugin: 'knossos', key: 'view' } as const, {
 const detail = atom({ plugin: 'knossos', key: 'detail' } as const, null as DetailState | null)
 const refresh = atom({ plugin: 'knossos', key: 'refresh' } as const, { fetchedAt: null, failed: false } as RefreshState)
 const rescan = atom({ plugin: 'knossos', key: 'rescan' } as const, { phase: 'idle', reason: null } as RescanState)
+const allow = atom({ plugin: 'knossos', key: 'allow' } as const, { phase: 'idle', root: null, reason: null } as AllowState)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -99,6 +103,11 @@ const mod = {
    * in the same tick cannot both start one.
    */
   fetching: new Set<string>(),
+  /**
+   * Set from the confirming press until its allow-root run settles: a second
+   * `y` in the same tick, before the state says running, starts nothing.
+   */
+  allowing: false,
 }
 
 /** The fan-in threshold from the options: an integer the dashboard command accepts (1 to 100000), else the default. */
@@ -150,10 +159,10 @@ async function disable($: EngineInterface): Promise<void> {
   $.ui.invalidate('ui.render')
 }
 
-/** Runs the wrapper; its stdout, or '' for any failure (the wrapper's contract is silence). */
-async function wrapper($: EngineInterface, sub: string, args: string[], timeoutMs: number): Promise<string> {
+/** Runs the wrapper in `dir` (the session's root by default); its stdout, or '' for any failure (the wrapper's contract is silence). */
+async function wrapper($: EngineInterface, sub: string, args: string[], timeoutMs: number, dir?: string): Promise<string> {
   try {
-    const root = await $.session.root()
+    const root = dir ?? (await $.session.root())
     const script = `${$.plugin.root}/hooks/scripts/knossos-run.sh`
     const { stdout } = await $.process.run(['sh', script, sub, root, ...args], { timeoutMs })
     return stdout
@@ -327,9 +336,9 @@ async function scan($: EngineInterface): Promise<void> {
     const args = [...files.map(f => `--files=${f}`), ...(mod.enforce ? [] : ['--no-policies'])]
     parsed = parseTurnBrief(await exclusively(() => wrapper($, 'turn-brief', args, BRIEF_TIMEOUT_MS)))
   } finally {
-    // A brief that never ran its scan saw none of these edits: the next one must report them,
-    // since only reported files count toward the policy verdict.
-    if (parsed === null || parsed.status === 'error' || parsed.status === 'scan-failed') {
+    // A brief that never ran its scan (silence, an error, a refused root) saw none of these edits:
+    // the next one must report them, since only reported files count toward the policy verdict.
+    if (parsed === null || parsed.status !== 'ok') {
       for (const file of files) mod.edited.add(file)
     }
   }
@@ -437,7 +446,9 @@ async function runRescan($: EngineInterface): Promise<void> {
     return
   }
   if (parsed?.status !== 'ok') {
-    await update($, rescan, (): RescanState => ({ phase: 'failed', reason: rescanReason(parsed) }))
+    // A refused root is kept, so the pane can offer to allow it.
+    const refused = parsed?.status === 'not-allowed' ? (parsed.refused_root ?? null) : null
+    await update($, rescan, (): RescanState => ({ phase: 'failed', reason: rescanReason(parsed), refusedRoot: refused }))
     return
   }
   await refreshDashboard($)
@@ -450,7 +461,7 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   if (d?.status !== 'ok') return null
   const v = await read($, view)
   const shown = v.inspect === null ? null : detailInput(v.inspect, await read($, detail))
-  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown)
+  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow))
 }
 
 /** The rows the selection walks on what the pane shows, from state. */
@@ -486,7 +497,7 @@ async function openRelated($: EngineInterface, index: number): Promise<void> {
  * never inside the press or a render.
  */
 async function openFilter($: EngineInterface): Promise<void> {
-  await update($, view, v => ({ ...v, tab: 'hubs', filtering: true }))
+  await update($, view, (v): KnossosView => ({ ...v, tab: 'hubs', filtering: true }))
   $.clock.after(0, () => void $.ui.focus({ requestId: PANE, key: 'filter' }).catch(() => undefined))
 }
 
@@ -500,8 +511,79 @@ async function submitFilter($: EngineInterface, text: string): Promise<void> {
   await update($, view, v => ({ ...v, filter: text.trim(), filtering: false, selected: 0 }))
 }
 
-/** What a press on the pane does, by the pressed element's id. */
-async function pressPane($: EngineInterface, id: string): Promise<void> {
+/** Copies the marked component's canonical name onto the clipboard of the surface the press came from. */
+async function copySubject($: EngineInterface, surface?: RenderSurface): Promise<void> {
+  const input = await currentInput($, true)
+  const subject = input === null ? null : subjectOf(input)
+  if (subject === null) return
+  const copied = await $.ui.copy({ text: subject.canonical, ...(surface === undefined ? {} : { surface }) })
+  $.ui.toast(copied.isCopied ? `Copied ${subject.canonical}` : `Could not copy ${subject.canonical}: ${copied.reason ?? 'the surface refused'}`)
+}
+
+/**
+ * "Ask Claude" about the marked component. The one prompt the mod ever
+ * submits, and only from this press: the person asked for it, so it does not
+ * start a turn on the mod's own account. One press, one prompt.
+ */
+async function askClaude($: EngineInterface): Promise<void> {
+  const input = await currentInput($, true)
+  const subject = input === null ? null : subjectOf(input)
+  if (subject !== null) await $.prompt.submit({ text: askPrompt(subject.canonical) })
+}
+
+/** `a`: asks the person to confirm allowing the refused root. Runs nothing. */
+async function offerAllow($: EngineInterface): Promise<void> {
+  const refused = refusedRoot(await read($, brief), await read($, rescan))
+  const current = await read($, allow)
+  const root = refused?.root ?? (current.phase === 'failed' ? current.root : null)
+  if (root === null || current.phase === 'running') return
+  await update($, allow, (): AllowState => ({ phase: 'confirming', root, reason: null }))
+}
+
+/**
+ * `y` on the question: allows the root it asked about, once the press has
+ * resolved. Nothing runs unless the pane is asking; a second press while a
+ * run is queued or under way adds nothing.
+ */
+async function confirmAllow($: EngineInterface): Promise<void> {
+  const asked = await read($, allow)
+  if (asked.phase !== 'confirming' || asked.root === null || mod.allowing) return
+  mod.allowing = true
+  const root = asked.root
+  await update($, allow, (): AllowState => ({ phase: 'running', root, reason: null }))
+  $.clock.after(0, () => {
+    void runAllow($, root)
+      .catch(() => undefined)
+      .finally(() => {
+        mod.allowing = false
+      })
+  })
+}
+
+/**
+ * Runs `knossos allow-root <root> --execute` through the wrapper, which
+ * writes the roots file baked in at install. Allowed, the turn's scan runs
+ * at once so the band and pane pick the project up.
+ */
+async function runAllow($: EngineInterface, root: string): Promise<void> {
+  const parsed = parseAllowRoot(await wrapper($, 'allow-root', [], ALLOW_TIMEOUT_MS, root))
+  if (parsed?.status === 'no-binary') {
+    await update($, allow, (): AllowState => ({ phase: 'idle', root: null, reason: null }))
+    await disable($)
+    return
+  }
+  if (parsed === null) {
+    await update($, allow, (): AllowState => ({ phase: 'failed', root, reason: 'knossos did not allow it' }))
+    return
+  }
+  await update($, allow, (): AllowState => ({ phase: 'done', root, reason: null }))
+  await update($, rescan, (r): RescanState => ({ ...r, refusedRoot: null }))
+  // The edits that were refused are still unscanned: the turn's scan picks them up now.
+  void (mod.flight ??= new SingleFlight(() => scanSafely($))).request()
+}
+
+/** What a press on the pane does, by the pressed element's id; `surface` is where the press came from. */
+async function pressPane($: EngineInterface, id: string, surface?: RenderSurface): Promise<unknown> {
   if (id.startsWith('tab:')) {
     const tab = id.slice(4) as PaneTab
     if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false }))
@@ -516,27 +598,34 @@ async function pressPane($: EngineInterface, id: string): Promise<void> {
   if (id === 'filter') return openFilter($)
   if (id === 'clear') return update($, view, v => ({ ...v, filter: '', filtering: false, selected: 0 }))
   if (id === 'sort') return update($, view, v => ({ ...v, sort: SORTS[(SORTS.indexOf(v.sort) + 1) % SORTS.length] ?? 'in', selected: 0 }))
-  if (id === 'rescan') requestRescan($)
+  if (id === 'rescan') return requestRescan($)
+  if (id === 'copy') return copySubject($, surface)
+  if (id === 'ask') return askClaude($)
+  if (id === 'allow') return offerAllow($)
+  if (id === 'allow-yes') return confirmAllow($)
+  if (id === 'allow-no') return update($, allow, (a): AllowState => (a.phase === 'confirming' ? { phase: 'idle', root: null, reason: null } : a))
 }
 
 /**
  * One laid-out row as elements: a pressable segment is a plain Button, any
  * other a Text. The layout already fitted the row, so nothing here wraps.
  */
-function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, press: (id: string) => void) {
-  const { Box, Button, Input, Text } = ui
+function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, press: (id: string, surface?: RenderSurface) => void) {
+  const { Box, Button, Text } = ui
+  // Every surface but mobile has a text field; there the filter is shown as text.
+  const Input = 'Input' in ui ? ui.Input : undefined
   return (
     <Box key={row.key} flexDirection="row">
       {row.segments.map((s, i) =>
-        s.field ? (
+        s.field && Input !== undefined ? (
           <Input
             key={s.field.id}
             value={s.field.value}
             placeholder={s.field.placeholder}
             submitLabel="keep"
             autoFocus
-            onInput={value => void typeFilter($, value).catch(() => undefined)}
-            onSubmit={value => void submitFilter($, value).catch(() => undefined)}
+            onInput={(value: string) => void typeFilter($, value).catch(() => undefined)}
+            onSubmit={(value: string) => void submitFilter($, value).catch(() => undefined)}
           />
         ) : s.press ? (
           <Button
@@ -545,7 +634,7 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
             label={s.press.label}
             {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })}
             {...(s.dim ? { dimColor: true } : {})}
-            onPress={() => press(s.press!.id)}
+            onPress={pressed => press(s.press!.id, pressed.surface)}
           />
         ) : (
           <Text
@@ -561,6 +650,30 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
       )}
     </Box>
   )
+}
+
+/**
+ * The laid-out rows as elements. On the terminal, consecutive rows that share
+ * a `raster` key (the heat map) are one `Raster` of coloured cells; every
+ * other surface draws them as text, glyphs and colours alike.
+ */
+function drawRows($: EngineInterface, ui: Elements[RenderSurface], terminal: boolean, rows: Row[], press: (id: string, surface?: RenderSurface) => void) {
+  const drawn = []
+  for (let i = 0; i < rows.length; i++) {
+    const block = rows[i]!.raster
+    if (!terminal || block === undefined) {
+      drawn.push(drawRow($, ui, rows[i]!, press))
+      continue
+    }
+    let end = i
+    while (end + 1 < rows.length && rows[end + 1]!.raster === block) end++
+    const grid = rows.slice(i, end + 1)
+    const { Raster } = ui as Elements['terminal']
+    const raster = rasterOf(grid, Math.max(1, ...grid.map(rowWidth)))
+    drawn.push(<Raster key={`raster-${block}`} columns={raster.columns} rows={raster.rows} cells={raster.cells} />)
+    i = end
+  }
+  return drawn
 }
 
 export const register: Register = (on, options) => {
@@ -581,6 +694,7 @@ export const register: Register = (on, options) => {
   mod.ticker?.cancel()
   mod.ticker = null
   mod.fetching = new Set()
+  mod.allowing = false
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
@@ -659,19 +773,21 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
-    const { Box, Text } = ui
+    const { Box } = ui
     mod.paneText = null
     if (mod.disabled) return <Box key="off" />
     const d = await read($, dashboard)
     const v = await read($, view)
+    const columns = Math.max(1, Math.min(CONTENT_MAX, e.props.bodyColumns))
+    const press = (id: string, surface?: RenderSurface) => void pressPane($, id, surface).catch(() => undefined)
     if (d === null || d.status !== 'ok') {
+      const offer = allowInput(await read($, brief), await read($, rescan), await read($, allow))
       return (
-        <Box key="empty">
-          <Text dimColor>No Knossos data for this project. Scan it with knossos scan.</Text>
+        <Box key="empty" flexDirection="column">
+          {emptyRows(offer, columns).map(row => drawRow($, ui, row, press))}
         </Box>
       )
     }
-    const columns = Math.max(1, Math.min(CONTENT_MAX, e.props.bodyColumns))
     const input = await currentInput($, e.surface === 'terminal')
     if (input === null) return <Box key="empty" />
     mod.paneText = input.status.text
@@ -680,7 +796,7 @@ export const register: Register = (on, options) => {
     // A press that outlives the session (a teardown under it) fails quietly.
     return (
       <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
-        {paneRows(input, columns).map(row => drawRow($, ui, row, id => void pressPane($, id).catch(() => undefined)))}
+        {drawRows($, ui, e.surface === 'terminal', paneRows(input, columns), press)}
       </Box>
     )
   })

@@ -7,8 +7,10 @@
  * shared primitives (segments, cutting, bars, the self-fitting table) are in
  * `rows.ts`; the Issues and Cycles tabs and the component detail in `views.ts`.
  */
-import type { Dashboard, HubSort, KnossosView, PaneTab, Ranked, RefreshState, RescanState, TurnBrief } from '../../types'
+import type { AllowState, Dashboard, HubSort, KnossosView, PaneTab, Ranked, RefreshState, RescanState, TurnBrief } from '../../types'
 import { formatAge } from './band'
+import { boundariesInput, boundaryRows } from './boundaries'
+import type { BoundariesInput } from './boundaries'
 import { countLabel } from './envelopes'
 import { ACCENT, boundaryLabel, STATUS_COLOURS } from './palette'
 import type { Tone } from './palette'
@@ -21,6 +23,7 @@ import {
   dimRow,
   displayName,
   fit,
+  grouped,
   joinFitting,
   numberWidth,
   padEnd,
@@ -45,6 +48,7 @@ import type { CyclesInput, DetailInput, IssuesInput, Openable } from './views'
 export { bar, button, cells, displayName, fit, plainText, rowWidth, tableSpec, wrapWords } from './rows'
 export type { Field, Press, Row, Segment, TableSpec } from './rows'
 export type { DetailInput, Openable } from './views'
+export type { BoundariesInput } from './boundaries'
 export { detailInput, SIDE_BY_SIDE } from './views'
 
 /** One component in a list the selection walks: hubs and hotspots merged. */
@@ -102,9 +106,16 @@ export type PaneInput = {
   sort: HubSort
   issues: IssuesInput
   cycles: CyclesInput
+  /** Null when the knossos that answered sends no boundary matrix. */
+  boundaries: BoundariesInput | null
   /** The component on show instead of a tab, or null. */
   detail: DetailInput | null
+  /** The allow-root offer and its progress, or null when no root was refused. */
+  allow: AllowInput | null
 }
+
+/** A refused root the pane offers to allow: the root, the roots file it would join, and where the action stands. */
+export type AllowInput = { root: string; rootsFile: string | null; phase: AllowState['phase']; reason: string | null }
 
 export const TABS: { id: PaneTab; full: string; short: string; hotkey: string }[] = [
   { id: 'overview', full: 'Overview', short: 'Over', hotkey: '1' },
@@ -198,8 +209,6 @@ export function lastTurnOf(brief: TurnBrief | null): LastTurn | null {
 }
 
 const LANGUAGES: Record<string, string> = { php: 'PHP', javascript: 'JS', typescript: 'TS', python: 'PY', rust: 'RS', go: 'GO', ruby: 'RB', java: 'JAVA' }
-/** A count with thousands separated: 7,878. */
-const grouped = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
 
 /**
  * The header's summary line: components, boundaries, drift and languages
@@ -241,6 +250,7 @@ export function paneInput(
   now: number,
   terminal: boolean,
   detail: DetailInput | null = null,
+  allow: AllowState | null = null,
 ): PaneInput {
   const items = mergeRanked(d)
   const issues = issuesInput(d)
@@ -273,8 +283,73 @@ export function paneInput(
     sort: view.sort ?? 'in',
     issues,
     cycles: cyclesInput(d),
+    boundaries: boundariesInput(d),
     detail,
+    allow: allowInput(brief, rescan, allow),
   }
+}
+
+/**
+ * The root a scan was refused for: the turn brief's, else the pane's last
+ * rescan's; null when neither was refused.
+ */
+export function refusedRoot(brief: TurnBrief | null, rescan: RescanState): { root: string; rootsFile: string | null } | null {
+  if (brief?.status === 'not-allowed') return { root: brief.refused_root ?? brief.path, rootsFile: brief.roots_file }
+  return rescan.refusedRoot ? { root: rescan.refusedRoot, rootsFile: null } : null
+}
+
+/** The allow-root offer: the action under way for its root, else an offer for a refused root, else null. */
+export function allowInput(brief: TurnBrief | null, rescan: RescanState, allow: AllowState | null): AllowInput | null {
+  const refused = refusedRoot(brief, rescan)
+  if (allow !== null && allow.phase !== 'idle' && allow.root !== null) {
+    return { root: allow.root, rootsFile: refused?.root === allow.root ? refused.rootsFile : null, phase: allow.phase, reason: allow.reason }
+  }
+  return refused === null ? null : { ...refused, phase: 'idle', reason: null }
+}
+
+/**
+ * The component a copy or an "Ask Claude" is about: the one on show in the
+ * detail, else the marked row of the tab's list; null when there is none.
+ */
+export function subjectOf(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'selected'>): Openable | null {
+  if (input.detail !== null) return input.detail.component === null ? null : { name: input.detail.component.name, canonical: input.detail.component.canonical }
+  const list = listFor(input)
+  const marked = list[Math.min(Math.max(0, input.selected), Math.max(0, list.length - 1))]
+  return marked === undefined ? null : { name: marked.name, canonical: marked.canonical }
+}
+
+/** The prompt "Ask Claude" submits for a component. */
+export const askPrompt = (canonical: string): string =>
+  `Using the Knossos graph, what depends on ${canonical} and what would break if I changed it?`
+
+/**
+ * The allow-root rows: the offer with its button, the question with its two
+ * answers, the action running, or how it ended. The offer never runs
+ * anything itself: `a` only asks, and only `y` on the question allows.
+ */
+export function allowRows(allow: AllowInput, columns: number): Row[] {
+  const lines = (key: string, text: string, style: Omit<Segment, 'text'>): Row[] =>
+    wrapWords(text, Math.max(1, columns - 3)).map((line, i) => ({ key: `${key}-${i}`, segments: [{ text: i === 0 ? '▲  ' : '   ', ...style }, { text: line, ...style }] }))
+  const answers = (groups: Segment[][]) => wrapGroups('allow-keys', groups, columns, 2, 3)
+  if (allow.phase === 'confirming') {
+    const where = allow.rootsFile === null ? 'the roots file knossos reads' : allow.rootsFile
+    return [
+      ...lines('allow-ask', `Allow knossos to scan ${allow.root}? This adds it to ${where}.`, { color: STATUS_COLOURS.warn }),
+      ...answers([[button('allow-yes', 'allow', 'y', { dim: false })], [button('allow-no', 'cancel', 'n', { dim: true })]]),
+    ]
+  }
+  if (allow.phase === 'running') return [dimRow('allow-running', `   allowing ${allow.root}…`, columns)]
+  if (allow.phase === 'done') {
+    return wrapWords(`✓ ${allow.root} allowed · the next turn scans it`, columns).map((line, i) => ({
+      key: `allow-done-${i}`,
+      segments: [{ text: line, color: STATUS_COLOURS.ok }],
+    }))
+  }
+  const said = allow.phase === 'failed' ? `allow-root failed${allow.reason ? `: ${allow.reason}` : ''} · ${allow.root}` : `${allow.root} is not an allowed root`
+  return [
+    ...lines('allow-offer', said, { color: allow.phase === 'failed' ? STATUS_COLOURS.alert : STATUS_COLOURS.warn }),
+    ...answers([[button('allow', 'allow root', 'a', { dim: false })]]),
+  ]
 }
 
 function headerRows(input: PaneInput, columns: number): Row[] {
@@ -418,6 +493,7 @@ function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] 
   const keys: Segment[] = []
   if (input.detail !== null) keys.push(button('back', 'back', 'b'))
   if (hasList) keys.push(button('down', '↓', 'j'), button('up', '↑', 'k'), button('open', 'open', 'o'))
+  if (subjectOf(input) !== null) keys.push(button('copy', 'copy', 'c'), button('ask', 'ask Claude', 'q'))
   if (input.detail === null && input.tab === 'hubs') {
     keys.push(button('filter', 'filter', 'f'), button('sort', `sort: ${input.sort}`, 's'))
     if (input.filter !== '') keys.push(button('clear', 'clear', 'x'))
@@ -428,14 +504,11 @@ function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] 
     const help =
       '1–5 or a click switch tabs. j/k, Tab or a click move the marker; o or Enter opens it, b goes back. ' +
       'On Hubs, f filters (type, then Enter; x clears) and s sorts by in, out or cross. ' +
-      'r rescans when the snapshot is stale. Every key has a button.'
+      'c copies the marked component\'s full name; q asks Claude what depends on it (your press sends the prompt). ' +
+      'r rescans when the snapshot is stale; a offers to allow a refused root and asks first. Every key has a button.'
     wrapWords(help, columns).forEach((line, i) => rows.push({ key: `help-${i}`, segments: [{ text: line, dim: true }] }))
   }
   return rows
-}
-
-const PLACEHOLDER: Partial<Record<PaneTab, string>> = {
-  boundaries: 'Boundary heat map: coming next.',
 }
 
 /** The hubs tab: its section header, the filter field or line, and the filtered, sorted table. */
@@ -455,12 +528,23 @@ function hubRows(input: PaneInput, list: Item[], selected: number, columns: numb
   return [...rows, ...componentRows('hub', list, selected, columns, true, input.sort)]
 }
 
+/**
+ * The pane with no dashboard to draw: what to do about it, and the allow-root
+ * offer when the project's root was refused (often the reason there is none).
+ */
+export function emptyRows(allow: AllowInput | null, columns: number): Row[] {
+  const width = Math.max(1, Math.min(CONTENT_MAX, columns))
+  const said = wrapWords('No Knossos data for this project. Scan it with knossos scan.', width).map((line, i) => dimRow(`empty-${i}`, line, width))
+  return allow === null ? said : [...said, blank('gap-allow'), ...allowRows(allow, width)]
+}
+
 /** Every row of the pane for `input`, none wider than `columns` (nor {@link CONTENT_MAX}). */
 export function paneRows(input: PaneInput, columns: number): Row[] {
   const width = Math.max(1, Math.min(CONTENT_MAX, columns))
   const list = listFor(input)
   const selected = Math.min(Math.max(0, input.selected), Math.max(0, list.length - 1))
   const rows: Row[] = [...headerRows(input, width)]
+  if (input.allow !== null) rows.push(...allowRows(input.allow, width))
   if (input.detail !== null) {
     rows.push(...detailRows(input.detail, width))
   } else {
@@ -478,7 +562,7 @@ export function paneRows(input: PaneInput, columns: number): Row[] {
     } else if (input.tab === 'cycles') {
       rows.push(...cycleRows(input.cycles, width))
     } else {
-      rows.push(blank('gap-soon'), ...wrapWords(PLACEHOLDER[input.tab] ?? '', width).map((line, i) => dimRow(`soon-${i}`, line, width)))
+      rows.push(...boundaryRows(input.boundaries, width))
     }
   }
   rows.push(blank('gap-keys'), ...footerRows(input, width, list.length > 0 && input.detail === null))

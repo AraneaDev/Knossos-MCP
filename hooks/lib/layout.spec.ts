@@ -3,6 +3,11 @@ import type { ComponentDetail, Dashboard, DetailState, KnossosView, PaneTab, Tur
 import {
   CONTENT_MAX,
   SIDE_BY_SIDE,
+  allowInput,
+  allowRows,
+  askPrompt,
+  emptyRows,
+  subjectOf,
   bar,
   detailInput,
   displayName,
@@ -301,8 +306,8 @@ describe('paneRows', () => {
     expect(lastTurnOf(brief({ status: 'scan-failed' }))).toBeNull()
   })
 
-  it('says the boundaries tab is coming, and walks nothing there or on cycles', () => {
-    expect(textOf(paneRows(input({ tab: 'boundaries' }), 60))).toContain('coming next')
+  it('says when the knossos that answered sends no boundary map, and walks nothing there or on cycles', () => {
+    expect(textOf(paneRows(input({ tab: 'boundaries' }), 60))).toContain('sends no boundary map')
     for (const tab of ['boundaries', 'cycles'] as const) expect(listFor(input({ tab }))).toEqual([])
   })
 
@@ -656,7 +661,7 @@ describe('the detail view', () => {
     const rows = paneRows(input, 60)
     expect(row(rows, 'uses-1')!.segments.find(s => s.press)?.press?.id).toBe('rel:3')
     const keys = row(rows, 'keys')!.segments.flatMap(s => (s.press ? [s.press.hotkey] : []))
-    expect(keys).toEqual(['b', 'h'])
+    expect(keys).toEqual(['b', 'c', 'q', 'h'])
     expect(row(rows, 'tabs')).toBeUndefined()
   })
   it('says it is looking, or what knossos said instead', () => {
@@ -706,13 +711,13 @@ describe('the hubs filter and sort', () => {
     expect(plainText(row(rows, 'hubs-head')!)).toMatch(/◆ hotspot only · by out$/)
     expect(plainText(row(rows, 'hub-0')!)).toMatch(/ProjectScanService::scan +core +█+ +119 +58 +0$/)
     const keys = rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))
-    expect(keys).toEqual(['j', 'k', 'o', 'f', 's', 'x', 'h'])
+    expect(keys).toEqual(['j', 'k', 'o', 'c', 'q', 'f', 's', 'x', 'h'])
   })
   it('wraps the keys rather than dropping one that does not fit', () => {
     const rows = paneRows(input({ tab: 'hubs', filter: 'a' }), 40)
     const keyRows = rows.filter(r => r.key.startsWith('keys'))
     expect(keyRows.length).toBeGreaterThan(1)
-    expect(keyRows.flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))).toEqual(['j', 'k', 'o', 'f', 's', 'x', 'h'])
+    expect(keyRows.flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))).toEqual(['j', 'k', 'o', 'c', 'q', 'f', 's', 'x', 'h'])
     widthsFit(rows, 40)
   })
 })
@@ -738,5 +743,60 @@ describe('row primitives', () => {
     const rows = wrapGroups('g', [[{ text: 'aaaa' }], [{ text: 'bbbb' }], [{ text: 'cccc' }]], 12, 1, 2)
     expect(rows.map(plainText)).toEqual(['  aaaa bbbb', '  cccc'])
     expect(rows.map(r => r.key)).toEqual(['g', 'g-1'])
+  })
+})
+
+describe('the allow-root offer', () => {
+  const refused = brief({ status: 'not-allowed', refused_root: '/work/Knossos-MCP', roots_file: '/data/roots.json' })
+  const offer = (phase: 'idle' | 'confirming' | 'running' | 'done' | 'failed', reason: string | null = null) =>
+    allowInput(refused, IDLE, { phase, root: '/work/Knossos-MCP', reason })!
+  const keysOf = (rows: Row[]) => rows.flatMap(r => r.segments.flatMap(s => (s.press ? [`${s.press.hotkey}:${s.press.id}`] : [])))
+
+  it('offers a refused root from the turn brief, else from the last rescan, else nothing', () => {
+    expect(allowInput(refused, IDLE, null)).toEqual({ root: '/work/Knossos-MCP', rootsFile: '/data/roots.json', phase: 'idle', reason: null })
+    expect(allowInput(brief(), { phase: 'failed', reason: 'not an allowed root', refusedRoot: '/work/x' }, null)?.root).toBe('/work/x')
+    expect(allowInput(brief(), IDLE, null)).toBeNull()
+    expect(allowInput(brief(), IDLE, { phase: 'done', root: '/work/x', reason: null })?.phase).toBe('done')
+  })
+  it('only asks on a: the offer has the one key, the question its two answers', () => {
+    expect(keysOf(allowRows(offer('idle'), 60))).toEqual(['a:allow'])
+    const asked = allowRows(offer('confirming'), 60)
+    expect(keysOf(asked)).toEqual(['y:allow-yes', 'n:allow-no'])
+    expect(asked.map(plainText).join(' ').replace(/\s+/g, ' ')).toContain('Allow knossos to scan /work/Knossos-MCP? This adds it to /data/roots.json.')
+    expect(keysOf(allowRows(offer('running'), 60))).toEqual([])
+    expect(keysOf(allowRows(offer('done'), 60))).toEqual([])
+    expect(allowRows(offer('failed', 'knossos did not allow it'), 60).map(plainText).join(' ')).toContain('allow-root failed: knossos did not allow it')
+    expect(keysOf(allowRows(offer('failed'), 60))).toEqual(['a:allow'])
+  })
+  it('sits under the header on every tab and in the empty pane, within the width', () => {
+    for (const columns of WIDTHS) {
+      for (const phase of ['idle', 'confirming', 'running', 'done', 'failed'] as const) {
+        const rows = paneRows(input({ allow: offer(phase, 'knossos did not allow it') }), columns)
+        widthsFit(rows, columns)
+        expect(rows.findIndex(r => r.key.startsWith('allow'))).toBeGreaterThan(0)
+        widthsFit(emptyRows(offer(phase), columns), columns)
+      }
+    }
+    expect(emptyRows(null, 60).map(plainText).join(' ')).toContain('No Knossos data for this project.')
+  })
+})
+
+describe('copy and Ask Claude', () => {
+  it('act on the marked row of the tab, or on the component in the detail', () => {
+    expect(subjectOf(input({ tab: 'hubs', selected: 1 }))).toEqual({ name: 'ArchitectureQueryService', canonical: 'Knossos\\Query\\ArchitectureQueryService' })
+    expect(subjectOf(input({ tab: 'cycles' }))).toBeNull()
+    expect(subjectOf(detailPane())?.canonical).toBe(detailPane().detail!.component!.canonical)
+    expect(subjectOf(detailPane(null))).toBeNull()
+  })
+  it('offer c and q only where there is a component to act on', () => {
+    const keys = (rows: Row[]) => rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))
+    expect(keys(paneRows(input({ tab: 'hubs' }), 60))).toEqual(expect.arrayContaining(['c', 'q']))
+    expect(keys(paneRows(input({ tab: 'boundaries' }), 60))).not.toContain('c')
+    expect(keys(paneRows(input({ tab: 'cycles' }), 60))).not.toContain('q')
+  })
+  it('asks what depends on the component and what a change would break', () => {
+    expect(askPrompt('Knossos\\Store\\StableId')).toBe(
+      'Using the Knossos graph, what depends on Knossos\\Store\\StableId and what would break if I changed it?',
+    )
   })
 })

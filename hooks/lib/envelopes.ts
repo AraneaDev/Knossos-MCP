@@ -1,8 +1,8 @@
-import type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, Rescan, TurnBrief, Violation } from '../../types'
+import type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, Rescan, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
-export type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, Rescan, TurnBrief, Violation }
+export type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, Rescan, TurnBrief, Violation }
 
 // `no-binary` is the wrapper's own answer when there is nothing to run; every envelope may be it.
 const BRIEF = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error', 'no-binary'])
@@ -98,4 +98,23 @@ export function rescanReason(rescan: Rescan | null): string {
   if (rescan.status === 'unscanned') return 'never scanned'
   if (rescan.status === 'scan-failed') return rescan.reason ?? 'the scan failed'
   return 'knossos could not run it'
+}
+
+/**
+ * The allow-root answer from the wrapper's stdout: the root now granted (or
+ * already present), `no-binary`, or null for silence, a preview that wrote
+ * nothing, or anything unexpected.
+ */
+export function parseAllowRoot(stdout: string): AllowRoot | null {
+  let value: unknown
+  try {
+    value = JSON.parse(stdout)
+  } catch {
+    return null
+  }
+  if (!isObject(value)) return null
+  const v = value as Record<string, unknown>
+  if (v.status === 'no-binary') return { status: 'no-binary' }
+  if (typeof v.path !== 'string' || typeof v.added !== 'boolean' || v.preview === true) return null
+  return { path: v.path, added: v.added, ...(typeof v.roots_file === 'string' ? { roots_file: v.roots_file } : {}) }
 }

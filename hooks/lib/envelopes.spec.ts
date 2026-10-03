@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countLabel, detailLines, parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './envelopes'
+import { countLabel, detailLines, parseAllowRoot, parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './envelopes'
 
 describe('envelopes', () => {
   it('empty stdout is no data', () => expect(parseTurnBrief('')).toBeNull())
@@ -103,5 +103,23 @@ describe('parseRescan and rescanReason', () => {
     expect(rescanReason({ status: 'scan-failed', reason: 'disk full' })).toBe('disk full')
     expect(rescanReason({ status: 'scan-failed' })).toBe('the scan failed')
     expect(rescanReason({ status: 'error' })).toBe('knossos could not run it')
+  })
+})
+
+describe('parseAllowRoot', () => {
+  it('reads a grant, and a root that was already allowed', () => {
+    expect(parseAllowRoot('{"path":"/w/p","roots_file":"/d/roots.json","roots_file_source":"named","added":true}')).toEqual({
+      path: '/w/p',
+      added: true,
+      roots_file: '/d/roots.json',
+    })
+    expect(parseAllowRoot('{"path":"/w/p","roots_file":"/d/roots.json","added":false}')).toEqual({ path: '/w/p', added: false, roots_file: '/d/roots.json' })
+  })
+  it('passes no-binary through and reads silence, a preview or anything else as nothing', () => {
+    expect(parseAllowRoot('{"status":"no-binary"}')).toEqual({ status: 'no-binary' })
+    expect(parseAllowRoot('')).toBeNull()
+    expect(parseAllowRoot('{"path":"/w/p","added":false,"preview":true}')).toBeNull()
+    expect(parseAllowRoot('[1]')).toBeNull()
+    expect(parseAllowRoot('{"path":3,"added":true}')).toBeNull()
   })
 })

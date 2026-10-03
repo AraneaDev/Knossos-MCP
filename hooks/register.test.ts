@@ -62,7 +62,7 @@ const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
  */
 function world(
   on: On,
-  answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[]; scan?: Answer[] } = {},
+  answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[]; scan?: Answer[]; allow?: Answer[] } = {},
   disk: { root?: string; links?: Record<string, string>; gone?: string[] } = {},
 ) {
   const clock = mock.clock(on)
@@ -73,7 +73,11 @@ function world(
     brief: answers.brief ?? [{ stdout: brief() }],
     detail: answers.detail ?? [{ stdout: '' }],
     scan: answers.scan ?? [{ stdout: '{"status":"ok"}' }],
+    allow: answers.allow ?? [{ stdout: '{"path":"/repo","roots_file":"/data/roots.json","added":true}' }],
   }
+  /** Every prompt submitted, and every copy with the surface it was for. */
+  const prompts: string[] = []
+  const copies: { text: string; surface: string | undefined }[] = []
   const calls: string[][] = []
   const toasts: string[] = []
   const logs: { text: string; to: string }[] = []
@@ -116,6 +120,14 @@ function world(
     panes.delete(e.id)
     return { value: undefined }
   })
+  on('prompt.submit', (_$, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+  on('ui.copy', (_$, e) => {
+    copies.push({ text: e.text, surface: e.surface })
+    return { value: { isCopied: true } }
+  })
   // The focus ring lands where it was asked to.
   on('ui.focus', () => ({}))
   on('ui.panes', () => ({
@@ -131,7 +143,9 @@ function world(
           ? queues.detail
           : sub === 'scan'
             ? queues.scan
-            : queues.brief
+            : sub === 'allow-root'
+              ? queues.allow
+              : queues.brief
     const answer = (queue.length > 1 ? queue.shift() : queue[0]) ?? { stdout: '' }
     if (answer.hold !== undefined) await clock.sleep(answer.hold)
     return {
@@ -145,7 +159,8 @@ function world(
   const detailRuns = () => calls.filter(c => c[2] === 'component-detail')
   const scanRuns = () => calls.filter(c => c[2] === 'scan')
   const dashboardRuns = () => calls.filter(c => c[2] === 'dashboard')
-  return { clock, calls, briefRuns, detailRuns, scanRuns, dashboardRuns, toasts, logs, opened, closed, invalidations }
+  const allowRuns = () => calls.filter(c => c[2] === 'allow-root')
+  return { clock, calls, briefRuns, detailRuns, scanRuns, dashboardRuns, allowRuns, toasts, logs, opened, closed, invalidations, prompts, copies }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -248,6 +263,29 @@ const issuesDashboard = (over: Record<string, unknown> = {}) =>
           nodes_truncated: false,
         },
       ],
+    },
+    ...over,
+  })
+
+/** A dashboard that also sends the boundary matrix: Core may not depend on Http, and one of its classes does. */
+const boundariesDashboard = (over: Record<string, unknown> = {}) =>
+  issuesDashboard({
+    boundary_matrix: {
+      boundaries: ['Http', 'Core', 'module:cli (+composer:app/cli)'],
+      members: [40, 30, 5],
+      boundaries_truncated: false,
+      cells: [
+        [120, 14, 0],
+        [3, 80, 0],
+        [6, 0, 9],
+      ],
+      forbidden: [
+        [1, 0],
+        [1, 2],
+      ],
+      edges: 232,
+      truncated: false,
+      truncation_reasons: [],
     },
     ...over,
   })
@@ -937,7 +975,7 @@ describe('knossos mod', () => {
       expect((await ui.find({ key: 'hub-0' }))?.text).toMatch(/^› +Router .*41 +3 +2$/)
       expect((await ui.find({ key: 'hub-1' }))?.text).toMatch(/◆ Kernel/)
       await ui.press({ key: 'tab:boundaries' })
-      expect((await ui.find({ key: 'pane' }))?.text).toContain('coming next')
+      expect((await ui.find({ key: 'pane' }))?.text).toContain('sends no boundary map')
       expect(await ui.find({ key: 'hub-0' })).toBeUndefined()
       await ui.press({ key: 'tab:overview' })
       expect(await ui.find({ key: 'top-0' })).toBeDefined()
@@ -1092,7 +1130,7 @@ describe('knossos mod', () => {
   })
 
   test('nothing in the pane is wider than its body', async ($, on) => {
-    const long = issuesDashboard({
+    const long = boundariesDashboard({
       project_root: '/work/a-project-with-a-rather-long-directory-name',
       freshness: { state: 'stale', age_seconds: 40_000, drift_files: 41 },
       hubs: [
@@ -1106,7 +1144,7 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       for (const bodyColumns of [40, 60, 90, 120]) {
         const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns } })
-        for (const step of ['tab:overview', 'tab:hubs', 'filter', 'tab:cycles', 'tab:issues', 'keys', 'tab:hubs', 'row:0']) {
+        for (const step of ['tab:overview', 'tab:hubs', 'filter', 'tab:boundaries', 'tab:cycles', 'tab:issues', 'keys', 'tab:hubs', 'row:0']) {
           await ui.press({ key: step })
           await w.clock.settle()
           const rows = (await ui.findAll({ type: 'Box' })).filter(b => b.key !== 'pane' && b.key !== 'detail')
@@ -1114,6 +1152,9 @@ describe('knossos mod', () => {
           for (const row of rows) {
             const width = [...row.text].length + hotkeyPrefixes(row)
             expect(width, `${surface} ${bodyColumns} ${step} ${String(row.key)}: ${row.text}`).toBeLessThanOrEqual(bodyColumns)
+          }
+          for (const grid of await ui.findAll({ type: 'Raster' })) {
+            expect(grid.props.columns, `${surface} ${bodyColumns} ${step} raster`).toBeLessThanOrEqual(bodyColumns)
           }
         }
         await ui.press({ key: 'back' })
@@ -1571,5 +1612,179 @@ describe('knossos mod', () => {
       expect((await ui.find({ key: 'health-dead' }))?.text).toMatch(/policy ▲ 2 +diagnostics ▲ 1/)
       await ui.unmount()
     }
+  })
+
+  test('the boundaries tab draws the heat map as a Raster on the terminal and as glyphs elsewhere', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: boundariesDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const term = await mountPane($, 'terminal')
+    await term.press({ key: 'tab:boundaries' })
+    expect((await term.find({ key: 'bounds-head' }))?.text).toMatch(/^BOUNDARIES +3 · 232 deps$/)
+    const grid = await term.find({ type: 'Raster' })
+    expect(grid?.key).toBe('raster-heat')
+    // The axis letters and one row per boundary, as wide as the widest of them.
+    expect(grid?.props.rows).toBe(4)
+    expect(grid?.props.columns).toBeLessThanOrEqual(PANE_PROPS.bodyColumns)
+    expect(typeof grid?.props.cells).toBe('string')
+    expect(await term.find({ key: 'heat-1' })).toBeUndefined()
+    expect((await term.find({ key: 'bounds-1' }))?.text).toMatch(/^ {3}B Core +[█▏▎▍▌▋▊▉]+ +30 +14 +3$/)
+    await term.unmount()
+
+    const desk = await mountPane($, 'desktop')
+    await desk.press({ key: 'tab:boundaries' })
+    expect(await desk.find({ type: 'Raster' })).toBeUndefined()
+    expect((await desk.find({ key: 'heat-head' }))?.text).toMatch(/^ {3}from→to +A +B +C *$/)
+    const core = await desk.find({ key: 'heat-1' })
+    expect(core?.text).toMatch(/^ {3}B Core +▒+ +█+ +× +$/)
+    // Core reaching into Http is forbidden and crossed: red; the empty forbidden cell is a red cross.
+    const crossed = await desk.find({ type: 'Text', text: '▒▒▒▒▒' })
+    expect(crossed?.props.color).toBe('red')
+    expect((await desk.find({ key: 'heat-legend' }))?.text).toContain('forbidden')
+    expect((await desk.find({ key: 'heat-2' }))?.text).toMatch(/^ {3}C cli /)
+    // Nothing to walk, copy or ask about on this tab.
+    expect(await desk.find({ key: 'down' })).toBeUndefined()
+    expect(await desk.find({ key: 'copy' })).toBeUndefined()
+    await desk.unmount()
+  })
+
+  test('c copies the marked component on the surface it was pressed on', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: fullDetailOf('Router') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface)
+      await ui.press({ key: 'tab:hubs' })
+      expect((await ui.find({ key: 'copy' }))?.props.hotkey).toBe('c')
+      await ui.press({ key: 'down' })
+      await ui.press({ key: 'copy' })
+      await w.clock.settle()
+      expect(w.copies.at(-1)).toEqual({ text: 'App\\Kernel', surface })
+      expect(w.toasts.at(-1)).toBe('Copied App\\Kernel')
+      await ui.press({ key: 'tab:overview' })
+      await ui.unmount()
+    }
+    // In the detail, the component on show.
+    const ui = await mountPane($)
+    await ui.press({ key: 'row:0' })
+    await w.clock.settle()
+    await ui.press({ key: 'copy' })
+    await w.clock.settle()
+    expect(w.copies.at(-1)?.text).toBe('App\\Router')
+    expect(w.copies).toHaveLength(3)
+    expect(w.prompts).toEqual([])
+    await ui.unmount()
+  })
+
+  test('Ask Claude submits exactly one prompt, and only on its press', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface)
+      // Opening, switching tabs and walking the list never submit anything.
+      for (const step of ['tab:hubs', 'down', 'up', 'tab:overview', 'keys', 'keys']) await ui.press({ key: step })
+      await edit($, `${ROOT}/src/Router.php`)
+      await $.turn.complete(TURN)
+      await w.clock.settle()
+      expect(w.prompts).toHaveLength(surface === 'terminal' ? 0 : 1)
+      expect((await ui.find({ key: 'ask' }))?.props.hotkey).toBe('q')
+      await ui.press({ key: 'ask' })
+      await w.clock.settle()
+      expect(w.prompts).toHaveLength(surface === 'terminal' ? 1 : 2)
+      expect(w.prompts.at(-1)).toBe('Using the Knossos graph, what depends on App\\Router and what would break if I changed it?')
+      await ui.unmount()
+    }
+  })
+
+  test('allow-root asks first, runs only on the confirming press, then scans the project', async ($, on) => {
+    const refused = brief({ status: 'not-allowed', refused_root: ROOT, roots_file: '/data/roots.json', changed_files: [], impact: {} })
+    const w = world(on, {
+      dashboard: [{ stdout: paneDashboard() }],
+      brief: [{ stdout: refused }, { stdout: brief() }],
+      allow: [{ stdout: '{"path":"/repo","roots_file":"/data/roots.json","added":true}', hold: 500 }],
+    })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    for (const surface of ['desktop', 'terminal'] as const) {
+      const ui = await mountPane($, surface)
+      expect((await ui.find({ key: 'allow-offer-0' }))?.text).toContain('/repo is not an allowed root')
+      expect((await ui.find({ key: 'allow' }))?.props.hotkey).toBe('a')
+      await ui.press({ key: 'allow' })
+      await w.clock.settle()
+      // The offer only asks.
+      expect(w.allowRuns()).toEqual([])
+      expect((await ui.find({ key: 'allow-ask-0' }))?.text).toContain('Allow knossos to scan /repo?')
+      expect((await ui.find({ key: 'allow-yes' }))?.props.hotkey).toBe('y')
+      await ui.press({ key: 'allow-no' })
+      await w.clock.settle()
+      expect(w.allowRuns()).toEqual([])
+      expect(await ui.find({ key: 'allow-yes' })).toBeUndefined()
+      await ui.unmount()
+    }
+    const ui = await mountPane($)
+    const briefs = w.briefRuns().length
+    await ui.press({ key: 'allow' })
+    await w.clock.settle()
+    await ui.press({ key: 'allow-yes' })
+    // Nothing runs inside the press.
+    expect(w.allowRuns()).toEqual([])
+    await w.clock.settle()
+    // Running, the question and its answers are gone: there is nothing to press twice.
+    expect(await ui.find({ key: 'allow-yes' })).toBeUndefined()
+    expect((await ui.find({ key: 'allow-running' }))?.text).toContain('allowing /repo')
+    await w.clock.advance(500)
+    await w.clock.settle()
+    expect(w.allowRuns()).toEqual([['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'allow-root', ROOT]])
+    expect((await ui.find({ key: 'allow-done-0' }))?.text).toContain('✓ /repo allowed')
+    // The refused edit is scanned now, and the offer is gone.
+    expect(w.briefRuns().length).toBe(briefs + 1)
+    expect(w.briefRuns().at(-1)).toContain('--files=src/Router.php')
+    expect(await ui.find({ key: 'allow' })).toBeUndefined()
+    expect(w.prompts).toEqual([])
+    await ui.unmount()
+  })
+
+  test('an allow-root that does not land says so and can be asked again', async ($, on) => {
+    const refused = brief({ status: 'not-allowed', refused_root: ROOT, roots_file: '/data/roots.json' })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], brief: [{ stdout: refused }], allow: [{ stdout: '' }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const ui = await mountPane($, 'desktop')
+    await ui.press({ key: 'allow' })
+    await w.clock.settle()
+    await ui.press({ key: 'allow-yes' })
+    await w.clock.settle()
+    expect((await ui.find({ key: 'allow-offer-0' }))?.text).toContain('allow-root failed: knossos did not allow it')
+    expect(w.allowRuns()).toHaveLength(1)
+    await ui.press({ key: 'allow' })
+    await w.clock.settle()
+    expect((await ui.find({ key: 'allow-ask-0' }))?.text).toContain('Allow knossos to scan /repo?')
+    expect(w.allowRuns()).toHaveLength(1)
+    await ui.unmount()
+  })
+
+  test('the pane without data offers to allow a refused root', async ($, on) => {
+    const unscanned = JSON.stringify({ ...(JSON.parse(dashboard) as object), status: 'unscanned' })
+    const refused = brief({ status: 'not-allowed', refused_root: ROOT, roots_file: '/data/roots.json' })
+    const w = world(on, { dashboard: [{ stdout: unscanned }], brief: [{ stdout: refused }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'empty' }))?.text).toContain('knossos scan')
+    await ui.press({ key: 'allow' })
+    await w.clock.settle()
+    expect((await ui.find({ key: 'empty' }))?.text).toMatch(/This adds it to\s+\/data\/roots\.json\./)
+    expect(w.allowRuns()).toEqual([])
+    await ui.unmount()
   })
 })
