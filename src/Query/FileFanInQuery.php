@@ -10,18 +10,23 @@ namespace Knossos\Query;
  * Counts distinct dependent files, not edges: a file calling forty methods
  * of another is one dependent. Edges inside one file never count, so a
  * class calling its own helpers does not look like a hub.
+ *
+ * Each row carries two boundary answers that are easy to confuse:
+ * `boundaries` lists the boundaries the file's dependents sit in (where a
+ * change reaches), and `boundary` is the file's own label (where the file
+ * sits, labelled as {@see BoundaryLabels} labels components), null when none
+ * of its components sits in a boundary.
  */
 final readonly class FileFanInQuery extends AbstractArchitectureQueryService
 {
     /**
      * Files with at least $threshold dependent files, most depended-on first.
      *
-     * @return list<array{path: string, dependent_files: int, boundaries: list<string>}>
+     * @return list<array{path: string, dependent_files: int, boundaries: list<string>, boundary: string|null}>
      */
     public function aboveThreshold(string $projectId, int $threshold, int $cap = 500): array
     {
-        $rows = $this->select($projectId, null, $threshold, $cap);
-        return array_values($rows);
+        return array_values($this->labelled($projectId, $this->select($projectId, null, $threshold, $cap)));
     }
 
     /**
@@ -32,18 +37,38 @@ final readonly class FileFanInQuery extends AbstractArchitectureQueryService
      * the handful of files an edit touched.
      *
      * @param list<string> $paths
-     * @return array<string, array{path: string, dependent_files: int, boundaries: list<string>, top_dependents: list<string>}>
+     * @return array<string, array{path: string, dependent_files: int, boundaries: list<string>, boundary: string|null, top_dependents: list<string>}>
      */
     public function forPaths(string $projectId, array $paths, int $topDependents = 5): array
     {
         $found = $paths === [] ? [] : $this->select($projectId, $paths, 1, count($paths));
+        foreach ($paths as $path) {
+            $found[$path] ??= ['path' => $path, 'dependent_files' => 0, 'boundaries' => []];
+        }
+        $found = $this->labelled($projectId, $found);
         $result = [];
         foreach ($paths as $path) {
-            $row = $found[$path] ?? ['path' => $path, 'dependent_files' => 0, 'boundaries' => []];
+            $row = $found[$path];
             $row['top_dependents'] = $this->dependents($projectId, $path, $topDependents);
             $result[$path] = $row;
         }
         return $result;
+    }
+
+    /**
+     * The rows with each file's own boundary label added as `boundary`.
+     *
+     * @param array<string, array{path: string, dependent_files: int, boundaries: list<string>}> $rows
+     * @return array<string, array{path: string, dependent_files: int, boundaries: list<string>, boundary: string|null}>
+     */
+    private function labelled(string $projectId, array $rows): array
+    {
+        $labels = $rows === [] ? [] : BoundaryLabels::load($this->pdo, $projectId)->forFiles($projectId, array_map('strval', array_keys($rows)));
+        foreach ($rows as $path => $row) {
+            $rows[$path] = $row + ['boundary' => $labels[$path] ?? null];
+        }
+
+        return $rows;
     }
 
     /**

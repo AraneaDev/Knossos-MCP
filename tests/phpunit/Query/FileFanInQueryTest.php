@@ -27,8 +27,8 @@ final class FileFanInQueryTest extends KnossosTestCase
         $rows = (new FileFanInQuery($pdo))->aboveThreshold($projectId, 1);
         assertSame(
             [
-                ['path' => 'a.php', 'dependent_files' => 2, 'boundaries' => ['Core']],
-                ['path' => 'b.php', 'dependent_files' => 1, 'boundaries' => []],
+                ['path' => 'a.php', 'dependent_files' => 2, 'boundaries' => ['Core'], 'boundary' => null],
+                ['path' => 'b.php', 'dependent_files' => 1, 'boundaries' => [], 'boundary' => 'Core'],
             ],
             $rows,
         );
@@ -51,13 +51,26 @@ final class FileFanInQueryTest extends KnossosTestCase
         $rows = (new FileFanInQuery($pdo))->forPaths($projectId, ['c.php', 'a.php']);
         assertSame(0, $rows['c.php']['dependent_files']);
         assertSame(
-            ['path' => 'c.php', 'dependent_files' => 0, 'boundaries' => [], 'top_dependents' => []],
+            ['path' => 'c.php', 'dependent_files' => 0, 'boundaries' => [], 'boundary' => null, 'top_dependents' => []],
             $rows['c.php'],
         );
         assertSame(2, $rows['a.php']['dependent_files']);
         assertSame(['b.php', 'c.php'], $rows['a.php']['top_dependents']);
         assertSame(['Core'], $rows['a.php']['boundaries']);
         assertSame(1, (new FileFanInQuery($pdo))->forPaths($projectId, ['b.php'])['b.php']['dependent_files']);
+    }
+
+    /**
+     * A file is labelled with its own boundary, never its dependents': a.php's
+     * dependents sit in Core while a.php sits in none; b.php sits in Core.
+     */
+    #[Group('query')]
+    public function testEachFileCarriesItsOwnBoundaryNotItsDependents(): void
+    {
+        [$pdo, $projectId] = $this->fanInGraph();
+        $rows = (new FileFanInQuery($pdo))->forPaths($projectId, ['a.php', 'b.php', 'd.php']);
+        assertSame([null, 'Core', 'Other'], [$rows['a.php']['boundary'], $rows['b.php']['boundary'], $rows['d.php']['boundary']]);
+        assertSame(['Core'], $rows['a.php']['boundaries']);
     }
 
     /** The dependents list honours its limit, and an empty path list asks nothing. */

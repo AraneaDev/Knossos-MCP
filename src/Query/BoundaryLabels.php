@@ -104,6 +104,33 @@ final readonly class BoundaryLabels
     }
 
     /**
+     * The label of each file, by project-relative path: the label among the
+     * boundaries its own components belong to (never its dependents'). A file
+     * none of whose components sits in a boundary is absent.
+     *
+     * @param list<string> $paths project-relative paths
+     * @return array<string, string>
+     */
+    public function forFiles(string $projectId, array $paths): array
+    {
+        $memberships = [];
+        // Chunked to stay far below SQLite's bound-variable limit.
+        foreach (array_chunk(array_values(array_unique($paths)), 500) as $chunk) {
+            $statement = $this->pdo->prepare(
+                'SELECT DISTINCT f.relative_path, b.id, b.name FROM files f JOIN nodes n ON n.file_id = f.id '
+                . 'JOIN boundary_memberships bm ON bm.node_id = n.id JOIN boundaries b ON b.id = bm.boundary_id '
+                . 'WHERE f.project_id = ? AND f.relative_path IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')',
+            );
+            $statement->execute([$projectId, ...$chunk]);
+            foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$path, $id, $name]) {
+                $memberships[(string) $path][] = ['id' => $id, 'name' => $name];
+            }
+        }
+
+        return array_filter(array_map(fn(array $boundaries): ?string => $this->of($boundaries), $memberships), static fn(?string $label): bool => $label !== null);
+    }
+
+    /**
      * The label of every node of the project that sits in a boundary, by node
      * id, read in one query over the project's memberships.
      *
