@@ -23,6 +23,49 @@ use Throwable;
  */
 final class SessionDiffCommand implements CliCommand
 {
+    /**
+     * {@inheritDoc}
+     *
+     * Always exit 0. With `--json` a failure prints `{"status":"error"}`;
+     * without it nothing is printed.
+     */
+    public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
+    {
+        $json = $context->options->flag($options, 'json');
+        $result = $this->answer($command, $positionals, $options, $context);
+        if ($json || $result['status'] !== 'error') {
+            $context->output($result, $json, (string) $result['status']);
+        }
+        return 0;
+    }
+
+    /**
+     * The command's answer, or `{"status":"error"}` for anything it refuses or that fails.
+     *
+     * @param list<string> $positionals
+     * @param array<string, list<string>> $options
+     * @return array<string, mixed>
+     */
+    private function answer(string $command, array $positionals, array $options, CliCommandContext $context): array
+    {
+        try {
+            $context->options->validate($options, $command === 'session-head' ? ['json'] : ['json', 'rev', 'file']);
+            if (count($positionals) > 1) {
+                throw new InvalidArgumentException('Too many arguments.');
+            }
+            $path = (string) ($positionals[0] ?? getcwd());
+            $service = new SessionDiffService();
+            if ($command === 'session-head') {
+                return $service->head($path);
+            }
+            $rev = $context->options->single($options, 'rev') ?? throw new InvalidArgumentException('--rev is required.');
+            $file = $context->options->single($options, 'file') ?? throw new InvalidArgumentException('--file is required.');
+            return $service->diff($path, $rev, $file);
+        } catch (Throwable) {
+            return ['status' => 'error'];
+        }
+    }
+
     /** {@inheritDoc} */
     public function supports(string $command): bool
     {
@@ -37,37 +80,5 @@ final class SessionDiffCommand implements CliCommand
     public function allowedOptions(string $command): array
     {
         return [CliOptionParser::ANY];
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * Always exit 0. With `--json` a failure prints `{"status":"error"}`;
-     * without it nothing is printed.
-     */
-    public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
-    {
-        $json = $context->options->flag($options, 'json');
-        try {
-            $context->options->validate($options, $command === 'session-head' ? ['json'] : ['json', 'rev', 'file']);
-            if (count($positionals) > 1) {
-                throw new InvalidArgumentException('Too many arguments.');
-            }
-            $path = (string) ($positionals[0] ?? getcwd());
-            $service = new SessionDiffService();
-            $result = $command === 'session-head'
-                ? $service->head($path)
-                : $service->diff(
-                    $path,
-                    $context->options->single($options, 'rev') ?? throw new InvalidArgumentException('--rev is required.'),
-                    $context->options->single($options, 'file') ?? throw new InvalidArgumentException('--file is required.'),
-                );
-            $context->output($result, $json, (string) $result['status']);
-        } catch (Throwable) {
-            if ($json) {
-                $context->output(['status' => 'error'], true, '');
-            }
-        }
-        return 0;
     }
 }
