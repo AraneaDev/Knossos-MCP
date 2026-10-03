@@ -128,6 +128,22 @@ expect_silent_success 'component-detail with a name that reads as an option' \
 expect_silent_success 'the old inspect subcommand is gone' \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" inspect /tmp p1 Router
 
+# file-detail: one file relative to the project directory, handed to the
+# binary as the file's own path; an option, an absolute path or nothing at all
+# is refused.
+expect_output 'file-detail passes the file under the project, spaces intact' "file-detail|$ABS_PROJ/src/My File.php|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail "$STUBS/proj" 'src/My File.php'
+expect_output 'file-detail with a missing binary says so' "$NO_BINARY" \
+    env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" file-detail /tmp a.php
+expect_silent_success 'file-detail without a file' \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail /tmp
+expect_silent_success 'file-detail with two files' \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail /tmp a.php b.php
+expect_silent_success 'file-detail with a file that reads as an option' \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail /tmp --db=/elsewhere
+expect_silent_success 'file-detail with an absolute path' \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail /tmp /etc/passwd
+
 # The container variant, emitted with its placeholders filled, against a docker stand-in.
 mkdir -p "$STUBS/container" "$STUBS/dockerbin"
 sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|/srv/data|" "$SCRIPTS/knossos-run-container.sh" > "$STUBS/container/knossos-run.sh"
@@ -149,6 +165,10 @@ expect_output 'container allow-root grants the root with --execute' "img:1|allow
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" allow-root "$STUBS/proj"
 expect_silent_success 'container allow-root refuses an option' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" allow-root /tmp --db=/x
+expect_output 'container file-detail passes the file under the project' "img:1|file-detail|$ABS_PROJ/src/A.php|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail "$STUBS/proj" src/A.php
+expect_silent_success 'container file-detail with an absolute path' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail /tmp /etc/passwd
 expect_silent_success 'container component-detail without a name' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp
 expect_output 'container without docker says so' "$NO_BINARY" \
@@ -167,6 +187,7 @@ expect_output 'turn-brief is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KN
 expect_output 'scan is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" scan /tmp
 expect_output 'allow-root is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" KNOSSOS_ROOTS_FILE=/tmp/roots.json PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" allow-root /tmp
 expect_output 'component-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" component-detail /tmp X
+expect_output 'file-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" file-detail /tmp a.php
 expect_output 'container dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard /tmp
 
 [ "$failures" -eq 0 ] || exit 1

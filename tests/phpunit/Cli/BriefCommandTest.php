@@ -126,10 +126,11 @@ final class BriefCommandTest extends KnossosTestCase
         assertSame(true, $command->supports('turn-brief'));
         assertSame(true, $command->supports('dashboard'));
         assertSame(true, $command->supports('component-detail'));
+        assertSame(true, $command->supports('file-detail'));
         assertSame(true, $command->supports('rescan'));
         assertSame(false, $command->supports('session-brief'));
         assertSame(false, $command->supports('scan'));
-        foreach (['turn-brief', 'rescan', 'dashboard', 'component-detail'] as $name) {
+        foreach (['turn-brief', 'rescan', 'dashboard', 'component-detail', 'file-detail'] as $name) {
             assertSame([CliOptionParser::ANY], $command->allowedOptions($name));
         }
     }
@@ -145,9 +146,14 @@ final class BriefCommandTest extends KnossosTestCase
                 'turn-brief' => ['files', 'policies', 'no-policies'],
                 'dashboard' => ['fan-in-threshold'],
                 'component-detail' => [],
+                'file-detail' => [],
             ];
             foreach ($known as $command => $own) {
-                $positionals = $command === 'component-detail' ? [$root, 'Greeter'] : [$root];
+                $positionals = match ($command) {
+                    'component-detail' => [$root, 'Greeter'],
+                    'file-detail' => [$root . '/src/Core/Greeter.php'],
+                    default => [$root],
+                };
                 ob_start();
                 $status = $router->route($command, $positionals, ['bogus' => ['1'], 'json' => ['true']]);
                 assertSame(['status' => 'error'], json_decode((string) ob_get_clean(), true), $command);
@@ -169,6 +175,7 @@ final class BriefCommandTest extends KnossosTestCase
             assertSame(['status' => 'error'], $this->runJson('turn-brief', [$root, 'extra'], [])[1]);
             assertSame(['status' => 'error'], $this->runJson('dashboard', [$root, 'extra'], [])[1]);
             assertSame(['status' => 'error'], $this->runJson('component-detail', [$root, 'Greeter', 'extra'], [])[1]);
+            assertSame(['status' => 'error'], $this->runJson('file-detail', [$root . '/src/Core/Greeter.php', 'extra'], [])[1]);
             assertSame('ok', $this->runJson('dashboard', [$root], [])[1]['status']);
         } finally {
             $this->removeTempTree($root);
@@ -400,6 +407,50 @@ final class BriefCommandTest extends KnossosTestCase
         assertStringContainsString('knossos dashboard [path]', $help);
         assertStringContainsString('knossos component-detail [path] <name>', $help);
         assertStringContainsString('knossos rescan [path]', $help);
+        assertStringContainsString('knossos file-detail <file>', $help);
+    }
+
+    #[Group('cli')]
+    public function testFileDetailPrintsTheEnvelopeAsJson(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        try {
+            [$status, $out] = $this->runJson('file-detail', [$root . '/src/Core/Greeter.php'], []);
+            assertSame(0, $status);
+            assertSame('ok', $out['status']);
+            assertSame('src/Core/Greeter.php', $out['file']['path']);
+            assertSame(['src/Edge/Caller.php', 'tests/GreeterTest.php'], array_column($out['file']['dependents']['items'], 'path'));
+            [, $missing] = $this->runJson('file-detail', [$root . '/src/Nope.php'], []);
+            assertSame('not-found', $missing['status']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Through the router, as the binary runs it: the database comes from the file's own path, and a missing one is never created. */
+    #[Group('cli')]
+    public function testFileDetailNeverCreatesADatabase(): void
+    {
+        $directory = $this->temporaryDirectory();
+        file_put_contents($directory . '/a.php', "<?php
+");
+        $router = new CliCommandRouter(self::repositoryRoot(), new CliOptionParser(), new CliHelpRenderer(), 'test');
+        try {
+            ob_start();
+            $status = $router->route('file-detail', [$directory . '/a.php'], ['json' => ['true']]);
+            $out = json_decode((string) ob_get_clean(), true);
+            assertSame(0, $status);
+            assertSame('unscanned', $out['status']);
+            assertFalse(is_dir($directory . '/.knossos'));
+        } finally {
+            $this->removeTempTree($directory);
+        }
+    }
+
+    #[Group('cli')]
+    public function testFileDetailWithoutAPathIsAnErrorStatus(): void
+    {
+        assertSame([0, ['status' => 'error']], $this->runJson('file-detail', [], []));
     }
 
     #[Group('cli')]

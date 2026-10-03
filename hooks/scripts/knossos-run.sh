@@ -3,6 +3,7 @@
 #
 # Usage: knossos-run.sh <turn-brief|dashboard> <project-dir> [options...]
 #        knossos-run.sh component-detail <project-dir> <name>
+#        knossos-run.sh file-detail <project-dir> <file>
 #        knossos-run.sh scan <project-dir>
 #        knossos-run.sh allow-root <root>
 #
@@ -30,7 +31,7 @@ case "$SUBCOMMAND" in
     scan) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60}; COMMAND=rescan ;;
     # A cold first dashboard of a large project walks the whole graph.
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
-    component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    component-detail|file-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     *) exit 0 ;;
 esac
@@ -40,6 +41,13 @@ esac
 if [ "$SUBCOMMAND" = component-detail ]; then
     [ "$#" -eq 1 ] || exit 0
     case "$1" in -*) exit 0 ;; esac
+fi
+# file-detail takes exactly one file, relative to the project directory: an
+# option such as `--db=...` would point the read at another graph, and an
+# absolute path would read outside the directory the call names.
+if [ "$SUBCOMMAND" = file-detail ]; then
+    [ "$#" -eq 1 ] || exit 0
+    case "$1" in -* | /* | '') exit 0 ;; esac
 fi
 # scan takes nothing but the project: an option such as `--db=...` would point the write at another graph.
 if [ "$SUBCOMMAND" = scan ]; then
@@ -56,6 +64,12 @@ fi
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
 # Absolute from here on: a relative path would mean something else to the binary, the mount and the find below once the directory changes.
 PROJECT_DIR=$(pwd -P) || exit 0
+# What the binary reads: the project directory, or for file-detail the file in it.
+TARGET=$PROJECT_DIR
+if [ "$SUBCOMMAND" = file-detail ]; then
+    TARGET="$PROJECT_DIR/$1"
+    shift
+fi
 
 # Shared discovery helpers and the install-time data location. A missing
 # library is silent like every other failure: a plain `.` of a missing file
@@ -79,10 +93,10 @@ BIN="$(find_knossos)" || {
 }
 
 if TIMEOUT_BIN="$(find_timeout)"; then
-    OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" "$BIN" "$COMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
+    OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" "$BIN" "$COMMAND" "$TARGET" "$@" --json 2>/dev/null)" || exit 0
 else
     # No timeout tool: the mod's own $.process.run timeoutMs is the bound.
-    OUTPUT="$("$BIN" "$COMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
+    OUTPUT="$("$BIN" "$COMMAND" "$TARGET" "$@" --json 2>/dev/null)" || exit 0
 fi
 
 [ -n "$OUTPUT" ] || exit 0

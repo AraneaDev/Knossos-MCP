@@ -9,13 +9,13 @@ use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Cli\ProjectDatabaseLocator;
-use Knossos\Query\{ComponentDetailService, DashboardService, RescanService, TurnBriefService};
+use Knossos\Query\{ComponentDetailService, DashboardService, FileDetailService, RescanService, TurnBriefService};
 use Knossos\Runtime\RuntimeFactory;
 use Throwable;
 
 /**
- * `turn-brief`, `rescan`, `dashboard` and `component-detail`: the calls the
- * Claude Code mod makes.
+ * `turn-brief`, `rescan`, `dashboard`, `component-detail` and `file-detail`:
+ * the calls the Claude Code mod makes.
  *
  * Addressed by path like `session-brief`, through the same database
  * resolution. All always exit 0, even on an unknown option or a stray
@@ -30,7 +30,7 @@ final class BriefCommand implements CliCommand
     /** {@inheritDoc} */
     public function supports(string $command): bool
     {
-        return in_array($command, ['turn-brief', 'rescan', 'dashboard', 'component-detail'], true);
+        return in_array($command, ['turn-brief', 'rescan', 'dashboard', 'component-detail', 'file-detail'], true);
     }
 
     /**
@@ -53,7 +53,7 @@ final class BriefCommand implements CliCommand
     {
         return match ($command) {
             'turn-brief' => ['db', 'json', 'files', 'policies', 'no-policies'],
-            'rescan', 'component-detail' => ['db', 'json'],
+            'rescan', 'component-detail', 'file-detail' => ['db', 'json'],
             default => ['db', 'json', 'fan-in-threshold'],
         };
     }
@@ -86,7 +86,9 @@ final class BriefCommand implements CliCommand
     /**
      * The path a command reads and, for `component-detail`, the component name:
      * `component-detail [path] <name>`, so a single positional is the name.
-     * One positional more than that is refused, not ignored.
+     * `file-detail <file>` reads the file's own path, which it requires: the
+     * working directory is no file. One positional more than a command takes
+     * is refused, not ignored.
      *
      * @param list<string> $positionals
      * @return array{0: string, 1: string}
@@ -95,6 +97,9 @@ final class BriefCommand implements CliCommand
     {
         if (count($positionals) > ($command === 'component-detail' ? 2 : 1)) {
             throw new InvalidArgumentException('Too many arguments.');
+        }
+        if ($command === 'file-detail') {
+            return [$positionals[0] ?? throw new InvalidArgumentException('A file path is required.'), ''];
         }
         if ($command !== 'component-detail') {
             return [(string) ($positionals[0] ?? getcwd()), ''];
@@ -118,6 +123,9 @@ final class BriefCommand implements CliCommand
         $pdo = $runtime->database($databasePath);
         if ($command === 'component-detail') {
             return (new ComponentDetailService($pdo))->detail($path, $name);
+        }
+        if ($command === 'file-detail') {
+            return (new FileDetailService($pdo))->detail($path);
         }
         if ($command === 'rescan') {
             return (new RescanService($pdo, $databasePath, $context->installationRoot()))->rescan($path);

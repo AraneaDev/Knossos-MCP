@@ -85,6 +85,7 @@ Usage:
   knossos rescan [path] [--db=FILE] [--json]
   knossos dashboard [path] [--fan-in-threshold=N] [--db=FILE] [--json]
   knossos component-detail [path] <name> [--db=FILE] [--json]
+  knossos file-detail <file> [--db=FILE] [--json]
   knossos install-agent-plugin [--scope=user] [--data-dir=DIR] [--execute]
   knossos install-agent-plugin --out=DIR --data=HOSTPATH [--image=NAME]
   knossos list-boundaries <project-id> [--source=explicit|inferred] [--limit=N]
