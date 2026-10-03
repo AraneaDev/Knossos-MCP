@@ -259,8 +259,18 @@ Drifted since the snapshot                                 3
   candidates (`◇` marks one only tests reach) and the five largest files.
   The tab label carries the count of violations, errors and warnings, as in
   `Issues ³`.
-- **Changes:** everything this session's turns touched, added up from each
-  turn's brief: every file (most dependents first, `+` added, `−` deleted)
+- **Changes:** everything that changed in the project since this session
+  began, whoever changed it: the session's own turns and subagents, your
+  editor, a checkout. While the live watcher runs, the list comes from the
+  scan ledger (`knossos session-changes --since=<the session's first
+snapshot>`, read again after each scan the watcher sees, one read at a
+  time), and each file says where its change came from: `this session` when
+  the session's own Edit, Write or NotebookEdit calls (main loop or subagent)
+  wrote it, `outside` otherwise. The header then reads `since it began`. With
+  no watcher (switched off, or a container install) the tab falls back to
+  what the session's turn briefs reported, added up, and says so; it does the
+  same when the ledger cannot account for every scan since the session began.
+  Either way it lists every file (most dependents first, `+` added, `−` deleted)
   with its dependents and the boundary it sits in (blank when it sits in
   none, or only in one spanning the whole repository), the boundaries its
   dependents are in (where the changes reach), any policy violations they introduced, and the tests that
@@ -312,12 +322,12 @@ Boundaries                                  10 · 29,854 deps
 ```
 
 ```text
-Changes this session                                 2 turns
+Changes this session                                        since it began
    3 files → 29 dependents reaching core hooks
-   file                                                 deps
-›  src/Query/TurnBriefService.php core  ━━━━━━━━━━━━━━━   21
-   hooks/register.tsx             hooks ━━━━╸··········    6
- + hooks/lib/changes.ts           hooks ━╸·············    2
+   file                                    deps from
+›  src/Query/TurnBriefService.php core ━━━━━━  21 this session
+   hooks/register.tsx             hooks ━╸····  6 outside
+ + src/Query/SessionChangesService.php core  ·  2 this session
 
 Tests that reach these changes · 3              hops
    hooks/lib/changes.spec.ts                       1
@@ -435,9 +445,19 @@ Every time the pane opens, by `/knossos`, `[ details ]` or on start, it
 reloads the dashboard. The header gives the snapshot's age, which keeps
 counting while the pane is open. While the live watcher keeps a fresh graph
 current, the header says `● live` instead (`● live · watched by another
-session` when another session's watcher leads), and `● scanning… · fresh · 4s`
-while the watcher scans. When a reload fails, the pane keeps the
-figures it had and the header says `refresh failed · 2m`.
+session` when another session's watcher leads, and `fresh · 4s · another
+session's watcher is stuck` when that watcher stopped answering), and
+`● scanning… · fresh · 4s` while the watcher scans. When a reload fails, the
+pane keeps the figures it had and the header says `refresh failed · 2m`.
+
+With no figures to draw yet, the pane says which of three things is the
+case: `Reading the graph…` while the first load is on its way; `Could not
+read the graph` when knossos did not answer or answered with an error (it
+asks again every 15 seconds while the pane shows this); and `No architecture
+graph yet` only when knossos answered that it never scanned the project.
+Only that last one offers `q: ask Claude to scan it`, and the press checks
+again before it sends anything, so a habitual `q` on a slow first load sends
+no prompt.
 
 When the snapshot is stale or files drifted since it, the header offers
 `r: rescan`. It runs an incremental scan (`knossos rescan`) under the same
@@ -478,27 +498,46 @@ lead over.
 
 **Stopping.** The watcher ends with the session (`session.end`) and with a
 reload of the mod, and Claude Code ends a module's children when it unloads
-it. The watcher also stops itself once the process that started it is gone,
-so a watcher outliving its session never keeps polling. A watcher that ends
-on its own after coming up is started again after 30 seconds, at most three
-times; one that never says a word (as with a container installation, which
-offers no watcher) is not started again.
+it. At a session end the mod also signals the watcher by the process id it
+reported, so its lock is free at once rather than at its next heartbeat, and
+the header stops saying `● live` at once. After an exit, a logout or a
+signal no watcher starts again; after a `/clear` or a resume within the same
+process, the next second's tick starts one for the new session. A new
+session that meets the earlier watcher of its own process (on its way out)
+does not call it another session. The watcher also stops itself once the
+process that started it is gone, so a watcher outliving its session never
+keeps polling. A watcher that ends on its own after coming up is started
+again after 30 seconds, at most three times; one that never says a word (as
+with a container installation, which offers no watcher) is not started again.
+
+**Stuck scans.** Each of the watcher's scans may run five minutes. Past that,
+or when the watcher itself is stopped, the scan is asked to stop and, after
+three seconds, killed with everything in its process group. The leader keeps
+its heartbeat while a scan runs, so a follower reports a leader as stuck only
+when that heartbeat is more than a minute old, and says so again when it is
+back.
 
 **The turn's brief.** The turn-end brief still runs: it computes what the
 turn did, its notes and its policy verdict. With a watcher running it waits
 for the watcher to take the turn's last edits in, then passes `--reuse-scan`,
 so it reads them from the graph instead of scanning again. It also passes
 `--since=<snapshot>`, the snapshot the graph was at before the turn's first
-edit. Every scan the watcher, the pane's rescan or a turn's brief runs is
-recorded in the `scan_ledger` table: the snapshot it started from and the one
+edit. Every scan of an existing project is recorded in the `scan_ledger`
+table, whoever runs it: the watcher, the pane's rescan, a turn's brief, the
+model's `scan_project` and `knossos scan` from a shell. Each writer takes the
+project's write lease before it reads the graph and keeps it until its scan
+is recorded, so no other scan can slip in between. An entry holds the
+snapshot it started from and the one
 it made, each changed file's content hash before it and, for up to 20 changed
 files, the policy violations each held before it. Read in order from the
 turn's snapshot, the first entry that changed a file says what that file was
 before the turn, so the brief's changed, added and deleted files and its
 before-and-after policy check stay the turn's own, whoever scanned the edits.
-When a scan since the turn began was not recorded (a `knossos scan` from a
-shell, say), the brief still names the files but leaves the policy
-unevaluated rather than guess.
+When a scan since the turn began was not recorded (a scan of a directory
+below the project's root, say, or one older than the newest 200 entries), or
+changed more than 2,000 files (a branch switch: such an entry keeps no file
+list, only that it was cut), the brief still names the files but leaves the
+policy unevaluated rather than guess.
 
 **What it costs.** Between scans the watcher stats the files it last saw and
 their directories instead of hashing every file, and fingerprints the whole
@@ -538,8 +577,8 @@ After a turn that edited files, the mod runs `knossos turn-brief`, which
 runs an incremental scan into the project's existing database. The pane's
 rescan runs `knossos rescan`, the same incremental scan without the brief.
 The live watcher runs incremental scans as files change, each a `knossos scan`
-process of its own. Those are the only writes to the graph, and each of them
-records what it changed in the `scan_ledger` table (migration 019, applied the
+process of its own. Those are the only writes to the graph the mod makes, and
+each of them records what it changed in the `scan_ledger` table (migration 019, applied the
 first time an updated knossos opens the database; the newest 200 entries per
 project are kept). The watcher also writes its lock and state files under
 `watch/` beside the database. They happen only for a project that
@@ -601,7 +640,8 @@ one log line and turns the band and pane off for the session.
 
 The wrapper bounds each call: 60 seconds for `turn-brief` and the pane's
 rescan, 30 for `dashboard` (a first dashboard of a large project walks the
-whole graph), 15 for `component-detail`, `file-detail` and `allow-root`.
+whole graph), 15 for `component-detail`, `file-detail`, `session-changes`
+and `allow-root`.
 `watch` is not bounded: the wrapper replaces itself with the watcher, so
 stopping the process the session started stops the watcher. It runs
 `allow-root` only with a roots file the installation (or the environment)

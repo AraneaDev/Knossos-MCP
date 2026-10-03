@@ -24,7 +24,7 @@
  *   node tools/pane-preview.mjs --data-dir=<dir> [--out=<dir>] [--project=<dir>]
  *                               [--dashboard=<file.json>] [--columns=60,100] [--themes=dark,light]
  *                               [--only=<view,...>]
- *   node tools/pane-preview.mjs --readme --data-dir=<dir> [--out=<dir>]
+ *   node tools/pane-preview.mjs --readme --data-dir=<dir> --since=<snapshot> --session-rev=<git rev> [--out=<dir>]
  *
  * Defaults: --out=.superpowers/sdd/2026-10-02-claude-code-mod/preview, the
  * repository as the project.
@@ -33,8 +33,13 @@
  * width, each in a terminal window frame (a title bar, rounded corners, a
  * soft shadow on a transparent margin) at twice the size for sharp text, to
  * docs/images/claude-code-mod/, shrunk to a 256-colour palette when python3
- * with Pillow is there. The Last turn and Changes figures in them
- * come from a sample turn over this repository's real files.
+ * with Pillow is there. They show only real files in real states: the Last
+ * turn is a sample turn over real files (the README says so); Changes is
+ * what the scan ledger says changed since `--since` (a snapshot the ledger
+ * reaches back to), as `knossos session-changes` reads it, with the files
+ * changed in git since `--session-rev` marked as this session's (that
+ * choice is the sample the README names); and the header says what the
+ * graph's freshness says, as no watcher runs while it draws.
  */
 import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
@@ -51,6 +56,12 @@ const args = Object.fromEntries(
 // Checked before anything loads or runs: the dashboard writes to the database it reads.
 if (typeof args['data-dir'] !== 'string' || args['data-dir'] === '') {
   console.error('pane-preview: --data-dir=<dir> is required (a copy of the database: the dashboard writes trend cache rows to it)')
+  process.exit(2)
+}
+
+// The README draws real changes only: it needs the snapshot to read them since, and what counts as the session's.
+if ('readme' in args && (!args.since || !args['session-rev'])) {
+  console.error('pane-preview: --readme needs --since=<snapshot> and --session-rev=<git rev>: its Changes tab shows real changes from the scan ledger')
   process.exit(2)
 }
 
@@ -74,6 +85,7 @@ const raster = await import(join(REPO, 'hooks/lib/raster.ts'))
 const rows = await import(join(REPO, 'hooks/lib/rows.ts'))
 const band = await import(join(REPO, 'hooks/lib/band.ts'))
 const palette = await import(join(REPO, 'hooks/lib/palette.ts'))
+const changesLib = await import(join(REPO, 'hooks/lib/changes.ts'))
 
 const README = 'readme' in args
 const OUT = resolve(args.out ?? join(REPO, README ? 'docs/images/claude-code-mod' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
@@ -228,16 +240,35 @@ function sampleSession(d, first) {
   return [first, second, first].reduce((s, b) => layout.accumulate(s, b), layout.NO_CHANGES)
 }
 
+/**
+ * The changes since `--since` as the scan ledger has them (real files, real
+ * states, real dependents and tests), the files git says changed since
+ * `--session-rev` marked as this session's, the turns being the sample one.
+ */
+function ledgerSession(first) {
+  const ledger = envelopes.parseSessionLedger(wrapper('session-changes', `--since=${args.since}`))
+  if (ledger?.status !== 'ok' || !ledger.complete) {
+    console.error(`pane-preview: the scan ledger does not account for every scan since ${args.since}`)
+    process.exit(1)
+  }
+  const diff = spawnSync('git', ['-C', PROJECT, 'diff', '--name-only', `${args['session-rev']}..HEAD`], { encoding: 'utf8' })
+  const edited = new Set((diff.stdout ?? '').split('\n').filter(line => line !== ''))
+  return changesLib.fromLedger(ledger, layout.accumulate(layout.NO_CHANGES, first), edited)
+}
+
 const NOW = Date.now()
 const BASE_VIEW = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
 const IDLE = { phase: 'idle', reason: null }
-/** The live watcher is on by default: the pane's header says so while the graph is fresh. */
-const LIVE = { phase: 'live' }
+/**
+ * The live watcher is on by default: the previews' header says so while the
+ * graph is fresh. The README's says what is so while it draws: no watcher.
+ */
+const LIVE = README ? { phase: 'off' } : { phase: 'live' }
 const FETCHED = { fetchedAt: NOW, failed: false }
 const detail = detailOf(dashboard)
 const fileDetail = fileDetailOf(dashboard)
 const brief = sampleBrief(dashboard)
-const session = sampleSession(dashboard, brief)
+const session = README ? ledgerSession(brief) : sampleSession(dashboard, brief)
 const root = dashboard.project_root ?? PROJECT
 const refused = { ...brief, status: 'not-allowed', refused_root: root, roots_file: join(DATA_DIR, 'roots.json') }
 

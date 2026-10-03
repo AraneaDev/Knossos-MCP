@@ -382,8 +382,10 @@ route, is in [the agent plugin guide](docs/guides/agent-plugin.md).
 
 The same plugin carries a [Claude Code mod](docs/capabilities/claude-code-mod.md) that puts
 the graph on screen while a session works. The images below are rendered by
-`tools/pane-preview.mjs` from this repository's own graph. The "Last turn" and "Changes"
-figures come from a sample turn over real files, not from a recorded session.
+`tools/pane-preview.mjs` from this repository's own graph. The "Last turn" figures come
+from a sample turn over real files, not from a recorded session. The Changes tab lists real
+changes to this repository, read from its scan ledger; which of them it marks as this
+session's is a sample.
 
 After a turn that edited files, one line above the prompt says how far the change reaches:
 the files, their dependents, the tests that reach them, and how old the figures are.
@@ -395,16 +397,20 @@ of the project depends on, marked: `o` lists the files that depend on it, `e` op
 editor, and `t` copies the command for the tests that reach the changes. It draws in your
 Claude Code theme's own colours. A live watcher, one per project shared by your sessions,
 rescans as files change, so the header reads `● live` and the figures follow your edits and
-Claude's without a rescan.
+Claude's without a rescan. A container install has no watcher: there the figures follow each
+turn's own scan, and the pane's `r` rescans on request.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/images/claude-code-mod/overview-light.png">
   <img alt="The pane's Overview: look at now, the last turn, health and the most depended-on components" src="docs/images/claude-code-mod/overview-dark.png">
 </picture>
 
-The Changes tab adds up every turn of the session: each file with its dependents and its
-boundary, the tests that reach them, nearest first, and the command that runs them. Every file
-there opens to the files that depend on it.
+The Changes tab lists everything that changed in the project since the session began,
+whoever changed it, each file marked `this session` (Claude's own edits, subagents included)
+or `outside` (your editor, a checkout): with its dependents and its boundary, the tests that
+reach them, nearest first, and the command that runs them. Without a watcher it adds up what
+the session's turns reported instead, and says so. Every file there opens to the files that
+depend on it.
 
 ![The Changes tab](docs/images/claude-code-mod/changes-dark.png)
 

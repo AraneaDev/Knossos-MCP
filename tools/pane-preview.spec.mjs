@@ -35,4 +35,13 @@ describe('pane-preview', () => {
     expect(run.stderr).toContain('--data-dir=<dir> is required')
     expect(existsSync(out)).toBe(false)
   })
+
+  it('refuses the README screenshots without the snapshot and git revision its real changes are read from', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'knossos-stale-preview-'))
+    const out = join(scratch, 'out')
+    const run = spawnSync(process.execPath, [SCRIPT, '--readme', `--data-dir=${join(scratch, 'data')}`, `--out=${out}`], { encoding: 'utf8' })
+    expect(run.status).toBe(2)
+    expect(run.stderr).toContain('--since=<snapshot> and --session-rev=<git rev>')
+    expect(existsSync(out)).toBe(false)
+  })
 })
