@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Knossos\Watch;
 
 use Closure;
-use Knossos\Query\LedgeredScanner;
 use Knossos\Query\ScanLedger;
 use Knossos\Query\ScanTarget;
 use Knossos\Scan\CancellationToken;
@@ -120,7 +119,8 @@ final readonly class SharedWatch
         };
         $hooks = new WatchHooks($projectId, $current, static fn(): ?string => $ledger->activeSnapshot($projectId), $alive, $beat, self::HEARTBEAT_MS);
         // Each scan in a process of its own: the watcher idles for hours, and a scan's memory goes with its process.
-        $scanner = new LedgeredScanner($this->pdo, (new ProcessScanner($this->installationRoot, $this->databasePath))->scan(...), $allowed);
+        // That process (`knossos scan`) records the scan in the ledger itself, under the scan's own write lease.
+        $scanner = new ProcessScanner($this->installationRoot, $this->databasePath);
         $observer = static function (array $event) use ($emit, $say): void {
             $phase = ['ready' => 'idle', 'scan_started' => 'scanning', 'scan_completed' => 'idle', 'absorbed' => 'idle'][$event['event']] ?? null;
             if ($phase !== null) {

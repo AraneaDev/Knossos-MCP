@@ -24,6 +24,13 @@ final readonly class ScanLedger
     /** Entries kept per project: far more than any one turn spans. */
     private const KEPT = 200;
 
+    /**
+     * The most changed files one entry lists. A branch switch can change
+     * thousands; such an entry keeps no paths, only that it was cut, and a
+     * turn whose start it spans gets no policy verdict ({@see self::since()}).
+     */
+    public const MAX_FILES = 2000;
+
     /** @param PDO $pdo an existing, migrated graph database */
     public function __construct(private PDO $pdo) {}
 
@@ -59,7 +66,9 @@ final readonly class ScanLedger
      * Records one scan: which files it changed and what each held before.
      *
      * A scan that moved no snapshot and changed nothing says nothing and is
-     * not recorded. Older entries past {@see self::KEPT} are pruned.
+     * not recorded. One that changed more than {@see self::MAX_FILES} files
+     * is recorded as cut, without them. Older entries past
+     * {@see self::KEPT} are pruned.
      *
      * @param array<string, string> $before every tracked file's hash before the scan
      * @param array<string, string> $after every tracked file's hash after it
@@ -80,9 +89,11 @@ final readonly class ScanLedger
         if ($changed === [] && $from === $to) {
             return;
         }
-        $kept = $baselines === null ? null : array_intersect_key($baselines, $changed);
+        $cut = count($changed) > self::MAX_FILES;
+        $kept = $baselines === null || $cut ? null : array_intersect_key($baselines, $changed);
+        $changes = $cut ? ['before' => (object) [], 'baselines' => null, 'truncated' => true] : ['before' => (object) $changed, 'baselines' => $kept === null ? null : (object) $kept];
         $insert = $this->pdo->prepare('INSERT INTO scan_ledger(project_id, from_snapshot, to_snapshot, recorded_at, changes_json) VALUES (?, ?, ?, ?, ?)');
-        $insert->execute([$projectId, $from, $to, time(), json_encode(['before' => (object) $changed, 'baselines' => $kept === null ? null : (object) $kept], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)]);
+        $insert->execute([$projectId, $from, $to, time(), json_encode($changes, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)]);
         $prune = $this->pdo->prepare('DELETE FROM scan_ledger WHERE project_id = ? AND id <= (SELECT id FROM scan_ledger WHERE project_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?)');
         $prune->execute([$projectId, $projectId, self::KEPT]);
     }
@@ -95,8 +106,9 @@ final readonly class ScanLedger
      * that scan (null: the scan added it). `baselines` maps those files to the
      * violations they held then (null: that scan did not check them). Null
      * altogether when the ledger cannot account for every scan since: none
-     * recorded starts at `$since`, one in between was not recorded, or the
-     * last recorded one is not the project's active snapshot.
+     * recorded starts at `$since`, one in between was not recorded or was
+     * recorded cut ({@see self::MAX_FILES}), or the last recorded one is not
+     * the project's active snapshot.
      *
      * @return array{before: array<string, string|null>, baselines: array<string, array{violations: array<string, array<string, mixed>>, truncated: bool}|null>}|null
      */
@@ -108,18 +120,22 @@ final readonly class ScanLedger
         }
         $statement = $this->pdo->prepare('SELECT from_snapshot, to_snapshot, changes_json FROM scan_ledger WHERE project_id = ? ORDER BY id');
         $statement->execute([$projectId]);
+        $rows = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $changes = json_decode((string) $row['changes_json'], true, 512, JSON_THROW_ON_ERROR);
+            // An entry recorded cut cannot rewind anything: no chain may pass through it.
+            if (($changes['truncated'] ?? false) !== true) {
+                $rows[] = ['from' => (string) $row['from_snapshot'], 'to' => (string) $row['to_snapshot'], 'changes' => $changes];
+            }
+        }
+        $chain = $active === null ? null : self::chain($rows, $since, $active, -1);
+        if ($chain === null || $chain === []) {
+            return null;
+        }
         $before = [];
         $baselines = [];
-        $at = null;
-        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            if ($at === null && $row['from_snapshot'] !== $since) {
-                continue;
-            }
-            if ($at !== null && $row['from_snapshot'] !== $at) {
-                return null;
-            }
-            $at = (string) $row['to_snapshot'];
-            $changes = json_decode((string) $row['changes_json'], true, 512, JSON_THROW_ON_ERROR);
+        foreach ($chain as $index) {
+            $changes = $rows[$index]['changes'];
             foreach ($changes['before'] as $path => $hash) {
                 $path = (string) $path;
                 if (array_key_exists($path, $before)) {
@@ -130,6 +146,43 @@ final readonly class ScanLedger
             }
         }
 
-        return $at !== null && $at === $active ? ['before' => $before, 'baselines' => $baselines] : null;
+        return ['before' => $before, 'baselines' => $baselines];
+    }
+
+    /**
+     * The entries, in the order they were recorded, that lead from snapshot
+     * `$at` to `$active`, each starting where the one before it ended; null
+     * when none do. Two entries can start at the same snapshot (two writers
+     * that read the graph before either scanned); the first chain found in
+     * recording order wins, so the answer never depends on which of them a
+     * reader meets first. Past `$active` a chain goes on only when a later
+     * entry leads back to it.
+     *
+     * @param list<array{from: string, to: string, changes: array<string, mixed>}> $rows
+     * @param array<string, true> $dead the starts already known to lead nowhere, so no start is walked twice
+     * @return list<int>|null indexes into `$rows`
+     */
+    private static function chain(array $rows, string $at, string $active, int $after, array &$dead = []): ?array
+    {
+        $key = $after . "\0" . $at;
+        if (isset($dead[$key])) {
+            return null;
+        }
+        $count = count($rows);
+        for ($i = $after + 1; $i < $count; ++$i) {
+            if ($rows[$i]['from'] !== $at) {
+                continue;
+            }
+            $rest = self::chain($rows, $rows[$i]['to'], $active, $i, $dead);
+            if ($rest !== null) {
+                return [$i, ...$rest];
+            }
+        }
+        if ($at === $active) {
+            return [];
+        }
+        $dead[$key] = true;
+
+        return null;
     }
 }

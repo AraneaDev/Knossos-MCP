@@ -64,6 +64,11 @@ final class ProjectScanService implements ProjectScanner
     /**
      * Run a scan end to end and return its result envelope.
      *
+     * A caller that already holds the project's write lease (a scanner that
+     * reads the graph before the scan and must know nobody wrote in between)
+     * passes it as `$lease`: the scan writes under it and leaves releasing it
+     * to the caller. A lease for another project is not used.
+     *
      * @param list<array<string, mixed>>|null $explicitBoundaries
      */
     public function scan(
@@ -77,6 +82,7 @@ final class ProjectScanService implements ProjectScanner
         ?int $snapshotRetention = null,
         ?int $workerTimeoutMs = null,
         ?int $workerMemoryMb = null,
+        ?ProjectWriterLease $lease = null,
     ): ResultEnvelope {
         $startedAt = hrtime(true);
         $cancellation ??= new CancellationToken();
@@ -98,7 +104,10 @@ final class ProjectScanService implements ProjectScanner
         $planningStarted = hrtime(true);
         $cancellation->throwIfCancelled();
         $projectId = \Knossos\Store\StableId::project('root:' . $preparation->discovery->rootRealpath);
-        $lease = (new ProjectWriterLock($this->pdo))->acquire($projectId);
+        $held = $lease !== null && $lease->projectId() === $projectId;
+        if ($lease === null || !$held) {
+            $lease = (new ProjectWriterLock($this->pdo))->acquire($projectId);
+        }
         $effectiveMode = 'full';
         try {
             $plan = $this->planner->finalize($preparation);
@@ -214,7 +223,7 @@ final class ProjectScanService implements ProjectScanner
             }
             throw $error;
         } finally {
-            if ($lease->release() === 0) {
+            if (!$held && $lease->release() === 0) {
                 error_log(sprintf('Knossos: writer lease for project %s released zero rows (already expired or stolen).', $projectId));
             }
         }

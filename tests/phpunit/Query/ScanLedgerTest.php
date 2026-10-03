@@ -9,6 +9,7 @@ use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
 
+use function PHPUnit\Framework\assertLessThan;
 use function PHPUnit\Framework\assertNull;
 use function PHPUnit\Framework\assertSame;
 
@@ -84,6 +85,52 @@ final class ScanLedgerTest extends KnossosTestCase
                 $ledger->record($projectId, 's' . $i, 's' . ($i + 1), ['a.php' => 'A' . $i], ['a.php' => 'A' . ($i + 1)]);
             }
             assertSame(200, self::entries($pdo));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Two writers that read the graph before either scanned both start at one snapshot: the chain that reaches the active one is taken, whichever comes first. */
+    #[Group('query')]
+    public function testEntriesStartingAtTheSameSnapshotResolveToTheChainThatReachesTheActiveOne(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('turn-brief');
+        try {
+            $ledger = new ScanLedger($pdo);
+            $start = (string) $ledger->activeSnapshot($projectId);
+            $ledger->record($projectId, $start, 's2', ['a.php' => 'A0'], ['a.php' => 'A1']);
+            $ledger->record($projectId, $start, 's3', ['a.php' => 'A0', 'b.php' => 'B0'], ['a.php' => 'A1', 'b.php' => 'B1']);
+            self::activate($pdo, $projectId, 's3');
+            assertSame(['a.php' => 'A0', 'b.php' => 'B0'], $ledger->since($projectId, $start)['before'] ?? null);
+            // And recorded the other way round, the same answer.
+            $pdo->exec('DELETE FROM scan_ledger');
+            $ledger->record($projectId, $start, 's3', ['a.php' => 'A0', 'b.php' => 'B0'], ['a.php' => 'A1', 'b.php' => 'B1']);
+            $ledger->record($projectId, $start, 's2', ['a.php' => 'A0'], ['a.php' => 'A1']);
+            assertSame(['a.php' => 'A0', 'b.php' => 'B0'], $ledger->since($projectId, $start)['before'] ?? null);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A scan that changed thousands of files (a branch switch) is kept small, and a turn it spans gets no verdict. */
+    #[Group('query')]
+    public function testAnEntryForMoreFilesThanItListsIsCutAndSpansNoVerdict(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('turn-brief');
+        try {
+            $ledger = new ScanLedger($pdo);
+            $start = (string) $ledger->activeSnapshot($projectId);
+            $before = [];
+            $after = [];
+            for ($i = 0; $i < ScanLedger::MAX_FILES + 500; ++$i) {
+                $before['src/F' . $i . '.php'] = str_repeat('a', 64);
+                $after['src/F' . $i . '.php'] = str_repeat('b', 64);
+            }
+            $ledger->record($projectId, $start, 's1', $before, $after, ['src/F1.php' => ['violations' => [], 'truncated' => false]]);
+            $size = (int) $pdo->query('SELECT MAX(LENGTH(changes_json)) FROM scan_ledger')->fetchColumn();
+            assertLessThan(200, $size);
+            self::activate($pdo, $projectId, 's1');
+            assertNull($ledger->since($projectId, $start));
         } finally {
             $this->removeTempTree($root);
         }

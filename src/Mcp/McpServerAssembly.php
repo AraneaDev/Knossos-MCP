@@ -9,9 +9,9 @@ use Knossos\Git\ProcessGitHistoryProvider;
 use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Query\ArchitectureQueryService;
+use Knossos\Query\LedgeredScanner;
 use Knossos\Query\StalenessProbe;
 use Knossos\Runtime\ServerEnvironment;
-use Knossos\Scan\ProjectScanService;
 use PDO;
 
 /**
@@ -45,7 +45,8 @@ final readonly class McpServerAssembly
             gitWorkingTree: new ProcessGitWorkingTreeProvider(),
         );
         $this->tools = new ToolService(
-            new ProjectScanService($pdo, $installationRoot, $allowedRoots),
+            // Recorded in the scan ledger, so a turn whose edits the model scanned still reports them.
+            LedgeredScanner::local($pdo, $installationRoot, $allowedRoots),
             $this->queries,
             $maintenance ?? new DatabaseMaintenanceService($pdo, $databasePath),
             new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),

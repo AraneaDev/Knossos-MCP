@@ -7,6 +7,8 @@ namespace Knossos\Query;
 use Knossos\Discovery\FileFingerprint;
 use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Scan\ProjectScanService;
+use Knossos\Scan\ProjectWriterLease;
+use Knossos\Scan\ProjectWriterLock;
 use Knossos\Scan\ScanBusyException;
 use PDO;
 use Throwable;
@@ -85,23 +87,34 @@ final readonly class TurnBriefService
         $violations = new FileViolationQuery($this->pdo, $this->policyTimeoutMs, $this->policyMaxEdges);
         $policies = $enforcePolicies ? FileViolationQuery::policies($root, $policies) : [];
         $ledger = new ScanLedger($this->pdo);
-        $from = $ledger->activeSnapshot($projectId);
-        $current = $ledger->hashes($projectId);
-        $absorbed = $since === null ? ['before' => [], 'baselines' => []] : $ledger->since($projectId, $since);
-        // Taken before the scan rewrites the graph: what the reported files already broke is not this turn's doing.
-        [$baseline, $perFile] = $this->baseline($violations, $projectId, $policies, $reported, $absorbed);
-        $before = self::rewound($current, $absorbed['before'] ?? []);
-        $started = hrtime(true);
-        $reuse = $reuseScan && self::onDisk($root, $reported, $current);
+        $reuse = $reuseScan && self::onDisk($root, $reported, $ledger->hashes($projectId));
+        // A brief that scans holds the project's write lease from before it reads the graph until its scan
+        // is recorded: no other writer scans in between, so the ledger entry starts where the scan did.
         try {
-            $scan = $reuse ? null : $this->scan($root, $allowed);
+            $lease = $reuse ? null : $this->lease($projectId);
         } catch (Throwable $failure) {
             return ['status' => 'scan-failed', 'reason' => $failure->getMessage(), 'project_root' => $root] + $envelope;
         }
-        // Same id as the baseline, so a recomputed id cannot make every file look added.
-        $after = $ledger->hashes($projectId);
-        if ($scan !== null) {
-            $ledger->record($projectId, $from, $scan->snapshotId, $current, $after, $perFile);
+        try {
+            $from = $ledger->activeSnapshot($projectId);
+            $current = $ledger->hashes($projectId);
+            $absorbed = $since === null ? ['before' => [], 'baselines' => []] : $ledger->since($projectId, $since);
+            // Taken before the scan rewrites the graph: what the reported files already broke is not this turn's doing.
+            [$baseline, $perFile] = $this->baseline($violations, $projectId, $policies, $reported, $absorbed);
+            $before = self::rewound($current, $absorbed['before'] ?? []);
+            $started = hrtime(true);
+            try {
+                $scan = $lease === null ? null : (new ProjectScanService($this->pdo, $this->installationRoot, $allowed))->scan($root, mode: 'incremental', lease: $lease);
+            } catch (Throwable $failure) {
+                return ['status' => 'scan-failed', 'reason' => $failure->getMessage(), 'project_root' => $root] + $envelope;
+            }
+            // Same id as the baseline, so a recomputed id cannot make every file look added.
+            $after = $ledger->hashes($projectId);
+            if ($scan !== null) {
+                $ledger->record($projectId, $from, $scan->snapshotId, $current, $after, $perFile);
+            }
+        } finally {
+            $lease?->release();
         }
         [$changed, $added, $deleted] = self::diff($before, $after, $reported);
         $live = array_merge($changed, $added);
@@ -127,14 +140,14 @@ final readonly class TurnBriefService
     }
 
     /**
-     * An incremental scan; a scan another writer holds the project for is
-     * waited out a few times before it counts as a failure.
+     * The project's write lease; one another writer holds is waited out a
+     * few times before it counts as a failure.
      */
-    private function scan(string $root, \Knossos\Discovery\AllowedRoots $allowed): \Knossos\Query\ResultEnvelope
+    private function lease(string $projectId): ProjectWriterLease
     {
         for ($attempt = 1; ; ++$attempt) {
             try {
-                return (new ProjectScanService($this->pdo, $this->installationRoot, $allowed))->scan($root, mode: 'incremental');
+                return (new ProjectWriterLock($this->pdo))->acquire($projectId);
             } catch (ScanBusyException $busy) {
                 if ($attempt >= self::BUSY_ATTEMPTS) {
                     throw $busy;

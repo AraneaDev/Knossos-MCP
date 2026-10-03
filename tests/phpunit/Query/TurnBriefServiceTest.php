@@ -539,7 +539,7 @@ final class TurnBriefServiceTest extends KnossosTestCase
     private function watcherScan(PDO $pdo, string $root): void
     {
         $roots = AllowedRoots::of([(string) realpath($root)]);
-        LedgeredScanner::local($pdo, self::repositoryRoot(), $roots, self::POLICIES)->scan($root, 'incremental');
+        LedgeredScanner::local($pdo, self::repositoryRoot(), $roots, self::POLICIES)->scan($root, mode: 'incremental');
     }
 
     /** Another writer scanned the turn's edit first: the ledger still makes it, and its violations, the turn's. */

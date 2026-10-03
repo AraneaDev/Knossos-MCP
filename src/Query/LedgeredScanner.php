@@ -5,8 +5,9 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use Knossos\Discovery\AllowedRoots;
-use Knossos\Scan\CancellationToken;
+use Knossos\Scan\ProjectScanner;
 use Knossos\Scan\ProjectScanService;
+use Knossos\Scan\ProjectWriterLock;
 use Knossos\Watch\TreeFingerprint;
 use PDO;
 use Throwable;
@@ -14,55 +15,75 @@ use Throwable;
 /**
  * A scanner that records each scan of an existing project in the
  * {@see ScanLedger}: what every file it changed held before it, and the
- * policy violations those files held before it.
+ * policy violations those files held before it. Every writer the Claude
+ * Code mod can meet scans through it: the pane's rescan, `knossos scan`
+ * (and so the live watcher's scan processes) and the MCP `scan_project`.
  *
- * Before scanning it fingerprints the tree and compares it with the hashes
- * the graph holds, which names the files the scan is about to change while
- * the graph still describes them; their violations are read then, one file
- * at a time so a later reader can take each file's from the first scan that
- * changed it. A first scan (no project yet) is passed through unrecorded:
- * there is no earlier graph to describe.
+ * It takes the project's write lease first and reads the graph under it,
+ * then scans under the same lease: no other writer can scan between the
+ * read of the snapshot the scan starts from and the scan itself, so each
+ * entry's `from` is the snapshot that scan really started from. Before
+ * scanning it fingerprints the tree and compares it with the hashes the
+ * graph holds, which names the files the scan is about to change while the
+ * graph still describes them; their violations are read then, one file at
+ * a time so a later reader can take each file's from the first scan that
+ * changed it. A first scan (no project yet), or a scan of a path that is
+ * not exactly a project's root, is passed through unrecorded: there is no
+ * earlier graph of it to describe.
  */
-final readonly class LedgeredScanner
+final readonly class LedgeredScanner implements ProjectScanner
 {
     /** Files whose violations are read before a scan; past it, that scan records none. */
     public const MAX_CHECKED = 20;
 
     /**
      * @param PDO $pdo the graph database the scan writes
-     * @param \Closure(string, ?string, ?CancellationToken): ResultEnvelope $inner the scan itself: root, mode, cancellation
+     * @param ProjectScanService $service the scan itself
      * @param list<array<string, mixed>>|null $policies the policies to check; null reads the project's knossos.json
      */
     public function __construct(
         private PDO $pdo,
-        private \Closure $inner,
+        private ProjectScanService $service,
         private AllowedRoots $roots,
         private ?array $policies = null,
     ) {}
 
-    /** A ledgered scan with a {@see ProjectScanService} of `$roots` as the scan itself. */
-    public static function local(PDO $pdo, string $installationRoot, AllowedRoots $roots, ?array $policies = null): self
+    /**
+     * A ledgered scan with a {@see ProjectScanService} of `$roots` as the scan itself.
+     *
+     * @param AllowedRoots|list<string> $roots
+     */
+    public static function local(PDO $pdo, string $installationRoot, AllowedRoots|array $roots, ?array $policies = null): self
     {
-        $service = new ProjectScanService($pdo, $installationRoot, $roots);
-        return new self($pdo, static fn(string $root, ?string $mode, ?CancellationToken $cancellation): ResultEnvelope => $service->scan($root, mode: $mode, cancellation: $cancellation), $roots, $policies);
+        $allowed = AllowedRoots::of($roots);
+        return new self($pdo, new ProjectScanService($pdo, $installationRoot, $allowed), $allowed, $policies);
     }
 
-    /** Scans `$root` in `$mode`, recording what the scan changed when the project already exists. */
-    public function scan(string $root, ?string $mode = null, ?CancellationToken $cancellation = null): ResultEnvelope
+    /**
+     * Scans `$root` as {@see ProjectScanService::scan()} does, with the same
+     * arguments (by position or by name), recording what the scan changed
+     * when it is a scan of an existing project.
+     */
+    public function scan(string $root, mixed ...$options): ResultEnvelope
     {
-        $run = fn(): ResultEnvelope => ($this->inner)($root, $mode, $cancellation);
-        $project = (new ProjectPathResolver($this->pdo))->resolve(realpath($root) ?: $root);
-        if ($project === null) {
-            return $run();
+        $real = realpath($root) ?: $root;
+        $project = (new ProjectPathResolver($this->pdo))->resolve($real);
+        if ($project === null || (string) $project['root_realpath'] !== $real) {
+            return $this->service->scan($root, ...$options);
         }
         $projectId = (string) $project['id'];
-        $ledger = new ScanLedger($this->pdo);
-        $from = $ledger->activeSnapshot($projectId);
-        $before = $ledger->hashes($projectId);
-        $baselines = $this->baselines($projectId, (string) $project['root_realpath'], $before);
-        $result = $run();
-        $ledger->record($projectId, $from, $result->snapshotId, $before, $ledger->hashes($projectId), $baselines);
-        return $result;
+        $lease = (new ProjectWriterLock($this->pdo))->acquire($projectId);
+        try {
+            $ledger = new ScanLedger($this->pdo);
+            $from = $ledger->activeSnapshot($projectId);
+            $before = $ledger->hashes($projectId);
+            $baselines = $this->baselines($projectId, $real, $before);
+            $result = $this->service->scan($root, ...$options, lease: $lease);
+            $ledger->record($projectId, $from, $result->snapshotId, $before, $ledger->hashes($projectId), $baselines);
+            return $result;
+        } finally {
+            $lease->release();
+        }
     }
 
     /**

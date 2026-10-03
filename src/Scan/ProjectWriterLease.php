@@ -31,6 +31,12 @@ final class ProjectWriterLease
         $this->release();
     }
 
+    /** The project this lease is for. */
+    public function projectId(): string
+    {
+        return $this->projectId;
+    }
+
     /**
      * Refresh acquired_at so a legitimately long scan is not expired-deleted
      * by another scanner mid-run. Returns false when zero rows matched, which
