@@ -70,7 +70,7 @@ claude plugin update knossos@knossos     # replace the snapshot
 
 Within one version that update is a no-op, because the cached version already
 equals the declared one. Editing `hooks/scripts/session-brief.sh` or
-`skills/knossos/SKILL.md` without releasing therefore needs an uninstall to
+`skills/graph/SKILL.md` without releasing therefore needs an uninstall to
 force a fresh copy:
 
 ```sh

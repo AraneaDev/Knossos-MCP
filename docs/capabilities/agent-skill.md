@@ -3,7 +3,7 @@
 The [agent orientation plugin](../guides/agent-plugin.md) installs two things
 that do different jobs. The [session brief](session-brief.md) tells a session
 what this repository looks like at the moment it starts. The skill,
-`skills/knossos/SKILL.md`, tells it which questions to bring back to the graph
+`skills/graph/SKILL.md`, tells it which questions to bring back to the graph
 for the rest of that session, and which to answer the ordinary way.
 
 Nothing invokes the skill by name. Claude Code loads a skill when its
@@ -11,7 +11,7 @@ description matches the question in front of it, so what arms it is the pointer
 line the brief always emits:
 
 ```text
-Ask before grepping for structure: the knossos skill.
+Ask before grepping for structure: the `knossos:graph` skill.
 ```
 
 That line sits beneath the brief's character budget as an irreducible floor

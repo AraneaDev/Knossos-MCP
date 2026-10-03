@@ -59,7 +59,7 @@ const EDITOR_TIMEOUT_MS = 10_000
  * editor (`$EDITOR`) needs a terminal of its own, which a press cannot give.
  */
 const EDITOR = ['code', '-g'] as const
-const USAGE = 'Usage: /knossos-pane to toggle the architecture pane; /knossos-pane inspect <component> to open it on one component.'
+const USAGE = 'Usage: /knossos to toggle the architecture pane; /knossos inspect <component> to open it on one component.'
 /** formatAge's finest step is a second; the tick redraws only when the text would change. */
 const AGE_TICK_MS = 1_000
 const DEFAULT_THRESHOLD = 20
@@ -348,7 +348,7 @@ async function openPane($: EngineInterface, refreshFirst = true): Promise<void> 
   await $.ui.open({ id: PANE, title: 'Knossos' }).catch(() => undefined)
 }
 
-/** `/knossos-pane` toggles the pane, `/knossos-pane inspect <component>` opens it on one component. */
+/** `/knossos` toggles the pane, `/knossos inspect <component>` opens it on one component. */
 async function runCommand($: EngineInterface, args: string): Promise<string> {
   const verb = args.trim().split(/\s+/)[0] ?? ''
   if (verb === 'inspect') {
@@ -909,8 +909,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'knossos-pane',
-      description: 'Toggle the Knossos architecture pane; /knossos-pane inspect <component> to drill in',
+      name: 'knossos',
+      description: 'Toggle the Knossos architecture pane; /knossos inspect <component> to drill in',
     })
     // A start-up that outlives the session (torn down under it) fails quietly, never as a stray rejection.
     $.clock.after(0, () => void startUp($, openOnStart).catch(() => undefined))
@@ -997,7 +997,7 @@ export const register: Register = (on, options) => {
     return set
   })
 
-  on('command.run', { command: 'knossos-pane' }, async ($, e) => ({ text: await runCommand($, e.args) }))
+  on('command.run', { command: 'knossos' }, async ($, e) => ({ text: await runCommand($, e.args) }))
 
   // The arrows, Tab or a click moving the focus onto a listed row move the marker with it.
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {

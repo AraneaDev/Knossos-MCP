@@ -165,7 +165,7 @@ Each state has a character budget on its _optional_ sections:
 
 | State                            | Budget          |
 | -------------------------------- | --------------- |
-| `unscanned`                      | 200 characters  |
+| `unscanned`                      | 210 characters  |
 | `stale`, `unverified`, `missing` | 500 characters  |
 | `fresh`                          | 1200 characters |
 
@@ -174,8 +174,8 @@ closing pointer) still fits; a section that would not fit is dropped whole,
 never truncated mid-list. A list cut off partway through reads as a complete
 list that happens to be wrong, which is worse than a shorter list.
 
-The verdict line, the identity line and the closing skill pointer (`Ask
-before grepping for structure: the knossos skill.`) sit **beneath** this
+The verdict line, the identity line and the closing skill pointer (``Ask
+before grepping for structure: the `knossos:graph` skill.``) sit **beneath** this
 budget as an irreducible floor, not subject to it. The identity line is the
 project id and name (`Knossos {project_id} ({name})`), followed, when the
 path you asked about resolved to an ancestor project, by the sentence that
@@ -190,7 +190,7 @@ the floor wins. Dropping or truncating the verdict would hand back a
 line would leave a brief that no longer says which project it describes, while
 the rules, entry points and hubs beneath it still speak for that project (on a
 nested checkout, for an ancestor you did not ask about). Dropping the pointer
-would mean the `knossos` skill is never armed for that session. An unusually
+would mean the `knossos:graph` skill is never armed for that session. An unusually
 long path can therefore push the rendered output past its nominal budget; that
 is accepted as the price of never emitting a broken command or an unattributed
 brief.

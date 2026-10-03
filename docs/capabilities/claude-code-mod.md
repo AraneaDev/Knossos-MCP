@@ -127,7 +127,7 @@ model a whole branch's worth of violations to fix.
 
 ## The pane
 
-`/knossos-pane` opens and closes the architecture pane. It lays itself out to
+`/knossos` opens and closes the architecture pane. It lays itself out to
 the width it has, from about 40 columns up. Its tables are packed to the left:
 names take what the longest one needs, the boundary follows the name, then the
 bar and the numbers, and width a table does not need stays at the right edge.
@@ -256,7 +256,7 @@ switch tabs, `j` and `k` move the `›` marker (as does moving the focus with
 Tab or the arrows onto a row), `o` or Enter opens the marked component, `b`
 goes back, `h` shows the keys. A component opens from the Overview, Hubs and
 Issues tabs; the pane looks it up by its canonical name.
-`/knossos-pane inspect <component>` opens the pane on one component directly.
+`/knossos inspect <component>` opens the pane on one component directly.
 
 ```text
 StalenessProbe                                                class · core
@@ -309,7 +309,7 @@ A count that hit a search limit reads `50+`, never `50`. When the walk that
 ranks hubs and hotspots stops at its limit (five seconds on a cold, large
 graph), the lists say `partial`.
 
-Every time the pane opens, by `/knossos-pane`, `[ details ]` or on start, it
+Every time the pane opens, by `/knossos`, `[ details ]` or on start, it
 reloads the dashboard. The header gives the snapshot's age, which keeps
 counting while the pane is open. When a reload fails, the pane keeps the
 figures it had and the header says `refresh failed · 2m`.

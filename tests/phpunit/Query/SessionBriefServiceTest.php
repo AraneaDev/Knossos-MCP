@@ -116,7 +116,7 @@ final class SessionBriefServiceTest extends KnossosTestCase
 
         assertSame(true, str_contains($text, $ids['project']));
         assertSame(true, str_contains($text, 'the seam is the repository'));
-        assertSame(true, str_contains($text, '`knossos` skill'));
+        assertSame(true, str_contains($text, '`knossos:graph` skill'));
     }
 
     #[Group('query')]

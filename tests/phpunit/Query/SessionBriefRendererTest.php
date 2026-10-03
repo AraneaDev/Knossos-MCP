@@ -39,7 +39,7 @@ final class SessionBriefRendererTest extends TestCase
         assertSame(true, str_contains($text, 'ToolCatalog'));
         assertSame(true, str_contains($text, 'StdioServer'));
         assertSame(true, str_contains($text, 'ScannerClient'));
-        assertSame(true, str_contains($text, '`knossos` skill'));
+        assertSame(true, str_contains($text, '`knossos:graph` skill'));
         assertSame(true, strlen($text) <= SessionBriefRenderer::BUDGETS['fresh']);
     }
 
@@ -390,7 +390,7 @@ final class SessionBriefRendererTest extends TestCase
                 str_contains($text, "\nKnossos project_1b4f41 (Knossos-MCP), rooted at " . $root . '. ' . $claim . "\n"),
                 $text,
             );
-            assertSame(true, str_ends_with($text, "\nAsk before grepping for structure: the `knossos` skill."), $text);
+            assertSame(true, str_ends_with($text, "\nAsk before grepping for structure: the `knossos:graph` skill."), $text);
             assertSame(false, str_contains($text, 'A long rule that cannot fit.'), $text);
         }
     }
@@ -538,7 +538,7 @@ final class SessionBriefRendererTest extends TestCase
         $brief = new SessionBrief('unscanned', null, null, $path, null, 0, 0);
         $text = (new SessionBriefRenderer())->render($brief);
 
-        assertSame(true, str_contains($text, '`knossos` skill'));
+        assertSame(true, str_contains($text, '`knossos:graph` skill'));
         assertSame(
             true,
             str_contains($text, sprintf('NOT SCANNED. Run scan_project path=%s to map this repository.', $path)),
@@ -565,7 +565,7 @@ final class SessionBriefRendererTest extends TestCase
         $text = (new SessionBriefRenderer())->render($brief);
 
         assertSame(true, strlen($text) <= SessionBriefRenderer::BUDGETS['fresh']);
-        assertSame(true, str_contains($text, '`knossos` skill'));  // never dropped
+        assertSame(true, str_contains($text, '`knossos:graph` skill'));  // never dropped
         assertSame(false, str_contains($text, 'Hub1xxxx'));        // dropped whole, not truncated
     }
 }

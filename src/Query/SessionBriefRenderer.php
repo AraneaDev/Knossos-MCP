@@ -36,10 +36,10 @@ final readonly class SessionBriefRenderer
         'stale' => 500,
         'unverified' => 500,
         'missing' => 500,
-        'unscanned' => 200,
+        'unscanned' => 210,
     ];
 
-    private const POINTER = 'Ask before grepping for structure: the `knossos` skill.';
+    private const POINTER = 'Ask before grepping for structure: the `knossos:graph` skill.';
 
     /** The brief as injected text: optional sections kept within budget, verdict, identity and pointer always present. */
     public function render(SessionBrief $brief): string

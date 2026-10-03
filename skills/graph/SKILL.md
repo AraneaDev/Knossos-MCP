@@ -1,5 +1,5 @@
 ---
-name: knossos
+name: graph
 description: Use when you need to know what depends on something, what a change would break, where a new file belongs, how a request reaches a given component, or who calls a function, in a repository that Knossos has scanned. Answers come from a static graph with file and line evidence instead of from reading the source tree. Also covers recording durable architectural facts for later sessions.
 ---
 

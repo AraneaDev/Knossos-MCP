@@ -48,8 +48,11 @@ final class PluginCommand implements CliCommand
      */
     private const PLUGIN_DIRECTORY = '/.plugin';
 
+    /** The directories this skill was installed under by earlier releases, which an install removes from the target. */
+    private const STALE_SKILLS = ['/skills/knossos', '/skills/ask-the-graph'];
+
     /** The directories a materialised plugin needs, in creation order. */
-    private const DIRECTORIES = ['/.claude-plugin', '/hooks', '/hooks/lib', '/hooks/scripts', '/skills', '/skills/knossos', '/types'];
+    private const DIRECTORIES = ['/.claude-plugin', '/hooks', '/hooks/lib', '/hooks/scripts', '/skills', '/skills/graph', '/types'];
 
     /**
      * Copied verbatim from the installation root into a materialised plugin.
@@ -73,7 +76,7 @@ final class PluginCommand implements CliCommand
         '/hooks/lib/scheduler.ts',
         '/hooks/lib/sparkline.ts',
         '/hooks/lib/views.ts',
-        '/skills/knossos/SKILL.md',
+        '/skills/graph/SKILL.md',
         '/types/index.d.ts',
     ];
 
@@ -99,7 +102,7 @@ final class PluginCommand implements CliCommand
         'hooks/lib/scheduler.ts',
         'hooks/lib/sparkline.ts',
         'hooks/lib/views.ts',
-        'skills/knossos/SKILL.md',
+        'skills/graph/SKILL.md',
         'types/index.d.ts',
     ];
 
@@ -339,6 +342,9 @@ final class PluginCommand implements CliCommand
                 $replacedFiles[$target] = $original;
             }
         };
+        // Where a stale skill directory from an earlier install was moved to,
+        // so a failure further down can put it back.
+        $retired = [];
         try {
             foreach (self::DIRECTORIES as $directory) {
                 $path = $out . $directory;
@@ -350,6 +356,7 @@ final class PluginCommand implements CliCommand
                 }
                 $createdDirectories[] = $path;
             }
+            $retired = $this->retireStaleSkills($out);
             foreach (self::COPIES as $relative) {
                 $target = $out . $relative;
                 $isNew = !file_exists($target);
@@ -400,11 +407,50 @@ final class PluginCommand implements CliCommand
                 }
             }
         } catch (Throwable $error) {
+            foreach ($retired as $original => $parked) {
+                @rename($parked, $original);
+            }
             $this->rollbackEmit($out, $existed, $createdDirectories, $createdFiles, $replacedFiles);
             throw $error;
         }
+        // Only now that nothing after it can fail is the old copy deleted.
+        foreach ($retired as $parked) {
+            $this->removeTree($parked);
+        }
 
         return $existed;
+    }
+
+    /**
+     * Move aside the skill directories earlier releases installed under their old names.
+     *
+     * The skill was `skills/knossos`, then `skills/ask-the-graph`. Claude Code
+     * loads every directory under `skills/`, so an updated install that only
+     * added the renamed one would offer the same instructions twice. Each old
+     * directory is renamed rather than deleted so that a later failure can
+     * restore it, and is only removed once the whole install has succeeded.
+     *
+     * @return array<string, string> original path => where it was parked
+     */
+    private function retireStaleSkills(string $out): array
+    {
+        $retired = [];
+        foreach (self::STALE_SKILLS as $relative) {
+            $stale = $out . $relative;
+            if (!is_dir($stale) && !is_link($stale)) {
+                continue;
+            }
+            $parked = $out . '/skills/.retired-' . bin2hex(random_bytes(4));
+            if (!@rename($stale, $parked)) {
+                foreach ($retired as $original => $moved) {
+                    @rename($moved, $original);
+                }
+                throw new InvalidArgumentException(sprintf('Unable to remove the stale %s.', $stale));
+            }
+            $retired[$stale] = $parked;
+        }
+
+        return $retired;
     }
 
     /**

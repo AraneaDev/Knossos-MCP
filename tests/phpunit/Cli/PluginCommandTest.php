@@ -37,7 +37,7 @@ final class PluginCommandTest extends KnossosTestCase
         'hooks/scripts/knossos-run.sh',
         'hooks/scripts/lib.sh',
         'hooks/scripts/session-brief.sh',
-        'skills/knossos/SKILL.md',
+        'skills/graph/SKILL.md',
         'types/index.d.ts',
     ];
 
@@ -175,7 +175,7 @@ final class PluginCommandTest extends KnossosTestCase
         assertSame('/srv/knossos-data', $decoded['data']);
         assertSame(true, in_array('hooks/scripts/session-brief.sh', $decoded['files'], true));
         assertSame(true, in_array('hooks/scripts/knossos-run.sh', $decoded['files'], true));
-        assertSame(true, in_array('skills/knossos/SKILL.md', $decoded['files'], true));
+        assertSame(true, in_array('skills/graph/SKILL.md', $decoded['files'], true));
         // The container scripts are standalone, so no shared library is shipped for them.
         assertSame(false, in_array('hooks/scripts/lib.sh', $decoded['files'], true));
         // Every listed file is really there, so the list cannot drift from what
@@ -223,7 +223,7 @@ final class PluginCommandTest extends KnossosTestCase
         assertSame(true, is_file($out . '/.claude-plugin/plugin.json'));
         assertSame(true, is_file($out . '/.claude-plugin/marketplace.json'));
         assertSame(true, is_file($out . '/hooks/hooks.json'));
-        assertSame(true, is_file($out . '/skills/knossos/SKILL.md'));
+        assertSame(true, is_file($out . '/skills/graph/SKILL.md'));
 
         $hook = (string) file_get_contents($out . '/hooks/scripts/session-brief.sh');
         assertSame(true, str_contains($hook, 'docker run'));
@@ -264,7 +264,7 @@ final class PluginCommandTest extends KnossosTestCase
             '/hooks/lib/sparkline.ts',
             '/hooks/lib/views.ts',
             '/types/index.d.ts',
-            '/skills/knossos/SKILL.md',
+            '/skills/graph/SKILL.md',
         ] as $relative) {
             if (!is_dir(dirname($root . $relative))) {
                 mkdir(dirname($root . $relative), 0o755, true);
@@ -336,7 +336,7 @@ final class PluginCommandTest extends KnossosTestCase
         // Pre-create the target so that .claude-plugin already exists (and is
         // therefore NOT tracked as created), but plugin.json is a DIRECTORY
         // where emit() expects to copy() a file. mkdir() of hooks, hooks/scripts
-        // and skills/knossos all succeed and ARE tracked; the first copy() then
+        // and skills/graph all succeed and ARE tracked; the first copy() then
         // fails on the pre-existing plugin.json directory. This exercises the
         // rollback branch that removes a non-empty set of tracked directories,
         // which the file-blocks-mkdir test above cannot reach.
@@ -757,7 +757,7 @@ final class PluginCommandTest extends KnossosTestCase
             '/hooks/lib/sparkline.ts',
             '/hooks/lib/views.ts',
             '/types/index.d.ts',
-            '/skills/knossos/SKILL.md',
+            '/skills/graph/SKILL.md',
         ] as $relative) {
             $directory = dirname($root . $relative);
             if (!is_dir($directory)) {
@@ -1074,12 +1074,77 @@ final class PluginCommandTest extends KnossosTestCase
 
         $this->emitProse($out, []);
 
-        foreach (['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills', '/skills/knossos'] as $directory) {
+        foreach (['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills', '/skills/graph'] as $directory) {
             assertSame(true, is_dir($out . $directory), $directory);
         }
         assertSame('0755', substr(sprintf('%o', fileperms($out . '/hooks/scripts')), -4));
 
         exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /** An update over an earlier install leaves one skill, never the old directory beside the renamed one. */
+    #[Group('cli')]
+    public function testAnInstallRemovesTheSkillDirectoryAnEarlierReleaseLeft(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-stale');
+        mkdir($out . '/skills/knossos', 0o755, true);
+        file_put_contents($out . '/skills/knossos/SKILL.md', "---\nname: knossos\n---\n");
+        file_put_contents($out . '/skills/knossos/extra.md', 'old');
+        mkdir($out . '/skills/ask-the-graph', 0o755, true);
+        file_put_contents($out . '/skills/ask-the-graph/SKILL.md', "---\nname: ask-the-graph\n---\n");
+
+        $this->emitProse($out, []);
+
+        assertSame(false, file_exists($out . '/skills/knossos'));
+        assertSame(false, file_exists($out . '/skills/ask-the-graph'));
+        assertSame(['graph'], array_values(array_diff(scandir($out . '/skills') ?: [], ['.', '..'])));
+        assertSame(true, is_file($out . '/skills/graph/SKILL.md'));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /** A failed install puts the old skill directory back exactly as it was. */
+    #[Group('cli')]
+    public function testAFailedInstallRestoresTheStaleSkillDirectory(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-stale-fail');
+        mkdir($out . '/skills/knossos', 0o755, true);
+        file_put_contents($out . '/skills/knossos/SKILL.md', 'old skill');
+        mkdir($out . '/skills/ask-the-graph', 0o755, true);
+        mkdir($out . '/.claude-plugin/plugin.json', 0o755, true);
+
+        try {
+            (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['/srv/data']], $this->context());
+            self::fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException) {
+            // Expected: plugin.json is a directory, so the manifest cannot be written.
+        }
+
+        assertSame('old skill', (string) file_get_contents($out . '/skills/knossos/SKILL.md'));
+        assertSame(['ask-the-graph', 'knossos'], array_values(array_diff(scandir($out . '/skills') ?: [], ['.', '..'])));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /** The plugin's slash command is `/knossos`, so no skill it ships may carry that name again. */
+    #[Group('cli')]
+    public function testNoSkillTheClaudePluginShipsSharesANameWithItsCommand(): void
+    {
+        $root = self::repositoryRoot();
+        $mod = (string) file_get_contents($root . '/hooks/register.tsx');
+        assertSame(1, preg_match("/command\\.register\\(\\{\\s*name: '([^']+)'/", $mod, $command));
+
+        $names = [];
+        foreach (glob($root . '/skills/*/SKILL.md') ?: [] as $file) {
+            assertSame(1, preg_match('/^---\nname: (\S+)\n/', (string) file_get_contents($file), $found), $file);
+            // The directory and the declared name must agree, or the person
+            // sees one name in the picker and finds another on disk.
+            assertSame(basename(dirname($file)), $found[1], $file);
+            $names[] = $found[1];
+        }
+
+        assertSame(true, $names !== []);
+        assertSame(false, in_array($command[1], $names, true), $command[1]);
     }
 
     /** An emit replaces a hand-edited descriptor, because the plugin it describes is regenerated. */
