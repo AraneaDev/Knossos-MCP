@@ -194,6 +194,15 @@ function detailOf(d) {
   return layout.detailInput(shown, { snapshot_id: d.snapshot_id, name: top.canonical, detail: answer, phase: 'done' }, d.project_root)
 }
 
+/** The detail of the file most depended on, as `file-detail` reads it. */
+function fileDetailOf(d) {
+  const path = (d.fan_in ?? [])[0]?.path
+  if (path === undefined) return null
+  const shown = { name: path, label: path, file: true }
+  const answer = envelopes.parseFileDetail(wrapper('file-detail', path))
+  return layout.fileDetailInput(shown, { snapshot_id: d.snapshot_id, name: path, file: true, detail: null, fileDetail: answer, phase: 'done' }, d.project_root, palette.huesOf(d))
+}
+
 /**
  * A session of three turns over real files (made-up turns): the sample turn,
  * then one that edits the next most depended on files, adds a file and deletes
@@ -224,6 +233,7 @@ const BASE_VIEW = { inspect: null, isBandHidden: false, tab: 'overview', selecte
 const IDLE = { phase: 'idle', reason: null }
 const FETCHED = { fetchedAt: NOW, failed: false }
 const detail = detailOf(dashboard)
+const fileDetail = fileDetailOf(dashboard)
 const brief = sampleBrief(dashboard)
 const session = sampleSession(dashboard, brief)
 const root = dashboard.project_root ?? PROJECT
@@ -287,6 +297,10 @@ const VIEWS = [
   ['changes', pane({ tab: 'changes', selected: 1 }, { turn: brief })],
   ['changes-empty', pane({ tab: 'changes' }, { changes: layout.NO_CHANGES })],
   ...(detail === null ? [] : [['detail', pane({ tab: 'hubs' }, { shown: detail })]]),
+  ...(fileDetail === null ? [] : [['file-detail', pane({ tab: 'changes' }, { shown: fileDetail })]]),
+  ['file-detail-loading', pane({ tab: 'changes' }, { shown: { label: 'src/Query/DashboardService.php', loading: true, messages: null, component: null, file: null } })],
+  ...(dashboard.freshness.drifted?.length ? [['drift', pane({ tab: 'overview', drift: true }, { turn: brief })]] : []),
+  ['overview-hub-marked', pane({ tab: 'overview', selected: 5 }, { turn: brief })],
   ['detail-loading', pane({ tab: 'hubs' }, { shown: { label: 'StableId', loading: true, messages: null, component: null } })],
   ['allow-offer', pane({ tab: 'overview' }, { turn: refused })],
   ['allow-confirm', pane({ tab: 'overview' }, { turn: refused, allow: { phase: 'confirming', root, reason: null } })],
