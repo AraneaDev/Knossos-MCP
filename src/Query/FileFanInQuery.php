@@ -9,7 +9,11 @@ namespace Knossos\Query;
  *
  * Counts distinct dependent files, not edges: a file calling forty methods
  * of another is one dependent. Edges inside one file never count, so a
- * class calling its own helpers does not look like a hub.
+ * class calling its own helpers does not look like a hub. Nor do edges to an
+ * `external_*` node: one stands for a symbol declared outside the project
+ * (`sprintf`, a vendor class) and is filed under whichever file first named
+ * it, so counting it would make that file look depended on by every caller
+ * of the built-in.
  *
  * Each row carries two boundary answers that are easy to confuse:
  * `boundaries` lists the boundaries the file's dependents sit in (where a
@@ -93,7 +97,7 @@ final readonly class FileFanInQuery extends AbstractArchitectureQueryService
                           JOIN boundary_memberships bm ON bm.node_id = s2.id
                           JOIN boundaries b ON b.id = bm.boundary_id
                          WHERE t2.file_id = tf.id AND s2.file_id <> tf.id AND e2.project_id = tf.project_id
-                           AND e2.kind IN ($kinds)
+                           AND e2.kind IN ($kinds) AND t2.kind NOT LIKE 'external\_%' ESCAPE '\'
                          ORDER BY b.name)) AS boundary_names
               FROM edges e
               JOIN nodes tn ON tn.id = e.target_id
@@ -101,6 +105,7 @@ final readonly class FileFanInQuery extends AbstractArchitectureQueryService
               JOIN nodes sn ON sn.id = e.source_id
              WHERE e.project_id = ? AND e.kind IN ($kinds)
                AND sn.file_id IS NOT NULL AND sn.file_id <> tn.file_id
+               AND tn.kind NOT LIKE 'external\_%' ESCAPE '\'
                $pathFilter
              GROUP BY tf.id
             HAVING COUNT(DISTINCT sn.file_id) >= ?
@@ -138,6 +143,7 @@ final readonly class FileFanInQuery extends AbstractArchitectureQueryService
               JOIN nodes sn ON sn.id = e.source_id
               JOIN files sf ON sf.id = sn.file_id
              WHERE e.project_id = ? AND e.kind IN ($kinds) AND tf.relative_path = ? AND sf.id <> tf.id
+               AND tn.kind NOT LIKE 'external\_%' ESCAPE '\'
              ORDER BY sf.relative_path
              LIMIT ?
             SQL);

@@ -129,6 +129,21 @@ final class FileFanInQueryTest extends KnossosTestCase
     }
 
     /**
+     * A built-in such as `sprintf` is an `external_*` node filed under the
+     * first file that named it: callers of the built-in do not depend on that file.
+     */
+    #[Group('query')]
+    public function testAnExternalSymbolFiledUnderAFileGivesItNoDependents(): void
+    {
+        [$pdo, $projectId] = $this->fanInGraph();
+        $pdo->exec("UPDATE nodes SET kind = 'external_function' WHERE id = 'A'");
+        $query = new FileFanInQuery($pdo);
+        assertSame(['b.php'], array_column($query->aboveThreshold($projectId, 1), 'path'));
+        $a = $query->forPaths($projectId, ['a.php'])['a.php'];
+        assertSame([0, [], []], [$a['dependent_files'], $a['boundaries'], $a['top_dependents']]);
+    }
+
+    /**
      * Files a, b, c, d; nodes A and A2 in a, B in b, C in c, D in d. Edges B calls A,
      * C imports A, A2 calls A (same file), C calls B, D contains A (not an impact edge). Boundary Core holds B, Other holds D.
      *
