@@ -28,6 +28,11 @@ final class TurnBriefServiceTest extends KnossosTestCase
     /** Called by Caller.php, so editing it must report a dependent. */
     private const TARGET = 'src/Core/Greeter.php';
 
+    /** Calls the target across a boundary, so the policy below already fails on it. */
+    private const CALLER = 'src/Edge/Caller.php';
+
+    private const POLICIES = [['id' => 'no-calls', 'from_boundary' => 'Edge', 'deny_targets' => ['Core']]];
+
     private string|false $allowedRoots = false;
 
     private string|false $rootsFile = false;
@@ -60,6 +65,14 @@ final class TurnBriefServiceTest extends KnossosTestCase
         file_put_contents($file, file_get_contents($file) . "\n// touched\n");
     }
 
+    /** Adds a method `$name` to the caller that crosses the boundary again. */
+    private function addCall(string $root, string $name): void
+    {
+        $file = $root . '/' . self::CALLER;
+        $method = sprintf("    public function %s(): string\n    {\n        return (new \\App\\Greeter())->greet('again');\n    }\n}\n", $name);
+        file_put_contents($file, (string) preg_replace('/}\s*$/', '', (string) file_get_contents($file)) . "\n" . $method);
+    }
+
     private function rows(PDO $pdo, string $table): int
     {
         return (int) $pdo->query('SELECT COUNT(*) FROM ' . $table)->fetchColumn();
@@ -85,7 +98,7 @@ final class TurnBriefServiceTest extends KnossosTestCase
             assertGreaterThanOrEqual(0, $brief['scan_ms']);
             assertLessThan(60_000, $brief['scan_ms']);
             assertSame(null, $brief['reason']);
-            assertSame(['status' => 'not_evaluated', 'total' => 0, 'violations' => []], $brief['policy']);
+            assertSame(['status' => 'not_evaluated', 'total' => 0, 'violations' => [], 'truncated' => false], $brief['policy']);
         } finally {
             $this->removeTempTree($root);
         }
@@ -195,10 +208,11 @@ final class TurnBriefServiceTest extends KnossosTestCase
             $brief = $this->service($pdo, $databasePath)->brief($root);
             assertSame('not-allowed', $brief['status']);
             assertSame($data . '/roots.json', $brief['roots_file']);
-            assertSame($root, $brief['path']);
+            assertSame(realpath($root), $brief['path']);
+            assertSame(realpath($root), $brief['refused_root']);
             assertSame(null, $brief['project_id']);
             assertSame([], $brief['changed_files']);
-            assertSame(['status' => 'not_evaluated', 'total' => 0, 'violations' => []], $brief['policy']);
+            assertSame(['status' => 'not_evaluated', 'total' => 0, 'violations' => [], 'truncated' => false], $brief['policy']);
             assertSame($scans, $this->rows($pdo, 'scans'));
         } finally {
             $this->removeTempTree($root);
@@ -220,6 +234,8 @@ final class TurnBriefServiceTest extends KnossosTestCase
             $brief = $this->service($pdo, $data . '/knossos.sqlite')->brief($real . '/src/Core');
             assertSame('not-allowed', $brief['status']);
             assertSame($data . '/roots.json', $brief['roots_file']);
+            // The path itself is allowed; the ancestor root that would be scanned is what to allow.
+            assertSame($real, $brief['refused_root']);
             assertSame(null, $brief['project_id']);
             assertSame($scans, $this->rows($pdo, 'scans'));
         } finally {
@@ -267,12 +283,12 @@ final class TurnBriefServiceTest extends KnossosTestCase
     {
         [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
         try {
-            // A real installation root is required to find the workers; a bogus one makes the scan throw.
-            $brief = (new TurnBriefService($pdo, ':memory:', '/nonexistent-installation'))->brief($root);
-            if ($brief['status'] === 'ok') {
-                $this->markTestSkipped('The scan does not depend on the installation root here.');
-            }
+            // A project configuration that does not parse stops every scan before it writes.
+            file_put_contents($root . '/knossos.json', '{');
+            $scans = $this->rows($pdo, 'scans');
+            $brief = $this->service($pdo)->brief($root);
             assertSame('scan-failed', $brief['status']);
+            assertSame($scans, $this->rows($pdo, 'scans'));
             assertSame(realpath($root), $brief['project_root']);
             assertSame(true, is_string($brief['reason']) && $brief['reason'] !== '');
         } finally {
@@ -285,32 +301,72 @@ final class TurnBriefServiceTest extends KnossosTestCase
     {
         [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
         try {
-            $policies = [['id' => 'no-calls', 'from_boundary' => 'Edge', 'deny_targets' => ['Core']]];
-            $this->touch($root, self::TARGET);
+            $this->addCall($root, 'again');
             $service = $this->service($pdo);
-            $off = $service->brief($root, [], $policies, false);
-            assertSame('disabled', $off['policy']['status']);
-            assertSame(0, $off['policy']['total']);
-            assertSame([], $off['policy']['violations']);
-            assertSame([self::TARGET], $off['changed_files']);
+            $off = $service->brief($root, [self::CALLER], self::POLICIES, false);
+            assertSame(['status' => 'disabled', 'total' => 0, 'violations' => [], 'truncated' => false], $off['policy']);
+            assertSame([self::CALLER], $off['changed_files']);
 
-            $this->touch($root, self::TARGET);
-            $on = $service->brief($root, [], $policies, true);
+            $this->addCall($root, 'more');
+            $on = $service->brief($root, [self::CALLER], self::POLICIES, true);
             assertSame('evaluated', $on['policy']['status']);
-            // Caller::run reaches both the class and its method, so two edges break the policy.
+            assertSame(false, $on['policy']['truncated']);
+            // Only the new method's two edges (the class and its method) are new.
             assertSame(2, $on['policy']['total']);
-            assertCount(2, $on['policy']['violations']);
             $targets = [];
             foreach ($on['policy']['violations'] as $violation) {
                 assertSame(['policy_id', 'source', 'target', 'source_boundaries', 'target_boundaries'], array_keys($violation));
                 assertSame('no-calls', $violation['policy_id']);
-                assertSame('App\\Caller::run', $violation['source']);
+                assertSame('App\\Caller::more', $violation['source']);
                 assertSame(true, in_array('Edge', array_column($violation['source_boundaries'], 'name'), true));
                 assertSame(true, in_array('Core', array_column($violation['target_boundaries'], 'name'), true));
                 $targets[] = $violation['target'];
             }
             sort($targets);
             assertSame(['App\\Greeter', 'App\\Greeter::greet'], $targets);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A violation that was there before the turn is not the turn's, even in a file the turn edited. */
+    #[Group('query')]
+    public function testAnExistingViolationIsNotReportedAsIntroduced(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $service = $this->service($pdo);
+            // The edited file's dependent already breaks the policy.
+            $this->touch($root, self::TARGET);
+            $impacted = $service->brief($root, [self::TARGET], self::POLICIES);
+            assertSame([self::TARGET], $impacted['changed_files']);
+            assertSame(['status' => 'evaluated', 'total' => 0, 'violations' => [], 'truncated' => false], $impacted['policy']);
+            // The violating file itself, edited without adding a call.
+            $this->touch($root, self::CALLER);
+            $edited = $service->brief($root, [self::CALLER], self::POLICIES);
+            assertSame([self::CALLER], $edited['changed_files']);
+            assertSame(['status' => 'evaluated', 'total' => 0, 'violations' => [], 'truncated' => false], $edited['policy']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Past the check's own result cap the figures are bounds, and the brief says so. */
+    #[Group('query')]
+    public function testATruncatedPolicyCheckIsFlagged(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $methods = '';
+            foreach (range(1, 60) as $n) {
+                $methods .= sprintf("    public function run%d(): string\n    {\n        return (new \\App\\Greeter())->greet('x');\n    }\n\n", $n);
+            }
+            file_put_contents($root . '/src/Edge/Many.php', "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfinal class Many\n{\n" . $methods . "}\n");
+            $brief = $this->service($pdo)->brief($root, [], self::POLICIES);
+            assertSame(['src/Edge/Many.php'], $brief['added_files']);
+            assertSame('evaluated', $brief['policy']['status']);
+            assertSame(true, $brief['policy']['truncated']);
+            assertGreaterThan(0, $brief['policy']['total']);
         } finally {
             $this->removeTempTree($root);
         }
@@ -375,7 +431,7 @@ final class TurnBriefServiceTest extends KnossosTestCase
         }
     }
 
-    /** The total counts every violation touching the change while the list stays short. */
+    /** The total counts every introduced violation while the list stays short. */
     #[Group('query')]
     public function testViolationsAreCappedButTheTotalIsExact(): void
     {
@@ -387,16 +443,42 @@ final class TurnBriefServiceTest extends KnossosTestCase
                     $n,
                 ));
             }
-            $service = $this->service($pdo);
-            $service->brief($root);
-            $this->touch($root, self::TARGET);
-            $policies = [['id' => 'no-calls', 'from_boundary' => 'Edge', 'deny_targets' => ['Core']]];
-            $brief = $service->brief($root, [], $policies);
-            // Seven callers, each reaching the class and its method.
-            assertSame(14, $brief['policy']['total']);
+            $brief = $this->service($pdo)->brief($root, [], self::POLICIES);
+            // Six new callers, each reaching the class and its method; the old caller's are not new.
+            assertSame(12, $brief['policy']['total']);
             assertCount(10, $brief['policy']['violations']);
+            assertSame(false, $brief['policy']['truncated']);
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    /** A checkout reached through a linked directory: the reported path still lands in the project. */
+    #[Group('query')]
+    public function testAPathReportedThroughASymlinkIsMadeRelative(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        $links = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($links);
+        try {
+            symlink((string) realpath($root), $links . '/checkout');
+            // Unchanged on disk, so only the reported path can put it in the list.
+            $brief = $this->service($pdo)->brief($root, [$links . '/checkout/' . self::TARGET]);
+            assertSame([self::TARGET], $brief['changed_files']);
+        } finally {
+            $this->removeTempTree($links);
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** An all-digit file name stays a string, though PHP turns it into an integer array key. */
+    #[Group('query')]
+    public function testAnAllDigitPathStaysAString(): void
+    {
+        $diff = new \ReflectionMethod(TurnBriefService::class, 'diff');
+        [$changed, $added, $deleted] = $diff->invoke(null, ['123' => 'a', '7' => 'x'], ['123' => 'b', '45' => 'c'], ['123']);
+        assertSame(['123'], $changed);
+        assertSame(['45'], $added);
+        assertSame(['7'], $deleted);
     }
 }

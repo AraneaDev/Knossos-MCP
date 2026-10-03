@@ -19,8 +19,10 @@ use Throwable;
  * Reads every file's content hash, runs an incremental scan, reads them
  * again: the difference is exactly what changed on disk since the last
  * scan, whoever changed it, with no git needed. Then reports fan-in, the
- * tests that reach the changed files, and the boundary-policy violations
- * touching them. Scans only roots the operator allowed.
+ * tests that reach the changed files, and the boundary-policy violations the
+ * turn introduced: those whose source lives in a changed or added file after
+ * the scan and was not already there before it, in the files the caller
+ * reported. Scans only roots the operator allowed.
  */
 final readonly class TurnBriefService
 {
@@ -30,7 +32,7 @@ final readonly class TurnBriefService
     /** Tests listed in the brief, enforced by testImpact()'s own limit. */
     private const MAX_TESTS = 20;
 
-    /** Violations listed in the brief; the total is always exact. */
+    /** Violations listed in the brief; the total counts them all, exactly unless `policy.truncated`. */
     private const MAX_VIOLATIONS = 10;
 
     /**
@@ -54,7 +56,7 @@ final readonly class TurnBriefService
         $absolute = realpath($path) ?: $path;
         $envelope = self::empty($absolute);
         $allowed = new AllowedRoots(AllowedRoots::fromEnvironment(), $this->rootsFile());
-        $refusal = self::refusal($allowed, $absolute, $this->rootsFile());
+        $refusal = self::refusal($allowed, $absolute, $absolute, $this->rootsFile());
         if ($refusal !== null) {
             return $refusal + $envelope;
         }
@@ -64,11 +66,16 @@ final readonly class TurnBriefService
         }
         $root = (string) $project['root_realpath'];
         // The resolver may have walked up to an ancestor project: that root is what gets scanned, so it is what must be allowed.
-        $refusal = self::refusal($allowed, $root, $this->rootsFile());
+        $refusal = self::refusal($allowed, $root, $root, $this->rootsFile());
         if ($refusal !== null) {
             return $refusal + $envelope;
         }
         $projectId = (string) $project['id'];
+        $reported = self::relative($root, $extraFiles);
+        $violations = new FileViolationQuery($this->pdo);
+        $policies = $enforcePolicies ? FileViolationQuery::policies($root, $policies) : [];
+        // Taken before the scan rewrites the graph: what the reported files already broke is not this turn's doing.
+        $baseline = $violations->inFiles($projectId, $policies, $reported);
         $before = $this->hashes($projectId);
         $started = hrtime(true);
         try {
@@ -79,7 +86,7 @@ final readonly class TurnBriefService
         }
         // Same id as the baseline, so a recomputed id cannot make every file look added.
         $after = $this->hashes($projectId);
-        [$changed, $added, $deleted] = self::diff($before, $after, self::relative($root, $extraFiles));
+        [$changed, $added, $deleted] = self::diff($before, $after, $reported);
         $live = array_merge($changed, $added);
         $queries = new ArchitectureQueryService($this->pdo, gitWorkingTree: new ProcessGitWorkingTreeProvider());
         return [
@@ -94,23 +101,26 @@ final readonly class TurnBriefService
             'deleted_files' => $deleted,
             'impact' => (new FileFanInQuery($this->pdo))->forPaths($scan->projectId, $live, self::TOP_DEPENDENTS),
             'tests' => $live === [] ? [] : $this->tests($queries, $scan->projectId, $live),
-            'policy' => $this->policy($queries, $scan->projectId, $live, $policies, $enforcePolicies),
+            'policy' => self::policy($enforcePolicies, $live, $baseline, $baseline === null ? null : $violations->inFiles($scan->projectId, $policies, $live)),
         ] + $envelope;
     }
 
     /**
      * The status fields for a path the allow-list refuses, or null when it is allowed.
      *
+     * `refused_root` names what has to be allowed: the path itself, or the
+     * ancestor project root the path resolved to, which is what gets scanned.
+     *
      * @return array<string, mixed>|null
      */
-    private static function refusal(AllowedRoots $allowed, string $path, string $rootsFile): ?array
+    private static function refusal(AllowedRoots $allowed, string $path, string $refusedRoot, string $rootsFile): ?array
     {
         try {
             (new RootGuard($allowed))->resolve($path);
         } catch (RootNotFoundException) {
             return ['status' => 'missing'];
         } catch (DiscoveryException) {
-            return ['status' => 'not-allowed', 'roots_file' => $rootsFile];
+            return ['status' => 'not-allowed', 'roots_file' => $rootsFile, 'refused_root' => $refusedRoot];
         }
         return null;
     }
@@ -146,7 +156,8 @@ final readonly class TurnBriefService
         $changed = [];
         foreach ($after as $file => $hash) {
             if (isset($before[$file]) && $before[$file] !== $hash) {
-                $changed[] = $file;
+                // An all-digit path comes back from FETCH_KEY_PAIR as an integer key.
+                $changed[] = (string) $file;
             }
         }
         foreach ($extra as $file) {
@@ -165,6 +176,11 @@ final readonly class TurnBriefService
     /**
      * Reported paths made relative to the project root, keeping a leading dot.
      *
+     * An absolute path is resolved first, so one spelled through a symbolic
+     * link (a checkout reached by a linked directory) still lands under the
+     * root, which is a real path. A deleted file no longer resolves; its
+     * directory still does.
+     *
      * @param list<string> $paths
      * @return list<string>
      */
@@ -172,12 +188,29 @@ final readonly class TurnBriefService
     {
         $prefix = rtrim($root, '/') . '/';
         return array_map(
-            // Only a literal "./" prefix goes: ltrim() with a character list would also eat the dot of ".github/".
-            static fn(string $p): string => str_starts_with($p, $prefix)
-                ? substr($p, strlen($prefix))
-                : (str_starts_with($p, './') ? substr($p, 2) : $p),
+            static function (string $p) use ($prefix): string {
+                $p = self::resolved($p);
+                // Only a literal "./" prefix goes: ltrim() with a character list would also eat the dot of ".github/".
+                return str_starts_with($p, $prefix)
+                    ? substr($p, strlen($prefix))
+                    : (str_starts_with($p, './') ? substr($p, 2) : $p);
+            },
             $paths,
         );
+    }
+
+    /** An absolute path with its links resolved, through its directory when the file is gone; others unchanged. */
+    private static function resolved(string $path): string
+    {
+        if (!str_starts_with($path, '/')) {
+            return $path;
+        }
+        $real = realpath($path);
+        if ($real !== false) {
+            return $real;
+        }
+        $directory = realpath(dirname($path));
+        return $directory === false ? $path : rtrim($directory, '/') . '/' . basename($path);
     }
 
     /**
@@ -196,35 +229,28 @@ final readonly class TurnBriefService
     }
 
     /**
-     * The boundary-policy verdict for the live changed files.
+     * The boundary-policy verdict: the violations in the live files after the
+     * scan that were not in the reported files before it.
      *
      * @param list<string> $live
-     * @param list<array<string, mixed>>|null $policies
-     * @return array{status: string, total: int, violations: list<array<string, mixed>>}
+     * @param array{violations: array<string, array<string, mixed>>, truncated: bool}|null $before null when not evaluable
+     * @param array{violations: array<string, array<string, mixed>>, truncated: bool}|null $after
+     * @return array{status: string, total: int, violations: list<array<string, mixed>>, truncated: bool}
      */
-    private function policy(ArchitectureQueryService $queries, string $projectId, array $live, ?array $policies, bool $enforce): array
+    private static function policy(bool $enforce, array $live, ?array $before, ?array $after): array
     {
         if (!$enforce) {
-            return ['status' => 'disabled', 'total' => 0, 'violations' => []];
+            return ['status' => 'disabled', 'total' => 0, 'violations' => [], 'truncated' => false];
         }
-        if ($live === []) {
-            return ['status' => 'not_evaluated', 'total' => 0, 'violations' => []];
+        if ($live === [] || $before === null || $after === null) {
+            return ['status' => 'not_evaluated', 'total' => 0, 'violations' => [], 'truncated' => false];
         }
-        $check = $queries->reviewDiff($projectId, files: $live, policies: $policies)->data['policy_check'] ?? [];
-        if (($check['status'] ?? '') !== 'evaluated') {
-            return ['status' => 'not_evaluated', 'total' => 0, 'violations' => []];
-        }
-        $violations = array_map(static fn(array $v): array => [
-            'policy_id' => $v['policy_id'],
-            'source' => $v['source']['canonical_name'],
-            'target' => $v['target']['canonical_name'],
-            'source_boundaries' => $v['source_boundaries'],
-            'target_boundaries' => $v['target_boundaries'],
-        ], $check['violations_touching_change'] ?? []);
+        $introduced = array_values(array_diff_key($after['violations'], $before['violations']));
         return [
             'status' => 'evaluated',
-            'total' => count($violations),
-            'violations' => array_slice($violations, 0, self::MAX_VIOLATIONS),
+            'total' => count($introduced),
+            'violations' => array_slice($introduced, 0, self::MAX_VIOLATIONS),
+            'truncated' => $before['truncated'] || $after['truncated'],
         ];
     }
 
@@ -233,10 +259,10 @@ final readonly class TurnBriefService
     {
         return [
             'path' => $path, 'project_root' => null, 'project_id' => null, 'snapshot_id' => null,
-            'scanned_at' => null, 'scan_ms' => null, 'reason' => null, 'roots_file' => null,
+            'scanned_at' => null, 'scan_ms' => null, 'reason' => null, 'roots_file' => null, 'refused_root' => null,
             'changed_files' => [], 'added_files' => [], 'deleted_files' => [],
             'impact' => [], 'tests' => [],
-            'policy' => ['status' => 'not_evaluated', 'total' => 0, 'violations' => []],
+            'policy' => ['status' => 'not_evaluated', 'total' => 0, 'violations' => [], 'truncated' => false],
         ];
     }
 }
