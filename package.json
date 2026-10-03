@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "@eslint/js": "latest",
+    "@types/node": "^24.19.1",
     "c8": "11.0.0",
     "eslint": "latest",
     "markdownlint": "0.41.1",
