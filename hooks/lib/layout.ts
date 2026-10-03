@@ -246,6 +246,8 @@ export function paneStatus(d: Dashboard, refresh: RefreshState, rescan: RescanSt
   if (rescan.phase === 'failed') return { tone: 'alert', text: `rescan failed${rescan.reason ? `: ${rescan.reason}` : ''}` }
   if (refresh.failed) return { tone: 'alert', text: `refresh failed${age}` }
   if (live.phase === 'scanning') return { tone: 'warn', text: `scanning… · ${d.freshness.state}${age}` }
+  // The leader's watcher is stuck or gone quiet: the graph is not being kept current, whatever its age says.
+  if (live.phase === 'following' && live.stale === true) return { tone: 'warn', text: `${d.freshness.state}${age} · another session's watcher is stuck` }
   if ((live.phase === 'live' || live.phase === 'following') && d.freshness.state === 'fresh' && d.freshness.drift_files === 0) {
     return { tone: 'ok', text: live.phase === 'live' ? 'live' : 'live · watched by another session' }
   }
@@ -749,21 +751,43 @@ function hubRows(input: PaneInput, list: Item[], selected: number, columns: numb
 export const SCAN_PROMPT = 'Scan this project with Knossos (scan_project), then give me a short summary of its architecture.'
 
 /**
- * The pane with no dashboard to draw: a heading, why, and one thing to do
- * about it. When the project's root was refused (often the reason there is
- * no graph), that one thing is the allow-root offer; otherwise it is asking
- * Claude to scan the project, which reaches the same graph the pane reads
- * without a terminal or a data directory to get right.
+ * Why the pane has no figures to draw: the first load is still on its way,
+ * the last load came back silent or as an error, or knossos answered that
+ * it has never scanned this project. Only the last is a reason to scan.
  */
-export function emptyRows(allow: AllowInput | null, columns: number): Row[] {
+export type NoGraph = 'loading' | 'unreadable' | 'unscanned'
+
+/** Which {@link NoGraph} state a dashboard that is not `ok` (or none yet) is in. */
+export function noGraphOf(d: Dashboard | null, refresh: RefreshState): NoGraph {
+  if (refresh.failed || d?.status === 'error') return 'unreadable'
+  if (d?.status === 'unscanned') return 'unscanned'
+  return refresh.fetchedAt === null ? 'loading' : 'unreadable'
+}
+
+const NO_GRAPH: Record<NoGraph, { head: string; why: string }> = {
+  loading: { head: 'Reading the graph…', why: 'Knossos is loading the architecture graph of this project.' },
+  unreadable: { head: 'Could not read the graph', why: 'Knossos did not answer, or answered with an error; retrying.' },
+  unscanned: { head: 'No architecture graph yet', why: 'Knossos has not scanned this project, so there is nothing to draw.' },
+}
+
+/**
+ * The pane with no dashboard to draw: a heading saying which state it is
+ * in, why, and at most one thing to do about it. When the project's root
+ * was refused, that one thing is the allow-root offer. Otherwise only a
+ * project knossos says it never scanned offers asking Claude to scan it:
+ * a load still on its way, or one that failed, is no reason to scan, so a
+ * habitual `q` there sends nothing.
+ */
+export function emptyRows(state: NoGraph, allow: AllowInput | null, columns: number): Row[] {
   const width = Math.max(1, Math.min(CONTENT_MAX, columns))
+  const { head: heading, why } = NO_GRAPH[state]
   const head: Row[] = [
-    { key: 'empty-head', segments: [{ text: fit('No architecture graph yet', width), bold: true, color: HEADING }] },
-    ...wrapWords('Knossos has not scanned this project, so there is nothing to draw.', width).map((line, i) => dimRow(`empty-${i}`, line, width)),
-    blank('gap-empty'),
+    { key: 'empty-head', segments: [{ text: fit(heading, width), bold: true, color: HEADING }] },
+    ...wrapWords(why, width).map((line, i) => dimRow(`empty-${i}`, line, width)),
   ]
-  if (allow !== null) return [...head, ...allowRows(allow, width)]
-  return [...head, { key: 'empty-action', segments: [button('scan-ask', 'ask Claude to scan it', 'q', { dim: false })] }]
+  if (allow !== null) return [...head, blank('gap-empty'), ...allowRows(allow, width)]
+  if (state !== 'unscanned') return head
+  return [...head, blank('gap-empty'), { key: 'empty-action', segments: [button('scan-ask', 'ask Claude to scan it', 'q', { dim: false })] }]
 }
 
 /**

@@ -317,7 +317,8 @@ export type RescanState = { phase: 'idle' | 'scanning' | 'failed'; reason: strin
  * watcher leads (this one only reads the snapshot), `off` when there is
  * none (switched off, refused, not offered, or stopped).
  */
-export type LiveState = { phase: 'off' | 'starting' | 'live' | 'scanning' | 'following' }
+/** `stale`: following a leader whose heartbeat stopped (its watcher is stuck or gone quiet). */
+export type LiveState = { phase: 'off' | 'starting' | 'live' | 'scanning' | 'following'; stale?: true }
 
 /** One event of the live watcher, one JSON object per line on its stdout; `no-binary` comes from the wrapper. */
 export type WatchEvent = {
@@ -326,6 +327,11 @@ export type WatchEvent = {
   snapshot_id?: string | null
   retryable?: boolean
   reason?: string
+  /** The watcher's own process id (on `ready`, `leading`, `following`): what a session end signals. */
+  pid?: number
+  /** On `following`: whether the leader's heartbeat stopped, and whether the leader was started by this same process. */
+  stale?: boolean
+  same_process?: boolean
 }
 
 /** The `allow-root` subcommand's answer: the root granted and the roots file it now stands in. */

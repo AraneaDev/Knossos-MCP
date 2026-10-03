@@ -197,6 +197,8 @@ function world(
   }
   on('process.run', async (_$, e) => {
     calls.push([...e.argv])
+    // A signal to a process the mod started: delivered.
+    if (e.argv[0] === 'kill') return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     // The editor's command: there and opening the file, or not installed.
     if (e.argv[0] === 'code') {
       if (answers.editor === 'missing') throw Object.assign(new Error('spawn code ENOENT'), { code: 'ENOENT' })
@@ -231,7 +233,8 @@ function world(
   const dashboardRuns = () => calls.filter(c => c[2] === 'dashboard')
   const allowRuns = () => calls.filter(c => c[2] === 'allow-root')
   const editorRuns = () => calls.filter(c => c[0] === 'code')
-  return { watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  const kills = () => calls.filter(c => c[0] === 'kill')
+  return { kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -1250,10 +1253,10 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect(await $.ui.focus({ requestId: 'knossos', key: 'row:1' })).toEqual({})
+    expect(await $.ui.focus({ requestId: 'knossos', key: 'row:1' } as never)).toEqual({})
     expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
     // Onto a tab: the marker stays on the list.
-    await $.ui.focus({ requestId: 'knossos', key: 'tab:hubs' })
+    await $.ui.focus({ requestId: 'knossos', key: 'tab:hubs' } as never)
     expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
     // Enter on the focused row presses it.
     await ui.press({ key: 'row:1' })
@@ -1270,10 +1273,10 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const ui = await mountPane($)
     // Forward: from Overview onto Hubs' twin lands on Hubs.
-    await $.ui.focus({ requestId: 'knossos', key: 'tab:overview' })
-    await $.ui.focus({ requestId: 'knossos', key: 'tabkey:hubs' })
+    await $.ui.focus({ requestId: 'knossos', key: 'tab:overview' } as never)
+    await $.ui.focus({ requestId: 'knossos', key: 'tabkey:hubs' } as never)
     // Backward from Hubs, its twin comes first: the ring goes on to Overview.
-    await $.ui.focus({ requestId: 'knossos', key: 'tabkey:hubs' })
+    await $.ui.focus({ requestId: 'knossos', key: 'tabkey:hubs' } as never)
     expect(w.focuses).toEqual(['tab:overview', 'tab:hubs', 'tab:overview'])
     await ui.unmount()
   })
@@ -1622,6 +1625,55 @@ describe('knossos mod', () => {
     expect(w.prompts).toEqual([])
     await ui.press({ key: 'scan-ask' })
     expect(w.prompts).toEqual(['Scan this project with Knossos (scan_project), then give me a short summary of its architecture.'])
+    await ui.unmount()
+  })
+
+  test('the pane opened before the first dashboard lands says it is reading the graph, and q there sends nothing', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard(), hold: 5_000 }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'empty' }))?.text).toContain('Reading the graph…')
+    expect((await ui.find({ key: 'empty' }))?.text).not.toContain('has not scanned')
+    expect(await ui.find({ key: 'scan-ask' })).toBeUndefined()
+    expect(await ui.findAll({ type: 'Button' })).toEqual([])
+    await w.clock.advance(5_000)
+    expect(await ui.find({ key: 'pane' })).toBeDefined()
+    expect(w.prompts).toEqual([])
+    await ui.unmount()
+  })
+
+  test('after a silent first load the pane says it could not read the graph, retries, and offers no scan', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: '' }, { stdout: '' }, { stdout: paneDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, '')
+    await w.clock.settle()
+    expect(w.dashboardRuns()).toHaveLength(2)
+    const ui = await mountPane($)
+    const text = (await ui.find({ key: 'empty' }))?.text ?? ''
+    expect(text).toContain('Could not read the graph')
+    expect(text).toContain('retrying')
+    expect(text).not.toContain('has not scanned')
+    expect(await ui.find({ key: 'scan-ask' })).toBeUndefined()
+    expect(await ui.findAll({ type: 'Button' })).toEqual([])
+    // Retried on its own while the pane shows it, not only at the next turn's end.
+    await w.clock.advance(16_000)
+    expect(w.dashboardRuns()).toHaveLength(3)
+    expect(await ui.find({ key: 'pane' })).toBeDefined()
+    expect(w.prompts).toEqual([])
+    await ui.unmount()
+  })
+
+  test('an error from the dashboard is not called unscanned either', async ($, on) => {
+    const failed = JSON.stringify({ ...(JSON.parse(dashboard) as object), status: 'error' })
+    const w = world(on, { dashboard: [{ stdout: failed }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'empty' }))?.text).toContain('Could not read the graph')
+    expect(await ui.find({ key: 'scan-ask' })).toBeUndefined()
+    expect(w.prompts).toEqual([])
     await ui.unmount()
   })
 
@@ -2174,7 +2226,7 @@ describe('knossos mod', () => {
     // The busiest step is the dark theme's accent, the crossed pair its error colour; no raw palette of the mod's own.
     expect(await foregrounds(term)).toContain(0xb1b9f9)
     expect(await foregrounds(term)).toContain(0xff6b80)
-    await $.config.set({ key: 'theme', value: 'light' })
+    await $.config.set({ key: 'theme', value: 'light' } as never)
     await w.clock.settle()
     expect(await foregrounds(term)).toContain(0x5769f7)
     expect(await foregrounds(term)).toContain(0xab2b3f)
@@ -2731,5 +2783,88 @@ describe('the live watcher', () => {
     await $.turn.complete(TURN)
     await w.clock.settle()
     expect(w.briefRuns()[2]).toContain('--since=s3')
+  })
+  test('an in-process /resume stops the watcher, stops saying live, scans without it, and then watches again', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[{ ...READY, pid: 4242 }], [READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live$/)
+    await $.session.end({ reason: 'resume', sessionId: 'x', resume: { id: 'x' } } as never)
+    await w.clock.settle()
+    // Nothing watches now: the header says so at once, and a brief in the gap scans for itself.
+    expect((await ui.find({ key: 'title' }))?.text).not.toContain('live')
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.briefRuns()).toHaveLength(1)
+    expect(w.briefRuns()[0]).not.toContain('--reuse-scan')
+    // The resumed session is watched again, from the next tick.
+    await w.clock.advance(1_100)
+    expect(w.watcher.starts).toHaveLength(2)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live$/)
+    await ui.unmount()
+  })
+
+  for (const reason of ['prompt_input_exit', 'logout', 'other'] as const) {
+    test(`after the session ends for good (${reason}) no watcher starts again and the header says nothing is live`, async ($, on) => {
+      const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY], [READY]] })
+      await $.session.start(START)
+      await w.clock.settle()
+      const ui = await mountPane($)
+      await $.session.end({ reason, sessionId: 'x', resume: { id: 'x' } } as never)
+      await w.clock.advance(60_000)
+      expect(w.watcher.starts).toHaveLength(1)
+      expect((await ui.find({ key: 'title' }))?.text).not.toContain('live')
+      await ui.unmount()
+    })
+  }
+
+  test('a session end signals the watcher it named at once, so its lock is free for the next session', async ($, on) => {
+    const w = world(on, { watch: [[{ ...READY, pid: 4242 }], [READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await $.session.end({ reason: 'clear', sessionId: 'x', resume: { id: 'x' } } as never)
+    await w.clock.settle()
+    expect(w.kills()).toEqual([['kill', '-TERM', '4242']])
+  })
+
+  test("following this process's own earlier watcher is not called another session", async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[{ event: 'following', owner_pid: 7, stale: false, same_process: true, snapshot_id: 's1' }]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live$/)
+    await ui.unmount()
+  })
+
+  test("a leader that stopped answering is said plainly while following it", async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[{ event: 'following', owner_pid: 7, stale: false, snapshot_id: 's1' }]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    w.watchSend({ event: 'following', owner_pid: 7, stale: true, snapshot_id: 's1' })
+    await w.clock.advance(100)
+    expect((await ui.find({ key: 'title' }))?.text).toContain("another session's watcher is stuck")
+    await ui.unmount()
+  })
+
+  test("an edit outside the project, or a turn with nothing to scan, leaves no turn start behind", async ($, on) => {
+    const later = JSON.stringify({ ...(JSON.parse(dashboard) as object), snapshot_id: 's2' })
+    const w = world(on, { dashboard: [{ stdout: dashboard }, { stdout: later }], watch: [[READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, '/elsewhere/notes.md')
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.briefRuns()).toHaveLength(0)
+    // Another writer moves the graph between the turns.
+    w.watchSend({ event: 'snapshot', snapshot_id: 's2' })
+    await w.clock.advance(100)
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.advance(3_000)
+    expect(w.briefRuns()).toHaveLength(1)
+    expect(w.briefRuns()[0]).toContain('--since=s2')
   })
 })

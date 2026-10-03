@@ -316,8 +316,11 @@ const VIEWS = [
   ['live-off', pane({ tab: 'overview' }, { turn: brief, live: { phase: 'off' } })],
   ['refresh-failed', pane({ tab: 'overview' }, { turn: brief, refresh: { fetchedAt: NOW - 600_000, failed: true } })],
   ['rescan-failed', pane({ tab: 'overview' }, { turn: brief, rescan: { phase: 'failed', reason: 'the scan timed out' } })],
-  ['no-data', columns => layout.emptyRows(null, columns)],
-  ['no-data-refused', columns => layout.emptyRows(layout.allowInput(refused, IDLE, null), columns)],
+  ['no-data', columns => layout.emptyRows('unscanned', null, columns)],
+  ['no-data-loading', columns => layout.emptyRows('loading', null, columns)],
+  ['no-data-unreadable', columns => layout.emptyRows('unreadable', null, columns)],
+  ['no-data-refused', columns => layout.emptyRows('unscanned', layout.allowInput(refused, IDLE, null), columns)],
+  ['live-following-stuck', pane({ tab: 'overview' }, { turn: brief, live: { phase: 'following', stale: true } })],
   ['band-prompt', columns => [...bandRows([['band-ok', scannedNow, JOB_IDLE]])(columns), ...promptRows(columns)]],
   [
     'band',

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_WATCH_POLL_MS, isWatching, parseWatchEvent, phaseAfter, snapshotOf, watchLines, watchPollMsOf } from './live'
+import { DEFAULT_WATCH_POLL_MS, isWatching, liveAfter, parseWatchEvent, phaseAfter, snapshotOf, watchLines, watchPollMsOf } from './live'
 
 describe('the watcher lines', () => {
   it('reads complete lines across pieces, keeping an unfinished one for the next', () => {
@@ -34,6 +34,16 @@ describe('the watcher phase', () => {
     expect(phaseAfter({ event: 'stopped', reason: 'error' }, 'live')).toBe('off')
     expect(phaseAfter({ event: 'error', retryable: true }, 'scanning')).toBe('live')
     expect(phaseAfter({ event: 'error', retryable: false }, 'scanning')).toBe('scanning')
+  })
+  it("calls following this process's own earlier watcher live, not another session", () => {
+    expect(phaseAfter({ event: 'following', same_process: true }, 'starting')).toBe('live')
+  })
+  it('keeps whether the leader stopped answering while following, until a following event says otherwise', () => {
+    const stuck = liveAfter({ event: 'following', stale: true }, { phase: 'starting' })
+    expect(stuck).toEqual({ phase: 'following', stale: true })
+    expect(liveAfter({ event: 'snapshot', snapshot_id: 's2' }, stuck)).toEqual({ phase: 'following', stale: true })
+    expect(liveAfter({ event: 'following', stale: false }, stuck)).toEqual({ phase: 'following' })
+    expect(liveAfter({ event: 'leading' }, stuck)).toEqual({ phase: 'live' })
   })
   it('names the snapshot an event reports', () => {
     expect(snapshotOf({ event: 'scan_completed', snapshot_id: 's2' })).toBe('s2')

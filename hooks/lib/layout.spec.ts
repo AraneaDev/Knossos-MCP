@@ -7,6 +7,7 @@ import {
   allowRows,
   askPrompt,
   emptyRows,
+  noGraphOf,
   subjectOf,
   bar,
   detailInput,
@@ -917,11 +918,11 @@ describe('the allow-root offer', () => {
         const rows = paneRows(input({ allow: offer(phase, 'knossos did not allow it') }), columns)
         widthsFit(rows, columns)
         expect(rows.findIndex(r => r.key.startsWith('allow'))).toBeGreaterThan(0)
-        widthsFit(emptyRows(offer(phase), columns), columns)
+        widthsFit(emptyRows('unscanned', offer(phase), columns), columns)
       }
     }
     // Refused, the one action is the offer; there is no second one beside it.
-    expect(keysOf(emptyRows(offer('idle'), 60))).toEqual(['a:allow'])
+    expect(keysOf(emptyRows('unscanned', offer('idle'), 60))).toEqual(['a:allow'])
   })
 })
 
@@ -950,6 +951,9 @@ describe('the live watcher in the header', () => {
   it('says live instead of an age while the watcher keeps a fresh graph current', () => {
     expect(paneStatus(fresh, FETCHED, IDLE, 6_000, { phase: 'live' })).toEqual({ tone: 'ok', text: 'live' })
     expect(paneStatus(fresh, FETCHED, IDLE, 6_000, { phase: 'following' })).toEqual({ tone: 'ok', text: 'live · watched by another session' })
+  })
+  it("says so plainly when the session it follows stopped answering", () => {
+    expect(paneStatus(fresh, FETCHED, IDLE, 6_000, { phase: 'following', stale: true })).toEqual({ tone: 'warn', text: "fresh · 11s · another session's watcher is stuck" })
   })
   it('says scanning while the watcher scans, and offers no rescan of its own then', () => {
     expect(paneStatus(fresh, FETCHED, IDLE, 6_000, { phase: 'scanning' })).toEqual({ tone: 'warn', text: 'scanning… · fresh · 11s' })
@@ -1009,11 +1013,33 @@ describe('hubs carry their file', () => {
 describe('the pane with no graph', () => {
   it('has a heading and one thing to do: ask Claude to scan it', () => {
     for (const columns of WIDTHS) {
-      const rows = emptyRows(null, columns)
+      const rows = emptyRows('unscanned', null, columns)
       expect(rows[0]).toMatchObject({ key: 'empty-head', segments: [{ text: 'No architecture graph yet', bold: true }] })
       const presses = rows.flatMap(r => r.segments.flatMap(s => (s.press ? [s.press] : [])))
       expect(presses).toEqual([{ id: 'scan-ask', label: 'ask Claude to scan it', hotkey: 'q' }])
       for (const r of rows) expect(rowWidth(r)).toBeLessThanOrEqual(columns)
     }
+  })
+  it('offers no scan while the first load is on its way or after a load that failed: q there sends nothing', () => {
+    for (const columns of WIDTHS) {
+      for (const state of ['loading', 'unreadable'] as const) {
+        const rows = emptyRows(state, null, columns)
+        expect(rows.flatMap(r => r.segments.filter(s => s.press !== undefined))).toEqual([])
+        for (const r of rows) expect(rowWidth(r)).toBeLessThanOrEqual(columns)
+      }
+    }
+    expect(emptyRows('loading', null, 90)[0]?.segments[0]?.text).toBe('Reading the graph…')
+    expect(emptyRows('unreadable', null, 90).map(plainText).join(' ')).toMatch(/^Could not read the graph .*retrying\.$/)
+  })
+  it('tells the states apart from the dashboard and the last load', () => {
+    const none = { fetchedAt: null, failed: false }
+    expect(noGraphOf(null, none)).toBe('loading')
+    expect(noGraphOf(null, { fetchedAt: null, failed: true })).toBe('unreadable')
+    const error = { status: 'error' } as Dashboard
+    const unscanned = { status: 'unscanned' } as Dashboard
+    expect(noGraphOf(error, { fetchedAt: 5, failed: false })).toBe('unreadable')
+    expect(noGraphOf(unscanned, { fetchedAt: 5, failed: false })).toBe('unscanned')
+    // Said unscanned once, but the latest load did not answer: no longer known to be unscanned.
+    expect(noGraphOf(unscanned, { fetchedAt: 5, failed: true })).toBe('unreadable')
   })
 })

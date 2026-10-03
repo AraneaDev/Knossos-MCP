@@ -58,7 +58,8 @@ export function phaseAfter(event: WatchEvent, current: LiveState['phase']): Live
     case 'absorbed':
       return 'live'
     case 'following':
-      return 'following'
+      // This process's own earlier watcher (one a /clear or resume just stopped) is no other session's.
+      return event.same_process === true ? 'live' : 'following'
     case 'scan_started':
       return 'scanning'
     case 'refused':
@@ -70,6 +71,17 @@ export function phaseAfter(event: WatchEvent, current: LiveState['phase']): Live
     default:
       return current
   }
+}
+
+/**
+ * The watcher's state after an event: its phase, and while it follows,
+ * whether the leader stopped answering (a `following` event says so each
+ * time that changes).
+ */
+export function liveAfter(event: WatchEvent, current: LiveState): LiveState {
+  const phase = phaseAfter(event, current.phase)
+  const stale = phase === 'following' && (event.event === 'following' ? event.stale === true : current.stale === true)
+  return stale ? { phase, stale: true } : { phase }
 }
 
 /** The snapshot an event says the graph is at, or null when it says none. */
