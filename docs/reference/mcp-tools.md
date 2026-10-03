@@ -102,7 +102,7 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `architecture_trends`
 
-See how architecture metrics moved over recent scans. Use for release notes or to spot slow structural drift.
+See how architecture metrics moved over recent scans. Use for release notes or to spot slow structural drift. Caches each retained snapshot's figures in the graph database, so a repeat call skips decoding its archive.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |

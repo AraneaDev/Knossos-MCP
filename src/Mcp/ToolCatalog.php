@@ -199,7 +199,7 @@ final readonly class ToolCatalog
             [
                 'name' => 'architecture_trends',
                 'title' => 'Architecture trends',
-                'description' => 'See how architecture metrics moved over recent scans. Use for release notes or to spot slow structural drift.',
+                'description' => 'See how architecture metrics moved over recent scans. Use for release notes or to spot slow structural drift. Caches each retained snapshot\'s figures in the graph database, so a repeat call skips decoding its archive.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [

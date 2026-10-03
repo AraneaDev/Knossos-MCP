@@ -95,6 +95,12 @@ Release notes include bounded structured change details alongside counts for
 components, relationships, moves, and confidence changes. When more than 100
 details exist, the Markdown explicitly reports truncation.
 
+The figures of each complete retained snapshot are computed once and cached
+in the graph database (`snapshot_metrics` rows, keyed by the archive and the
+code that computed them), so a trends call is not a pure read: the first call
+over a snapshot writes its row, and later calls read it instead of decoding
+the archive. A write that would wait on a running scan is skipped.
+
 Incomplete retained snapshots remain visible as incomplete timeline points but
 are not interpreted as metric data. Scanner or configuration fingerprint
 changes are included because they can affect comparability even when source

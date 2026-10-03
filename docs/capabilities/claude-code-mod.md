@@ -367,7 +367,9 @@ it computed for a retained snapshot in the `snapshot_metrics` table
 (migration 018, applied the first time an updated knossos opens the
 database), since an archived snapshot never
 changes, so the next dashboard reads them instead of decoding the archive
-again. A row answers only for the archive and the code it came from, goes
+again. The cache belongs to the trend query, not to the mod: every caller of
+it writes those rows, the MCP tool `architecture_trends` and the CLI
+`knossos architecture-trends` too. A row answers only for the archive and the code it came from, goes
 with the archive, and is never written while a scan holds the database: that
 write is skipped, not waited for. None of them ever creates a database.
 

@@ -9,28 +9,44 @@
  * (DejaVu Sans Mono).
  *
  * It lays the pane out with the mod's own pure functions (hooks/lib) over
- * this repository's real dashboard, read through the mod's wrapper
- * (read-only: `dashboard` and `component-detail` never scan), and draws
+ * this repository's real dashboard, read through the mod's wrapper, and draws
  * every tab plus a component's detail at 60 and 100 columns in Claude Code's
  * dark and light themes. Rows the terminal draws as a `Raster` are drawn
  * from the packed cells exactly as the engine would receive them.
  *
+ * Not read-only. `dashboard` and `component-detail` never scan, but the
+ * dashboard writes trend cache rows (`snapshot_metrics`) and brings an older
+ * schema up to date. So the data dir is never defaulted: `--data-dir` is
+ * required, and should hold a copy of the database made for the preview,
+ * deleted after it.
+ *
  * Usage:
- *   node tools/pane-preview.mjs [--out=<dir>] [--project=<dir>] [--data-dir=<dir>]
+ *   node tools/pane-preview.mjs --data-dir=<dir> [--out=<dir>] [--project=<dir>]
  *                               [--dashboard=<file.json>] [--columns=60,100] [--themes=dark,light]
  *
  * Defaults: --out=.superpowers/sdd/2026-10-02-claude-code-mod/preview, the
- * repository as the project, KNOSSOS_DATA_DIR or ~/.knossos as the data dir.
+ * repository as the project.
  */
 import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { registerHooks } from 'node:module'
-import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+const args = Object.fromEntries(
+  process.argv.slice(2).map(a => {
+    const [k, ...v] = a.replace(/^--/, '').split('=')
+    return [k, v.join('=')]
+  }),
+)
+// Checked before anything loads or runs: the dashboard writes to the database it reads.
+if (typeof args['data-dir'] !== 'string' || args['data-dir'] === '') {
+  console.error('pane-preview: --data-dir=<dir> is required (a copy of the database: the dashboard writes trend cache rows to it)')
+  process.exit(2)
+}
+
 // The mod's modules import each other without an extension, as the engine's bundler resolves them.
+const { registerHooks } = await import('node:module')
 registerHooks({
   resolve(specifier, context, nextResolve) {
     try {
@@ -48,15 +64,9 @@ const envelopes = await import(join(REPO, 'hooks/lib/envelopes.ts'))
 const raster = await import(join(REPO, 'hooks/lib/raster.ts'))
 const rows = await import(join(REPO, 'hooks/lib/rows.ts'))
 
-const args = Object.fromEntries(
-  process.argv.slice(2).map(a => {
-    const [k, ...v] = a.replace(/^--/, '').split('=')
-    return [k, v.join('=')]
-  }),
-)
 const OUT = resolve(args.out ?? join(REPO, '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
 const PROJECT = resolve(args.project ?? REPO)
-const DATA_DIR = args['data-dir'] ?? process.env.KNOSSOS_DATA_DIR ?? join(homedir(), '.knossos')
+const DATA_DIR = resolve(args['data-dir'])
 const COLUMNS = (args.columns ?? '60,100').split(',').map(Number)
 const THEME_NAMES = (args.themes ?? 'dark,light').split(',')
 
