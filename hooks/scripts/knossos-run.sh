@@ -7,6 +7,7 @@
 #        knossos-run.sh scan <project-dir>
 #        knossos-run.sh allow-root <root>
 #        knossos-run.sh watch <project-dir> [--poll-ms=N]
+#        knossos-run.sh session-changes <project-dir> --since=<snapshot>
 #
 # Every failure exits 0. All but one print nothing: the mod reads silence as
 # "no data", keeps its last figures with their age and asks again later, so a
@@ -39,6 +40,7 @@ case "$SUBCOMMAND" in
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     component-detail|file-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    session-changes) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     watch) LIMIT=0 ;;
     *) exit 0 ;;
 esac
@@ -68,6 +70,12 @@ if [ "$SUBCOMMAND" = watch ]; then
         case "$1" in --poll-ms=*[!0-9]* | --poll-ms=) exit 0 ;; --poll-ms=*) ;; *) exit 0 ;; esac
     fi
     set -- --shared "$@"
+fi
+# session-changes takes exactly the snapshot the session began at, a plain id:
+# any other option (`--db=...`) would read another graph.
+if [ "$SUBCOMMAND" = session-changes ]; then
+    [ "$#" -eq 1 ] || exit 0
+    case "$1" in --since=*[!A-Za-z0-9_.:-]* | --since=) exit 0 ;; --since=*) ;; *) exit 0 ;; esac
 fi
 # allow-root takes nothing but the root, and always writes: the pane runs it
 # only after the person confirmed, so a preview would answer a question nobody

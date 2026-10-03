@@ -154,6 +154,13 @@ expect_silent_success 'watch refuses a poll interval that is not a number' env K
 expect_silent_success 'watch refuses an empty poll interval' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --poll-ms=
 expect_silent_success 'watch refuses a second argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --poll-ms=1 extra
 expect_output 'missing binary says so for a watch' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" watch /tmp
+# session-changes: what changed since the session began, read from the scan ledger, with nothing but that snapshot.
+expect_output 'session-changes reads since the snapshot it names' "session-changes|$ABS_PROJ|--since=scan_ab12|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj" --since=scan_ab12
+expect_silent_success 'session-changes refuses another option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj" --db=/tmp/other.sqlite
+expect_silent_success 'session-changes refuses a snapshot that is not a plain id' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj" '--since=a b'
+expect_silent_success 'session-changes refuses no snapshot' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj"
+expect_silent_success 'session-changes refuses a second argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj" --since=s1 --db=/tmp/x
 # The watcher replaces the wrapper's shell: stopping the process the session started stops the watcher.
 printf '#!/bin/sh\nprintf "%%s" "$$"\n' > "$STUBS/pid"; chmod +x "$STUBS/pid"
 env KNOSSOS_BIN="$STUBS/pid" /bin/sh "$RUN" watch "$STUBS/proj" > "$STUBS/pid.out" &

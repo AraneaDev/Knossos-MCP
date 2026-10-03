@@ -128,9 +128,10 @@ final class BriefCommandTest extends KnossosTestCase
         assertSame(true, $command->supports('component-detail'));
         assertSame(true, $command->supports('file-detail'));
         assertSame(true, $command->supports('rescan'));
+        assertSame(true, $command->supports('session-changes'));
         assertSame(false, $command->supports('session-brief'));
         assertSame(false, $command->supports('scan'));
-        foreach (['turn-brief', 'rescan', 'dashboard', 'component-detail', 'file-detail'] as $name) {
+        foreach (['turn-brief', 'rescan', 'dashboard', 'component-detail', 'file-detail', 'session-changes'] as $name) {
             assertSame([CliOptionParser::ANY], $command->allowedOptions($name));
         }
     }
