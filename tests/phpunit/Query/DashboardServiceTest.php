@@ -45,6 +45,11 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame(false, $d['freshness']['drifted_truncated']);
             assertGreaterThanOrEqual(0, $d['freshness']['age_seconds']);
             assertNotSame([], $d['hubs']);
+            // Each hub says where it is declared, so the pane can open its file.
+            foreach ($d['hubs'] as $hub) {
+                assertSame(true, is_file($root . '/' . $hub['path']), (string) $hub['path']);
+                assertSame(true, is_int($hub['line']) && $hub['line'] >= 1);
+            }
             assertNotSame([], $d['fan_in']);
             assertSame($d['snapshot_id'], $d['trend'][count($d['trend']) - 1]['snapshot_id']);
             assertLessThanOrEqual(10, count($d['cycles']['largest']));
@@ -252,7 +257,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame($health['hubs'][0]['component']['display_name'], $d['hubs'][0]['name']);
             assertSame($health['hubs'][0]['component']['kind'], $d['hubs'][0]['kind']);
             assertSame(
-                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree'],
+                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'path', 'line'],
                 array_keys($d['hubs'][0]),
             );
             // The pane shows the display name and looks the component up by the canonical one.
@@ -262,7 +267,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame($health['hubs'][0]['metrics']['out_degree'], $d['hubs'][0]['out_degree']);
             assertSame($health['hubs'][0]['metrics']['cross_boundary_degree'], $d['hubs'][0]['cross_boundary_degree']);
             assertSame(
-                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'score'],
+                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'path', 'line', 'score'],
                 array_keys($d['hotspots'][0]),
             );
             // A hotspot carries the same degrees the health walk measured for it.

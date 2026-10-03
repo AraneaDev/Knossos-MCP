@@ -88,6 +88,7 @@ final readonly class DashboardService
         $series = $queries->architectureTrends($id, self::TREND_POINTS)->data['series'];
         $labels = BoundaryLabels::load($this->pdo, $id);
         $findings = new ProjectFindings($this->pdo, $this->clock);
+        $places = $this->places([...array_column($health['hubs'], 'component'), ...array_column($health['static_hotspots'], 'component')]);
 
         return [
             'status' => 'ok',
@@ -102,11 +103,11 @@ final readonly class DashboardService
                     + (int) ($probe['added_files_since'] ?? 0)
                     + (int) ($probe['deleted_files_since'] ?? 0),
             ] + self::drifted($staleness->drift, $labels, $id),
-            'hubs' => array_map(static fn(array $h): array => self::listed($h['component'], $h['metrics'], $labels), $health['hubs']),
+            'hubs' => array_map(static fn(array $h): array => self::listed($h['component'], $h['metrics'], $labels, $places), $health['hubs']),
             'hubs_truncated' => $hubLimits !== [],
             'hubs_truncation_reasons' => $hubLimits,
             'hotspots' => array_map(
-                static fn(array $h): array => self::listed($h['component'], $h['factors'], $labels) + ['score' => $h['score']],
+                static fn(array $h): array => self::listed($h['component'], $h['factors'], $labels, $places) + ['score' => $h['score']],
                 $health['static_hotspots'],
             ),
             // The listed candidates are paged by the health limit, so the
@@ -154,14 +155,45 @@ final readonly class DashboardService
     }
 
     /**
-     * One ranked component as the pane lists it: names, kind, degrees and boundary.
+     * Where each component is declared, by id: its file relative to the
+     * project root and its first line. A stand-in for something outside the
+     * project (`external_*`) is filed under the first file that names it,
+     * which is not where it lives, so it has no place.
+     *
+     * @param list<array<string, mixed>> $components
+     * @return array<string, array{path: string, line: int|null}>
+     */
+    private function places(array $components): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map(static fn(array $c): string => (string) ($c['id'] ?? ''), $components), static fn(string $id): bool => $id !== '')));
+        if ($ids === []) {
+            return [];
+        }
+        $statement = $this->pdo->prepare(
+            'SELECT n.id, f.relative_path, n.start_line FROM nodes n JOIN files f ON f.id = n.file_id ' .
+            "WHERE n.kind NOT LIKE 'external%' AND n.id IN (" . implode(',', array_fill(0, count($ids), '?')) . ')',
+        );
+        $statement->execute($ids);
+        $places = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $places[(string) $row['id']] = ['path' => (string) $row['relative_path'], 'line' => $row['start_line'] === null ? null : (int) $row['start_line']];
+        }
+        return $places;
+    }
+
+    /**
+     * One ranked component as the pane lists it: names, kind, degrees,
+     * boundary, and where it is declared (`path` and `line`, null when the
+     * graph places it nowhere), so the pane can open its file.
      *
      * @param array<string, mixed> $component
      * @param array<string, mixed> $metrics the degree walk's in, out and cross-boundary degrees
+     * @param array<string, array{path: string, line: int|null}> $places
      * @return array<string, mixed>
      */
-    private static function listed(array $component, array $metrics, BoundaryLabels $labels): array
+    private static function listed(array $component, array $metrics, BoundaryLabels $labels, array $places = []): array
     {
+        $place = $places[(string) ($component['id'] ?? '')] ?? null;
         return [
             'name' => $component['display_name'],
             'canonical_name' => $component['canonical_name'],
@@ -170,6 +202,8 @@ final readonly class DashboardService
             'in_degree' => $metrics['in_degree'],
             'out_degree' => $metrics['out_degree'],
             'cross_boundary_degree' => $metrics['cross_boundary_degree'],
+            'path' => $place['path'] ?? null,
+            'line' => $place['line'] ?? null,
         ];
     }
 
