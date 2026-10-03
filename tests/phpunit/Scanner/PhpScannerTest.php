@@ -38,6 +38,8 @@ final class PhpScannerTest extends KnossosTestCase
             'Fixture\\Payable',
             'Fixture\\Payable::pay',
             'Fixture\\PaymentService',
+            // A promoted constructor parameter is a property like any other.
+            'Fixture\\PaymentService::$repository',
             'Fixture\\PaymentService::__construct',
             'Fixture\\PaymentService::pay',
             'Fixture\\UserRepository',

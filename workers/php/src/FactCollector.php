@@ -40,6 +40,13 @@ final class FactCollector extends NodeVisitorAbstract
     private array $callables = [];
 
     /**
+     * The variables of code no callable encloses: a script's body.
+     *
+     * @var array<string, array{type: ?string, confidence: string, returned_by?: string}>
+     */
+    private array $fileScopeVariables = [];
+
+    /**
      * Declared return types of the methods this file declares, keyed `Class::method`.
      *
      * Collected up front because a method is routinely called above its own
@@ -464,6 +471,9 @@ final class FactCollector extends NodeVisitorAbstract
             foreach ($types as $type) {
                 $this->addEdge($constructor ? 'injects' : 'references', $source, self::reference('class', $type), $param);
             }
+            if ($constructor && $param->flags !== 0 && is_string($param->var->name)) {
+                $this->promotedProperty($param, $param->var->name, $types);
+            }
             if ($types !== [] && is_string($param->var->name)) {
                 $this->setVariableType($param->var->name, $types[0]);
                 if ($constructor && $param->flags !== 0) {
@@ -486,6 +496,30 @@ final class FactCollector extends NodeVisitorAbstract
         }
         foreach ($node->traits as $trait) {
             $this->addEdge('uses_trait', $class['id'], self::reference('trait', $this->name($trait)), $trait);
+        }
+    }
+
+    /**
+     * Emit a promoted constructor parameter as the property it declares.
+     *
+     * A promoted parameter is a property like any other, and another file's
+     * `$context->options->flag()` is resolved through its declared type, which
+     * the reconciler reads from the property's `references` edge.
+     *
+     * @param list<string> $types
+     */
+    private function promotedProperty(Node\Param $param, string $name, array $types): void
+    {
+        $class = $this->currentClass();
+        if ($class === null) {
+            return;
+        }
+        $canonical = $class['name'] . '::$' . $name;
+        $id = self::reference('property', $canonical);
+        $this->addNode($id, 'property', $canonical, '$' . $name, $param, ['promoted' => true]);
+        $this->addEdge('contains', $class['id'], $id, $param);
+        foreach ($types as $type) {
+            $this->addEdge('references', $id, self::reference('class', $type), $param->type ?? $param);
         }
     }
 
@@ -887,6 +921,23 @@ final class FactCollector extends NodeVisitorAbstract
 
             return;
         }
+        $path = $this->propertyPath($node->var);
+        if ($path !== null) {
+            // A property of a typed receiver (`$context->options->flag()`),
+            // declared in whatever file declares that type, often as a
+            // promoted constructor parameter. Resolved by the reconciler from
+            // every file's declared property types, and dropped there if a
+            // step names no typed property.
+            $this->addEdge(
+                'calls',
+                $source,
+                self::reference('method_of_property', $path . '::' . $node->name->toString()),
+                $node,
+                'probable',
+            );
+
+            return;
+        }
         $returnedBy = $this->receiverReturnSource($node->var);
         if ($returnedBy !== null) {
             // Named indirectly: the member, and the call whose result it is on.
@@ -905,6 +956,30 @@ final class FactCollector extends NodeVisitorAbstract
         // Nothing types the receiver. A method by this name may be what the
         // call reaches, so the caller records it for dead-code confidence.
         $this->untypedCalls[$source][$node->name->toString()] = true;
+    }
+
+    /**
+     * A receiver read through properties of a typed root, as the path the
+     * reconciler resolves: `Type::$a::$b` for `$x->a->b`, where `$x` is
+     * `$this` or a variable of a known type. Null when the root's type is
+     * unknown or a step is not a plain property name.
+     */
+    private function propertyPath(Expr $receiver): ?string
+    {
+        if ((!$receiver instanceof Expr\PropertyFetch && !$receiver instanceof Expr\NullsafePropertyFetch)
+            || !$receiver->name instanceof Identifier) {
+            return null;
+        }
+        $property = '$' . $receiver->name->toString();
+        $root = $receiver->var;
+        if ($root instanceof Expr\Variable && is_string($root->name)) {
+            $type = $root->name === 'this' ? ($this->currentClass()['name'] ?? null) : $this->variableType($root->name);
+
+            return $type === null ? null : $type . '::' . $property;
+        }
+        $inner = $this->propertyPath($root);
+
+        return $inner === null ? null : $inner . '::' . $property;
     }
 
     /** The call a receiver's value came from, whether held in a variable or used inline. */
@@ -1122,15 +1197,32 @@ final class FactCollector extends NodeVisitorAbstract
         return $id;
     }
 
+    /**
+     * The variables of the scope being read: the innermost callable's, or the
+     * file's own when no callable encloses the code.
+     *
+     * A script makes its calls from file scope (`$endpoint = new Endpoint();
+     * $endpoint->handle();`), and leaving those variables untracked typed
+     * nothing there, so whatever an entry script alone reaches read as dead.
+     * A function does not see the file's variables, which is why each
+     * callable keeps its own.
+     *
+     * @return array<string, array{type: ?string, confidence: string, returned_by?: string}>
+     */
+    private function &variables(): array
+    {
+        if ($this->callables === []) {
+            return $this->fileScopeVariables;
+        }
+
+        return $this->callables[array_key_last($this->callables)]['variables'];
+    }
+
     /** Remember a variable's inferred class so later calls on it can be resolved. */
     private function setVariableType(string $variable, string $type, string $confidence = 'certain'): void
     {
-        if ($this->callables !== []) {
-            $this->callables[array_key_last($this->callables)]['variables'][$variable] = [
-                'type' => $type,
-                'confidence' => $confidence,
-            ];
-        }
+        $variables = &$this->variables();
+        $variables[$variable] = ['type' => $type, 'confidence' => $confidence];
     }
 
     /**
@@ -1138,50 +1230,39 @@ final class FactCollector extends NodeVisitorAbstract
      *
      * Kept instead of a type because the declaration that names the type is in
      * another file; the reference this records is enough for the reconciler,
-     * which sees them all, to finish the resolution.
+     * which sees every file, to name the receiver.
      */
     private function setVariableReturnSource(string $variable, string $callee): void
     {
-        if ($this->callables !== []) {
-            $this->callables[array_key_last($this->callables)]['variables'][$variable] = [
-                'type' => null,
-                'confidence' => 'probable',
-                'returned_by' => $callee,
-            ];
-        }
+        $variables = &$this->variables();
+        $variables[$variable] = ['type' => null, 'confidence' => 'probable', 'returned_by' => $callee];
     }
 
     /** The call a variable's value came from, when its type was not resolvable here. */
     private function variableReturnSource(string $variable): ?string
     {
-        return $this->callables === []
-            ? null
-            : ($this->callables[array_key_last($this->callables)]['variables'][$variable]['returned_by'] ?? null);
+        return $this->variables()[$variable]['returned_by'] ?? null;
     }
 
     /** Forget a variable's type when it is reassigned to something unknown. */
     private function clearVariableType(string $variable): void
     {
-        if ($this->callables !== []) {
-            unset($this->callables[array_key_last($this->callables)]['variables'][$variable]);
-        }
+        $variables = &$this->variables();
+        unset($variables[$variable]);
     }
 
     /** The tracked class for a variable, or null when it was never inferred. */
     private function variableType(string $variable): ?string
     {
-        return $this->callables === []
-            ? null
-            : ($this->callables[array_key_last($this->callables)]['variables'][$variable]['type'] ?? null);
+        return $this->variables()[$variable]['type'] ?? null;
     }
-    /** How far a tracked variable's type is inferred, so a guess is never recorded as proven. */
 
+    /** How far a tracked variable's type is inferred, so a guess is never recorded as proven. */
     private function variableConfidence(string $variable): string
     {
-        return $this->callables === []
-            ? 'certain'
-            : ($this->callables[array_key_last($this->callables)]['variables'][$variable]['confidence'] ?? 'certain');
+        return $this->variables()[$variable]['confidence'] ?? 'certain';
     }
+
     /** Remember a property's declared type for resolving calls on `$this->x`. */
 
     private function setPropertyType(string $property, string $type): void
