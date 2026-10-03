@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "lint:js": "eslint workers/typescript/bin workers/typescript/src hooks",
+    "lint:js": "eslint workers/typescript/bin workers/typescript/src hooks tools/lint-md.mjs tools/lint-md.spec.mjs",
     "format:check": "prettier --check \"**/*.{js,json,jsonc,yaml,yml,md}\"",
     "format:write": "prettier --write \"**/*.{js,json,jsonc,yaml,yml,md}\"",
     "lint:md": "node tools/lint-md.mjs",

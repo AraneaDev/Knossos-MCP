@@ -11,6 +11,14 @@ export default [
         files: ["hooks/**/*.{ts,tsx}"],
     })),
     {
+        files: ["tools/*.mjs"],
+        languageOptions: {
+            ecmaVersion: 2024,
+            sourceType: "module",
+            globals: { console: "readonly", process: "readonly" },
+        },
+    },
+    {
         files: ["workers/typescript/**/*.js"],
         languageOptions: {
             ecmaVersion: 2024,

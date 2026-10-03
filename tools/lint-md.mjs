@@ -11,7 +11,7 @@
 // local agent scratch directories never reach CI, so linting them would fail
 // a developer's run over files that are not part of the repository.
 import { execFileSync, spawnSync } from "node:child_process";
-import { glob, readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { lint } from "markdownlint/promise";
@@ -19,9 +19,11 @@ import { lint } from "markdownlint/promise";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const configFile = path.join(root, ".markdownlint-cli2.jsonc");
 
-// Directories never worth descending into, whatever their depth.
-const pruned = new Set(["node_modules", "vendor", ".git"]);
-// The patterns the old `lint:md` script negated on its command line.
+// The only directory skipped by name: git's own metadata. Every other
+// dot-directory (.github, .claude-plugin) is walked, as the old linter did.
+const GIT_DIR = ".git";
+// The patterns the old `lint:md` script negated on its command line. They
+// also decide which directories are not descended into.
 const excludedPatterns = [
     "vendor/**",
     "node_modules/**",
@@ -52,11 +54,15 @@ export function parseJsonc(text) {
             const end = text.indexOf("*/", i + 2);
             i = end === -1 ? text.length : end + 2;
         } else {
+            // A comma directly before a closing bracket is a trailing comma.
+            // Only text outside strings reaches here, so a string such as
+            // ",}" is never touched.
+            if (c === "}" || c === "]") out = out.replace(/,\s*$/, "");
             out += c;
             i++;
         }
     }
-    return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1"));
+    return JSON.parse(out);
 }
 
 /**
@@ -111,7 +117,7 @@ function withoutGitIgnored(files) {
  * @param {string[]} patterns
  * @returns {boolean}
  */
-function matchesAny(file, patterns) {
+export function matchesAny(file, patterns) {
     return patterns.some((pattern) => {
         const body = pattern
             .split("**")
@@ -121,18 +127,41 @@ function matchesAny(file, patterns) {
     });
 }
 
+/**
+ * Every Markdown file under `dir`, root-relative with forward slashes. Only
+ * `.git` and the directories the exclusion patterns cover are skipped.
+ *
+ * @param {string} base
+ * @param {string} [relative]
+ * @returns {Promise<string[]>}
+ */
+export async function markdownFiles(base, relative = "") {
+    const found = [];
+    const entries = await readdir(path.join(base, relative), {
+        withFileTypes: true,
+    });
+    for (const entry of entries) {
+        const rel = relative === "" ? entry.name : `${relative}/${entry.name}`;
+        if (entry.isDirectory()) {
+            if (entry.name === GIT_DIR) continue;
+            // A probe file inside the directory: an exclusion such as
+            // `vendor/**` covers the whole subtree, so it is never walked.
+            if (matchesAny(`${rel}/x.md`, excludedPatterns)) continue;
+            found.push(...(await markdownFiles(base, rel)));
+        } else if (entry.isFile() && entry.name.endsWith(".md")) {
+            found.push(rel);
+        }
+    }
+    return found;
+}
+
 /** Lint every Markdown file and report. */
 async function main() {
     const config = parseJsonc(await readFile(configFile, "utf8"));
     const ignores = [...excludedPatterns, ...(config.ignores ?? [])];
-    const found = [];
-    for await (const entry of glob("**/*.md", {
-        cwd: root,
-        exclude: (dirent) => pruned.has(dirent.name),
-    })) {
-        const file = entry.split(path.sep).join("/");
-        if (!matchesAny(file, ignores)) found.push(file);
-    }
+    const found = (await markdownFiles(root)).filter(
+        (file) => !matchesAny(file, ignores),
+    );
     const files = (config.gitignore ? withoutGitIgnored(found) : found).sort();
 
     const results = await lint({
