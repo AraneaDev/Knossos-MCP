@@ -17,14 +17,29 @@ use Throwable;
  * both and drops out. Keyed by policy and the two canonical names, which
  * survive a rescan; node ids need not.
  *
- * The underlying check stops at its own result cap (100 violations across the
- * whole project) and its time limit; `truncated` says so, because a violation
- * past that bound is missing from one side or the other and the difference is
- * then a lower or an upper bound rather than exact.
+ * The check walks only the edges whose source is declared in the given files,
+ * so its cost follows the edit rather than the graph: run over a whole graph
+ * of several thousand components, a turn's check ran out of its time limit
+ * and reported a clean edit as truncated. It still stops at its result cap
+ * (100 violations), its edge budget and its time limit; `truncated` says so,
+ * and then means those files really were not fully evaluated, because a
+ * violation past that bound is missing from one side or the other and the
+ * difference is a lower or an upper bound rather than exact.
  */
 final readonly class FileViolationQuery
 {
-    public function __construct(private PDO $pdo) {}
+    /** Files a scoped check names at once; a larger set is checked project-wide and filtered. */
+    private const MAX_SCOPED_FILES = 500;
+
+    /**
+     * @param int $timeoutMs the check's time budget, at most the checker's 5000 ms ceiling
+     * @param int $maxEdges the check's edge budget
+     */
+    public function __construct(
+        private PDO $pdo,
+        private int $timeoutMs = 5000,
+        private int $maxEdges = ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES,
+    ) {}
 
     /**
      * The policies to check: those supplied, else the project's `knossos.json`.
@@ -62,7 +77,13 @@ final readonly class FileViolationQuery
             return ['violations' => [], 'truncated' => false];
         }
         try {
-            $check = (new ArchitectureQueryService($this->pdo))->checkArchitecture($projectId, $policies);
+            $check = (new ArchitectureQueryService($this->pdo))->checkArchitecture(
+                $projectId,
+                $policies,
+                maxEdges: $this->maxEdges,
+                timeoutMs: $this->timeoutMs,
+                sourceFiles: count($files) > self::MAX_SCOPED_FILES ? [] : array_values(array_unique($files)),
+            );
         } catch (InvalidArgumentException) {
             return null;
         }

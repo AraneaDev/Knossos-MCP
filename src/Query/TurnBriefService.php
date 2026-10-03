@@ -34,11 +34,15 @@ final readonly class TurnBriefService
 
     /**
      * @param string $databasePath where $pdo lives; locates `roots.json`
+     * @param int $policyTimeoutMs the time budget of each policy check, which walks only the edited files' edges
+     * @param int $policyMaxEdges the edge budget of each policy check
      */
     public function __construct(
         private PDO $pdo,
         private string $databasePath,
         private string $installationRoot,
+        private int $policyTimeoutMs = 5000,
+        private int $policyMaxEdges = ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES,
     ) {}
 
     /**
@@ -59,7 +63,7 @@ final readonly class TurnBriefService
         $root = (string) $project['root_realpath'];
         $projectId = (string) $project['id'];
         $reported = self::relative($root, $extraFiles);
-        $violations = new FileViolationQuery($this->pdo);
+        $violations = new FileViolationQuery($this->pdo, $this->policyTimeoutMs, $this->policyMaxEdges);
         $policies = $enforcePolicies ? FileViolationQuery::policies($root, $policies) : [];
         // Taken before the scan rewrites the graph: what the reported files already broke is not this turn's doing.
         $baseline = $violations->inFiles($projectId, $policies, $reported);

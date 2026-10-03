@@ -225,7 +225,7 @@ final readonly class ArchitectureQueryService
         return $this->topologyQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests, $candidateConfidence, $candidateOffset, $candidateTimeoutMs);
     }
 
-    /** @param list<array<string, mixed>> $policies */
+    /** @param list<array<string, mixed>> $policies @param list<string> $sourceFiles */
     /** {@see ArchitecturePolicyQueryService::checkArchitecture()} */
     public function checkArchitecture(
         string $projectId,
@@ -234,8 +234,9 @@ final readonly class ArchitectureQueryService
         int $limit = 100,
         int $maxEdges = ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES,
         int $timeoutMs = 1000,
+        array $sourceFiles = [],
     ): ResultEnvelope {
-        return $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs);
+        return $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs, $sourceFiles);
     }
 
     /** {@see LocationSuggestionService::suggestLocation()} */

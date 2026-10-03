@@ -457,6 +457,36 @@ final class TurnBriefServiceTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The check is scoped to the edited files' edges: edges elsewhere in the
+     * graph, however many, cannot exhaust its budget and flag a clean edit as
+     * truncated, nor push the edited file's own violations past the bound.
+     */
+    #[Group('query')]
+    public function testEdgesOutsideTheEditedFilesDoNotTruncateThePolicyCheck(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $methods = '';
+            foreach (range(1, 30) as $n) {
+                $methods .= sprintf("    public function run%d(): string\n    {\n        return (new \\App\\Greeter())->greet('x');\n    }\n\n", $n);
+            }
+            // Sorts before the edited caller, so a project-wide walk spends its budget here first.
+            file_put_contents($root . '/src/Edge/Aaa.php', "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfinal class Aaa\n{\n" . $methods . "}\n");
+            $service = new TurnBriefService($pdo, ':memory:', self::repositoryRoot(), 1000, 20);
+            $service->brief($root, [], self::POLICIES);
+
+            $this->addCall($root, 'scoped');
+            $brief = $service->brief($root, [self::CALLER], self::POLICIES);
+            assertSame('evaluated', $brief['policy']['status']);
+            assertSame(false, $brief['policy']['truncated']);
+            assertSame(2, $brief['policy']['total']);
+            assertSame(['App\\Caller::scoped'], array_values(array_unique(array_column($brief['policy']['violations'], 'source'))));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /** The total counts every introduced violation while the list stays short. */
     #[Group('query')]
     public function testViolationsAreCappedButTheTotalIsExact(): void
