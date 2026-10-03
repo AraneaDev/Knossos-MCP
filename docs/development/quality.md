@@ -118,7 +118,7 @@ on demand rather than in a profile -- see
 | PHP                          | PHP syntax, PHP-CS-Fixer 3.95.12, PHPStan 2.2.5                                |
 | JavaScript/TypeScript worker | ESLint 10.7.0, Prettier 3.9.5, TypeScript compiler checks, vitest suite        |
 | Python worker                | Ruff 0.15.12, mypy 2.3.0, isolated compile/runtime tests                       |
-| Markdown                     | Prettier, markdownlint-cli2 0.23.0                                             |
+| Markdown                     | Prettier, markdownlint 0.41.1                                                  |
 | JSON/JSONC/YAML              | Prettier, strict JSON decode, pre-commit JSON/YAML checks                      |
 | Shell                        | ShellCheck 0.9.0                                                               |
 | Dockerfile                   | Hadolint 2.14.0, digest-pinned base images, clean build/doctor                 |
