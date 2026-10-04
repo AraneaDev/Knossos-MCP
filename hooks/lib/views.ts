@@ -38,6 +38,7 @@ import {
   segmentsWidth,
   spaces,
   SWATCH,
+  tableHead,
   tableRow,
   tableSpec,
   tinted,
@@ -83,7 +84,10 @@ export type IssuesInput = {
   policy: { evaluated: boolean; total: string; count: number; items: ViolationLine[] } | null
   diagnostics: { errors: number; warnings: number; infos: number; items: DiagnosticLine[] } | null
   deadCode: { total: string; items: DeadLine[] }
-  largest: { path: string; lines: number; loc: Loc | null }[]
+  /** The files a change is riskiest in: lines times dependents, the highest first. */
+  hotspots: { path: string; lines: number; dependents: number; score: number; loc: Loc | null }[]
+  /** The files over the project's function-length budget; null without a budget, undefined when the knossos that answered does not say. */
+  budget: { source: string; max: number; total: number; files: { path: string; functions: number; longest: number; loc: Loc | null }[] } | null | undefined
 }
 
 export type Side = { title: string; count: string; items: (Openable & { boundary: string | null; edges: number })[] }
@@ -179,7 +183,16 @@ export function issuesInput(d: Dashboard): IssuesInput {
         testOnly: c.reachability === 'test_only',
       })),
     },
-    largest: (d.largest_files ?? []).map(f => ({ path: f.path, lines: f.lines, loc: locIn(root, f.path) })),
+    hotspots: (d.complexity_hotspots ?? []).map(f => ({ path: f.path, lines: f.lines, dependents: f.dependent_files, score: f.score, loc: locIn(root, f.path) })),
+    budget:
+      d.over_budget === undefined || d.over_budget === null
+        ? d.over_budget
+        : {
+            source: d.over_budget.source,
+            max: d.over_budget.max_function_lines,
+            total: d.over_budget.total,
+            files: d.over_budget.files.map(f => ({ path: f.path, functions: f.functions, longest: f.longest, loc: locIn(root, f.path, f.line) })),
+          },
   }
 }
 
@@ -190,9 +203,15 @@ export function issueCount(issues: IssuesInput): { n: number; plus: boolean } {
   return { n: policy + diagnostics, plus: issues.policy?.total.endsWith('+') ?? false }
 }
 
-/** The components the Issues tab walks: each violation's source, then each dead-code candidate. */
+/** The rows the Issues tab walks: each violation's source, each dead-code candidate, then the hotspot files and the files over budget. */
 export function issuesList(issues: IssuesInput): Openable[] {
-  return [...(issues.policy?.items ?? []).map(v => v.source), ...issues.deadCode.items]
+  const file = (path: string, loc: Loc | null): Openable => ({ name: path, canonical: path, loc, file: true })
+  return [
+    ...(issues.policy?.items ?? []).map(v => v.source),
+    ...issues.deadCode.items,
+    ...issues.hotspots.map(f => file(f.path, f.loc)),
+    ...(issues.budget?.files ?? []).map(f => file(f.path, f.loc)),
+  ]
 }
 
 const sideOf = (title: string, related: { count: number; truncated: boolean; names: string[]; items?: Counterpart[] }): Side => ({
@@ -296,9 +315,10 @@ const none = (key: string): Row => ({ key, segments: [{ text: '   none', dim: tr
 const ISSUES_MIN = 3
 
 /**
- * The Issues tab's cards: policy violations, diagnostics, dead code and the
- * largest files, each list as long as the pane allows. Wide, the violations
- * and diagnostics stand left, dead code and the largest files right.
+ * The Issues tab's cards: policy violations, diagnostics, dead code, the
+ * complexity hotspots (lines times dependents) and the files over the
+ * project's function-length budget, each list as long as the pane allows.
+ * Wide, they stand on a grid of equal rows (see {@link issueGrid}).
  */
 export function issuesArrangement(issues: IssuesInput, selected: number, tier: Tier, hues: Hues = NO_HUES): Arrangement {
   const policy = issues.policy
@@ -381,33 +401,68 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
       return { key: 'dead', title: 'Dead code', note: noteOf(deadNote), body, empty: 'none' }
     },
   }
-  const largeBlock: Block = {
-    key: 'large',
-    grow: { length: issues.largest.length, min: ISSUES_MIN },
+  const spotOffset = offset + dead.items.length
+  const hotBlock: Block = {
+    key: 'hotspots',
+    grow: { length: issues.hotspots.length, min: ISSUES_MIN },
     make: (columns, limit) => {
-      const window = windowOf(issues.largest.length, limit)
-      const shown = issues.largest.slice(0, window.end)
-      const spec = tableSpec(columns, shown.map(f => f.path), [], [numberWidth('lines', shown.map(f => f.lines), tier)], 56, { tier })
-      const max = Math.max(0, ...issues.largest.map(f => f.lines))
-      const body: Row[] = shown.map((f, i) => tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, path: true, link: f.loc }, spec, hues))
-      body.push(...moreRows('large-window', window, issues.largest.length, columns))
-      return { key: 'large', title: 'Largest files', note: noteOf(issues.largest.length > 0 ? 'lines' : ''), body, empty: 'none' }
+      const list = issues.hotspots
+      const local = selected - spotOffset
+      const window = windowOf(list.length, limit, local >= 0 && local < list.length ? local : -1)
+      const shown = list.slice(window.start, window.end)
+      // The bar draws the score (lines times dependents); the two figures it is made of stand beside it.
+      const spec = tableSpec(columns, shown.map(f => f.path), [], [numberWidth('lines', shown.map(f => f.lines), tier), numberWidth('deps', shown.map(f => f.dependents), tier)], 56, { tier })
+      const max = Math.max(0, ...list.map(f => f.score))
+      const body: Row[] = list.length === 0 ? [] : [tableHead('hot-cols', spec, { name: 'file', boundary: '', numbers: ['lines', 'deps'] })]
+      shown.forEach((f, n) => {
+        const i = window.start + n
+        body.push(tableRow(`hot-${i}`, { name: f.path, boundary: null, values: [f.lines, f.dependents], barValue: f.score, max, path: true, press: `row:${spotOffset + i}`, selected: spotOffset + i === selected }, spec, hues))
+      })
+      body.push(...moreRows('hot-window', window, list.length, columns))
+      return { key: 'hotspots', title: 'Complexity hotspots', note: noteOf(list.length > 0 ? 'lines × dependents' : ''), body, empty: 'none' }
     },
   }
-  return { left: [policyBlock, diagBlock], right: [deadBlock, largeBlock], rows: issueGrid([policyBlock, diagBlock, deadBlock, largeBlock]) }
+  const budget = issues.budget
+  const overOffset = spotOffset + issues.hotspots.length
+  const budgetBlock: Block = {
+    key: 'budget',
+    grow: { length: budget?.files.length ?? 0, min: ISSUES_MIN },
+    make: (columns, limit) => {
+      const title = 'Over the maintainability budget'
+      if (budget === undefined) return { key: 'budget', title, note: noteOf('not reported'), body: [], empty: 'not reported' }
+      if (budget === null) return { key: 'budget', title, note: [{ text: 'no maintainability-budgets.json', dim: true }], body: [], empty: 'none' }
+      const rule = `functions over ${budget.max} lines`
+      if (budget.files.length === 0) return { key: 'budget', title, note: [{ text: '✓ 0', color: STATUS_COLOURS.ok }, { text: ` ${rule}`, dim: true }], body: [], empty: 'none' }
+      const local = selected - overOffset
+      const window = windowOf(budget.files.length, limit, local >= 0 && local < budget.files.length ? local : -1)
+      const shown = budget.files.slice(window.start, window.end)
+      const spec = { ...tableSpec(columns, shown.map(f => f.path), [], [numberWidth('over', shown.map(f => f.functions), tier), numberWidth('longest', shown.map(f => f.longest), tier)], 56, { tier }), bar: 0 }
+      const body: Row[] = [tableHead('budget-cols', spec, { name: 'file', boundary: '', numbers: ['over', 'longest'] })]
+      shown.forEach((f, n) => {
+        const i = window.start + n
+        body.push(tableRow(`budget-${i}`, { name: f.path, boundary: null, values: [f.functions, f.longest], max: 0, path: true, press: `row:${overOffset + i}`, selected: overOffset + i === selected, mark: { text: '▲', color: STATUS_COLOURS.warn } }, spec, hues))
+      })
+      body.push(...moreRows('budget-window', window, budget.files.length, columns))
+      if (budget.total > budget.files.length) body.push(dimRow('budget-more', `   +${budget.total - budget.files.length} not listed`, columns))
+      return { key: 'budget', title, note: [{ text: `▲ ${grouped(budget.total)}`, color: STATUS_COLOURS.warn }, { text: ` ${rule}`, dim: true }], body, empty: 'none' }
+    },
+  }
+  return { left: [policyBlock, diagBlock, budgetBlock], right: [deadBlock, hotBlock], rows: issueGrid([policyBlock, diagBlock, deadBlock, hotBlock, budgetBlock]) }
 }
 
 /**
- * How the wide Issues tab sets its four cards in rows of equal height: the
- * cards with nothing listed first, side by side as one short row (two rows
- * of two when all four are empty), then the lists in pairs, each pair as
- * tall as its longer list allows; a list left over spans the pane.
+ * How the wide Issues tab sets its cards in rows of equal height: the cards
+ * with nothing listed first, side by side as short rows of at most three,
+ * the rows as even as they can be (four as two and two, five as three and
+ * two), then the lists in pairs, each pair as tall as its longer list
+ * allows; a list left over spans the pane.
  */
 export function issueGrid(blocks: Block[]): Block[][] {
   const empty = blocks.filter(b => (b.grow?.length ?? 0) === 0)
   const listed = blocks.filter(b => (b.grow?.length ?? 0) > 0)
-  const pairs = (list: Block[]): Block[][] => Array.from({ length: Math.ceil(list.length / 2) }, (_, i) => list.slice(i * 2, i * 2 + 2))
-  return [...(empty.length > 3 ? pairs(empty) : empty.length > 0 ? [empty] : []), ...pairs(listed)]
+  const chunks = (list: Block[], size: number): Block[][] => Array.from({ length: Math.ceil(list.length / size) }, (_, i) => list.slice(i * size, i * size + size))
+  const per = empty.length === 0 ? 1 : Math.ceil(empty.length / Math.ceil(empty.length / 3))
+  return [...chunks(empty, per), ...chunks(listed, 2)]
 }
 
 /** One side of the detail ("used by" or "uses") as a card: a small table `limit` rows long around the marker. */

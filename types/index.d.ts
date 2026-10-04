@@ -4,7 +4,7 @@
  * own boundary label (`boundary`, where it sits; null when none of its
  * components is in a boundary, absent from a knossos older than the mod).
  */
-export type FanIn = { path: string; dependent_files: number; boundaries: string[]; boundary?: string | null; top_dependents?: string[] }
+export type FanIn = { path: string; dependent_files: number; boundaries: string[]; boundary?: string | null; top_dependents?: string[]; tests?: number }
 export type BoundaryRef = { id: string; name: string; source: string }
 export type Violation = {
   policy_id: string
@@ -142,7 +142,18 @@ export type Dashboard = {
    */
   boundaries?: { items: { name: string; source: string; members: number }[]; truncated: boolean; declared?: string[]; declared_truncated?: boolean }
   diagnostics?: { total: number; errors: number; warnings: number; infos: number; items: Diagnostic[] }
-  largest_files?: { path: string; language: string; lines: number }[]
+  /**
+   * The files a change is riskiest in: lines times dependent files, the
+   * highest first (absent from an older knossos).
+   */
+  complexity_hotspots?: { path: string; language: string; lines: number; dependent_files: number; score: number }[]
+  /**
+   * The files holding a PHP function longer than the project's
+   * `max_php_function_lines` budget (`source`, at its root), the longest
+   * first, `total` counting them all; null when the project declares no such
+   * budget, absent from an older knossos.
+   */
+  over_budget?: { source: string; max_function_lines: number; total: number; files: { path: string; functions: number; longest: number; line: number | null }[] } | null
   /**
    * `truncated` when the check stopped at its edge or time limit, so `total`
    * is a floor. `rules`, `boundaries` and `files` (absent from an older

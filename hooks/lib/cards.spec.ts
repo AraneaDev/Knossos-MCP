@@ -319,7 +319,7 @@ describe('notes', () => {
 describe('card glyphs', () => {
   it('mark each kind of card with one dim, one-cell glyph before its title, the same on every tab', () => {
     for (const glyph of Object.values(GLYPHS)) expect([...glyph]).toHaveLength(1)
-    expect(GLYPHS).toMatchObject({ look: '◆', turn: '▤', map: '▦', bounds: '▦', cycles: '↻', policy: '!', diag: '!', dead: '!', large: '!', changes: '±' })
+    expect(GLYPHS).toMatchObject({ look: '◆', turn: '▤', map: '▦', bounds: '▦', cycles: '↻', policy: '!', diag: '!', dead: '!', hotspots: '!', budget: '!', changes: '±' })
     for (const tier of ['narrow', 'medium', 'wide'] as const) {
       const head = topRow({ key: 'cycles', title: 'Cycles', note: [{ text: '2' }], body: [] }, 60, tier)
       expect(head.segments.find(s => s.text === '↻ ')).toMatchObject({ dim: true })
@@ -375,6 +375,8 @@ describe('rows of cards of equal height', () => {
     expect(issueGrid([empty('policy'), listBlock('diag', 4, 3), empty('dead'), listBlock('large', 50, 3)]).map(r => r.map(b => b.key))).toEqual([['policy', 'dead'], ['diag', 'large']])
     expect(issueGrid([empty('policy'), empty('diag'), empty('dead'), listBlock('large', 50, 3)]).map(r => r.map(b => b.key))).toEqual([['policy', 'diag', 'dead'], ['large']])
     expect(issueGrid([empty('a'), empty('b'), empty('c'), empty('d')]).map(r => r.map(b => b.key))).toEqual([['a', 'b'], ['c', 'd']])
+    expect(issueGrid([empty('a'), empty('b'), empty('c'), empty('d'), empty('e')]).map(r => r.map(b => b.key))).toEqual([['a', 'b', 'c'], ['d', 'e']])
+    expect(issueGrid([empty('a'), empty('b'), empty('c'), empty('d'), listBlock('e', 9, 3)]).map(r => r.map(b => b.key))).toEqual([['a', 'b'], ['c', 'd'], ['e']])
     expect(issueGrid([listBlock('a', 5, 3), listBlock('b', 5, 3), listBlock('c', 5, 3)]).map(r => r.map(b => b.key))).toEqual([['a', 'b'], ['c']])
     // Only wide: narrower panes stack them as before.
     const arrangement = { left: [listBlock('a', 5, 3)], right: [listBlock('b', 50, 3)], rows: [[listBlock('a', 5, 3), listBlock('b', 50, 3)]] }

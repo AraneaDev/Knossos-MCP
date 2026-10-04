@@ -377,7 +377,8 @@ const issuesDashboard = (over: Record<string, unknown> = {}) =>
       infos: 0,
       items: [{ severity: 'error', code: 'PHP001', message: 'Syntax error, unexpected end of file', path: 'src/Broken.php', line: 9 }],
     },
-    largest_files: [{ path: 'src/Http/Router.php', language: 'php', lines: 900 }],
+    complexity_hotspots: [{ path: 'src/Http/Router.php', language: 'php', lines: 900, dependent_files: 12, score: 10_800 }],
+    over_budget: { source: 'maintainability-budgets.json', max_function_lines: 205, total: 0, files: [] },
     policy: {
       status: 'evaluated',
       total: 2,
@@ -553,7 +554,8 @@ function nodeOf(tree: unknown, key: string): { props?: Record<string, unknown>; 
 
 /** What the footer says after an action, while it lasts: its `✓` or `✗` line; undefined when it says nothing. */
 async function said(ui: Awaited<ReturnType<typeof mountPane>>): Promise<string | undefined> {
-  return (await ui.findAll({ type: 'Text' })).map(t => t.text).find(t => /^[✓✗] \S/.test(t))
+  // The footer's word says what happened; a card's verdict (`✓ 0`) is a figure.
+  return (await ui.findAll({ type: 'Text' })).map(t => t.text).find(t => /^[✓✗] [^\d\s]/.test(t))
 }
 
 /** The narrow pane's stat tiles as one line of text: every row of the wrapped line, joined. */
@@ -675,7 +677,8 @@ describe('knossos mod', () => {
       fan_in: Array.from({ length: 50 }, (_, i) => ({ path: path(i), dependent_files: 500 - i, boundaries: bounds.slice(0, 3), boundary: bounds[i % 12], top_dependents: [path(i + 1), path(i + 2), path(i + 3)] })),
       dead_code: Array.from({ length: 50 }, (_, i) => ({ name: name(i), canonical_name: `App\\${name(i)}`, kind: 'method', boundary: bounds[i % 12], reachability: 'unreferenced', confidence: 'possible', path: path(i), line: i + 1 })),
       dead_code_candidates: 5_000,
-      largest_files: Array.from({ length: 50 }, (_, i) => ({ path: path(i), language: 'php', lines: 9_000 - i })),
+      complexity_hotspots: Array.from({ length: 30 }, (_, i) => ({ path: path(i), language: 'php', lines: 9_000 - i, dependent_files: 400 - i, score: (9_000 - i) * (400 - i) })),
+      over_budget: { source: 'maintainability-budgets.json', max_function_lines: 205, total: 900, files: Array.from({ length: 30 }, (_, i) => ({ path: path(i + 30), functions: 9 - (i % 9), longest: 2_000 - i, line: i + 1 })) },
       cycles: { count: 50, truncated: true, truncation_reasons: [], largest: Array.from({ length: 10 }, (_, c) => ({ size: 40, members: nodes.map(n => n.name), nodes, nodes_truncated: c === 0 })) },
       trend: Array.from({ length: 20 }, (_, i) => ({ snapshot_id: `s${i}`, cycles: i % 4, max_degree: 900 + i, dead_code: 5_000 - i, diagnostics: i % 3, components: 99_000 + i })),
       deltas: { against: 's18', components: 12, cycles: 1, max_degree: -3, dead_code: 9, diagnostics: 0 },
@@ -2809,13 +2812,8 @@ describe('knossos mod', () => {
         await ui.press({ key: 'tab:issues' })
         const links = await ui.findAll({ type: 'Markdown' })
         const hrefs = links.map(l => /\]\((file:[^)]*)\)/.exec(String(l.props.text))?.[1])
-        // The violation's place, the diagnostic's, the dead code's and the largest file.
-        expect(hrefs).toEqual([
-          'file:///repo/src/Core/Kernel.php#L12',
-          'file:///repo/src/Broken.php#L9',
-          'file:///repo/src/Http/Router.php#L40',
-          'file:///repo/src/Http/Router.php',
-        ])
+        // The violation's place, the diagnostic's and the dead code's; a hotspot is a row that opens its file's detail.
+        expect(hrefs).toEqual(['file:///repo/src/Core/Kernel.php#L12', 'file:///repo/src/Broken.php#L9', 'file:///repo/src/Http/Router.php#L40'])
         const dead = links[2]!
         await ui.press({ key: String(dead.key), link: { href: 'file:///repo/src/Http/Router.php#L40' } })
         await w.clock.settle()
@@ -2846,8 +2844,10 @@ describe('knossos mod', () => {
     await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
+    // The file's name is the link, its directory dim beside it.
     const place = await ui.find({ type: 'Markdown' })
-    expect(place?.props.text).toBe('[src/Http/Router\\.php:3](file:///repo/src/Http/Router.php#L3)')
+    expect(place?.props.text).toBe('[Router\\.php:3](file:///repo/src/Http/Router.php#L3)')
+    expect((await ui.findAll({ type: 'Text' })).some(t => t.text.endsWith('src/Http/'))).toBe(true)
     await ui.press({ key: 'edit' })
     await w.clock.settle()
     expect(w.editorRuns()).toEqual([['code', '-g', '/repo/src/Http/Router.php:3']])

@@ -455,10 +455,11 @@ const full = (over: Partial<Dashboard> = {}): Dashboard =>
         { severity: 'warning', code: 'PY001', message: 'Unused import', path: 'workers/python/bin/worker.py', line: 3 },
       ],
     },
-    largest_files: [
-      { path: 'workers/typescript/src/scanner.js', language: 'javascript', lines: 4986 },
-      { path: 'src/Discovery/ProjectDiscoverer.php', language: 'php', lines: 2835 },
+    complexity_hotspots: [
+      { path: 'workers/typescript/src/scanner.js', language: 'javascript', lines: 4986, dependent_files: 20, score: 99720 },
+      { path: 'src/Discovery/ProjectDiscoverer.php', language: 'php', lines: 2835, dependent_files: 16, score: 45360 },
     ],
+    over_budget: { source: 'maintainability-budgets.json', max_function_lines: 205, total: 3, files: [{ path: 'src/Scan/ProjectScanService.php', functions: 2, longest: 260, line: 88 }] },
     policy: {
       status: 'evaluated',
       total: 7,
@@ -603,7 +604,7 @@ describe('the issues tab', () => {
       widthsFit(paneRows(fullInput({ tab: 'issues', showKeys: true, terminal: false }), columns), columns)
     })
   }
-  it('lists violations, diagnostics, dead code and the largest files, each with its place', () => {
+  it('lists violations, diagnostics, dead code, the complexity hotspots and the files over budget, each with its place', () => {
     const text = textOf(paneRows(fullInput({ tab: 'issues' }), 100))
     expect(text).toMatch(/Policy violations +▲ 7/)
     expect(text).toMatch(/ArchitectureQueryService::fileMetr… → ■ FactCollector ■ core +ArchitectureQueryService\.php:191/)
@@ -614,8 +615,11 @@ describe('the issues tab', () => {
     expect(text).toMatch(/Dead code +55 · first 2/)
     expect(text).toMatch(/FactCollector::beforeTraverse +■ php-worker +FactCollector\.php:108/)
     expect(text).toMatch(/◇ helper/)
-    expect(text).toMatch(/Largest files +lines/)
-    expect(text).toMatch(/workers\/typescript\/src\/scanner\.js .*━+ +4,986/)
+    expect(text).toMatch(/Complexity hotspots +lines × dependents/)
+    expect(text).toMatch(/workers\/typescript\/src\/scanner\.js .*━+ +4,986 +20/)
+    expect(text).toMatch(/Over the maintainability budget +▲ 3 functions over 205 lines/)
+    expect(text).toMatch(/▲ src\/Scan\/ProjectScanService\.php +2 +260/)
+    expect(text).toContain('+2 not listed')
   })
   it('gives way in order: names are cut, then the boundary goes, then the place', () => {
     const dead = (columns: number) => plainText(row(paneRows(fullInput({ tab: 'issues' }), columns), 'dead-0')!)
@@ -626,12 +630,15 @@ describe('the issues tab', () => {
     expect(dead(30)).not.toContain('.php')
     expect(dead(30)).toContain('FactCollector::')
   })
-  it('walks violations then dead code, each row pressable by its index', () => {
+  it('walks violations, dead code, the hotspots and the files over budget, each row pressable by its index', () => {
     const input = fullInput({ tab: 'issues', selected: 1 })
     expect(listFor(input).map(i => i.canonical)).toEqual([
       'Knossos\\Query\\ArchitectureQueryService::fileMetrics',
       'KnossosPhpScanner\\FactCollector::beforeTraverse',
       'Knossos\\Support\\helper',
+      'workers/typescript/src/scanner.js',
+      'src/Discovery/ProjectDiscoverer.php',
+      'src/Scan/ProjectScanService.php',
     ])
     const rows = paneRows(input, 90)
     expect(plainText(row(rows, 'dead-0')!)).toMatch(/^›/)
@@ -653,7 +660,7 @@ describe('the issues tab', () => {
     expect(old).toMatch(/Diagnostics +not reported/)
     const undeclared = full({ policy: { status: 'not_evaluated', total: 0, truncated: false, truncation_reasons: [], items: [] } })
     expect(textOf(paneRows(fullInput({ tab: 'issues' }, undeclared), 60))).toMatch(/Policy violations +no policies declared/)
-    expect(issuesList(issuesInput(undeclared))).toHaveLength(2)
+    expect(issuesList(issuesInput(undeclared))).toHaveLength(5)
   })
   it('reads a policy total cut short as a floor', () => {
     const cut = full({ policy: { status: 'evaluated', total: 100, truncated: true, truncation_reasons: ['time_limit'], items: [] } })
@@ -834,7 +841,19 @@ describe('tables packed to the left', () => {
   it('makes every place on the Issues tab a link to its file and line', () => {
     const rows = paneRows(fullInput({ tab: 'issues' }), 90)
     expect(row(rows, 'dead-0')!.segments.find(seg => seg.link)?.link).toEqual({ path: '/work/Knossos-MCP/workers/php/src/FactCollector.php', line: 108 })
-    expect(row(rows, 'large-0')!.segments.find(seg => seg.link)?.link?.line).toBeNull()
+    // A hotspot or a file over budget is a row: it opens as the file's detail, and `e` opens it at its longest function.
+    expect(row(rows, 'hot-0')!.segments.find(seg => seg.press)?.press).toEqual({ id: 'row:3', label: 'workers/typescript/src/scanner.js' })
+    const listed = listFor(fullInput({ tab: 'issues' }))
+    expect(listed.slice(3).map(i => [i.canonical, i.file, i.loc?.line])).toEqual([
+      ['workers/typescript/src/scanner.js', true, null],
+      ['src/Discovery/ProjectDiscoverer.php', true, null],
+      ['src/Scan/ProjectScanService.php', true, 88],
+    ])
+  })
+  it('says how the budget stands when nothing is over it, or there is none', () => {
+    const none = textOf(paneRows(fullInput({ tab: 'issues' }, full({ over_budget: { source: 'maintainability-budgets.json', max_function_lines: 205, total: 0, files: [] } })), 100))
+    expect(none).toMatch(/Over the maintainability budget +✓ 0 functions over 205 lines/)
+    expect(textOf(paneRows(fullInput({ tab: 'issues' }, full({ over_budget: null })), 100))).toMatch(/Over the maintainability budget +no maintainability-budgets\.json/)
   })
 })
 
