@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { arrange, BALANCE_SLACK, balanceColumns, besideRows, cardInner, cardRows, DEFAULT_ROWS, equalColumns, figures, fitBlocks, GLYPHS, gridColumns, gridRows, LIST_SOFT, moreRows, paneHeight, topRow, windowOf } from './cards'
+import { arrange, BALANCE_SLACK, balanceColumns, besideRows, cardInner, cardRows, DEFAULT_ROWS, equalColumns, figures, fitBlocks, GLYPHS, gridColumns, gridRows, LIST_MAX, LIST_SOFT, moreRows, paneHeight, topRow, windowOf } from './cards'
 import { issueGrid } from './views'
 import type { Block, Section } from './cards'
 import { rawText } from './__tests__/plain-text'
@@ -135,7 +135,8 @@ describe('lists sized to the height', () => {
       expect(shown).toBeGreaterThanOrEqual(last)
       last = shown
     }
-    expect(last).toBeGreaterThan(100)
+    // However tall the pane, a list stops at LIST_MAX rows: the engine bounds the tree it takes.
+    expect(last).toBe(LIST_MAX)
   })
   it('share the rows between the lists in turn, each stopping at its length', () => {
     const rows = fitBlocks([listBlock('a', 4, 2), listBlock('b', 100, 2)], 60, 'narrow', 40)

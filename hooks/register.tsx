@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register, RenderNode, RenderSurface, Timer } from 'claude-code'
+import type { Elements, EngineInterface, Register, RenderElement, RenderNode, RenderSurface, Timer } from 'claude-code'
 
 import { activeBetween, begin, counts, finish, FOLLOWED_SCAN_MS, lookbackMs, noActivity, scanWindow } from './lib/activity'
 import type { Activity } from './lib/activity'
@@ -44,7 +44,7 @@ import {
 import type { Loc, Openable, PaneInput, Preview, Row, Segment } from './lib/layout'
 import { editNote, fanInIndex, freshViolations, readNote, testsNote, violationKey, violationNote } from './lib/notes'
 import { isWatching, LIVE_OFF, liveAfter, snapshotOf, watchLines, watchPollMsOf } from './lib/live'
-import { declaredOf, huesOf } from './lib/palette'
+import { CARD_BG, declaredOf, huesOf } from './lib/palette'
 import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { cells, pressLabel, textStyle } from './lib/rows'
@@ -1518,14 +1518,19 @@ const scopeOf = (preview: Preview): string => `knossos:${preview.key}`.slice(0, 
  * (the open tab, the marked row) stands in a Box of that colour, which they
  * cannot take themselves. `scope` joins the segment to its row's hover card.
  *
- * Nothing a segment draws can wrap or push its row wider: each stands in a
- * Box exactly as many cells wide as the layout gave it (`flexShrink` 0,
- * overflow hidden), every Text cuts at that edge (`truncate-end`), and a
+ * Nothing a segment draws can wrap or push its row wider: every Text cuts
+ * at its edge (`truncate-end`) inside a row exactly as wide as the pane; a
  * Button draws the segment's own text as its label ({@link pressLabel}), not
- * the whole name its press may carry. A field takes the rest of its row
- * (`room`). Off the terminal a Button, a link and a field are the surface's
- * own, whose width the pane cannot know in cells: their Box does not shrink,
- * and the row's own width and overflow clip them at its edge.
+ * the whole name its press may carry, so it takes exactly the cells the
+ * layout gave it; one on a tint stands in a Box of that tint and width, and
+ * a field's Box takes the rest of its row (`room`). Off the terminal a
+ * Button, a link and a field are the surface's own, whose width the pane
+ * cannot know in cells: the row's width and overflow clip them at its edge.
+ *
+ * Every tree the engine takes is bounded (20,000 nodes, 32 deep, 100,000
+ * characters serialized): a Text carries no key and no Box of its own, and a
+ * Box is keyed only where a key is needed (a tint, a hidden twin), so a tall
+ * pane stays well within them.
  */
 function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, s: Segment, i: number, press: (id: string, surface?: RenderSurface) => void, links: boolean, terminal: boolean, room: number, scope?: string) {
   const { Box, Button, Markdown, Text } = ui
@@ -1536,15 +1541,15 @@ function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, 
   const width = s.field !== undefined && Input !== undefined ? Math.max(1, room) : cells(s.text)
   const sized = !native || terminal ? { width } : {}
   // The marked row's Button or link keeps its `-bg` Box: that Box is what carries the tint.
-  const framed = (key: string, element: RenderNode, bg?: string) => (
-    <Box key={key} {...sized} flexShrink={0} overflow="hidden" {...(bg === undefined ? {} : { backgroundColor: bg })}>
+  const framed = (element: RenderNode, key?: string, bg?: string) => (
+    <Box {...(key === undefined ? {} : { key })} {...sized} flexShrink={0} {...(bg === undefined ? {} : { backgroundColor: bg })}>
       {element}
     </Box>
   )
-  const ground = (key: string, element: RenderNode) => (s.bg === undefined ? framed(`${row.key}-w${i}`, element) : framed(`${key}-bg`, element, s.bg))
+  // A Button or link draws exactly its segment's cells: only a tint needs a Box under it.
+  const ground = (key: string, element: RenderNode) => (s.bg === undefined ? element : framed(element, `${key}-bg`, s.bg))
   if (s.field && Input !== undefined) {
     return framed(
-      `${row.key}-w${i}`,
       <Input
         key={s.field.id}
         value={s.field.value}
@@ -1589,20 +1594,18 @@ function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, 
       />,
     )
   }
-  return framed(
-    `${row.key}-w${i}`,
-    <Text key={`${row.key}-${i}`} wrap="truncate-end" {...textStyle(s)} {...hover}>
+  return (
+    <Text wrap="truncate-end" {...textStyle(s)} {...hover}>
       {s.text}
-    </Text>,
+    </Text>
   )
 }
 
 /**
  * One laid-out row as elements (see {@link drawSegment}): a Box exactly
  * `columns` wide that clips what passes its edge, so a row can neither wrap
- * nor widen the pane. A row of the wide grid that hangs a
- * hover card off one of its halves joins only that half's segments to the
- * card's group: the pointer on the other card's half shows nothing.
+ * nor widen the pane. A row that hangs a hover card joins only the name the
+ * card is about to the card's group: the pointer on that name shows it.
  *
  * A link is the surface's own: ctrl- or cmd-click opens it as a link in a
  * reply would, and a plain click (`onLinkPress`) opens it in the editor.
@@ -1619,20 +1622,85 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
   }
   const at = hovers ? row.segments.findIndex(s => s.preview !== undefined) : -1
   const preview = at < 0 ? undefined : row.segments[at]!.preview!
-  const half = row.split !== undefined && at >= 0 ? (at < row.split ? [0, row.split] : [row.split, row.segments.length]) : [0, row.segments.length]
-  const scoped = (i: number) => (preview !== undefined && i >= half[0]! && i < half[1]! ? scopeOf(preview) : undefined)
+  // The name the card is about joins its group: resting the pointer on it shows the card.
+  const scoped = (i: number) => (preview !== undefined && i === at ? scopeOf(preview) : undefined)
+  const { Text } = ui
+  // A run of plain text (no press, field or link, no hover group) is one Text that cuts at the row's edge,
+  // its styled pieces nested in it and the rest bare strings: a tall pane stays far inside the engine's bounds.
+  const plain = (s: Segment): boolean => s.press === undefined && s.field === undefined && !(s.link !== undefined && links)
+  const drawn: RenderNode[] = []
   let x = 0
-  const drawn = row.segments.map((s, i) => {
-    const element = drawSegment($, ui, row, s, i, press, links, terminal, columns - x, scoped(i))
-    x += s.hidden === true ? 0 : cells(s.text)
-    return element
-  })
+  for (let i = 0; i < row.segments.length; i++) {
+    const s = row.segments[i]!
+    if (!plain(s)) {
+      drawn.push(drawSegment($, ui, row, s, i, press, links, terminal, columns - x, scoped(i)))
+      x += s.hidden === true ? 0 : cells(s.text)
+      continue
+    }
+    const run: Segment[] = [s]
+    // One hover group per run: the outer Text joins it (a nested Text follows its group but cannot light it).
+    const scope = scoped(i)
+    while (i + 1 < row.segments.length && plain(row.segments[i + 1]!) && scoped(i + 1) === scope) run.push(row.segments[++i]!)
+    x += run.reduce((n, r) => n + cells(r.text), 0)
+    drawn.push(textRun(Text, run, scope))
+  }
   return (
     <Box key={row.key} flexDirection="row" width={columns} overflow="hidden">
       {drawn}
     </Box>
   )
 }
+
+/**
+ * A run of plain segments as one Text that cuts at its edge: a lone segment
+ * styled itself, else its styled pieces nested in it and the rest bare
+ * strings. `scope` joins it to a hover group.
+ */
+function textRun(Text: Elements[RenderSurface]['Text'], run: Segment[], scope?: string): RenderNode {
+  const hover = scope === undefined ? {} : { hover: { scope } }
+  const pieces = mergedRun(run)
+  if (pieces.length === 1) {
+    return (
+      <Text wrap="truncate-end" {...textStyle(pieces[0]!)} {...hover}>
+        {pieces[0]!.text}
+      </Text>
+    )
+  }
+  return (
+    <Text wrap="truncate-end" {...hover}>
+      {pieces.map(r => (Object.keys(textStyle(r)).length === 0 ? r.text : <Text {...textStyle(r)}>{r.text}</Text>))}
+    </Text>
+  )
+}
+
+/** A run of segments with neighbours of one style joined, so each style change is one piece; blank cells take any style. */
+function mergedRun(run: Segment[]): Segment[] {
+  const out: Segment[] = []
+  // Blank cells without a ground look the same in any colour: they carry no style, and join their neighbours.
+  for (const piece of run) {
+    const r = piece.bg === undefined && /^ *$/.test(piece.text) ? { text: piece.text } : piece
+    const last = out[out.length - 1]
+    const same = last !== undefined && JSON.stringify(textStyle(last)) === JSON.stringify(textStyle(r))
+    if (same) out[out.length - 1] = { ...last, text: last.text + r.text }
+    else out.push(r)
+  }
+  return out
+}
+
+/**
+ * How much of the engine's tree bounds the pane lets itself use: its tree
+ * serialized stays under this many characters (the engine's limit is
+ * 100,000) and so, with room to spare, under its 20,000 nodes.
+ */
+const TREE_BUDGET = 70_000
+/** The fewest rows the pane lays its lists out for when it gives rows back to fit its budget. */
+const SHORT_ROWS = 16
+
+/** A drawn tree's size as the engine bounds it: its length serialized (handlers are not data). */
+const treeWeight = (tree: RenderElement): number => JSON.stringify(tree)?.length ?? 0
+
+/** The most hover cards a pane hangs: those on the rows nearest the marked one. */
+const CARDS_MAX = 8
 
 /** A hover card where the pointer can reach it: under its row, or over it when the rows below cannot hold it; never past the right edge. */
 function cardPlace(row: number, rows: number, x: number, preview: Preview, columns: number): { top: number; left: number } {
@@ -1645,13 +1713,18 @@ function cardPlace(row: number, rows: number, x: number, preview: Preview, colum
  * The hover cards the rows hang, drawn out of the flow over the rows below
  * their own (`position: absolute`), hidden until the pointer rests on a
  * segment of their group. Nothing crosses to the mod when one shows: the
- * surface reveals it alone. Only where the surface has a pointer. Each of
- * its lines is as wide as the card, every Text in a Box of its own width.
+ * surface reveals it alone. Only where the surface has a pointer. A card is
+ * one Text of its lines on the card's ground, as wide as the card and cut at
+ * its edge: two nodes, however many rows hang one, so a tall list keeps the
+ * tree far inside the engine's bounds.
  */
 function drawCards(ui: Elements[RenderSurface], rows: Row[], columns: number) {
   const { Box, Text } = ui
   const cards = []
-  for (let y = 0; y < rows.length; y++) {
+  // At most CARDS_MAX cards, on the rows nearest the marked one: a tall list cannot grow the tree past its bounds.
+  const marked = Math.max(0, rows.findIndex(r => r.tint !== undefined))
+  const hung = rows.map((r, y) => ({ y, has: r.segments.some(s => s.preview !== undefined) })).filter(r => r.has).sort((a, b) => Math.abs(a.y - marked) - Math.abs(b.y - marked) || a.y - b.y).slice(0, CARDS_MAX).map(r => r.y)
+  for (const y of hung.sort((a, b) => a - b)) {
     const row = rows[y]!
     let x = 0
     for (const s of row.segments) {
@@ -1660,18 +1733,8 @@ function drawCards(ui: Elements[RenderSurface], rows: Row[], columns: number) {
         const place = cardPlace(y, rows.length, x, preview, columns)
         const width = Math.min(preview.width, columns)
         cards.push(
-          <Box key={preview.key} position="absolute" top={place.top} left={place.left} width={width} display="none" flexDirection="column" hover={{ scope: scopeOf(preview), display: 'flex' }}>
-            {preview.rows.map(line => (
-              <Box key={line.key} flexDirection="row" width={width} overflow="hidden">
-                {line.segments.map((c, i) => (
-                  <Box key={`${line.key}-w${i}`} width={cells(c.text)} flexShrink={0} overflow="hidden">
-                    <Text key={`${line.key}-${i}`} wrap="truncate-end" {...textStyle(c)}>
-                      {c.text}
-                    </Text>
-                  </Box>
-                ))}
-              </Box>
-            ))}
+          <Box key={preview.key} position="absolute" top={place.top} left={place.left} width={width} height={preview.rows.length} display="none" backgroundColor={CARD_BG} hover={{ scope: scopeOf(preview), display: 'flex' }}>
+            <Text wrap="truncate-end">{preview.rows.map(line => line.segments.map(c => c.text).join('')).join('\n')}</Text>
           </Box>,
         )
         break
@@ -1688,15 +1751,16 @@ function drawCards(ui: Elements[RenderSurface], rows: Row[], columns: number) {
  * other surface draws them as text, glyphs and colours alike. Where the
  * surface has a pointer (all but mobile), the hover cards follow the rows.
  */
-function drawRows($: EngineInterface, ui: Elements[RenderSurface], surface: RenderSurface, themeName: string, rows: Row[], columns: number, press: (id: string, surface?: RenderSurface) => void) {
+function drawRows($: EngineInterface, ui: Elements[RenderSurface], surface: RenderSurface, themeName: string, rows: Row[], columns: number, press: (id: string, surface?: RenderSurface) => void, lean = false) {
   const terminal = surface === 'terminal'
   const links = surface !== 'mobile'
-  const hovers = surface !== 'mobile'
+  // Lean (a tree near the engine's bounds): no hover cards, and only the marked row's places are links.
+  const hovers = surface !== 'mobile' && !lean
   const drawn = []
   for (let i = 0; i < rows.length; i++) {
     const block = rows[i]!.raster
     if (!terminal || block === undefined) {
-      drawn.push(drawRow($, ui, rows[i]!, press, columns, terminal, links, hovers))
+      drawn.push(drawRow($, ui, rows[i]!, press, columns, terminal, links && (!lean || rows[i]!.tint !== undefined), hovers))
       continue
     }
     let end = i
@@ -1977,25 +2041,46 @@ export const register: Register = (on, options) => {
     // A press that outlives the session (a teardown under it) fails quietly.
     const height = paneHeight(e.props.scroll)
     const offset = Math.max(0, e.props.scroll?.offset ?? 0)
-    const laidOut = paneLayout(input, columns, height, offset)
     const themeName = await read($, theme)
-    if (!laidOut.pinned) {
+    const key = v.inspect === null ? 'pane' : 'detail'
+    // The engine refuses a tree past its bounds (100,000 characters serialized, 20,000 nodes) and draws its own:
+    // past TREE_BUDGET the pane drops its hover cards and most links, then gives its lists fewer rows, until it fits.
+    // How many rows the last layout drew with something in them (the blank fill under a short tab left out).
+    let used = height
+    const draw = (rows: number, lean: boolean): RenderElement => {
+      const laidOut = paneLayout(input, columns, rows, offset)
+      used = laidOut.body.filter(r => !r.key.startsWith('fill-')).length + laidOut.footer.length
+      if (!laidOut.pinned) {
+        return (
+          <Box key={key} flexDirection="column">
+            {drawRows($, ui, e.surface, themeName, [...laidOut.body, ...laidOut.footer], columns, press, lean)}
+          </Box>
+        )
+      }
+      // Taller than the window: the bar is drawn over its last rows wherever it is scrolled to, and the body ends in room for it.
+      const reserve = laidOut.footer.map((_, i) => ({ key: `bar-room-${i}`, segments: [{ text: ' ' }] }))
+      const top = Math.min(offset, laidOut.body.length + reserve.length - height) + height - laidOut.footer.length
       return (
-        <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
-          {drawRows($, ui, e.surface, themeName, [...laidOut.body, ...laidOut.footer], columns, press)}
+        <Box key={key} flexDirection="column">
+          {drawRows($, ui, e.surface, themeName, [...laidOut.body, ...reserve], columns, press, lean)}
+          <Box key="bar" position="absolute" top={Math.max(0, top)} left={0} width={columns} flexDirection="column">
+            {laidOut.footer.map(row => drawRow($, ui, row, press, columns, e.surface === 'terminal'))}
+          </Box>
         </Box>
       )
     }
-    // Taller than the window: the bar is drawn over its last rows wherever it is scrolled to, and the body ends in room for it.
-    const reserve = laidOut.footer.map((_, i) => ({ key: `bar-room-${i}`, segments: [{ text: ' ' }] }))
-    const top = Math.min(offset, laidOut.body.length + reserve.length - height) + height - laidOut.footer.length
-    return (
-      <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
-        {drawRows($, ui, e.surface, themeName, [...laidOut.body, ...reserve], columns, press)}
-        <Box key="bar" position="absolute" top={Math.max(0, top)} left={0} width={columns} flexDirection="column">
-          {laidOut.footer.map(row => drawRow($, ui, row, press, columns, e.surface === 'terminal'))}
-        </Box>
-      </Box>
-    )
+    let tree = draw(height, false)
+    let weight = treeWeight(tree)
+    if (weight <= TREE_BUDGET) return tree
+    tree = draw(height, true)
+    weight = treeWeight(tree)
+    // Lists make most of the weight: each try lays out fewer rows than were drawn, in proportion to the budget.
+    let rows = Math.min(height, used)
+    for (let tries = 0; weight > TREE_BUDGET && rows > SHORT_ROWS && tries < 4; tries++) {
+      rows = Math.max(SHORT_ROWS, Math.min(rows - 2, Math.floor((rows * TREE_BUDGET) / weight) - 2))
+      tree = draw(rows, true)
+      weight = treeWeight(tree)
+    }
+    return tree
   })
 }

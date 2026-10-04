@@ -7,6 +7,7 @@ declare module 'claude-code' {
   export type Elements = any
   export type EngineInterface = any
   export type Register = any
+  export type RenderElement = any
   export type RenderNode = any
   export type RenderSurface = any
   export type Timer = any

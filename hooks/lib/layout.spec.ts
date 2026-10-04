@@ -862,7 +862,8 @@ describe('the pane at every width and height', () => {
     expect(shown(paneRows(input({ tab: 'hubs' }, many), 100, 8), 'hub')).toBe(5)
     expect(tall.length).toBeLessThanOrEqual(40)
     expect(textOf(tall)).toMatch(new RegExp(`${40 - shown(tall, 'hub')} more ↓`))
-    expect(shown(paneRows(input({ tab: 'hubs' }, many), 100, 200), 'hub')).toBe(40)
+    // However tall the pane, a list stops at 28 rows and says how many more.
+    expect(shown(paneRows(input({ tab: 'hubs' }, many), 100, 200), 'hub')).toBe(28)
   })
 
   it('scrolls a list to the marker: the marked hub is drawn, with how many are above it', () => {

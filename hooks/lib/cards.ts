@@ -235,10 +235,18 @@ export type Block = { key: string; grow?: { length: number; min: number; late?: 
 export const LIST_SOFT = 10
 
 /**
+ * The most rows a list grows to however tall the pane: past it the list says
+ * `n more ↓` and scrolls to the marker. It keeps the tree the engine takes
+ * well inside its bounds (100,000 characters serialized) on a tall, wide pane.
+ */
+export const LIST_MAX = 28
+
+/**
  * Cards stacked in `width`, each list as long as `budget` rows allow: every
  * list starts at its minimum, then each in turn takes one more row while the
  * whole still fits, up to {@link LIST_SOFT}; then the late cards grow the
- * same way, within `lateBudget` too; then the lists take what is left. A
+ * same way, within `lateBudget` too; then the lists take what is left, up to
+ * {@link LIST_MAX}. A
  * short pane shows the minimums and scrolls.
  */
 export function fitBlocks(blocks: Block[], width: number, tier: Tier, budget: number, lateBudget = budget): Row[] {
@@ -259,7 +267,7 @@ export function fitBlocks(blocks: Block[], width: number, tier: Tier, budget: nu
   const phases: { late: boolean; cap: number; within: number }[] = [
     { late: false, cap: LIST_SOFT, within: budget },
     { late: true, cap: Number.POSITIVE_INFINITY, within: Math.min(budget, lateBudget) },
-    { late: false, cap: Number.POSITIVE_INFINITY, within: budget },
+    { late: false, cap: LIST_MAX, within: budget },
   ]
   for (const phase of phases) {
     let grew = true
@@ -373,7 +381,7 @@ export function gridRows(grid: Block[][], width: number, tier: Tier, budget: num
   const lineHeight = (start: number, count: number): number => Math.max(0, ...Array.from({ length: count }, (_, j) => rowsOf(start + j).length))
   const starts = placed.map((_, n) => placed.slice(0, n).reduce((sum, p) => sum + p.line.length, 0))
   const total = () => placed.reduce((sum, p, n) => sum + 1 + lineHeight(starts[n]!, p.line.length), 0)
-  for (const cap of [LIST_SOFT, Number.POSITIVE_INFINITY]) {
+  for (const cap of [LIST_SOFT, LIST_MAX]) {
     let grew = true
     while (grew) {
       grew = false

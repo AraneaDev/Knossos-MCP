@@ -187,16 +187,25 @@ by side as one-line rules first, then the lists in pairs. Cycles and a
 detail stand in one column at every width, since a diagram wants the room.
 
 Nothing the pane draws can wrap or push its card wider, on a terminal that
-counts cells as the layout does or not: every piece of a row stands in a box
-exactly as wide as the layout gave it, every text cuts at that edge with an
-ellipsis, a pressable name draws the name as the layout cut it, and every
-row is a box as wide as the pane that clips what passes its edge.
+counts cells as the layout does or not: every row is a box as wide as the
+pane that clips what passes its edge, every text in it cuts at that edge
+with an ellipsis, and a pressable name draws the name as the layout cut it,
+so it takes exactly the cells it was given.
+
+Claude Code refuses a drawing past its bounds (20,000 elements, 32 deep,
+100,000 characters serialized) and draws its own, empty pane instead. The
+pane keeps far inside them: each row's plain text is one text element with
+its styled pieces nested in it, a list grows to at most 28 rows however tall
+the pane (then `n more ↓`, scrolling to the marker), and at most eight hover
+cards hang off the rows nearest the marker. Should a drawing still pass
+70,000 characters, the pane drops its hover cards and every link but the
+marked row's, then gives its lists fewer rows until it fits.
 
 Lists size themselves to the rows the pane's body has: every list starts at
 a few rows, then the rows left after the rest of the tab are shared out
 between the lists in turn, up to ten each; then the charts take what they
 can use (the heat map's cells grow from one row to two or three); then the
-lists take the rest. A chart in one column of
+lists take the rest, up to 28 rows each. A chart in one column of
 the wide grid stops growing once it would leave the other column more than
 three rows shorter. The dashboard sends up to fifty hubs, hotspots, dead-code
 candidates and largest files, enough for a tall pane. A list cut short says `n more ↓` (and `n above ↑`
@@ -389,7 +398,7 @@ change` for a flat one, drawn faint). Only with five snapshots or more.
   field: the list narrows as you type to the components whose name holds the
   text, Enter keeps the filter and `x` clears it. `s` sorts by in, out or
   cross-boundary degree in turn; the bar follows the sort, and the title says
-  it (`Hubs and hotspots · sorted by in`). Resting the pointer on a row
+  it (`Hubs and hotspots · sorted by in`). Resting the pointer on a name
   (where the surface has a pointer: not on mobile) shows a card over the
   rows below it, without opening anything: its name and boundary, how many
   files depend on it (and a component's in- and out-degree), and the three

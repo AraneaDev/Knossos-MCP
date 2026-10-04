@@ -594,7 +594,7 @@ function nodeText(node: DrawnNode): string {
  * Everything in a drawn tree that could wrap or push its container wider
  * than `columns`, as lines naming where: a Text that does not cut at its
  * edge, or that stands in no Box of a set width, or holds more cells than
- * that Box; on the terminal a Button whose label (with its `k: `) is wider
+ * that Box (a row, or the Box a Button stands in); on the terminal a Button whose label (with its `k: `) is wider
  * than its Box; a Box wider than the one it stands in, or placed past its
  * right edge; a row whose fixed-width children add up past its own width,
  * or that does not clip; a Raster wider than its Box. Measured from the
@@ -628,7 +628,18 @@ function overflowsOf(tree: unknown, columns: number, terminal: boolean): string[
       if (box !== undefined && (props.position === 'absolute' ? left + width : width) > box) out.push(`${at}: a Box ${width} wide (at ${left}) in ${box}`)
       if (props.flexDirection === 'row') {
         if (props.overflow !== 'hidden') out.push(`${at}: a row that does not clip`)
-        const fixed = (n.children ?? []).reduce((sum: number, c) => sum + (typeof c === 'object' && c !== null && typeof (c as DrawnNode).props?.width === 'number' && (c as DrawnNode).props?.display !== 'none' ? ((c as DrawnNode).props!.width as number) : 0), 0)
+        // What its children take: a sized Box its width, a Text its cells (it cuts at the row's edge, never wraps).
+        const taken = (c: unknown): number => {
+          if (typeof c !== 'object' || c === null) return 0
+          const child = c as DrawnNode
+          if (child.props?.display === 'none' || child.props?.position === 'absolute') return 0
+          if (child.type === 'Text') return [...nodeText(child)].length
+          // A Button draws its label (and `k: ` before a hotkey); the surface's own elsewhere, so measured on the terminal only.
+          if (child.type === 'Button') return terminal ? [...String(child.props?.label ?? '')].length + (child.props?.hotkey === undefined ? 0 : 3) : 0
+          if (child.type === 'Markdown') return [...String(child.props?.text ?? '').replace(/\[((?:\\.|[^\]\\])*)\]\(file:[^)]*\)/g, (_m: string, l: string) => l.replace(/\\(.)/g, '$1'))].length
+          return typeof child.props?.width === 'number' ? child.props.width : 0
+        }
+        const fixed = (n.children ?? []).reduce((sum: number, c) => sum + taken(c), 0)
         if (fixed > width) out.push(`${at}: its segments take ${fixed} cells of ${width}`)
       }
       inner = width
@@ -639,7 +650,75 @@ function overflowsOf(tree: unknown, columns: number, terminal: boolean): string[
   return out
 }
 
+/** How big a drawn tree is, as the engine bounds every tree: its nodes, its depth and its length serialized. */
+function treeSize(tree: unknown): { nodes: number; depth: number; chars: number } {
+  let nodes = 0
+  const deepest = (node: unknown, depth: number): number => {
+    if (typeof node !== 'object' || node === null) return depth - 1
+    nodes++
+    return Math.max(depth, ...((node as DrawnNode).children ?? []).map(c => deepest(c, depth + 1)))
+  }
+  const depth = deepest(tree, 1)
+  return { nodes, depth, chars: JSON.stringify(tree).length }
+}
+
 describe('knossos mod', () => {
+  test('every view stays well within the bounds the engine sets every tree (20,000 nodes, 32 deep, 100,000 characters), with the largest lists the dashboard sends', { timeoutMs: 120_000 }, async ($, on) => {
+    const name = (i: number) => `ProjectModuleIndexWithAVeryLongName${i}::_is_python_script_with_a_shebang`
+    const path = (i: number) => `src/a/rather/deeply/nested/directory/with/an/UnreasonablyLongControllerName${i}.php`
+    const bounds = ['Http', 'Core', 'module:cli (+composer:app/cli)', 'tests', 'tooling', 'hooks', 'types', 'php-worker', 'rust-worker', 'python-worker', 'typescript-worker', 'composer:knossos']
+    const ranked = (i: number) => ({ name: name(i), canonical_name: `App\\Core\\${name(i)}`, kind: 'method', boundary: bounds[i % 12], in_degree: 900 - i, out_degree: i, cross_boundary_degree: i % 7, dependent_files: 400 - i, path: path(i), line: i + 1, top_dependents: [path(i + 1), path(i + 2), path(i + 3)] })
+    const nodes = Array.from({ length: 40 }, (_, i) => ({ name: name(i), canonical_name: `App\\${name(i)}`, kind: 'method', boundary: bounds[i % 12] }))
+    const big = boundariesDashboard({
+      hubs: Array.from({ length: 50 }, (_, i) => ranked(i)),
+      hotspots: Array.from({ length: 50 }, (_, i) => ({ ...ranked(i + 50), score: 99 })),
+      fan_in: Array.from({ length: 50 }, (_, i) => ({ path: path(i), dependent_files: 500 - i, boundaries: bounds.slice(0, 3), boundary: bounds[i % 12], top_dependents: [path(i + 1), path(i + 2), path(i + 3)] })),
+      dead_code: Array.from({ length: 50 }, (_, i) => ({ name: name(i), canonical_name: `App\\${name(i)}`, kind: 'method', boundary: bounds[i % 12], reachability: 'unreferenced', confidence: 'possible', path: path(i), line: i + 1 })),
+      dead_code_candidates: 5_000,
+      largest_files: Array.from({ length: 50 }, (_, i) => ({ path: path(i), language: 'php', lines: 9_000 - i })),
+      cycles: { count: 50, truncated: true, truncation_reasons: [], largest: Array.from({ length: 10 }, (_, c) => ({ size: 40, members: nodes.map(n => n.name), nodes, nodes_truncated: c === 0 })) },
+      trend: Array.from({ length: 20 }, (_, i) => ({ snapshot_id: `s${i}`, cycles: i % 4, max_degree: 900 + i, dead_code: 5_000 - i, diagnostics: i % 3, components: 99_000 + i })),
+      deltas: { against: 's18', components: 12, cycles: 1, max_degree: -3, dead_code: 9, diagnostics: 0 },
+      in_degree: { buckets: [{ from: 0, to: 0, components: 9_000 }, { from: 1, to: 5, components: 20_000 }, { from: 6, to: 20, components: 4_000 }, { from: 21, to: 100, components: 1_800 }, { from: 101, to: null, components: 260 }], truncated: false },
+      boundary_matrix: {
+        boundaries: bounds,
+        members: bounds.map((_, i) => 9_000 - i * 500),
+        labelled: 99_000,
+        boundaries_truncated: true,
+        cells: bounds.map((_, f) => bounds.map((_, t) => (f === t ? 9_000 : (f * 7 + t * 3) % 50))),
+        forbidden: [[1, 0], [1, 2]],
+        flows: Array.from({ length: 8 }, (_, i) => ({ from: i, to: (i + 1) % 12, edges: 9_000 - i, forbidden: i === 1 })),
+        edges: 400_000,
+        truncated: false,
+        truncation_reasons: [],
+      },
+    })
+    const touched = brief({ changed_files: Array.from({ length: 30 }, (_, i) => path(i)), impact: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [path(i), { path: path(i), dependent_files: 300 - i, boundaries: bounds.slice(0, 4), boundary: bounds[i % 12] }])), tests: Array.from({ length: 30 }, (_, i) => ({ path: `tests/${name(i)}Test.php`, distance: 1 })) })
+    const w = world(on, { dashboard: [{ stdout: big }], brief: [{ stdout: touched }], detail: [{ stdout: fullDetailOf('Router') }], file: [{ stdout: fileDetailOf(path(0)) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/${path(0)}`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      for (const [bodyColumns, bodyRows] of [[200, 60], [140, 120], [100, 60], [60, 60]] as const) {
+        const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows } } })
+        for (const step of ['tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'tab:issues', 'tab:changes', 'keys', 'tab:hubs', 'row:0', 'back', 'row:50']) {
+          if ((await ui.find({ key: step })) === undefined) continue
+          await ui.press({ key: step })
+          await w.clock.settle()
+          const size = treeSize(await ui.drawn())
+          const at = `${surface} ${bodyColumns}x${bodyRows} after ${step}: ${JSON.stringify(size)}`
+          expect(size.nodes, at).toBeGreaterThan(20)
+          expect(size.nodes, at).toBeLessThan(10_000)
+          expect(size.depth, at).toBeLessThan(16)
+          expect(size.chars, at).toBeLessThan(72_000)
+        }
+        await ui.unmount()
+      }
+    }
+  })
+
   test('no line can wrap or widen its container: every view at every width, on terminal and desktop, measured from the drawn tree', async ($, on) => {
     const long = 'ProjectModuleIndexWithAnUnreasonablyLongName::_is_python_script_with_a_shebang_line'
     const nodes = Array.from({ length: 14 }, (_, i) => ({ name: `${long}${i}`, canonical_name: `App\\Core\\${long}${i}`, kind: 'method', boundary: i % 2 === 0 ? 'Core' : 'module:cli (+composer:app/cli)' }))
@@ -2041,8 +2120,8 @@ describe('knossos mod', () => {
       expect(short.count).toBeGreaterThanOrEqual(5)
       expect(tall.count).toBeGreaterThan(short.count)
       expect(short.more).toMatch(/\d+ more ↓/)
-      // Every hub and the one hotspot that is not a hub.
-      expect((await listed(200)).count).toBe(31)
+      // However tall the pane, a list stops at 28 rows (of the 31: every hub and the one hotspot that is not a hub) and says how many more.
+      expect((await listed(200)).count).toBe(28)
     }
     // The marker past the window brings the window along.
     const ui = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 } } })
@@ -2532,8 +2611,9 @@ describe('knossos mod', () => {
     const core = await desk.find({ key: 'heat-1' })
     expect(core?.text).toMatch(/^ ■ B Core +▒+ +█+ +× +$/)
     // Core reaching into Http is forbidden and crossed: red; the empty forbidden cell is a red cross.
-    const crossed = await desk.find({ type: 'Text', text: '▒▒' })
-    expect(crossed?.props.color).toBe('error')
+    // A styled piece of a row is a Text nested in the row's run: the one in the error colour.
+    const crossed = (await desk.findAll({ type: 'Text', text: '▒▒' })).map(t => t.props.color)
+    expect(crossed).toContain('error')
     expect((await desk.find({ key: 'heat-legend' }))?.text).toContain('forbidden')
     expect(await desk.find({ key: 'heat-legend-1' })).toBeDefined()
     expect((await desk.find({ key: 'heat-2' }))?.text).toMatch(/^ ■ C cli /)
@@ -2745,7 +2825,7 @@ describe('knossos mod', () => {
         } else {
           expect(w.copies.at(-1)).toEqual({ text: '/repo/src/Http/Router.php:40', surface })
           expect(await said(ui)).toBe('✗ no editor · path copied')
-          expect((await ui.find({ type: 'Text', text: '✗ no editor · path copied' }))?.props.color).toBe('error')
+          expect((await ui.findAll({ type: 'Text', text: '✗ no editor · path copied' })).map(t => t.props.color)).toContain('error')
         }
         // e opens the marked row's place: the first violation.
         await ui.press({ key: 'edit' })
