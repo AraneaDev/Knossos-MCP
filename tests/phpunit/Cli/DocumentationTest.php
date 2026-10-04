@@ -167,6 +167,113 @@ final class DocumentationTest extends KnossosTestCase
     }
 
     /**
+     * Run the link checker against a throwaway tree.
+     *
+     * @param array<string, string> $files path relative to the tree => contents
+     * @return array{0: int, 1: string, 2: string}
+     */
+    private function checkDocumentationTree(array $files): array
+    {
+        $tree = sys_get_temp_dir() . '/knossos-doc-check-' . bin2hex(random_bytes(6));
+        try {
+            foreach ($files as $relative => $contents) {
+                $path = $tree . '/' . $relative;
+                if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0o777, true) && !is_dir(dirname($path))) {
+                    throw new RuntimeException('Unable to create ' . dirname($path));
+                }
+                file_put_contents($path, $contents);
+            }
+
+            return $this->runFixtureCommandOutput([PHP_BINARY, self::repositoryRoot() . '/tools/documentation-check.php', '--root=' . $tree]);
+        } finally {
+            $this->removeTree($tree);
+        }
+    }
+
+    private function removeTree(string $path): void
+    {
+        if (is_link($path) || is_file($path)) {
+            @unlink($path);
+
+            return;
+        }
+        if (!is_dir($path)) {
+            return;
+        }
+        foreach (scandir($path) ?: [] as $entry) {
+            if ($entry !== '.' && $entry !== '..') {
+                $this->removeTree($path . '/' . $entry);
+            }
+        }
+        @rmdir($path);
+    }
+
+    #[Group('documentation')]
+    public function testLinkCheckRejectsAnAnchorTheTargetPageDoesNotHave(): void
+    {
+        [$exit, , $errors] = $this->checkDocumentationTree([
+            'README.md' => "# Home\n",
+            'docs/a.md' => "[x](page.md#missing-heading)\n",
+            'docs/page.md' => "# Page\n\n## Sentence case heading\n",
+        ]);
+
+        assertSame(1, $exit);
+        assertContains('missing anchor page.md#missing-heading', $errors);
+    }
+
+    #[Group('documentation')]
+    public function testLinkCheckAcceptsGithubSlugsIncludingDuplicatesAndSamePageAnchors(): void
+    {
+        [$exit, $output, $errors] = $this->checkDocumentationTree([
+            'README.md' => "# Home\n",
+            'docs/a.md' => "[a](page.md#sentence-case-heading) [b](page.md#sentence-case-heading-1) [c](page.md#whats-new-in-v20) [d](#local-part)\n\n## Local part\n",
+            'docs/page.md' => "# Page\n\n## Sentence case heading\n\n## Sentence case heading\n\n## What's `new` in [v2.0](https://example.com)?\n\n```sh\n# not a heading\n```\n",
+        ]);
+
+        self::assertSame('', $errors);
+        assertSame(0, $exit);
+        assertContains('Documentation links passed:', $output);
+    }
+
+    #[Group('documentation')]
+    public function testLinkCheckIgnoresAHashCommentInsideAFencedBlockWhenCollectingHeadings(): void
+    {
+        [$exit, , $errors] = $this->checkDocumentationTree([
+            'README.md' => "# Home\n",
+            'docs/a.md' => "[x](page.md#not-a-heading)\n",
+            'docs/page.md' => "# Page\n\n```sh\n# not a heading\n```\n",
+        ]);
+
+        assertSame(1, $exit);
+        assertContains('missing anchor page.md#not-a-heading', $errors);
+    }
+
+    #[Group('documentation')]
+    public function testLinkCheckRejectsAMissingImageTarget(): void
+    {
+        [$exit, , $errors] = $this->checkDocumentationTree([
+            'README.md' => "# Home\n\n![x](img/none.png)\n",
+        ]);
+
+        assertSame(1, $exit);
+        assertContains('missing link target img/none.png', $errors);
+    }
+
+    #[Group('documentation')]
+    public function testLinkCheckCoversContributingSkillsAndPlugins(): void
+    {
+        foreach (['CONTRIBUTING.md', 'skills/graph/SKILL.md', 'plugins/knossos/skills/knossos/SKILL.md'] as $file) {
+            [$exit, , $errors] = $this->checkDocumentationTree([
+                'README.md' => "# Home\n",
+                $file => "[gone](docs/gone.md)\n",
+            ]);
+
+            assertSame(1, $exit, $file);
+            assertContains($file . ': missing link target docs/gone.md', $errors);
+        }
+    }
+
+    /**
      * A badge host must never gate the quality profile.
      *
      * mcpobservatory.com reset the connection to a GitHub runner and failed
