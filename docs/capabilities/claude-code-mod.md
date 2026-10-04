@@ -167,7 +167,7 @@ into the top edge, one cell of padding inside. A small dim glyph before the
 title says what kind of card it is, the same on every tab: `◆` Look at now,
 `▤` Last turn, `◎` the most depended-on components, `≡` the files most
 depended on, `▦` the boundary map, `▥` the per-boundary table, `◈` the marked
-boundary, `⇄` the marked heat map cell, `↻` cycles, `⚠` the Issues cards,
+boundary, `⇄` the marked heat map cell and a detail's dependencies, `↻` cycles, `!` the Issues cards,
 `±` changes, `✓` the tests that reach them, `∿` the trend, `◇` a detail. Cards stand one blank row
 apart. Wide, each tab arranges its cards in two columns: Overview puts the
 stat tiles across the top, "Look at now" and the last turn left and the most
@@ -175,10 +175,9 @@ depended on right (with the trend under it when the pane has rows to spare),
 and the small boundary map and the files most depended on under whichever
 column leaves the two ending closest in height; Hubs sets the files most
 depended on beside the components, the components' table taking the wider
-share; the detail
-sets "used by" beside "uses" with the change below both; Boundaries puts the
-map beside the per-boundary table and the marked boundary; Cycles spells out
-the marked cycle, a member a row, beside the list; Issues sets its cards in
+share; Boundaries puts the
+map beside the per-boundary table and the marked boundary; Cycles and a
+detail stand in one column at every width, since a diagram wants the room; Issues sets its cards in
 rows of equal height (the cards with nothing to list side by side first,
 then the lists in pairs, a shorter card stretched inside its frame to its
 neighbour's height, so no column ends half way down); Changes puts the tests
@@ -277,11 +276,19 @@ and its tables add columns:
 ```
 
 ```text
-Knossos-MCP  feat/claude-code-mod · 610c773  PHP  JS  TS  RS     ● stale 16s   r: rescan
- Overview   Hubs   Boundaries   Cycles   Issues¹   Changes⁸
+
+  Knossos-MCP  feat/claude-code-mod · 610c773  PHP  JS  TS  RS     ● stale 16s   r: rescan
+
+   Overview    Hubs    Boundaries    Cycles    Issues¹    Changes⁸
+
+────────────────────────────────────────────────────────────────────────────────────────────
 ```
 
-The header is two rows. The first names the project in bold, where its
+The header has room around it: a blank row above the name, another between
+the name and the tabs, both rows padded two cells in from the edges (one when
+narrow), then a blank row and a rule in the faint ink before the first card.
+Narrow, the row above the name goes; on a pane 24 rows tall or shorter every
+blank row goes, never a line that says something. The first row names the project in bold, where its
 checkout stands (the branch and the short commit, dim; the commit alone on a
 detached head, nothing outside git), the languages as small chips, and
 against the right edge the status pill, why it is so when the pill does not
@@ -295,7 +302,8 @@ first row is the way back: `Knossos-MCP › Hubs › StableId`. The second row i
 the tab bar: each tab by its name, with the Issues and Changes counts as
 superscript badges (`Issues³`), the open one on the selection colour; where
 the names do not fit, and always when narrow, the others by their digit. The
-digits that switch tabs are said in the `h` help, not on the bar.
+tabs stand two cells apart while they fit. The digits that switch tabs are
+said in the `h` help, not on the bar.
 
 When the dashboard names the drifted files, the drifted tile's label is a
 button that lists them, and `d` does the same on every tab: it lists the
@@ -353,14 +361,42 @@ Drifted since the snapshot                                 3
   draws its label dimmed, so the column reads by where the boundary changes.
   The same holds for Overview's most depended on, and the last turn dims its
   repeats. `e` opens a hub's file at its declaration, as on Overview.
-- **Cycles:** each dependency cycle, the largest first, as a chain of its
-  members (`↻ a → b → c → ↻`) wrapped to the pane's width, under a line naming
-  the boundary most of them are in. Every hop is drawn in its own boundary's
-  colour, with a legend, so the eye sees where the loop crosses from one
-  boundary into another. The ten largest are listed. `j` and `k` mark a cycle: `o` opens
-  the member where it leaves its own boundary (its uses include the edge that
-  closes the loop), `c` copies the whole chain, and `q` asks Claude how to
-  break it.
+- **Cycles:** the marked cycle drawn, and under it every cycle (the ten
+  largest), each as a line naming its size, the boundary most of its members
+  are in and how many others it reaches. The drawing is a serpentine of boxes,
+  one member a box: the first row left to right, the next right to left
+  under it, as many to a row as fit, an arrow from each member to the next,
+  and a return edge from the last along a lane under the boxes and up the
+  left margin into the first, labelled `back to the start` where it has
+  room. A cycle that spans boundaries frames each box in its boundary's
+  colour, with a legend, and marks each hop that crosses from one boundary
+  into another with `╫` (`╪` on a vertical hop), in the warning colour; one
+  that stays in one boundary is drawn plain. The marked member's box is
+  framed in the accent and tinted, the hops into and out of it in the accent
+  too. The marker walks members, not cycles: `j` and `k` move from box to box
+  in the order the eye reads them, on to the next cycle's first member past
+  a cycle's last; a press on a cycle's line marks its first member; `o` or a
+  press on a box opens that member, `c` copies its name and `q` asks Claude
+  how to break the cycle it is in. A long cycle on a narrow pane (more than
+  six members; ten on a medium one, sixteen wide) folds its middle into one
+  `… N more …` box the marker can rest on: `o` there, or a press on it,
+  unfolds the cycle and marks the first member it hid. Members knossos did
+  not list (past forty) close the loop as one `+N not listed` box. Below 50
+  columns the drawing gives way to the chain as text
+  (`↻ a → b → c → ↻`, each hop in its boundary's colour) and a member a row.
+
+    ```text
+       ╭───────────────────────╮       ╭───────────────────────╮
+    ╭─►│ Index::_add_instances ├──────►│ Index::read_bounded   │
+    │  ╰───────────────────────╯       ╰───────────┬───────────╯
+    │                                              ╪
+    │                                              ▼
+    │                                  ╭───────────────────────╮
+    │                                  │ Index::safe_file      │
+    │                                  ╰───────────┬───────────╯
+    ╰───────────── back to the start ────────────╫─╯
+    ```
+
 - **Issues:** the declared policy violations (each with the offending file
   and line), the scan's errors and warnings, the first fifty dead-code
   candidates (`◇` marks one only tests reach) and the fifty largest files,
@@ -455,10 +491,12 @@ snapshot>`, read again after each scan the watcher sees, one read at a
     first, coming round again: `h` already lists the keys, so the cell steps
     one way), as does a press on one of those boundaries in the marked boundary's
     card; marking another boundary starts on its own top dependency. Under the
-    marked boundary the cell is spelled out: `tests → core`, how many
-    dependencies run that way (red, `forbidden`, where a policy forbids the
-    pair) and the five component pairs that make up most of them
-    (`source → target` and their edges). They are read by
+    marked boundary the cell is drawn: a box for each boundary, the arrow
+    between them carrying how many dependencies run that way (in the error
+    colour and marked `✕`, with `forbidden` in the card's note, where a policy
+    forbids the pair), and under it the five component pairs that make up
+    most of them in columns: the sources padded to one width, an arrow, the
+    targets, their edges right-aligned. They are read by
     `knossos boundary-couplings --from=<boundary> --to=<boundary>` (the same
     bounded walk as the map, once per cell and snapshot) on a timer, never while
     the pane draws; the card says it is reading meanwhile.
@@ -468,9 +506,13 @@ G tooling
    depends on   core 18  hooks 4
    used by      nothing outside itself
 
-tests → php-worker                                      11 deps
-   PhpScannerReceiverFactsTest::scan → PhpScanner             1
-   PhpScannerTest::testAScannerRead… → UnreadableFileException 1
+tests → php-worker                                       11 deps
+╭───────╮                           ╭────────────╮
+│ tests ├───────── 11 deps ────────►│ php-worker │
+╰───────╯                           ╰────────────╯
+
+   PhpScannerReceiverFactsTest::scan ──► PhpScanner                1
+   PhpScannerTest::testAScannerRead… ──► UnreadableFileException   1
 ```
 
 ```text
@@ -500,7 +542,13 @@ Tests that reach these changes · 3              hops
 ```
 
 Every action is a button, so a click works as well as its key. The footer
-groups them: moving about (`j`, `k`, and `b` in a detail) dim on the left,
+is a bar: one full-width row (more when the keys wrap) on a faint ground
+(`composerSidebarBackground`), padded in from the edges, at the bottom of the
+pane: blank rows fill the pane above it when what it shows is shorter, and
+when it is taller the bar is drawn over the window's last rows wherever the
+pane is scrolled to (the body ends in room for it). Once the header is
+scrolled out of view, the bar also says the graph's state at its right edge
+(`● live · 7s`). The bar groups the keys: moving about (`j`, `k`, and `b` in a detail) dim on the left,
 what can be done to the marked row on the right, only the keys that do
 something in the view on show. For a moment after an action the footer says
 what it did, between the two (`✓ copied StableId`, `✓ opened in editor`,
@@ -521,30 +569,43 @@ on the tab, the marker stands where the detail was opened from. Numbers of four 
 ── StalenessProbe ────────────────────────── class · core ──
 src/Query/StalenessProbe.php:21
 
-── Used by · 91 ──────────────────────────────────── edges ──
-   RefreshIfStaleTest::test… tests ━━━━━━━━━━━━━━━━━━ 2
-   McpServerAssembly::__con… core  ━━━━━━━━━········· 1
-
-── Uses · 13 ─────────────────────────────────────── edges ──
-   DriftOracle         core ━━━━━━━━━━━━━━━━━━ 1
-   StalenessProbe::age core ━━━━━━━━━━━━━━━━━━ 1
+── ⇄ Dependencies · used by 91 · uses 13 ─────────── edges ──
+╭──────────────────────╮                                   ╭──────────────────────╮
+│ RefreshIfStaleTest:… ├─ 2 ──╮                     ╭─ 1 ─►│ DriftOracle          │
+╰──────────────────────╯      │  ╭────────────────╮ │      ╰──────────────────────╯
+                              ├─►│ StalenessProbe ├─┤
+╭──────────────────────╮      │  ╰────────────────╯ │      ╭──────────────────────╮
+│ +90 more             ├──────╯                     ╰─────►│ +12 more             │
+╰──────────────────────╯                                   ╰──────────────────────╯
 ```
 
 The detail heads with the component's name, kind, boundary, file and line.
-Below it, what uses it and what it uses, each the eight most connected with
-their boundary and how many relationships run to each, side by side in the
-wide layout and one above the other below it. A side whose counts are all the
-same draws no bars, since they would compare nothing. The marker walks both
-sides, used by first, and every name there opens in turn.
+Below it, its neighbourhood drawn: the component in a box in the middle,
+what uses it fanning in from the left, each a box joined to a bus that enters
+the middle with an arrow, and what it uses fanning out to the right, the bus
+branching to each with an arrow; how many relationships run along each edge
+is set into it. Each box is framed in its boundary's colour. Each side shows
+as many neighbours as the pane's height allows, around the marker, and the
+rest (those knossos did not list included) as one `+N more` box. Narrower
+than the three boxes and two edges need, the users stand above the
+component and what it uses below it, on one spine. Below 50 columns the two
+sides are listed as tables instead. The marker walks both sides, used by
+first; the marked box is framed in the accent and tinted, and every name
+there opens in turn.
 Annotations recorded on the component follow.
 
 A file's detail answers what depends on it. It heads with the file's name,
-its own boundary, its path (a link), language and size. Below, the files that
-depend on it, the ten most connected with their boundary and how many
-relationships run from each, the boundaries a change here reaches, and how
-many more there are; then the components it declares, the twelve most used
-with how many components in other files use each. A dependent opens as its
-own file detail, a component as a component's detail. The counts leave out
+its own boundary, its path (a link), language and size. Below, its
+neighbourhood drawn as a component's is, each file by its name in a box: the
+files that depend on it (the ten most connected, with how many relationships
+run from each) fanning in, the files it depends on (`file-detail`'s `uses`,
+the same ten and counts the other way round) fanning out, with the boundaries
+a change here reaches above them; then the components it declares, the
+twelve most used with how many components in other files use each. The
+marker walks the dependents, then what it depends on, then the components; a
+file opens as its own file detail, a component as a component's detail. An
+older knossos that does not say what the file depends on draws its
+dependents alone. The counts leave out
 the stand-ins for symbols declared outside the project (`sprintf`, a vendor
 class), which knossos files under the first file that names them, and the
 module node that stands for the file itself; the fan-in figures in the band,
@@ -585,15 +646,22 @@ a new process, earlier changes are labelled `outside`.
 Assertions.php                                                tests
 tests/phpunit/Support/Assertions.php · PHP · 91 lines
 
-Depended on by 251 files                                      edges
+⇄ Dependencies · used by 251 · uses 0                          edges
    reaching tests core
-›  tests/phpunit/Reconciliation/GraphReconcilerTest.php tests ━━━ 206
-   tests/phpunit/Discovery/IgnoreMatcherTest.php        tests ━━╸ 167
-   +241 more
+╭─────────────────────────╮
+│ GraphReconcilerTest.php ├─ 206 ─╮
+╰─────────────────────────╯       │
+                                  │
+╭─────────────────────────╮       │
+│ +250 more               ├───────┤
+╰─────────────────────────╯       │
+                                  │
+                                  ▼
+                         ╭────────────────╮
+                         │ Assertions.php │
+                         ╰────────────────╯
 
-Declares 7 components                     used by
-   assertSame        ━━━━━━━━━━━━━━━━━━━━━━ 2,360
-   captureThrows     ━━╸··················    313
+                            uses nothing
 ```
 
 Escape cannot be caught by a

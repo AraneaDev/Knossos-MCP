@@ -421,16 +421,21 @@ depend on it.
 
 The Boundaries tab maps how much each boundary depends on each other one, with the pairs a
 policy forbids in red. Marking a boundary spells out what it depends on, what depends on it,
-and what it may not use, and marks its cell on the map: the component pairs behind that
-cell are listed under it, and `l` steps to the next one.
+and what it may not use, and marks its cell on the map: the two boundaries are drawn with
+the dependencies between them on the arrow, the component pairs behind that cell are listed
+under it, and `l` steps to the next one.
 
 ![The Boundaries tab with tests marked and its cell on php-worker spelled out](docs/images/claude-code-mod/boundaries-cell-dark.png)
 
-The Cycles tab lists each dependency cycle as a chain, every hop in its boundary's colour.
-Marking one lets you open the member
-where it crosses its boundary, copy the chain, or ask Claude how to break it.
+The Cycles tab draws the marked cycle as boxes that snake across the pane, row by row, an
+arrow from each member to the next and a return edge that closes the loop back to the first.
+A cycle that spans boundaries frames each box in its boundary's colour and marks the hop
+where it crosses. `j` and `k` walk the members, `o` opens one, and `q` asks Claude how to
+break the cycle. On a narrow pane a long cycle folds its middle into one box that unfolds
+when you open it. A component's or a file's detail is drawn the same way: what uses it
+fanning in on the left, what it uses fanning out on the right, each count on its edge.
 
-![The Cycles tab](docs/images/claude-code-mod/cycles-dark.png)
+![The Cycles tab: a cycle of thirteen members drawn as a serpentine of boxes, its middle folded](docs/images/claude-code-mod/cycles-dark.png)
 
 ## Supported languages
 
