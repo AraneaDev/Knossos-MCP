@@ -18,8 +18,8 @@ import type { Hues } from './palette'
 import {
   baseName,
   blank,
-  boundaryStyle,
   cells,
+  chip,
   dimRow,
   displayName,
   fitStart,
@@ -123,7 +123,7 @@ export function fileDetailArrangement(detail: DetailInput, tier: Tier, hues: Hue
     // A deleted file is in no graph, yet its change is all there is to see.
     return { left: [head, ...diff] }
   }
-  const own: Segment[] = f.boundary === null ? [] : [{ text: boundaryLabel(f.boundary, hues), ...boundaryStyle(f.boundary, hues) }]
+  const own: Segment[] = chip(f.boundary, hues)
   const facts = [f.language.toUpperCase(), ...(f.lines === null ? [] : [plural(f.lines, 'line', 'lines')])].filter(s => s !== '').join(' · ')
   const tail = facts === '' ? '' : ` · ${facts}`
   const head: Block = {

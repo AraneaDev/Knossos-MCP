@@ -175,13 +175,14 @@ describe('tableSpec', () => {
     // Names take what the longest needs, bars stop at their cap, and the rest stays at the right edge.
     expect(full.bar).toBe(16)
     expect(full.name).toBe(24)
-    expect(full.boundary).toBe(12)
+    // A boundary is a chip: its swatch and a space before the label.
+    expect(full.boundary).toBe(14)
     const shrinking = at(70)
     expect(shrinking.name).toBe(24)
     expect(shrinking.bar).toBeLessThan(full.bar)
     const truncating = at(55)
     expect(truncating.bar).toBe(4)
-    expect(truncating.boundary).toBe(12)
+    expect(truncating.boundary).toBe(14)
     expect(truncating.name).toBeLessThan(24)
     const noBoundary = at(38)
     expect(noBoundary.boundary).toBe(0)
@@ -229,7 +230,7 @@ describe('paneRows', () => {
   it('degrades the hubs table as the pane narrows', () => {
     const at = (columns: number) => textOf(paneRows(input({ tab: 'hubs' }), columns))
     // Wide: full names, boundary labels and bars.
-    expect(at(90)).toMatch(/ArchitectureQueryService +core/)
+    expect(at(90)).toMatch(/ArchitectureQueryService +■ core/)
     expect(at(90)).toContain('━')
     // Narrow: names cut before anything else goes; the numbers stay.
     expect(at(40)).toContain('…')
@@ -274,10 +275,12 @@ describe('paneRows', () => {
 
   it('colours a boundary and its bar alike, its track faint, and draws no boundary neutral', () => {
     const rows = paneRows(input({ tab: 'hubs' }), 90)
-    const core = row(rows, 'hub-0')!.segments.filter(s => s.text.trim() === 'core' || s.text.includes('━'))
+    const core = row(rows, 'hub-0')!.segments.filter(s => s.text === '■' || s.text.includes('━'))
     expect(core).toHaveLength(2)
     expect(core[0]!.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
     expect(core[0]!.color).toBe(core[1]!.color)
+    // The name on the chip stays in a text tone: the colour is on the swatch and the bar.
+    expect(row(rows, 'hub-0')!.segments.find(s => s.text.trim() === 'core')).toMatchObject({ dim: true })
     const track = row(rows, 'hub-1')!.segments.find(s => /^·+$/.test(s.text))
     expect(track?.color).toBe('subtle')
     const none = row(rows, 'hub-5')!.segments.find(s => /[━╸]/.test(s.text))
@@ -600,21 +603,21 @@ describe('the issues tab', () => {
   it('lists violations, diagnostics, dead code and the largest files, each with its place', () => {
     const text = textOf(paneRows(fullInput({ tab: 'issues' }), 100))
     expect(text).toMatch(/Policy violations +▲ 7/)
-    expect(text).toMatch(/ArchitectureQueryService::fileMetrics → FactCollector +core +ArchitectureQueryService\.php:191/)
+    expect(text).toMatch(/ArchitectureQueryService::fileMetr… → ■ FactCollector ■ core +ArchitectureQueryService\.php:191/)
     expect(text).toContain('+6 not listed')
     expect(text).toMatch(/Diagnostics +1 error · 1 warning · 1 note/)
     expect(text).toMatch(/✗ TS2307 Cannot find module/)
     expect(text).toMatch(/scanner\.ts:14$/m)
     expect(text).toMatch(/Dead code +55 · first 2/)
-    expect(text).toMatch(/FactCollector::beforeTraverse +php-worker +FactCollector\.php:108/)
+    expect(text).toMatch(/FactCollector::beforeTraverse +■ php-worker +FactCollector\.php:108/)
     expect(text).toMatch(/◇ helper/)
     expect(text).toMatch(/Largest files +lines/)
     expect(text).toMatch(/workers\/typescript\/src\/scanner\.js .*━+ +4,986/)
   })
   it('gives way in order: names are cut, then the boundary goes, then the place', () => {
     const dead = (columns: number) => plainText(row(paneRows(fullInput({ tab: 'issues' }), columns), 'dead-0')!)
-    expect(dead(90)).toMatch(/FactCollector::beforeTraverse +php-worker +FactCollector\.php:108$/)
-    expect(dead(50)).toMatch(/FactCollector::be… php-worker …ollector\.php:108$/)
+    expect(dead(90)).toMatch(/FactCollector::beforeTraverse +■ php-worker +FactCollector\.php:108$/)
+    expect(dead(50)).toMatch(/FactCollector::… ■ php-worker …ollector\.php:108$/)
     expect(dead(40)).not.toContain('php-worker')
     expect(dead(40)).toMatch(/\.php:108$/)
     expect(dead(30)).not.toContain('.php')
@@ -678,13 +681,13 @@ describe('the cycles tab', () => {
     expect(drawn.flatMap(r => r.segments).some(s => s.text.includes('╫') || s.text.includes('╪'))).toBe(true)
     expect(plainText(row(rows, 'cycle-legend')!)).toBe('■ python-worker  ■ core  ╫ crosses a boundary')
     // The list under it names each cycle, the marked one tinted.
-    expect(plainText(row(rows, 'cycle-0')!)).toBe('›  cycle 1 · 5 members · python-worker +1 boundary')
+    expect(plainText(row(rows, 'cycle-0')!)).toBe('›  cycle 1 · 5 members · ■ python-worker +1 boundary')
     expect(row(rows, 'cycle-0')!.tint).toBe('userMessageBackground')
   })
   it('falls back to the chain as text and a member a row below fifty columns', () => {
     const rows = paneRows(fullInput({ tab: 'cycles' }), 40)
     const text = textOf(rows)
-    expect(text).toContain('↻ Index::_add_instances →')
+    expect(text).toContain('↻ ■ Index::_add_instances →')
     expect(text).toContain('→ ↻')
     expect(rows.some(r => r.key.startsWith('diagram-'))).toBe(false)
     expect(row(rows, 'member-0')!.segments.find(s => s.press)?.press?.id).toBe('row:0')
@@ -751,7 +754,7 @@ describe('the detail view', () => {
   }
   it('heads with name, kind, boundary and place, then draws its neighbourhood round it', () => {
     const rows = paneRows(detailPane(), 140)
-    expect(plainText(row(rows, 'detail-head')!)).toMatch(/^DashboardService +class · core$/)
+    expect(plainText(row(rows, 'detail-head')!)).toMatch(/^DashboardService +class · ■ core$/)
     expect(plainText(row(rows, 'detail-place')!)).toBe('src/Query/DashboardService.php:28')
     expect(plainText(row(rows, 'detail-canonical')!)).toBe('Knossos\\Query\\DashboardService')
     // Drawn round it: what uses it on the left, each with its count on its edge, what it uses on the right.
@@ -772,7 +775,7 @@ describe('the detail view', () => {
     expect(raw).toContain('▼')
     const text = textOf(paneRows(detailPane(), 40))
     expect(text.indexOf('Used by · 19')).toBeLessThan(text.indexOf('Uses · 2'))
-    expect(text).toMatch(/BoundaryLabels +core +[━╸·]+ +4/)
+    expect(text).toMatch(/BoundaryLabels +■ core +[━╸·]+ +4/)
   })
   it('makes every neighbour pressable, used by first, marks the one j and k reach, and offers back beside the list keys', () => {
     const input = detailPane()
@@ -812,8 +815,9 @@ describe('tables packed to the left', () => {
     for (const columns of [...WIDTHS, 100]) {
       const hubs = paneRows(fullInput({ tab: 'hubs' }), columns)
       const issues = paneRows(fullInput({ tab: 'issues' }), columns)
-      if (columns >= 60) expect(plainText(row(hubs, 'hub-1')!), `hubs ${columns}`).toMatch(/ArchitectureQueryService core +━/)
-      if (columns >= 90) expect(plainText(row(issues, 'dead-0')!), `dead ${columns}`).toMatch(/FactCollector::beforeTraverse php-worker +FactCollector\.php:108$/)
+      if (columns >= 60) expect(plainText(row(hubs, 'hub-1')!), `hubs ${columns}`).toMatch(/ArchitectureQueryService ■ core +━/)
+      // Wide, dead code is half the pane: its longest name is cut before its boundary goes.
+      if (columns >= 90 && columns <= 130) expect(plainText(row(issues, 'dead-0')!), `dead ${columns}`).toMatch(/FactCollector::beforeTraverse ■ php-worker +FactCollector\.php:108$/)
       for (const r of [...hubs, ...issues]) expect(rowWidth(r)).toBeLessThanOrEqual(columns)
     }
   })
@@ -947,7 +951,7 @@ describe('the hubs filter and sort', () => {
   it('names the sort, draws its bar, and offers f, s and x as keys', () => {
     const rows = paneRows(input({ tab: 'hubs', sort: 'out', filter: 'a' }), 90)
     expect(plainText(row(rows, 'hubs-head')!)).toMatch(/^Hubs and hotspots · sorted by out +◆ hotspot only$/)
-    expect(plainText(row(rows, 'hub-0')!)).toMatch(/ProjectScanService::scan +core +[━╸]+·* +119 +58 +0$/)
+    expect(plainText(row(rows, 'hub-0')!)).toMatch(/ProjectScanService::scan +■ core +[━╸]+·* +119 +58 +0$/)
     const keys = rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))
     expect(keys).toEqual(['j', 'k', 'o', 'c', 'q', 'f', 's', 'x', 'h'])
   })
@@ -1099,13 +1103,15 @@ describe('a boundary column that one boundary dominates', () => {
       expect(plainText(row(rows, 'hub-1')!)).not.toContain('core')
     }
   })
-  it('draws a repeat dim, so the column reads by where the boundary changes', () => {
+  it('draws a repeat fainter, so the column reads by where the boundary changes; the swatch keeps its colour', () => {
     const rows = paneRows(input({ tab: 'hubs' }), 120)
     const label = (key: string) => row(rows, key)!.segments.find(s => s.text.trim() === 'core')
+    const swatch = (key: string) => row(rows, key)!.segments.find(s => s.text === '■')
     // StableId (core), ArchitectureQueryService (core): the second is the repeat.
-    expect(label('hub-0')?.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
-    expect(label('hub-1')).toMatchObject({ dim: true })
-    expect(label('hub-1')?.color).toBeUndefined()
+    expect(label('hub-0')).toMatchObject({ dim: true })
+    expect(label('hub-1')?.color).toBe('subtle')
+    expect(swatch('hub-0')?.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
+    expect(swatch('hub-1')?.color).toBe(swatch('hub-0')?.color)
   })
 })
 
@@ -1408,9 +1414,11 @@ describe('cycles as chains', () => {
       { name: 'c', canonical: 'C', boundary: null },
     ] }
     const groups = chainGroups(cycle, 20)
-    expect(groups.map(g => g.map(x => x.text).join(''))).toEqual(['↻', 'a →', 'b →', 'c', '→ ↻'])
+    expect(groups.map(g => g.map(x => x.text).join(''))).toEqual(['↻', '■ a →', '■ b →', 'c', '→ ↻'])
+    // The colour is on the swatch; every name stays in the text tone, one in no boundary without a swatch.
     expect(groups[1]![0]!.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
-    expect(groups[3]![0]!.dim).toBe(true)
+    expect(groups[1]![1]!.color).toBeUndefined()
+    expect(groups[3]![0]).toEqual({ text: 'c' })
     expect(chainGroups({ ...cycle, more: 7 }, 20).at(-1)!.map(x => x.text).join('')).toBe('… +7 more')
   })
 })

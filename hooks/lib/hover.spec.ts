@@ -38,7 +38,7 @@ describe('hover cards', () => {
     const card = previewCard('card-hub-0', facts, 120)
     expect(card.rows.map(rawText)).toEqual([
       `╭${'─'.repeat(card.width - 2)}╮`,
-      expect.stringMatching(/^│ ResultEnvelope {2}core +│$/),
+      expect.stringMatching(/^│ ResultEnvelope {2}■ core +│$/),
       expect.stringMatching(/^│ 42 files depend on it · in 240 · out 1 +│$/),
       expect.stringMatching(/^│ ← src\/Mcp\/ToolService\.php +│$/),
       expect.stringMatching(/^│ ← tests\/phpunit\/Query\/ResultEnvelopeTest\.php +│$/),

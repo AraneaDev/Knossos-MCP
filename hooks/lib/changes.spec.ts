@@ -168,7 +168,7 @@ describe('own boundary', () => {
     expect(c.boundaries).toEqual(['tests', 'Core'])
     const rows = changesRows(c, 0, 90)
     expect(plainText(row(rows, 'change-0')!)).not.toContain('tests')
-    expect(plainText(row(rows, 'change-1')!)).toMatch(/src\/Core\/Kernel\.php +Core/)
+    expect(plainText(row(rows, 'change-1')!)).toMatch(/src\/Core\/Kernel\.php +■ Core/)
   })
   it('reads an older knossos without the field as unassigned', () => {
     const old = accumulate(NO_CHANGES, brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 4, boundaries: ['Http'] } } }))
@@ -205,9 +205,9 @@ describe('changesRows', () => {
     const rows = changesRows(changesInput(session(), ROOT), 1, 90)
     const text = textOf(rows)
     expect(text).toMatch(/Changes this session +2 turns/)
-    expect(text).toContain('3 files → 45 dependents reaching Core Http')
+    expect(text).toContain('3 files → 45 dependents reaching ■ Core ■ Http')
     expect(text).toContain('▲ 1 policy violation introduced')
-    expect(plainText(row(rows, 'change-1')!)).toMatch(/^›\+ src\/Core\/Kernel\.php +Core +━/)
+    expect(plainText(row(rows, 'change-1')!)).toMatch(/^›\+ src\/Core\/Kernel\.php +■ Core +━/)
     expect(plainText(row(rows, 'change-2')!)).toMatch(/^ − src\/Helper\.php/)
     // A file opens as its detail, by the same index the marker walks; `e` opens it in the editor.
     expect(row(rows, 'change-0')!.segments.find(s => s.press)?.press).toEqual({ id: 'row:0', label: 'src/Router.php' })
@@ -222,7 +222,7 @@ describe('changesRows', () => {
       expect(reach, `${columns}`).toHaveLength(1)
       expect(plainText(reach[0]!), `${columns}`).toMatch(/\+\d more$/)
     }
-    expect(plainText(changesRows(many, 0, 90).find(r => r.key.startsWith('changes-reach'))!)).toContain('reaching tests core php-worker +3 more')
+    expect(plainText(changesRows(many, 0, 90).find(r => r.key.startsWith('changes-reach'))!)).toContain('reaching ■ tests ■ core ■ php-worker +3 more')
   })
   it('warns when no test reaches the changes', () => {
     const none = accumulate(NO_CHANGES, brief({ tests: [] }))

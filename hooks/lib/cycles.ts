@@ -25,9 +25,9 @@ export { DIAGRAM_MIN } from './diagram'
 import type { DiagramNode, Hop } from './diagram'
 import type { Dashboard } from '../../types'
 import { countLabel } from './envelopes'
-import { ACCENT, boundaryColour, boundaryLabel, FAINT, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryColour, FAINT, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
-import { blank, boundaryStyle, button, cells, clip, displayName, fit, MARK, plural, tableRow, tinted, wrapGroups } from './rows'
+import { blank, button, cells, chip, clip, displayName, fit, MARK, plural, SWATCH, tableRow, tinted, wrapGroups } from './rows'
 import type { Row, Segment, Tier } from './rows'
 import type { Openable } from './views'
 
@@ -187,7 +187,7 @@ export function cyclesArrangement(input: CyclesInput, tier: Tier, hues: Hues = N
 function cycleLine(cycle: CycleLine, i: number, offset: number, on: boolean, columns: number, hues: Hues): Row {
   const home = homeBoundary(cycle)
   const head: Segment[] = [{ text: on ? '›' : ' ', color: ACCENT, bold: true }, { text: '  ' }, button(`mark:${offset}`, `cycle ${i + 1}`), { text: ` · ${plural(cycle.size, 'member', 'members')}`, dim: true }]
-  if (home !== null) head.push({ text: ' · ', dim: true }, { text: boundaryLabel(home, hues), ...boundaryStyle(home, hues) })
+  if (home !== null) head.push({ text: ' · ', dim: true }, ...chip(home, hues))
   const others = boundariesOf(cycle).filter(b => b !== home)
   if (others.length > 0) head.push({ text: ` +${others.length} ${others.length === 1 ? 'boundary' : 'boundaries'}`, dim: true })
   return on ? { key: `cycle-${i}`, segments: tinted(clip(head, columns), SELECTED_BG), tint: SELECTED_BG } : { key: `cycle-${i}`, segments: clip(head, columns) }
@@ -206,7 +206,7 @@ function cycleSection(input: CyclesInput, index: number, offset: number, local: 
   const note = noteOf([plural(cycle.size, 'member', 'members'), ...(crossings > 0 ? [`crosses ${plural(spans.length, 'boundary', 'boundaries')}`] : [])].join(' · '))
   const legend: Row[] = []
   if (coloured) {
-    const groups: Segment[][] = spans.filter(b => boundaryColour(b, hues) !== undefined).map(b => [{ text: `■ ${boundaryLabel(b, hues)}`, color: boundaryColour(b, hues) }])
+    const groups: Segment[][] = spans.filter(b => boundaryColour(b, hues) !== undefined).map(b => chip(b, hues))
     if (crossings > 0) groups.push([{ text: CROSSING.across, color: STATUS_COLOURS.warn }, { text: ' crosses a boundary', dim: true }])
     legend.push(...wrapGroups('cycle-legend', groups, columns, 2), blank('cycle-legend-gap'))
   }
@@ -247,7 +247,9 @@ export function chainGroups(cycle: CycleLine, room: number, hues: Hues = NO_HUES
   const groups: Segment[][] = [[{ text: '↻', color: ACCENT }]]
   cycle.nodes.forEach((node, j) => {
     const last = j === cycle.nodes.length - 1
-    groups.push([{ text: fit(node.name, room), ...(coloured ? boundaryStyle(node.boundary, hues) : {}) }, ...(last && cycle.more === 0 ? [] : [{ text: ' →', dim: true }])])
+    // Coloured, each member's boundary on a swatch before its name: the name stays in the text tone.
+    const swatch: Segment[] = coloured && node.boundary !== null ? [{ text: `${SWATCH} `, color: boundaryColour(node.boundary, hues) ?? FAINT }] : []
+    groups.push([...swatch, { text: fit(node.name, room - swatch.length * 2) }, ...(last && cycle.more === 0 ? [] : [{ text: ' →', dim: true }])])
   })
   groups.push(cycle.more > 0 ? [{ text: `… +${cycle.more} more`, dim: true }] : [{ text: '→ ↻', dim: true }])
   return groups

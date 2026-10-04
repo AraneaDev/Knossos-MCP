@@ -29,7 +29,8 @@ import type { Row, Segment, Tier } from './rows'
  * rows alone (the stat tiles, which draw their own frames). `glyph` is the
  * small mark before the title, when not the one its kind has ({@link GLYPHS}).
  * A section with no rows and an `empty` word collapses to one line: its title
- * and that word set into a rule (`── ! Policy ───── none ──`), at every tier.
+ * and its note (or, without one, that word) set into a rule
+ * (`── ! Policy violations ───── ✓ 0 ──`), at every tier.
  */
 export type Section = { key: string; title: string; subtitle?: string; note?: Segment[]; body: Row[]; bare?: true; glyph?: string; empty?: string }
 
@@ -163,7 +164,11 @@ function bareRow(row: Row, width: number): Row {
 
 /** A card's rows at `width`: its top edge, its rows (framed where the tier frames them) and, framed, its bottom edge. */
 export function cardRows(section: Section, width: number, tier: Tier): Row[] {
-  if (section.body.length === 0 && section.empty !== undefined) return [topRow({ ...section, subtitle: undefined, note: [{ text: section.empty, dim: true }] }, width, 'narrow')]
+  if (section.body.length === 0 && section.empty !== undefined) {
+    // Its note says how it stands when it has one (`✓ 0`); else the word.
+    const note = section.note !== undefined && section.note.length > 0 ? section.note : [{ text: section.empty, dim: true }]
+    return [topRow({ key: section.key, title: section.title, note, ...(section.glyph === undefined ? {} : { glyph: section.glyph }), body: [] }, width, 'narrow')]
+  }
   if (section.bare === true) return section.body.map(row => (row.code !== undefined || rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))
   const head = topRow(section, width, tier)
   if (tier === 'narrow') return [head, ...section.body.map(row => bareRow(row, width))]

@@ -13,16 +13,16 @@ import { moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
 import type { ComponentDetail, Counterpart, Dashboard, DetailState, Inspected, PaneTab } from '../../types'
 import { countLabel, detailLines } from './envelopes'
-import { ACCENT, boundaryColour, boundaryLabel, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryColour, boundaryLabel, FAINT, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
 import { DIAGRAM_MIN, neighbourhood } from './diagram'
 import type { Neighbour } from './diagram'
 import type { Hues } from './palette'
 import {
   absolute,
   blank,
-  boundaryStyle,
   button,
   cells,
+  chip,
   dimRow,
   displayName,
   fit,
@@ -31,11 +31,12 @@ import {
   linked,
   MARK,
   numberWidth,
-  padEnd,
   placeOf,
   plural,
   shortName,
+  segmentsWidth,
   spaces,
+  SWATCH,
   tableRow,
   tableSpec,
   tinted,
@@ -248,7 +249,9 @@ type Entry = { selected?: boolean; mark?: Segment; need: number; main: (width: n
  */
 function entrySpec(columns: number, entries: Entry[], hues: Hues = NO_HUES): EntrySpec {
   const placeNeed = Math.min(Math.max(12, Math.floor(columns * PLACE_SHARE)), Math.max(0, ...entries.map(e => cells(e.place))))
-  const boundaryNeed = Math.min(12, Math.max(0, ...entries.map(e => cells(boundaryLabel(e.boundary ?? null, hues)))))
+  // A boundary is a chip: its swatch and a space before its label.
+  const longest = Math.max(0, ...entries.map(e => cells(boundaryLabel(e.boundary ?? null, hues))))
+  const boundaryNeed = longest === 0 ? 0 : Math.min(12, longest) + 2
   const mainNeed = Math.max(1, ...entries.map(e => e.need))
   const attempt = (boundary: number, place: number): EntrySpec | null => {
     const room = columns - MARK - (boundary > 0 ? boundary + 1 : 0) - (place > 0 ? place + 1 : 0)
@@ -267,7 +270,10 @@ function entryRow(key: string, e: Entry, spec: EntrySpec, hues: Hues): Row {
     ...main,
     { text: spaces(spec.main - used) },
   ]
-  if (spec.boundary > 0) segments.push({ text: ' ' }, { text: padEnd(fit(boundaryLabel(e.boundary ?? null, hues), spec.boundary), spec.boundary), ...boundaryStyle(e.boundary ?? null, hues) })
+  if (spec.boundary > 0) {
+    const chipped = chip(e.boundary ?? null, hues, spec.boundary)
+    segments.push({ text: ' ' }, ...chipped, { text: spaces(spec.boundary - segmentsWidth(chipped)) })
+  }
   // Places are left-aligned: a column of file names reads down its left edge.
   if (spec.place > 0) segments.push({ text: ' ' }, linked(fitStart(e.place, spec.place), e.loc ?? null, { dim: true }))
   const kept = segments.filter(s => s.text !== '')
@@ -302,10 +308,12 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
     boundary: v.source.boundary,
     place: v.place,
     loc: v.source.loc ?? null,
-    need: cells(v.source.name) + 3 + cells(v.target),
+    need: cells(v.source.name) + 3 + (v.targetBoundary === null ? 0 : 2) + cells(v.target),
     main: width => {
-      const [a, b] = pair(v.source.name, v.target, width)
-      return [button(`row:${i}`, a), { text: ' → ', dim: true }, { text: b, ...boundaryStyle(v.targetBoundary, hues) }]
+      // The target's boundary on a swatch before its name: the name stays in the text tone.
+      const swatch: Segment[] = v.targetBoundary === null ? [] : [{ text: `${SWATCH} `, color: boundaryColour(v.targetBoundary, hues) ?? FAINT }]
+      const [a, b] = pair(v.source.name, v.target, width - swatch.length * 2)
+      return [button(`row:${i}`, a), { text: ' → ', dim: true }, ...swatch, { text: b }]
     },
   }))
   const d = issues.diagnostics
@@ -348,8 +356,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
               : [{ text: `▲ ${policy.total}`, color: STATUS_COLOURS.alert }]
       const body = listed('pol', violationEntries, columns, limit, selected < offset ? selected : -1)
       if (policy !== null && policy.evaluated && policy.count > violations.length) body.push(dimRow('pol-more', `   +${policy.count - violations.length} not listed`, columns))
-      if (body.length === 0) body.push(none('pol-none'))
-      return { key: 'policy', title: 'Policy violations', note: verdict, body }
+      return { key: 'policy', title: 'Policy violations', note: verdict, body, empty: 'none' }
     },
   }
   const diagBlock: Block = {
@@ -361,8 +368,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
           ? 'not reported'
           : [plural(d.errors, 'error', 'errors'), plural(d.warnings, 'warning', 'warnings'), ...(d.infos > 0 ? [plural(d.infos, 'note', 'notes')] : [])].join(' · ')
       const body = listed('diag', diagEntries, columns, limit, -1)
-      if (body.length === 0) body.push(none('diag-none'))
-      return { key: 'diag', title: 'Diagnostics', note: noteOf(counts), body }
+      return { key: 'diag', title: 'Diagnostics', note: noteOf(counts), body, empty: 'none' }
     },
   }
   const deadBlock: Block = {
@@ -371,8 +377,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
     make: (columns, limit) => {
       const deadNote = dead.items.length > 0 && dead.total !== String(dead.items.length) ? `${dead.total} · first ${dead.items.length}` : dead.total
       const body = listed('dead', deadEntries, columns, limit, selected >= offset ? selected - offset : -1)
-      if (body.length === 0) body.push(none('dead-none'))
-      return { key: 'dead', title: 'Dead code', note: noteOf(deadNote), body }
+      return { key: 'dead', title: 'Dead code', note: noteOf(deadNote), body, empty: 'none' }
     },
   }
   const largeBlock: Block = {
@@ -385,8 +390,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
       const max = Math.max(0, ...issues.largest.map(f => f.lines))
       const body: Row[] = shown.map((f, i) => tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, cutStart: true, link: f.loc }, spec, hues))
       body.push(...moreRows('large-window', window, issues.largest.length, columns))
-      if (body.length === 0) body.push(none('large-none'))
-      return { key: 'large', title: 'Largest files', note: noteOf(issues.largest.length > 0 ? 'lines' : ''), body }
+      return { key: 'large', title: 'Largest files', note: noteOf(issues.largest.length > 0 ? 'lines' : ''), body, empty: 'none' }
     },
   }
   return { left: [policyBlock, diagBlock], right: [deadBlock, largeBlock], rows: issueGrid([policyBlock, diagBlock, deadBlock, largeBlock]) }
@@ -446,7 +450,7 @@ export function detailArrangement(detail: DetailInput, tier: Tier, hues: Hues = 
     }
     return { left: [head, ...diff] }
   }
-  const label: Segment[] = [{ text: c.kind, dim: true }, ...(c.boundary === null ? [] : [{ text: ' · ', dim: true }, { text: boundaryLabel(c.boundary, hues), ...boundaryStyle(c.boundary, hues) }])]
+  const label: Segment[] = [{ text: c.kind, dim: true }, ...(c.boundary === null ? [] : [{ text: ' · ', dim: true }, ...chip(c.boundary, hues)])]
   const head: Block = {
     key: 'detail',
     make: columns => {

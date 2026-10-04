@@ -186,7 +186,7 @@ export function write(c: Canvas, x: number, y: number, segments: Segment[]): voi
 export type DiagramNode = {
   key: string
   label: string
-  /** The node's colour (its boundary's): its frame's, and its label's when the label is not pressable. */
+  /** The node's colour (its boundary's): its frame's, never its label's. */
   color?: string
   dim?: boolean
   press?: Press
@@ -217,7 +217,8 @@ export function box(c: Canvas, x: number, y: number, width: number, node: Diagra
   const label: Segment = {
     text,
     ...ground,
-    ...(node.color !== undefined && node.press === undefined ? { color: node.color } : node.dim ? { dim: true } : node.centre ? { color: HEADING } : {}),
+    // The label stays in a text tone: the node's colour is on its frame alone.
+    ...(node.dim ? { dim: true } : node.centre ? { color: HEADING } : {}),
     ...(node.selected || node.centre ? { bold: true } : {}),
     ...(node.press === undefined ? {} : { press: node.press }),
   }

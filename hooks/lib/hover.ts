@@ -12,7 +12,7 @@
 import { FRAME } from './cards'
 import { boundaryLabel, CARD_BG, HEADING, NO_HUES } from './palette'
 import type { Hues } from './palette'
-import { boundaryStyle, cells, fit, fitStart, grouped, segmentsWidth, spaces } from './rows'
+import { cells, chip, fit, fitStart, grouped, segmentsWidth, spaces } from './rows'
 import type { Preview, Row, Segment } from './rows'
 
 /** The widest a card is drawn, frame included, and the narrowest. */
@@ -50,7 +50,7 @@ function line(key: string, segments: Segment[], inner: number): Row {
  */
 export function previewCard(key: string, facts: CardFacts, room: number, hues: Hues = NO_HUES): Preview {
   const label = boundaryLabel(facts.boundary, hues)
-  const head: Segment[] = [{ text: facts.name, bold: true, color: HEADING }, ...(label === '' ? [] : [{ text: '  ' }, { text: label, ...boundaryStyle(facts.boundary, hues) }])]
+  const head: Segment[] = [{ text: facts.name, bold: true, color: HEADING }, ...(label === '' ? [] : [{ text: '  ' }, ...chip(facts.boundary, hues)])]
   const tops = facts.top.slice(0, CARD_TOP)
   const want = Math.max(segmentsWidth(head), segmentsWidth(facts.figures), ...tops.map(t => cells(t) + 2))
   const width = Math.max(Math.min(CARD_MIN, room), Math.min(CARD_MAX, room, want + 4))

@@ -15,8 +15,8 @@ import type { Hues } from './palette'
 import {
   baseName,
   blank,
-  boundaryStyle,
   cells,
+  chip,
   clip,
   dimRow,
   grouped,
@@ -373,7 +373,7 @@ export function reachRows(key: string, lead: string, boundaries: string[], colum
   const groups = (shown: number): Segment[][] => {
     const named = boundaries.slice(0, shown)
     const out: Segment[][] = lead === '' ? [] : [[{ text: lead, dim: true }]]
-    if (named.length > 0) out.push([{ text: 'reaching', dim: true }], ...named.map(b => [{ text: boundaryLabel(b, hues), ...boundaryStyle(b, hues) }]))
+    if (named.length > 0) out.push([{ text: 'reaching', dim: true }], ...named.map(b => chip(b, hues)))
     if (boundaries.length > named.length) out.push([{ text: `+${boundaries.length - named.length} more`, dim: true }])
     return out
   }
@@ -402,7 +402,8 @@ export function changesArrangement(input: ChangesInput, selected: number, tier: 
   const files: Block = { key: 'changes', grow: { length: input.files.length, min: FILES_MIN }, make: (columns, limit) => filesSection(input, selected, columns, limit, tier, hues) }
   if (input.files.length === 0) return { left: [files] }
   const tests: Block = { key: 'tests', grow: { length: input.tests.length, min: TESTS_MIN }, make: (columns, limit) => testsSection(input, columns, limit, hues) }
-  return { left: [files], right: [tests] }
+  // Wide, the two side by side on the grid, equally tall.
+  return { left: [files], right: [tests], rows: [[files, tests]], split: 0.5 }
 }
 
 /** The changed files' card, its list `limit` rows long around the marker. */

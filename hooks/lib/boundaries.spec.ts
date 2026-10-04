@@ -108,17 +108,18 @@ describe('heat map', () => {
   it('draws every cell in the one accent, none as a faint dot and a forbidden pair as a cross in the error colour', () => {
     const rows = heatRows(boundariesInput(dash())!, 60)
     expect(plainText(rows[0]!)).toMatch(/^ {3}from→to +A +B +C +D *$/)
-    expect(plainText(row(rows, 'heat-0')!)).toMatch(/^ {3}A tests +█+ █+ ·  +·  +$/)
+    expect(plainText(row(rows, 'heat-0')!)).toMatch(/^ ■ A tests +█+ █+ ·  +·  +$/)
     const core = row(rows, 'heat-1')!
-    expect(plainText(core)).toMatch(/^ {3}B core +× +█+ × +· +$/)
+    expect(plainText(core)).toMatch(/^ ■ B core +× +█+ × +· +$/)
     expect(core.segments.filter(s => s.text.includes('×')).every(s => s.color === 'error')).toBe(true)
     expect(core.segments.find(s => s.text.includes('·'))?.color).toBe('subtle')
     const tests = row(rows, 'heat-0')!.segments.find(s => s.text.startsWith('█'))!
     // One hue, whatever the boundary: the accent, its busiest step as a tile on the terminal grid.
     expect(tests.color).toBe(ACCENT)
     expect(tests.cell).toEqual({ glyph: '▇', fg: HEAT_KEYS[3] })
-    // Only the axis letter carries the boundary's colour.
-    expect(row(rows, 'heat-0')!.segments.find(s => s.text === 'A')?.color).toBe(boundaryColour('tests'))
+    // Only the swatch in the margin carries the boundary's colour: its letter and name stay in the text tones.
+    expect(row(rows, 'heat-0')!.segments.find(s => s.text === '■')?.color).toBe(boundaryColour('tests'))
+    expect(row(rows, 'heat-0')!.segments.find(s => s.text === 'A')?.color).toBe('text')
     expect(row(rows, 'heat-0')!.segments.find(s => s.text.includes('tests'))?.color).toBeUndefined()
     expect(rows.every(r => r.raster === 'heat')).toBe(true)
   })
@@ -153,7 +154,7 @@ describe('the marked boundary', () => {
       const text = focus(i)
       expect(text, b.label).toContain(b.label)
       const out = input.cells[i]!.some((n, to) => to !== i && n > 0)
-      expect(text, b.label).toMatch(out ? /depends on +\S+ [\d,]+/ : /depends on +nothing outside itself/)
+      expect(text, b.label).toMatch(out ? /depends on +■ \S+ [\d,]+/ : /depends on +nothing outside itself/)
     }
   })
   it('names the boundaries a policy forbids it to use, and a crossed one in the error colour', () => {
@@ -272,7 +273,9 @@ describe('the marked heat map cell', () => {
     for (const columns of WIDTHS) {
       const rows = arrange(boundariesArrangement(input, columns < 80 ? 'narrow' : columns <= 130 ? 'medium' : 'wide', NO_HUES, 0, null, view), columns, 1_000)
       const at = (key: string) => rows.findIndex(r => r.key.split('|').includes(key))
-      expect(at('coupling-head'), `${columns}`).toBeGreaterThan(at('focus-head'))
+      // Wide, beside it on the same row of the grid; narrower, under it.
+      if (columns > 130) expect(at('coupling-head'), `${columns}`).toBe(at('focus-head'))
+      else expect(at('coupling-head'), `${columns}`).toBeGreaterThan(at('focus-head'))
       for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
     }
     // What the marked boundary depends on is pressable: a press moves the cell there.

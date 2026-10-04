@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, KnossosView } from '../../types'
-import { paneInput, paneLayout, TABS } from './layout'
+import { detailInput, paneInput, paneLayout, TABS } from './layout'
+import { BOUNDARY_COLOURS } from './palette'
 import { cells, pressLabel, rowWidth } from './rows'
 import type { Row } from './rows'
 
@@ -89,5 +90,23 @@ describe('every row draws as laid out', () => {
   it('names a Button by what its segment draws, less the hotkey the engine puts before it', () => {
     expect(pressLabel({ text: 'j: ↓', press: { id: 'down', label: '↓', hotkey: 'j' } })).toBe('↓')
     expect(pressLabel({ text: 'ProjectModuleIndex::modu…', press: { id: 'row:1', label: 'ProjectModuleIndex::module_declares' } })).toBe('ProjectModuleIndex::modu…')
+  })
+
+  it('keeps every word in a text tone: a boundary colour is only ever on a mark (a swatch, a bar, a frame, an arrow)', () => {
+    const hues = new Set<string>(BOUNDARY_COLOURS)
+    const MARKS = /^[■━╸█▌─│╭╮╰╯├┤┬┴┼►◄▲▼╫╪ ]+$/
+    const detail = detailInput({ name: 'App\\Core\\X', label: 'X' }, { snapshot_id: 's1', name: 'App\\Core\\X', phase: 'done', detail: { status: 'ok', path: '/w', name: 'X', project_id: 'p1', snapshot_id: 's1', component: { name: 'App\\Core\\X', kind: 'class', path: 'src/X.php', line: 1, boundary: 'core', boundaries: ['core'], used_by: { count: 1, truncated: false, names: ['Y'], items: [{ name: 'Y', canonical_name: 'App\\Y', kind: 'class', boundary: 'module:cli (+composer:app/cli)', edges: 3 }] }, uses: { count: 0, truncated: false, names: [] } }, candidates: [] } }, '/w')
+    const first = paneInput(longDashboard, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, VIEW, 0, true)
+    expect(paneLayout({ ...first, detail }, 100, 60).body.some(r => r.key.split('|').includes('detail-head'))).toBe(true)
+    for (const tab of TABS) {
+      for (const columns of [40, 100, 200]) {
+        const input = paneInput(longDashboard, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, { ...VIEW, tab: tab.id }, 0, true)
+        for (const shown of [input, { ...input, detail }]) {
+          for (const r of paneLayout(shown, columns, 60).body) {
+            for (const seg of r.segments) if (seg.color !== undefined && hues.has(seg.color)) expect(seg.text, `${tab.id} ${columns} ${r.key}: "${seg.text}"`).toMatch(MARKS)
+          }
+        }
+      }
+    }
   })
 })

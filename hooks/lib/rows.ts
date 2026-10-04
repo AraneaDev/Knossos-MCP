@@ -413,7 +413,9 @@ export function tableSpec(columns: number, names: string[], boundaries: string[]
   const longest = Math.max(1, ...names.map(cells))
   // From the medium tier on a whole name wins over a longer gauge; narrow, names stop at their cap so the bars still compare.
   const nameNeed = (options.tier ?? 'narrow') === 'narrow' ? Math.min(nameMax, longest) : longest
-  const boundaryNeed = Math.min(BOUNDARY_MAX, Math.max(0, ...boundaries.map(cells)))
+  // A boundary is a chip: its swatch and a space before its label.
+  const boundaryLongest = Math.max(0, ...boundaries.map(cells))
+  const boundaryNeed = boundaryLongest === 0 ? 0 : Math.min(BOUNDARY_MAX, boundaryLongest) + 2
   const placeNeed = Math.min(PLACE_MAX, Math.max(0, ...(options.places ?? []).map(cells)))
   const kindNeed = Math.min(KIND_MAX, Math.max(0, ...(options.kinds ?? []).map(cells)))
   // Beside a file or kind column a name may stop at the typical one's width: the few longest are cut rather than the column lost.
@@ -489,9 +491,10 @@ export type TableLine = {
 }
 
 /**
- * One table row: marker, name (pressable when it has an id), boundary, bar
- * and numbers. The marked row keeps its `›` (a surface without backgrounds
- * still shows which) and is tinted across.
+ * One table row: marker, name (pressable when it has an id), boundary as a
+ * chip, bar and numbers. The boundary's colour is on its swatch and its
+ * bar, never on its name. The marked row keeps its `›` (a surface without
+ * backgrounds still shows which) and is tinted across.
  */
 export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hues = NO_HUES): Row {
   const style = boundaryStyle(line.boundary, hues)
@@ -506,8 +509,9 @@ export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hu
   ]
   if ((spec.kind ?? 0) > 0) segments.push({ text: ' ' }, { text: padEnd(fit(line.kind ?? '', spec.kind ?? 0), spec.kind ?? 0), dim: true })
   if (spec.boundary > 0) {
-    const label = fit(boundaryLabel(line.boundary, hues), spec.boundary)
-    segments.push({ text: ' ' }, { text: padEnd(label, spec.boundary), ...(line.repeat === true ? { dim: true } : style) })
+    // A chip: the boundary's colour on its swatch, its name in a text tone (fainter when the row above has the same).
+    const chipped = chip(line.boundary, hues, spec.boundary, line.repeat === true ? { color: FAINT } : { dim: true })
+    segments.push({ text: ' ' }, ...chipped, { text: spaces(spec.boundary - segmentsWidth(chipped)) })
   }
   if (spec.bar > 0) {
     const glyphs = bar(line.barValue ?? line.values[0] ?? 0, line.max, spec.bar)

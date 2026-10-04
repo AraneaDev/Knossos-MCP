@@ -116,12 +116,12 @@ describe('a file detail', () => {
     const rows = paneRows(shown, 90)
     const text = textOf(rows)
     const raw = rows.map(rawText).join('\n')
-    expect(plainText(row(rows, 'detail-head')!)).toMatch(/^Router\.php +Http$/)
+    expect(plainText(row(rows, 'detail-head')!)).toMatch(/^Router\.php +■ Http$/)
     expect(plainText(row(rows, 'detail-place')!)).toBe('src/Http/Router.php · PHP · 240 lines')
     expect(row(rows, 'detail-place')!.segments.find(s => s.link)!.link).toEqual({ path: `${ROOT}/src/Http/Router.php`, line: null })
     expect(text).toMatch(/Dependencies · used by 14 · uses 1 +edges/)
     // The dependents' boundaries in the project's colour order: declared ones first.
-    expect(plainText(row(rows, 'deps-reach')!)).toBe('   reaching Http Core tests')
+    expect(plainText(row(rows, 'deps-reach')!)).toBe('   reaching ■ Http ■ Core ■ tests')
     // Each file by its name in a box, its count on its edge; the twelve not listed as one box.
     expect(raw).toMatch(/│ Kernel\.php +├─+ 6 ─+[╮┤┼]/)
     expect(raw).toContain('│ +12 more')
@@ -132,9 +132,9 @@ describe('a file detail', () => {
     expect(plainText(row(rows, 'comps-more')!)).toBe('   +1 not listed')
     // Below fifty columns the two lists as tables.
     const narrow = paneRows(shown, 40)
-    expect(plainText(row(narrow, 'dep-0')!)).toMatch(/^› {2}…?[a-zA-Z/]*Kernel\.php +Core +━+ +6$/)
+    expect(plainText(row(narrow, 'dep-0')!)).toMatch(/^› {2}…?[a-zA-Z/]*Kernel\.php +■ Core +━+ +6$/)
     expect(plainText(row(narrow, 'deps-more')!)).toBe('   +12 not listed')
-    expect(plainText(row(narrow, 'use-0')!)).toMatch(/Container\.php +Core/)
+    expect(plainText(row(narrow, 'use-0')!)).toMatch(/Container\.php +■ Core/)
   })
 
   it('walks the dependents, then what it depends on (each a file), then the components, by the indexes their presses carry', () => {
@@ -214,9 +214,9 @@ describe('the drifted files', () => {
     const open = pane({ view: { drift: true } })
     const rows = paneRows(open, 90)
     expect(plainText(row(rows, 'drift-head')!)).toMatch(/^Drifted since the snapshot +23$/)
-    expect(plainText(row(rows, 'drift-0')!)).toMatch(/^› {2}src\/Http\/Router\.php +Http$/)
+    expect(plainText(row(rows, 'drift-0')!)).toMatch(/^› {2}src\/Http\/Router\.php +■ Http$/)
     expect(plainText(row(rows, 'drift-1')!)).toMatch(/^ \+ src\/Http\/New\.php/)
-    expect(plainText(row(rows, 'drift-2')!)).toMatch(/^ − src\/Core\/Gone\.php +Core$/)
+    expect(plainText(row(rows, 'drift-2')!)).toMatch(/^ − src\/Core\/Gone\.php +■ Core$/)
     expect(plainText(row(rows, 'drift-more')!)).toBe('   +20 not listed')
     expect(rows.findIndex(r => r.key === 'drift-head')).toBeGreaterThan(rows.findIndex(r => r.key === 'tabs'))
     // The marker is theirs while they are listed: the tab below draws none.

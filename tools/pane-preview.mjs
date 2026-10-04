@@ -417,13 +417,15 @@ const violated = {
 const JOB_IDLE = { phase: 'idle', lastAttemptAt: null }
 
 /** Every view the preview draws, by name. */
+/** The Overview's walk starts on the way to Changes when the session changed anything: the rows before its buckets. */
+const SESSION_ROWS = Object.keys(session.files).length > 0 ? 1 : 0
+
 const VIEWS = [
   ['overview', pane({ tab: 'overview' }, { turn: brief })],
   ['overview-fresh', pane({ tab: 'overview' }, { changes: layout.NO_CHANGES })],
   ['overview-keys', pane({ tab: 'overview', showKeys: true }, { turn: brief })],
   ['hubs', pane({ tab: 'hubs', selected: 1 })],
   ['hubs-hover', pane({ tab: 'hubs', selected: 2 }, { hover: true })],
-  ['overview-hover', pane({ tab: 'overview', selected: 4 }, { turn: brief, hover: true })],
   ['hubs-copied', pane({ tab: 'hubs', selected: 1 }, { feedback: { text: '✓ copied StableId', tone: 'ok', until: NOW + 2000 } })],
   ['hubs-no-editor', pane({ tab: 'hubs', selected: 1 }, { feedback: { text: '✗ no editor · path copied', tone: 'alert', until: NOW + 2000 } })],
   ['hubs-filtering', pane({ tab: 'hubs', filtering: true, filter: 'query' })],
@@ -451,7 +453,10 @@ const VIEWS = [
     : [['file-detail-diff-no-git', pane({ tab: 'changes' }, { shown: { ...fileDetail, diff: diffLib.diffView({ name: 'x', label: 'x', file: true, changed: true }, null, { status: 'no-git' }) } })]]),
   ['file-detail-loading', pane({ tab: 'changes' }, { shown: { label: 'src/Query/DashboardService.php', loading: true, messages: null, component: null, file: null } })],
   ...(dashboard.freshness.drifted?.length ? [['drift', pane({ tab: 'overview', drift: true }, { turn: brief })]] : []),
-  ['overview-hub-marked', pane({ tab: 'overview', selected: 5 }, { turn: brief })],
+  // The Overview's marker on the hubs bucket, then on the strongest flow; Hubs narrowed to that bucket.
+  ['overview-bucket', pane({ tab: 'overview', selected: SESSION_ROWS + Math.max(0, (dashboard.in_degree?.buckets.length ?? 1) - 1) })],
+  ['overview-flow', pane({ tab: 'overview', selected: SESSION_ROWS + (dashboard.in_degree?.buckets.length ?? 0) })],
+  ['hubs-degree', pane({ tab: 'hubs', degree: dashboard.in_degree?.buckets.at(-1) ?? null })],
   ['detail-loading', pane({ tab: 'hubs' }, { shown: { label: 'StableId', loading: true, messages: null, component: null } })],
   ['allow-offer', pane({ tab: 'overview' }, { turn: refused })],
   ['allow-confirm', pane({ tab: 'overview' }, { turn: refused, allow: { phase: 'confirming', root, reason: null } })],
