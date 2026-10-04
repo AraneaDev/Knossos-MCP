@@ -15,6 +15,7 @@ import {
     copyFile,
     mkdir,
     mkdtemp,
+    readdir,
     readFile,
     rm,
     writeFile,
@@ -24,7 +25,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { clearInterval, setInterval } from "node:timers";
 import { promisify } from "node:util";
-import { plain, send, snap, type, waitFor } from "./driver.mjs";
+import { cursor, plain, send, snap, type, waitFor } from "./driver.mjs";
 import { framePage } from "./frame.mjs";
 import { buildGif } from "./gif.mjs";
 import { renderPng } from "./render.mjs";
@@ -36,7 +37,7 @@ import {
     registerCleanup,
     runCleanups,
 } from "./session.mjs";
-import { FRAME_MS, SHOTS, WAIT_MS } from "./shots.mjs";
+import { FIXTURE, FRAME_MS, SHOTS, WAIT_MS } from "./shots.mjs";
 
 const run = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -71,48 +72,71 @@ const git = (dir, ...args) =>
     run("git", ["-C", dir, ...args]).then(({ stdout }) => stdout.trim());
 
 /**
- * A detached worktree of HEAD, named like this checkout so the pane's header
- * reads the same. Its removal is registered before it is added, so a signal
- * while git adds it still removes it. Never `git config` in it: in a linked
- * worktree that writes the shared repository config.
+ * A detached worktree of HEAD at `<home>/<name of the repo>`, so the pane's
+ * header reads the same as this checkout's. Its removal is registered before
+ * it is added, so a signal or an error while git adds it still removes it.
+ * Never `git config` in it: in a linked worktree that writes the shared
+ * repository config.
  */
-export async function throwawayWorktree(repo = REPO) {
-    const parent = await mkdtemp(
-        path.join(os.tmpdir(), "knossos-capture-tree-"),
-    );
-    const dir = path.join(parent, path.basename(repo));
+export async function throwawayWorktree(repo, { home, runGit = git }) {
+    const dir = path.join(home, path.basename(repo));
     registerCleanup(async () => {
-        await git(repo, "worktree", "remove", "--force", dir).catch(() => {});
-        await rm(parent, { recursive: true, force: true });
-        await git(repo, "worktree", "prune").catch(() => {});
+        await runGit(repo, "worktree", "remove", "--force", dir).catch(
+            () => {},
+        );
+        await rm(dir, { recursive: true, force: true });
+        await runGit(repo, "worktree", "prune").catch(() => {});
     });
-    await git(repo, "worktree", "add", "--detach", dir, "HEAD");
+    await mkdir(home, { recursive: true });
+    await runGit(repo, "worktree", "add", "--detach", dir, "HEAD");
     return dir;
 }
 
+/** The branch origin's HEAD names (`origin/main` gives `main`), or main when there is none. */
+export async function defaultBranch(dir, runGit = git) {
+    const ref = await runGit(
+        dir,
+        "symbolic-ref",
+        "--short",
+        "refs/remotes/origin/HEAD",
+    ).catch(() => "");
+    return ref.includes("/") ? ref.slice(ref.indexOf("/") + 1) : "main";
+}
+
+const knossosBin = path.join(REPO, "bin", "knossos");
+
 /**
- * A copy of the real graph with the worktree allowed and freshly scanned
- * into it, for each session to copy in turn. With `base`, the commit where
- * HEAD left main is scanned first, so the Branch tab has a snapshot to
- * compare with. The real data dir is only read.
+ * A copy of the real graph in a fresh dir under `tmpRoot`, with the worktree
+ * allowed and freshly scanned into it, for each session to copy in turn.
+ * With `base`, the commit where HEAD left the default branch is scanned
+ * first, so the Branch tab has a snapshot to compare with. `realDataDir` is
+ * only ever read: the stage is refused inside it before anything is made.
  */
 export async function stageGraph(
     worktree,
-    { source = REAL_DATA, base = false } = {},
+    {
+        source = REAL_DATA,
+        realDataDir = REAL_DATA,
+        tmpRoot = os.tmpdir(),
+        base = false,
+        runGit = git,
+        runScan = (args, options) => run(knossosBin, args, options),
+    } = {},
 ) {
-    const stage = await mkdtemp(
-        path.join(os.tmpdir(), "knossos-capture-stage-"),
-    );
+    const guard = (dir) =>
+        guardEnv(
+            { KNOSSOS_DATA_DIR: dir, CLAUDE_CONFIG_DIR: dir },
+            { realDataDir, realConfigDir: REAL_CONFIG },
+        );
+    guard(path.join(tmpRoot, "knossos-capture-stage"));
+    const stage = await mkdtemp(path.join(tmpRoot, "knossos-capture-stage-"));
     registerCleanup(() => rm(stage, { recursive: true, force: true }));
+    guard(stage);
     const env = {
         ...process.env,
         KNOSSOS_DATA_DIR: stage,
         KNOSSOS_ROOTS_FILE: path.join(stage, "roots.json"),
     };
-    guardEnv(
-        { ...env, CLAUDE_CONFIG_DIR: stage },
-        { realDataDir: source, realConfigDir: REAL_CONFIG },
-    );
     await copyData(source, stage);
     const rootsFile = env.KNOSSOS_ROOTS_FILE;
     const roots = JSON.parse(
@@ -121,20 +145,39 @@ export async function stageGraph(
     roots.roots = [...new Set([...(roots.roots ?? []), worktree])];
     await writeFile(rootsFile, `${JSON.stringify(roots, null, 4)}\n`);
     const scan = () =>
-        run(
-            path.join(REPO, "bin", "knossos"),
-            ["scan", worktree, "--snapshot-retention=5"],
-            { env, maxBuffer: 64 * 1024 * 1024 },
-        );
+        runScan(["scan", worktree, "--snapshot-retention=5"], {
+            env,
+            maxBuffer: 64 * 1024 * 1024,
+        });
     if (base) {
-        const head = await git(worktree, "rev-parse", "HEAD");
-        const fork = await git(worktree, "merge-base", "HEAD", "main");
-        await git(worktree, "checkout", "--quiet", "--detach", fork);
+        const head = await runGit(worktree, "rev-parse", "HEAD");
+        const fork = await runGit(
+            worktree,
+            "merge-base",
+            "HEAD",
+            await defaultBranch(worktree, runGit),
+        );
+        await runGit(worktree, "checkout", "--quiet", "--detach", fork);
         await scan();
-        await git(worktree, "checkout", "--quiet", "--detach", head);
+        await runGit(worktree, "checkout", "--quiet", "--detach", head);
     }
     await scan();
     return stage;
+}
+
+/**
+ * Puts the worktree back to HEAD between shots: an earlier shot's edit, or a
+ * file it left, is not the next one's. Run only after git itself says the
+ * dir is the top of a worktree, and never this checkout.
+ */
+async function resetTree(worktree) {
+    const top = await git(worktree, "rev-parse", "--show-toplevel");
+    if (top !== worktree || worktree === REPO)
+        throw new Error(
+            `refusing to clean ${worktree}: not the capture's worktree`,
+        );
+    await run("git", ["checkout", "--quiet", "--", "."], { cwd: worktree });
+    await run("git", ["clean", "-fdq"], { cwd: worktree });
 }
 
 const pad = (n) => String(n).padStart(5, "0");
@@ -175,17 +218,6 @@ export function paneFocused(ansi) {
 /** The pane's left border column, from the first row's plain text. */
 const borderColumn = (ansi) => [...plain(ansi).split("\n")[0]].indexOf("│");
 
-async function cursor(session) {
-    const { stdout } = await run("tmux", [
-        "display-message",
-        "-p",
-        "-t",
-        session.name,
-        "#{cursor_x}",
-    ]);
-    return Number(stdout.trim());
-}
-
 /**
  * Gives the pane the keyboard with ctrl+x tab, which Claude Code toggles: it
  * is sent only while the pane (or, with `field`, a field in it, where the
@@ -223,13 +255,37 @@ async function focusPane(session, { field = false, prompt = false } = {}) {
     throw error;
 }
 
-/** The text in Claude Code's prompt: the last line that starts with its `❯`. */
+/**
+ * The text in Claude Code's prompt: the last line that starts with its `❯`,
+ * and the lines a long text wraps onto, up to the box's lower rule.
+ */
 export function promptText(screen) {
-    const line = plain(screen)
-        .split("\n")
-        .filter((l) => l.startsWith("❯"))
-        .at(-1);
-    return line === undefined ? "" : line.slice(1).trim();
+    const lines = plain(screen).split("\n");
+    const at = lines.findLastIndex((l) => l.startsWith("❯"));
+    if (at === -1) return "";
+    const parts = [lines[at].slice(1).trim()];
+    for (const line of lines.slice(at + 1)) {
+        if (line.startsWith("─") || line.trim() === "") break;
+        parts.push(line.trim());
+    }
+    return parts.filter((p) => p !== "").join(" ");
+}
+
+/**
+ * Why the prompt is not ready to send `expect`, or null when it is: the
+ * prompt line must read exactly `expect`; a trailing space, which no line
+ * shows, is read from the cursor, which then stands one past it (the text
+ * starts two columns in, after `❯ `); and nothing on screen may match `absent`.
+ */
+export function promptReady(screen, cursorX, expect, absent) {
+    const text = promptText(screen);
+    if (text !== expect.trim())
+        return `the prompt reads "${text}", not "${expect.trim()}"`;
+    if (expect.endsWith(" ") && cursorX !== 2 + [...expect].length)
+        return `the cursor is at column ${cursorX}, not past "${expect}"`;
+    if (absent !== undefined && new RegExp(absent, "m").test(plain(screen)))
+        return `the screen still shows ${absent}`;
+    return null;
 }
 
 /**
@@ -362,6 +418,25 @@ const until = (session, step, re) =>
 /** Steps a GIF shows only the outcome of. */
 const QUICK = ["send", "press", "focus", "widen"];
 
+/** Where the edit goes: `text` as a line above the first line holding `anchor`. */
+export function insertBefore(content, anchor, text, file = "the file") {
+    const lines = content.split("\n");
+    const at = lines.findIndex((l) => l.includes(anchor));
+    if (at === -1)
+        throw new Error(
+            `edit: no line holds "${anchor}" in ${file}; FIXTURE.editAnchor needs updating`,
+        );
+    lines.splice(at, 0, text);
+    return lines.join("\n");
+}
+
+/** A wait's timeout, naming the FIXTURE entry its match depends on. */
+function fixtureError(error, key) {
+    if (key === undefined) return error;
+    error.message += ` (it waits on FIXTURE.${key} = "${FIXTURE[key]}", which the graph or the source may no longer have)`;
+    return error;
+}
+
 /**
  * Runs one shot's steps in its session (see shots.mjs for what each does).
  * Returns the GIF's frames (ANSI), when the shot records, and the stills by name.
@@ -369,105 +444,164 @@ const QUICK = ["send", "press", "focus", "widen"];
 export async function playShot(session, shot, { worktree, record = false }) {
     const tape = recorder(session, record);
     const stills = {};
-    try {
-        for (const step of shot.steps) {
-            const from = tape.mark();
-            switch (step.do) {
-                case "type":
-                    if (step.delayMs) {
-                        // By words for a long text, as a fast typist's bursts; by keys for a short one.
-                        const parts =
-                            step.words === true
-                                ? step.text.split(/(?<= )/)
-                                : [...step.text];
-                        for (const part of parts) {
-                            await type(session, part);
-                            await sleep(step.delayMs);
-                        }
-                    } else {
-                        await type(session, step.text);
+    const runStep = async (step) => {
+        const from = tape.mark();
+        switch (step.do) {
+            case "type":
+                if (step.delayMs) {
+                    // By words for a long text, as a fast typist's bursts; by keys for a short one.
+                    const parts =
+                        step.words === true
+                            ? step.text.split(/(?<= )/)
+                            : [...step.text];
+                    for (const part of parts) {
+                        await type(session, part);
+                        await sleep(step.delayMs);
                     }
-                    break;
-                case "send":
-                    await send(session, ...step.keys);
-                    break;
-                case "press":
-                    await pressKey(
-                        session,
-                        Array.isArray(step.key) ? step.key : [step.key],
-                        step.until,
-                    );
-                    break;
-                case "focus":
-                    await focusPane(session, {
-                        field: step.field === true,
-                        prompt: step.prompt === true,
-                    });
-                    break;
-                case "widen":
-                    await widen(session, step.columns);
-                    break;
-                case "wait": {
-                    const re = new RegExp(step.match, "m");
-                    const test =
-                        step.absent === true
-                            ? (s) => !re.test(s)
-                            : (s) => re.test(s);
-                    const from = tape.mark();
-                    await waitFor(session, test, {
-                        timeoutMs: step.timeoutMs ?? 30000,
-                        step: step.step,
-                    });
-                    tape.squeeze(from, step.lapse ?? 4);
-                    await sleep(WAIT_MS);
-                    break;
+                } else {
+                    await type(session, step.text);
                 }
-                case "hold":
-                    await tape.hold(step.ms);
-                    break;
-                case "edit": {
-                    const file = path.join(worktree, step.file);
-                    const lines = (await readFile(file, "utf8")).split("\n");
-                    lines.splice(step.line - 1, 0, step.text);
-                    await writeFile(file, lines.join("\n"));
-                    break;
-                }
-                case "cut":
-                    tape.stop();
-                    break;
-                case "still":
-                    stills[step.name] = await settle(session);
-                    break;
-                default:
-                    throw new Error(`unknown step: ${step.do}`);
-            }
-            if (step.until !== undefined && step.do !== "press")
-                await until(session, step.do, step.until);
-            // A key and its checks show as their outcome, not as the time the checks took.
-            if (QUICK.includes(step.do)) tape.squeeze(from, 3);
-            if (process.env.CAPTURE_TRACE)
-                process.stderr.write(
-                    `${step.do} ${step.step ?? step.key ?? step.text ?? ""}: ${tape.mark()} frames\n`,
+                break;
+            case "send":
+                await send(session, ...step.keys);
+                break;
+            case "submit":
+                await submit(session, step, runStep);
+                break;
+            case "press":
+                await pressKey(
+                    session,
+                    Array.isArray(step.key) ? step.key : [step.key],
+                    step.until,
                 );
+                break;
+            case "focus":
+                await focusPane(session, {
+                    field: step.field === true,
+                    prompt: step.prompt === true,
+                });
+                break;
+            case "widen":
+                await widen(session, step.columns);
+                break;
+            case "wait": {
+                const re = new RegExp(step.match, "m");
+                const test =
+                    step.absent === true
+                        ? (s) => !re.test(s)
+                        : (s) => re.test(s);
+                await waitFor(session, test, {
+                    timeoutMs: step.timeoutMs ?? 30000,
+                    step: step.step,
+                }).catch((error) => {
+                    throw fixtureError(error, step.fixture);
+                });
+                tape.squeeze(from, step.lapse ?? 4);
+                await sleep(WAIT_MS);
+                break;
+            }
+            case "hold":
+                await tape.hold(step.ms);
+                break;
+            case "edit": {
+                const file = path.join(worktree, step.file);
+                await writeFile(
+                    file,
+                    insertBefore(
+                        await readFile(file, "utf8"),
+                        step.before,
+                        step.text,
+                        step.file,
+                    ),
+                );
+                break;
+            }
+            case "cut":
+                tape.stop();
+                break;
+            case "still":
+                stills[step.name] = await settle(session);
+                break;
+            default:
+                throw new Error(`unknown step: ${step.do}`);
         }
+        if (step.until !== undefined && step.do !== "press")
+            await until(session, step.do, step.until);
+        // A key and its checks show as their outcome, not as the time the checks took.
+        if (QUICK.includes(step.do)) tape.squeeze(from, 3);
+        if (process.env.CAPTURE_TRACE)
+            process.stderr.write(
+                `${step.do} ${step.step ?? step.key ?? step.text ?? step.expect ?? ""}: ${tape.mark()} frames\n`,
+            );
+    };
+    try {
+        for (const step of shot.steps) await runStep(step);
     } finally {
         tape.stop();
     }
     return { frames: tape.frames, stills };
 }
 
-async function shootOne(name, shot, { worktree, stage, out }) {
+/**
+ * Types into the prompt with the step's own steps, and sends Enter only once
+ * the prompt reads exactly what it should (see promptReady). Otherwise the
+ * prompt is cleared and typed again, twice at most, and the step fails with
+ * nothing sent.
+ */
+export async function submit(session, step, runStep, { attempts = 3 } = {}) {
+    let why = null;
+    for (let n = 0; n < attempts; n += 1) {
+        for (const sub of step.steps) await runStep(sub);
+        await sleep(300);
+        why = promptReady(
+            await snap(session),
+            await cursor(session),
+            step.expect,
+            step.absent,
+        );
+        if (why === null) {
+            await send(session, "Enter");
+            return;
+        }
+        await send(session, "C-u");
+        await sleep(300);
+    }
+    const error = new Error(
+        `submit "${step.expect.trim()}": ${why}; Enter not sent`,
+    );
+    error.lastFrame = plain(await snap(session));
+    throw error;
+}
+
+/** The GIF's length from the frames it was built from, refused past the shot's `maxMs`. */
+export async function checkLength(dir, shot) {
+    const count = (await readdir(dir)).filter((f) =>
+        /^\d{5}\.png$/.test(f),
+    ).length;
+    const ms = count * FRAME_MS;
+    if (shot.maxMs !== undefined && ms > shot.maxMs)
+        throw new Error(
+            `the GIF plays ${(ms / 1000).toFixed(1)} s, past ${(shot.maxMs / 1000).toFixed(0)} s: shorten the holds in shots.mjs`,
+        );
+    return ms;
+}
+
+async function shootOne(
+    name,
+    shot,
+    { worktree, stage, out, run: runDir, home },
+) {
     const [cols, rows] = shot.size;
     const view = { cols, rows, theme: shot.theme };
-    // A fresh tree for every shot: an earlier shot's edit is not this one's.
-    await git(worktree, "checkout", "--quiet", "--", ".");
+    await resetTree(worktree);
     const session = await createSession({
         project: worktree,
         dataDir: stage,
         ...view,
         pluginDir: path.join(REPO, ".plugin"),
-        // The header then names the project `~/Knossos-MCP`.
-        home: path.dirname(worktree),
+        tmpRoot: runDir,
+        // The worktree lies in it, so the header names the project `~/Knossos-MCP`.
+        home,
         ...(shot.claude ? { claudeArgs: shot.claude } : {}),
     });
     try {
@@ -476,7 +610,6 @@ async function shootOne(name, shot, { worktree, stage, out }) {
             worktree,
             record,
         });
-        await session.close();
         const dir = path.join(OUT, name);
         await rm(dir, { recursive: true, force: true });
         await mkdir(dir, { recursive: true });
@@ -491,9 +624,10 @@ async function shootOne(name, shot, { worktree, stage, out }) {
                 pngs,
                 view,
             );
+            const ms = await checkLength(dir, shot);
             const built = await buildGif(dir, path.join(out, `${name}.gif`));
             process.stdout.write(
-                `${name}: ${frames.length} frames (${((frames.length * FRAME_MS) / 1000).toFixed(1)} s), ${built.bytes} bytes${built.mp4 ? `, ${built.mp4}` : ""}\n`,
+                `${name}: ${frames.length} frames (${(ms / 1000).toFixed(1)} s), ${built.bytes} bytes${built.mp4 ? `, ${built.mp4}` : ""}\n`,
             );
         }
         const named = Object.entries(stills);
@@ -522,12 +656,24 @@ export async function main(argv = process.argv.slice(2)) {
     installExitHandlers();
     let current = null;
     try {
-        const worktree = await throwawayWorktree();
+        // One temp dir holds the run: HOME with the worktree in it, the stage and every session.
+        const runDir = await mkdtemp(
+            path.join(os.tmpdir(), "knossos-capture-run-"),
+        );
+        registerCleanup(() => rm(runDir, { recursive: true, force: true }));
+        const home = path.join(runDir, "home");
+        const worktree = await throwawayWorktree(REPO, { home });
         const base = only.some((s) => SHOTS[s].base === true);
-        const stage = await stageGraph(worktree, { base });
+        const stage = await stageGraph(worktree, { base, tmpRoot: runDir });
         for (const name of only) {
             current = name;
-            await shootOne(name, SHOTS[name], { worktree, stage, out });
+            await shootOne(name, SHOTS[name], {
+                worktree,
+                stage,
+                out,
+                run: runDir,
+                home,
+            });
         }
         return 0;
     } catch (error) {

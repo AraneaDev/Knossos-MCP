@@ -6,14 +6,20 @@
  * - `type`: text typed into whatever has the keyboard (`delayMs` between keys,
  *   or between words with `words`).
  * - `send`: tmux key names, sent as they are.
+ * - `submit`: runs its `steps` (typing into the prompt), then sends Enter only
+ *   once the prompt line reads exactly `expect` and nothing matches `absent`;
+ *   otherwise the prompt is cleared (ctrl+u) and typed again, twice at most,
+ *   and the step fails without Enter.
  * - `press`: a key for the pane; the pane is given the keyboard first if it lost it.
  * - `focus`: gives the pane the keyboard (ctrl+x tab) unless it has it; with
  *   `field`, its open field; with `prompt`, hands it back to the prompt (Escape).
  * - `widen`: widens the pane (ctrl+x left) until it is `columns` wide.
  * - `wait`: a visible beat: until `match` (a regex source, multiline) is on
- *   screen, or gone with `absent`, then a moment to read it.
+ *   screen, or gone with `absent`, then a moment to read it. `fixture` names
+ *   the FIXTURE entry the match depends on, for the error on a timeout.
  * - `hold`: keeps the screen as it is for `ms` (in a GIF, copies of the last frame).
- * - `edit`: writes a line into a file of the worktree, as an edit would.
+ * - `edit`: writes `text` into a file of the worktree, above the first line
+ *   holding `before`, as an edit would.
  * - `cut`: ends the GIF's recording; the steps after it only take stills.
  * - `still`: once nothing on screen moves, keeps the screen as `name`.png.
  *
@@ -25,12 +31,39 @@
  * the bindings Claude Code gives a plugin pane (ctrl+x tab, ctrl+x left).
  */
 
+/**
+ * What the shots expect of this project's graph and source. Each comes from
+ * somewhere a refactor can move it; change it here, once, when it does.
+ */
+export const FIXTURE = {
+    // A top hub: the class in src/Query/ResultEnvelope.php, third on the Hubs tab
+    // sorted by in-degree (so two `j` mark it). Its blast radius has three rings.
+    hub: "ResultEnvelope",
+    // Letters of the hub's name the finder is given; ResultEnvelope must be the first match.
+    hubLetters: "ResultEnv",
+    // A command that reaches the hub in a few hops: ServeCommand::run in src/Cli/Command/ServeCommand.php.
+    routeFrom: "ServeCommand::run",
+    // The boundary pair the Boundaries tab marks first: the tests and core boundaries of knossos.json,
+    // the heaviest flow (tests depend on core the most).
+    boundaryPair: "tests → core",
+    // The label hooks/lib/diagram.ts draws under a cycle once the diagram closes the loop.
+    cycleDrawn: "back to the start",
+    // The small file the hero's turn and the Changes still edit, and the line the edit goes above.
+    edited: "hooks/lib/paths.ts",
+    editAnchor: "function normalise",
+};
+
+/** A FIXTURE value inside a regex, matched as written. */
+const lit = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** The GIF's frame interval: 8 frames a second. */
 export const FRAME_MS = 125;
 /** How long a `wait` lets the screen stand once its text is there. */
 export const WAIT_MS = 1000;
 /** What a `wait` costs in the GIF, on average: the time-lapsed wait itself plus WAIT_MS. */
 export const WAIT_BUDGET_MS = 1500;
+/** The longest the hero may play. */
+export const HERO_MAX_MS = 30000;
 
 const SIZES = { hero: [160, 48], doc: [160, 48], wide: [224, 56] };
 /** How wide the pane is drawn at each size: past 130 columns it puts the marked row's detail beside a tab. */
@@ -39,6 +72,7 @@ const PANE = { 160: 96, 224: 140 };
 export const STEP_KINDS = [
     "type",
     "send",
+    "submit",
     "press",
     "focus",
     "widen",
@@ -61,20 +95,32 @@ const still = (name) => ({ do: "still", name });
 /** Claude Code is up: its prompt, not a dialog's numbered choice. */
 const ready = [wait("prompt", String.raw`^❯(?! *\d\.)`, { timeoutMs: 90000 })];
 
+/** A row of the slash command list: the command, two spaces or more, its description. */
+export const COMMAND_LIST = String.raw`^\s*/knossos(:graph)?\s{2,}\S`;
+
 /**
- * Opens the pane: `/knossos`, then a space once the command is listed (it
- * closes the list: Enter on the list runs the highlighted knossos:graph skill
- * instead, which starts a model turn), then Enter. The pane is given the
- * keyboard and widened to `columns`, so the tabs are named.
+ * `/knossos`, then a space once the command is listed: the space closes the
+ * list, since Enter on the list runs the highlighted knossos:graph skill
+ * instead, which starts a model turn. Enter goes only once the prompt reads
+ * `/knossos ` and the list is gone.
  */
+export const knossosCommand = {
+    do: "submit",
+    expect: "/knossos ",
+    absent: COMMAND_LIST,
+    steps: [
+        {
+            do: "type",
+            text: "/knossos",
+            until: String.raw`^\s*/knossos\s+Toggle`,
+        },
+        { do: "type", text: " " },
+    ],
+};
+
+/** Opens the pane, gives it the keyboard and widens it to `columns`, so the tabs are named. */
 const openPane = (columns, beat = true) => [
-    { do: "type", text: "/knossos", until: String.raw`^\s*/knossos\s+Toggle` },
-    {
-        do: "type",
-        text: " ",
-        until: String.raw`^(?![\s\S]*^\s*/knossos:graph)`,
-    },
-    { do: "send", keys: ["Enter"], until: "Overview" },
+    { ...knossosCommand, until: "Overview" },
     { do: "focus" },
     { do: "widen", columns },
     beat
@@ -82,12 +128,21 @@ const openPane = (columns, beat = true) => [
         : { do: "focus", until: String.raw`Overview\s+Hubs\s+Boundaries` },
 ];
 
+/** A row the marker stands on, naming `name`. */
+const marked = (name) => String.raw`›\s+${lit(name)}\s`;
+
 /** The finder's field, given the keyboard: `f` opens it, and a first key may not reach it. */
-const find = (text, match, delayMs = 0) => [
+const find = (text, fixture, delayMs = 0) => [
     press("f", String.raw`⌕ Find`),
     { do: "focus", field: true },
     { do: "type", text, delayMs },
-    wait(`found ${text}`, match),
+    wait(`found ${text}`, marked(FIXTURE[fixture]), { fixture }),
+];
+
+/** Finds the hub and opens its detail. */
+const openHub = (delayMs = 0) => [
+    ...find(FIXTURE.hubLetters, "hub", delayMs),
+    { do: "send", keys: ["Enter"], until: "Blast radius" },
 ];
 
 /** A still of one view: open the pane, do `steps`, keep the screen as `name`. */
@@ -102,22 +157,39 @@ const pane = (
     steps: [...ready, ...openPane(PANE[size[0]], false), ...steps, still(name)],
 });
 
-/** The edit the hero's model turn makes, and the one the Changes stills make by hand. */
-const EDITED = "hooks/lib/paths.ts";
-const PROMPT =
-    "Add a one-line comment above the normalise function in hooks/lib/paths.ts saying what it does. Edit only that file and run nothing.";
+/** The hero's one prompt. */
+export const PROMPT = `Add a one-line comment above the normalise function in ${FIXTURE.edited} saying what it does. Edit only that file and run nothing.`;
+
+/** The edit the Changes still makes by hand, where the hero's turn makes it. */
 const handEdit = {
     do: "edit",
-    file: EDITED,
-    line: 8,
+    file: FIXTURE.edited,
+    before: FIXTURE.editAnchor,
     text: "// Resolves . and .. segments, so two spellings of one path compare equal.",
 };
+
+const hubDetail = (theme) =>
+    pane(
+        theme === "light" ? "hubs-detail-light" : "hubs-detail",
+        [
+            press("2"),
+            press("j"),
+            press("j"),
+            wait(
+                "hub detail",
+                String.raw`${marked(FIXTURE.hub)}[\s\S]*Dependencies · used by`,
+                { fixture: "hub" },
+            ),
+        ],
+        { size: SIZES.wide, theme },
+    );
 
 export const SHOTS = {
     hero: {
         size: SIZES.hero,
         theme: "dark",
         gif: true,
+        maxMs: HERO_MAX_MS,
         // One model turn, kept to the worktree: only Read and Edit exist, and edits are accepted.
         claude: ["--tools", "Read,Edit", "--permission-mode", "acceptEdits"],
         steps: [
@@ -128,30 +200,29 @@ export const SHOTS = {
             press("2"),
             press("j"),
             press("j"),
-            wait("hub marked", String.raw`›\s+ResultEnvelope\s`),
+            wait("hub marked", marked(FIXTURE.hub), { fixture: "hub" }),
             hold(1500),
             press("4"),
-            wait("cycle drawn", String.raw`back to the start`),
+            wait("cycle drawn", lit(FIXTURE.cycleDrawn), {
+                fixture: "cycleDrawn",
+            }),
             hold(1500),
             press("3"),
             wait("boundaries", String.raw`Per boundary`),
             hold(1500),
-            ...find("ResultEnv", String.raw`›\s+ResultEnvelope\s`, 60),
-            { do: "send", keys: ["Enter"], until: "Blast radius" },
+            ...openHub(60),
             press("End"),
-            wait("rings", String.raw`◉ ResultEnvelope`),
+            wait("rings", String.raw`◉ ${lit(FIXTURE.hub)}`, {
+                fixture: "hub",
+            }),
             hold(2000),
             // The prompt gets the keyboard back for the model turn: typed into the pane, its letters would be keys.
             { do: "focus", prompt: true },
-            // Checked before Enter: only text that reached the prompt is sent.
             {
-                do: "type",
-                text: PROMPT,
-                delayMs: 60,
-                words: true,
-                until: "Edit only that file",
+                do: "submit",
+                expect: PROMPT,
+                steps: [{ do: "type", text: PROMPT, delayMs: 60, words: true }],
             },
-            { do: "send", keys: ["Enter"] },
             // The turn's note: the band over the prompt sums up what the edit reaches.
             wait("note on the turn", String.raw`knossos · \d+ files? →`, {
                 timeoutMs: 180000,
@@ -160,8 +231,9 @@ export const SHOTS = {
             press("b", String.raw`Per boundary`),
             press("Home"),
             press("6", String.raw`± Changes this session`),
-            wait("change listed", String.raw`›\s+hooks/lib/paths\.ts`, {
+            wait("change listed", marked(FIXTURE.edited), {
                 timeoutMs: 60000,
+                fixture: "edited",
             }),
             press("o"),
             wait("diff", String.raw`Changed since the session began`),
@@ -173,17 +245,7 @@ export const SHOTS = {
                 timeoutMs: 180000,
             }),
             { do: "focus", prompt: true },
-            {
-                do: "type",
-                text: "/knossos",
-                until: String.raw`^\s*/knossos\s+Toggle`,
-            },
-            {
-                do: "type",
-                text: " ",
-                until: String.raw`^(?![\s\S]*^\s*/knossos:graph)`,
-            },
-            { do: "send", keys: ["Enter"] },
+            knossosCommand,
             wait("band", String.raw`knossos · `, { timeoutMs: 120000 }),
             still("band"),
         ],
@@ -194,43 +256,19 @@ export const SHOTS = {
     "overview-light": pane(
         "overview-light",
         [wait("overview", String.raw`Cross-boundary flows`)],
-        {
-            theme: "light",
-        },
+        { theme: "light" },
     ),
-    "hubs-detail": pane(
-        "hubs-detail",
-        [
-            press("2"),
-            press("j"),
-            press("j"),
-            wait(
-                "hub detail",
-                String.raw`›\s+ResultEnvelope\s[\s\S]*Dependencies · used by`,
-            ),
-        ],
-        { size: SIZES.wide },
-    ),
-    "hubs-detail-light": pane(
-        "hubs-detail-light",
-        [
-            press("2"),
-            press("j"),
-            press("j"),
-            wait(
-                "hub detail",
-                String.raw`›\s+ResultEnvelope\s[\s\S]*Dependencies · used by`,
-            ),
-        ],
-        { size: SIZES.wide, theme: "light" },
-    ),
+    "hubs-detail": hubDetail("dark"),
+    "hubs-detail-light": hubDetail("light"),
     cycles: pane("cycles", [
         press("4"),
-        wait("cycle drawn", String.raw`back to the start`),
+        wait("cycle drawn", lit(FIXTURE.cycleDrawn), { fixture: "cycleDrawn" }),
     ]),
     boundaries: pane("boundaries", [
         press("3"),
-        wait("boundaries", String.raw`tests → core`),
+        wait("boundaries", lit(FIXTURE.boundaryPair), {
+            fixture: "boundaryPair",
+        }),
     ]),
     "changes-diff": pane(
         "changes-diff",
@@ -240,8 +278,8 @@ export const SHOTS = {
             press("6"),
             wait(
                 "change and its diff",
-                String.raw`›\s+hooks/lib/paths\.ts[\s\S]*Changed since the session began`,
-                { timeoutMs: 60000 },
+                String.raw`${marked(FIXTURE.edited)}[\s\S]*Changed since the session began`,
+                { timeoutMs: 60000, fixture: "edited" },
             ),
             wait("fresh", String.raw`● live`, { timeoutMs: 60000 }),
         ],
@@ -255,35 +293,30 @@ export const SHOTS = {
                 timeoutMs: 60000,
             }),
         ],
-        {
-            size: SIZES.wide,
-            base: true,
-        },
+        { size: SIZES.wide, base: true },
     ),
     churn: pane("churn", [
         press("8"),
         wait("churn", String.raw`Churn hotspots`),
     ]),
-    finder: pane("finder", find("ResultEnv", String.raw`›\s+ResultEnvelope\s`)),
+    finder: pane("finder", find(FIXTURE.hubLetters, "hub")),
     route: pane("route", [
-        ...find("ServeCommand::run", String.raw`›\s+ServeCommand::run\s`),
+        ...find(FIXTURE.routeFrom, "routeFrom"),
         { do: "send", keys: ["Enter"], until: "Blast radius" },
         press("p", String.raw`Route from`),
         { do: "focus", field: true },
-        { do: "type", text: "ResultEnvelope" },
-        wait("target found", String.raw`›\s+ResultEnvelope\s`),
+        { do: "type", text: FIXTURE.hub },
+        wait("target found", marked(FIXTURE.hub), { fixture: "hub" }),
         { do: "send", keys: ["Enter"] },
         wait("route drawn", String.raw`Route 1 · \d+ hops?`),
     ]),
     rings: pane("rings", [
-        ...find("ResultEnv", String.raw`›\s+ResultEnvelope\s`),
-        { do: "send", keys: ["Enter"], until: "Blast radius" },
+        ...openHub(),
         press("End"),
-        wait("rings", String.raw`◉ ResultEnvelope`),
+        wait("rings", String.raw`◉ ${lit(FIXTURE.hub)}`, { fixture: "hub" }),
     ]),
     "note-on-detail": pane("note-on-detail", [
-        ...find("ResultEnv", String.raw`›\s+ResultEnvelope\s`),
-        { do: "send", keys: ["Enter"], until: "Blast radius" },
+        ...openHub(),
         press("End"),
         press("m", String.raw`note: `),
         { do: "focus", field: true },

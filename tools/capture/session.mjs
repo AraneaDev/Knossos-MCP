@@ -28,6 +28,7 @@ import os from "node:os";
 import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
+import { tmuxArgv, tmux } from "./driver.mjs";
 
 const run = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -132,8 +133,10 @@ const inside = (p, root) => {
 /**
  * Throws unless both the data dir and the config dir are set and lie outside
  * the real ones, compared by real path, so a link into either is refused too.
+ * With `tempBase`, HOME must be set and lie inside it: a session never runs
+ * with the user's own HOME.
  */
-export function guardEnv(env, { realDataDir, realConfigDir }) {
+export function guardEnv(env, { realDataDir, realConfigDir, tempBase }) {
     if (!env.KNOSSOS_DATA_DIR || inside(env.KNOSSOS_DATA_DIR, realDataDir)) {
         throw new Error(`refusing the real data dir: ${env.KNOSSOS_DATA_DIR}`);
     }
@@ -142,6 +145,11 @@ export function guardEnv(env, { realDataDir, realConfigDir }) {
     if (inside(env.CLAUDE_CONFIG_DIR, realConfigDir)) {
         throw new Error(
             `refusing the real config dir: ${env.CLAUDE_CONFIG_DIR}`,
+        );
+    }
+    if (tempBase !== undefined && (!env.HOME || !inside(env.HOME, tempBase))) {
+        throw new Error(
+            `refusing a HOME outside the capture's temp dir ${tempBase}: ${env.HOME}`,
         );
     }
 }
@@ -336,6 +344,77 @@ export async function stopWatchers(dataCopy, graceMs = 3000) {
 export const sessionName = (pid = process.pid) =>
     `knossos-capture-${pid}-${randomBytes(4).toString("hex")}`;
 
+/**
+ * The command that starts the session on its own tmux server (`-L`, so the
+ * user's server and its options are never touched): focus events on there,
+ * or Claude Code prints a tmux hint at the bottom of the first frames.
+ */
+export function launchArgv(session, { env, project, pluginDir, claudeArgs }) {
+    const envArgs = SESSION_ENV.flatMap((k) => ["-e", `${k}=${env[k]}`]);
+    return tmuxArgv(session, [
+        "start-server",
+        ";",
+        "set-option",
+        "-s",
+        "focus-events",
+        "on",
+        ";",
+        "new-session",
+        "-d",
+        "-s",
+        session.name,
+        "-x",
+        String(session.cols),
+        "-y",
+        String(session.rows),
+        ...envArgs,
+        "-c",
+        project,
+        "claude",
+        "--plugin-dir",
+        pluginDir,
+        ...claudeArgs,
+    ]);
+}
+
+/** Where tmux keeps a server's socket: its own dir per user, under TMUX_TMPDIR or /tmp. */
+export const socketPath = (socket) =>
+    path.join(
+        process.env.TMUX_TMPDIR ?? "/tmp",
+        `tmux-${process.getuid()}`,
+        socket,
+    );
+
+/** Ends the session's whole tmux server and removes its socket, then whatever is left on its data copy. */
+export async function stopSession(session) {
+    // Tolerates a server that never started or is gone already.
+    await tmux(session, ["kill-server"]).catch(() => {});
+    // A killed server leaves its socket file behind.
+    await rm(session.socketPath ?? socketPath(session.socket), {
+        force: true,
+    });
+    // The watcher leaves with the session as a rule; what is left is stopped by its data dir.
+    await stopWatchers(session.dataCopy);
+}
+
+const SESSION_ENV = [
+    "CLAUDE_CONFIG_DIR",
+    "KNOSSOS_DATA_DIR",
+    "KNOSSOS_ROOTS_FILE",
+    "COLORTERM",
+    "CLAUDE_CODE_TMUX_TRUECOLOR",
+    "ENABLE_CLAUDEAI_MCP_SERVERS",
+    "DISABLE_AUTOUPDATER",
+    "IS_DEMO",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "HOME",
+];
+
+/**
+ * `tmpRoot` is where the session's temp dir goes (the system's by default);
+ * `home` must lie inside it, and is a fresh `home` dir in the session's own
+ * temp dir when left out.
+ */
 export async function createSession({
     project,
     dataDir,
@@ -343,13 +422,15 @@ export async function createSession({
     rows,
     theme,
     pluginDir,
-    home = os.homedir(),
+    tmpRoot = os.tmpdir(),
+    home,
     claudeArgs = ["--permission-mode", "default"],
 }) {
     installExitHandlers();
-    const base = await mkdtemp(path.join(os.tmpdir(), "knossos-capture-"));
+    const base = await mkdtemp(path.join(tmpRoot, "knossos-capture-"));
     const removeBase = () => rm(base, { recursive: true, force: true });
     const forgetBase = registerCleanup(removeBase);
+    const homeDir = home ?? path.join(base, "home");
     const configDir = path.join(base, "config");
     const dataCopy = path.join(base, "data");
     const env = {
@@ -367,14 +448,19 @@ export async function createSession({
         IS_DEMO: "1",
         // Essential traffic only, which also keeps promotional notices out of the startup header.
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-        // The header names the project from here: `~/<name>` when the project lies in it.
-        HOME: home,
+        // HOME is a temp dir, never the user's: Claude Code names the project
+        // `~/<name>` in its header when the project lies in HOME (so the shot
+        // reads ~/Knossos-MCP, not a temp path), and with the user's HOME it
+        // would also find their ~/.claude rules and memory.
+        HOME: homeDir,
     };
     guardEnv(env, {
         realDataDir: path.join(os.homedir(), ".knossos"),
         realConfigDir: path.join(os.homedir(), ".claude"),
+        tempBase: home === undefined ? base : tmpRoot,
     });
     await mkdir(configDir, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
     await copyData(dataDir, dataCopy);
     await cp(
         path.join(os.homedir(), ".claude", ".credentials.json"),
@@ -394,17 +480,14 @@ export async function createSession({
     const name = sessionName();
     const session = {
         name,
+        // Its own tmux server, named like the session.
+        socket: name,
         env,
         configDir,
         dataCopy,
         cols,
         rows,
-        async stop() {
-            // Tolerates a session that never started or is gone already.
-            await run("tmux", ["kill-session", "-t", name]).catch(() => {});
-            // The watcher leaves with the session as a rule; what is left is stopped by its data dir.
-            await stopWatchers(dataCopy);
-        },
+        stop: () => stopSession(session),
         /** Stops the session and removes its temp dir now, for a run that shoots several sessions in turn. */
         async close() {
             forgetStop();
@@ -415,43 +498,11 @@ export async function createSession({
     };
     // Before the session starts, so a signal while it starts still ends it.
     const forgetStop = registerCleanup(() => session.stop());
-    const envArgs = [
-        "CLAUDE_CONFIG_DIR",
-        "KNOSSOS_DATA_DIR",
-        "KNOSSOS_ROOTS_FILE",
-        "COLORTERM",
-        "CLAUDE_CODE_TMUX_TRUECOLOR",
-        "ENABLE_CLAUDEAI_MCP_SERVERS",
-        "DISABLE_AUTOUPDATER",
-        "IS_DEMO",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-        "HOME",
-    ].flatMap((k) => ["-e", `${k}=${env[k]}`]);
-    await run("tmux", [
-        // Focus events on, or Claude Code prints a tmux hint at the bottom of the first frames.
-        "start-server",
-        ";",
-        "set-option",
-        "-s",
-        "focus-events",
-        "on",
-        ";",
-        "new-session",
-        "-d",
-        "-s",
-        name,
-        "-x",
-        String(cols),
-        "-y",
-        String(rows),
-        ...envArgs,
-        "-c",
-        project,
-        "claude",
-        "--plugin-dir",
-        pluginDir,
-        ...claudeArgs,
-    ]);
+    const [cmd, ...argv] = [
+        "tmux",
+        ...launchArgv(session, { env, project, pluginDir, claudeArgs }),
+    ];
+    await run(cmd, argv);
     return session;
 }
 

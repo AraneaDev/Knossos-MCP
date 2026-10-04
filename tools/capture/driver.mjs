@@ -10,17 +10,27 @@ const ANSI =
 
 export const plain = (s) => s.replace(ANSI, "");
 
+/** A tmux command line on the session's own server (`-L`): the user's tmux server is never addressed. */
+export const tmuxArgv = (session, args) => ["-L", session.socket, ...args];
+
+/** Runs tmux on the session's own server; `session.runTmux` stands in for it in specs. */
+export async function tmux(session, args) {
+    const argv = tmuxArgv(session, args);
+    if (session.runTmux !== undefined) return session.runTmux(argv);
+    return run("tmux", argv, { maxBuffer: 16 * 1024 * 1024 });
+}
+
 export async function send(session, ...keys) {
-    await run("tmux", ["send-keys", "-t", session.name, ...keys]);
+    await tmux(session, ["send-keys", "-t", session.name, ...keys]);
 }
 
 export async function type(session, text) {
-    await run("tmux", ["send-keys", "-t", session.name, "-l", text]);
+    await tmux(session, ["send-keys", "-t", session.name, "-l", text]);
 }
 
 /** The visible pane, with its colours as escape sequences. */
 export async function snap(session) {
-    const { stdout } = await run("tmux", [
+    const { stdout } = await tmux(session, [
         "capture-pane",
         "-t",
         session.name,
@@ -28,6 +38,18 @@ export async function snap(session) {
         "-p",
     ]);
     return stdout;
+}
+
+/** The terminal cursor's column, where a focused field (or the prompt) puts it. */
+export async function cursor(session) {
+    const { stdout } = await tmux(session, [
+        "display-message",
+        "-p",
+        "-t",
+        session.name,
+        "#{cursor_x}",
+    ]);
+    return Number(stdout.trim());
 }
 
 /**

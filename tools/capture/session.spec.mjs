@@ -589,3 +589,22 @@ describe("copyData sidecars", () => {
         }
     });
 });
+
+describe("guardEnv HOME", () => {
+    const real = {
+        realDataDir: "/root/.knossos",
+        realConfigDir: "/root/.claude",
+    };
+    const env = {
+        KNOSSOS_DATA_DIR: "/tmp/b/data",
+        CLAUDE_CONFIG_DIR: "/tmp/b/config",
+    };
+    it("refuses a HOME outside the capture's temp dir, or none", () => {
+        const guard = (HOME) =>
+            guardEnv({ ...env, HOME }, { ...real, tempBase: "/tmp/b" });
+        expect(() => guard("/root")).toThrow(/HOME outside/);
+        expect(() => guard("/tmp/other")).toThrow(/HOME outside/);
+        expect(() => guard(undefined)).toThrow(/HOME outside/);
+        expect(() => guard("/tmp/b/home")).not.toThrow();
+    });
+});
