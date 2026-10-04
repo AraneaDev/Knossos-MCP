@@ -432,6 +432,47 @@ final class BriefCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testGraphSearchFileContextAndBranchDiffPrintTheirEnvelopesAsJson(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        try {
+            [$status, $out] = $this->runJson('graph-search', [$root], ['query' => ['greeter']]);
+            assertSame([0, 'ok', 'greeter'], [$status, $out['status'], $out['query']]);
+            assertSame('Greeter', $out['results'][0]['name']);
+            [$status, $out] = $this->runJson('file-context', [$root . '/src/Core/Greeter.php'], []);
+            assertSame([0, 'ok', 'src/Core/Greeter.php'], [$status, $out['status'], $out['file']['path']]);
+            // The fixture is no repository: nothing to compare a branch with.
+            [$status, $out] = $this->runJson('branch-diff', [$root], []);
+            assertSame([0, 'no-git'], [$status, $out['status']]);
+            foreach ([['graph-search', [$root], ['since' => ['x']]], ['file-context', [], []], ['file-context', [$root . '/a.php', 'b'], []], ['branch-diff', [$root], ['query' => ['x']]]] as [$command, $positionals, $options]) {
+                assertSame([0, ['status' => 'error']], $this->runJson($command, $positionals, $options));
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Through the router, as the binary runs them: a directory never scanned is unscanned, and no database is created. */
+    #[Group('cli')]
+    public function testGraphSearchFileContextAndBranchDiffNeverCreateADatabase(): void
+    {
+        $directory = $this->temporaryDirectory();
+        file_put_contents($directory . '/a.php', "<?php\n");
+        $router = new CliCommandRouter(self::repositoryRoot(), new CliOptionParser(), new CliHelpRenderer(), 'test');
+        try {
+            foreach ([['graph-search', [$directory], ['query' => ['a']]], ['file-context', [$directory . '/a.php'], []], ['branch-diff', [$directory], []]] as [$command, $positionals, $options]) {
+                ob_start();
+                $status = $router->route($command, $positionals, $options + ['json' => ['true']]);
+                $out = json_decode((string) ob_get_clean(), true);
+                assertSame([0, 'unscanned'], [$status, $out['status']], $command);
+            }
+            assertFalse(is_dir($directory . '/.knossos'));
+        } finally {
+            $this->removeTempTree($directory);
+        }
+    }
+
+    #[Group('cli')]
     public function testFileDetailPrintsTheEnvelopeAsJson(): void
     {
         $root = $this->scannedFixtureOnDisk();

@@ -10,6 +10,9 @@
 #        knossos-run-container.sh session-head <project-dir>
 #        knossos-run-container.sh session-diff <project-dir> --rev=<commit> --file=<file>
 #        knossos-run-container.sh boundary-couplings <project-dir> --from=<boundary> --to=<boundary>
+#        knossos-run-container.sh graph-search <project-dir> --query=<text>
+#        knossos-run-container.sh file-context <project-dir> <file>
+#        knossos-run-container.sh branch-diff <project-dir>
 #
 # Emitted by `knossos install-agent-plugin --out`, with __KNOSSOS_IMAGE__ and
 # __KNOSSOS_DATA__ substituted at emit time. Not used in place.
@@ -21,6 +24,9 @@
 # two that read git (`session-head`, `session-diff`) run as the caller's own
 # user and group: git refuses a repository another user owns, and the image's
 # user owns none of the caller's. They read the project only, never the data.
+# `file-context` and `branch-diff` read the graph as well, so they run as the
+# image's user like the rest: git may then refuse the mounted repository, and
+# they answer without commits, or with `no-git`, rather than not at all.
 #
 # `watch` is not offered here and answers with silence, so the mod falls back
 # to scanning at the end of a turn: a container outlives the docker client
@@ -50,7 +56,9 @@ case "$SUBCOMMAND" in
     scan) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60}; COMMAND=rescan ;;
     # A cold first dashboard of a large project walks the whole graph.
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
-    component-detail|file-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    component-detail|file-detail|file-context|graph-search) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    # Two whole graphs read and compared.
+    branch-diff) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     session-changes|session-head|session-diff|boundary-couplings) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     *) exit 0 ;;
@@ -65,9 +73,21 @@ fi
 # file-detail takes exactly one file, relative to the project directory: an
 # option such as `--db=...` would point the read at another graph, and an
 # absolute path would read outside the directory the call names.
-if [ "$SUBCOMMAND" = file-detail ]; then
+if [ "$SUBCOMMAND" = file-detail ] || [ "$SUBCOMMAND" = file-context ]; then
     [ "$#" -eq 1 ] || exit 0
     case "$1" in -* | /* | '') exit 0 ;; esac
+fi
+# graph-search takes exactly what was typed into the finder, one printable
+# line of at most 200 characters: any other option (`--db=...`) would read
+# another graph.
+if [ "$SUBCOMMAND" = graph-search ]; then
+    [ "$#" -eq 1 ] || exit 0
+    case "$1" in --query= | --query=*[![:print:]]*) exit 0 ;; --query=*) ;; *) exit 0 ;; esac
+    [ "${#1}" -le 208 ] || exit 0
+fi
+# branch-diff takes nothing but the project.
+if [ "$SUBCOMMAND" = branch-diff ]; then
+    [ "$#" -eq 0 ] || exit 0
 fi
 # scan takes nothing but the project: an option such as `--db=...` would point the write at another graph.
 if [ "$SUBCOMMAND" = scan ]; then
@@ -115,9 +135,9 @@ fi
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
 # Absolute from here on: a relative path would mean something else to the binary, the mount and the find below once the directory changes.
 PROJECT_DIR=$(pwd -P) || exit 0
-# What the binary reads: the project directory, or for file-detail the file in it.
+# What the binary reads: the project directory, or for file-detail and file-context the file in it.
 TARGET=$PROJECT_DIR
-if [ "$SUBCOMMAND" = file-detail ]; then
+if [ "$SUBCOMMAND" = file-detail ] || [ "$SUBCOMMAND" = file-context ]; then
     TARGET="$PROJECT_DIR/$1"
     shift
 fi

@@ -144,6 +144,26 @@ expect_silent_success 'file-detail with a file that reads as an option' \
 expect_silent_success 'file-detail with an absolute path' \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail /tmp /etc/passwd
 
+# file-context: one file relative to the project, as file-detail takes it.
+expect_output 'file-context passes the file under the project' "file-context|$ABS_PROJ/src/My File.php|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context "$STUBS/proj" 'src/My File.php'
+expect_silent_success 'file-context with an absolute path' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context /tmp /etc/passwd
+expect_silent_success 'file-context with a file that reads as an option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context /tmp --db=/elsewhere
+expect_silent_success 'file-context without a file' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context /tmp
+# graph-search: what was typed into the finder, one printable line and nothing else.
+expect_output 'graph-search passes what was typed' "graph-search|$ABS_PROJ|--query=dash svc|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" graph-search "$STUBS/proj" '--query=dash svc'
+expect_silent_success 'graph-search refuses an empty query' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" graph-search "$STUBS/proj" --query=
+expect_silent_success 'graph-search refuses another option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" graph-search "$STUBS/proj" --db=/tmp/other.sqlite
+expect_silent_success 'graph-search refuses a second argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" graph-search "$STUBS/proj" --query=a --db=/tmp/x
+expect_silent_success 'graph-search refuses a query with a line break' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" graph-search "$STUBS/proj" "--query=a
+b"
+expect_silent_success 'graph-search refuses a query past 200 characters' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" graph-search "$STUBS/proj" "--query=$(printf '%0201d' 0)"
+# branch-diff: the branch against its merge base, with nothing but the project.
+expect_output 'branch-diff asks for the project alone' "branch-diff|$ABS_PROJ|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" branch-diff "$STUBS/proj"
+expect_silent_success 'branch-diff refuses an option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" branch-diff "$STUBS/proj" --db=/tmp/other.sqlite
+
 # watch: the live watcher, `knossos watch --shared`, with at most its poll interval.
 expect_output 'watch runs the shared watcher on the project' "watch|$ABS_PROJ|--shared|--poll-ms=1500|" \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --poll-ms=1500
@@ -256,6 +276,14 @@ expect_silent_success 'container file-detail with an absolute path' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail /tmp /etc/passwd
 expect_silent_success 'container component-detail without a name' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp
+expect_output 'container file-context passes the file under the project' "img:1|file-context|$ABS_PROJ/src/A.php|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-context "$STUBS/proj" src/A.php
+expect_output 'container graph-search passes what was typed' "img:1|graph-search|$ABS_PROJ|--query=dash|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" graph-search "$STUBS/proj" --query=dash
+expect_silent_success 'container graph-search refuses another option' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" graph-search "$STUBS/proj" --db=/tmp/other.sqlite
+expect_output 'container branch-diff asks for the project alone' "img:1|branch-diff|$ABS_PROJ|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" branch-diff "$STUBS/proj"
 # The session commands, as the local wrapper takes them; the two that read git run as the caller, whom git trusts with the mounted project.
 ME="$(id -u):$(id -g)"
 expect_output 'container session-changes reads since the snapshot it names' "img:1|session-changes|$ABS_PROJ|--since=scan_ab12|--json|" \

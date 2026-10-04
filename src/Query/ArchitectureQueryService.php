@@ -130,6 +130,17 @@ final readonly class ArchitectureQueryService
     }
 
     /**
+     * {@see ProjectCatalogQueryService::branchComparison()}
+     *
+     * @param list<array<string, mixed>> $policies
+     * @return array<string, mixed>
+     */
+    public function branchComparison(string $projectId, string $baseSnapshot, array $policies, int $limit = 8): array
+    {
+        return $this->catalogQueries->branchComparison($projectId, $baseSnapshot, $policies, $limit);
+    }
+
+    /**
      * {@see ProjectCatalogQueryService::qualityGate()}
      *
      * @param array<string, mixed> $budgets

@@ -11,6 +11,9 @@
 #        knossos-run.sh session-head <project-dir>
 #        knossos-run.sh session-diff <project-dir> --rev=<commit> --file=<file>
 #        knossos-run.sh boundary-couplings <project-dir> --from=<boundary> --to=<boundary>
+#        knossos-run.sh graph-search <project-dir> --query=<text>
+#        knossos-run.sh file-context <project-dir> <file>
+#        knossos-run.sh branch-diff <project-dir>
 #
 # Every failure exits 0. All but one print nothing: the mod reads silence as
 # "no data", keeps its last figures with their age and asks again later, so a
@@ -41,7 +44,9 @@ case "$SUBCOMMAND" in
     scan) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60}; COMMAND=rescan ;;
     # A cold first dashboard of a large project walks the whole graph.
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
-    component-detail|file-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    component-detail|file-detail|file-context|graph-search) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    # Two whole graphs read and compared.
+    branch-diff) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     session-changes|session-head|session-diff|boundary-couplings) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     watch) LIMIT=0 ;;
@@ -57,9 +62,21 @@ fi
 # file-detail takes exactly one file, relative to the project directory: an
 # option such as `--db=...` would point the read at another graph, and an
 # absolute path would read outside the directory the call names.
-if [ "$SUBCOMMAND" = file-detail ]; then
+if [ "$SUBCOMMAND" = file-detail ] || [ "$SUBCOMMAND" = file-context ]; then
     [ "$#" -eq 1 ] || exit 0
     case "$1" in -* | /* | '') exit 0 ;; esac
+fi
+# graph-search takes exactly what was typed into the finder, one printable
+# line of at most 200 characters: any other option (`--db=...`) would read
+# another graph.
+if [ "$SUBCOMMAND" = graph-search ]; then
+    [ "$#" -eq 1 ] || exit 0
+    case "$1" in --query= | --query=*[![:print:]]*) exit 0 ;; --query=*) ;; *) exit 0 ;; esac
+    [ "${#1}" -le 208 ] || exit 0
+fi
+# branch-diff takes nothing but the project.
+if [ "$SUBCOMMAND" = branch-diff ]; then
+    [ "$#" -eq 0 ] || exit 0
 fi
 # scan takes nothing but the project: an option such as `--db=...` would point the write at another graph.
 if [ "$SUBCOMMAND" = scan ]; then
@@ -112,9 +129,9 @@ fi
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
 # Absolute from here on: a relative path would mean something else to the binary, the mount and the find below once the directory changes.
 PROJECT_DIR=$(pwd -P) || exit 0
-# What the binary reads: the project directory, or for file-detail the file in it.
+# What the binary reads: the project directory, or for file-detail and file-context the file in it.
 TARGET=$PROJECT_DIR
-if [ "$SUBCOMMAND" = file-detail ]; then
+if [ "$SUBCOMMAND" = file-detail ] || [ "$SUBCOMMAND" = file-context ]; then
     TARGET="$PROJECT_DIR/$1"
     shift
 fi
