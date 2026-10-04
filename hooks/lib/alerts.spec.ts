@@ -60,4 +60,18 @@ describe('alerts for what a scan brought', () => {
   it('reads policies only where both graphs were checked', () => {
     expect(freshAlerts(dash({ policy: { status: 'skipped', total: 0, truncated: false, truncation_reasons: [], items: [] } }), dash({ snapshot_id: 's2', policy: { status: 'evaluated', total: 2, truncated: false, truncation_reasons: [], items: [violation(0), violation(1)] } }))).toEqual([])
   })
+
+  it('names nothing new against an earlier list that was cut: only a count that grew is said', () => {
+    // Before: 12 cycles, 2 listed. After: a cycle listed that was not, 13 in all.
+    const before = dash({ cycles: { count: 12, truncated: true, truncation_reasons: [], largest: [cycle('App\\A', 'App\\B'), cycle('App\\C', 'App\\D')] } })
+    const after = dash({ snapshot_id: 's2', cycles: { count: 13, truncated: true, truncation_reasons: [], largest: [cycle('App\\A', 'App\\B'), cycle('App\\E', 'App\\F')] } })
+    expect(freshAlerts(before, after).map(a => a.text)).toEqual(['knossos: the graph now has 13 dependency cycles, 1 more than before'])
+    // The same count: nothing to say, though a listed one changed.
+    expect(freshAlerts(before, dash({ ...after, cycles: { ...after.cycles, count: 12 } }))).toEqual([])
+    // Violations the same way: 5 counted, 1 listed before.
+    const was = dash({ policy: { status: 'evaluated', total: 5, truncated: false, truncation_reasons: [], items: [violation(0)] } })
+    const now = dash({ snapshot_id: 's2', policy: { status: 'evaluated', total: 5, truncated: false, truncation_reasons: [], items: [violation(1)] } })
+    expect(freshAlerts(was, now)).toEqual([])
+    expect(freshAlerts(was, { ...now, policy: { ...now.policy!, total: 6 } }).map(a => a.text)).toEqual(['knossos: 1 new policy violation, 6 in all'])
+  })
 })

@@ -32,14 +32,18 @@ function chain(members: string[]): string {
 /**
  * The alerts for what `after` holds that `before` did not: new listed
  * cycles, then new listed violations, leaving out what `told` already
- * holds. A count that grew past what the lists show is said as a count.
+ * holds. One is named new only when `before`'s list held every one it
+ * counted: past a cut, a listed one may only be newly listed. Otherwise,
+ * and when a count grew past what the lists show, the count is said.
  */
 export function freshAlerts(before: Dashboard | null, after: Dashboard, told: ReadonlySet<string> = new Set()): Alert[] {
   if (before === null || before.status !== 'ok' || after.status !== 'ok') return []
   if (before.project_id !== after.project_id || before.snapshot_id === after.snapshot_id) return []
   const alerts: Alert[] = []
+  // A listed one is new only against a list that held them all: one past an earlier cut may have been there all along.
+  const cyclesWhole = !before.cycles.truncated && before.cycles.largest.length >= before.cycles.count
   const had = new Set(before.cycles.largest.map(c => cycleKey(c.members)))
-  const cycles = after.cycles.largest.filter(c => !had.has(cycleKey(c.members)))
+  const cycles = cyclesWhole ? after.cycles.largest.filter(c => !had.has(cycleKey(c.members))) : []
   for (const c of cycles) alerts.push({ key: cycleKey(c.members), text: `knossos: a new dependency cycle of ${c.size}: ${chain(c.members)}` })
   if (cycles.length === 0 && after.cycles.count > before.cycles.count) {
     alerts.push({ key: `cycles:${after.cycles.count}`, text: `knossos: the graph now has ${after.cycles.count} dependency cycles, ${after.cycles.count - before.cycles.count} more than before` })
@@ -50,7 +54,7 @@ export function freshAlerts(before: Dashboard | null, after: Dashboard, told: Re
   if (was !== null && now !== null) {
     const key = (v: { policy_id: string; source: string; target: string }) => `policy:${v.policy_id} ${v.source} ${v.target}`
     const seen = new Set(was.items.map(key))
-    const fresh = now.items.filter(v => !seen.has(key(v)))
+    const fresh = !was.truncated && was.items.length >= was.total ? now.items.filter(v => !seen.has(key(v))) : []
     for (const v of fresh) alerts.push({ key: key(v), text: `knossos: a new policy violation (${v.policy_id}): ${shortName(v.source)} → ${shortName(v.target)}` })
     if (fresh.length === 0 && now.total > was.total) alerts.push({ key: `violations:${now.total}`, text: `knossos: ${now.total - was.total} new policy ${now.total - was.total === 1 ? 'violation' : 'violations'}, ${now.total} in all` })
   }
