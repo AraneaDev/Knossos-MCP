@@ -1183,52 +1183,70 @@ final class PluginCommandTest extends KnossosTestCase
         exec('rm -rf ' . escapeshellarg($out));
     }
 
-    /** An update deletes the files an earlier install left in the plugin's directories that this one no longer ships. */
+    /** An emit names any directory: a file of someone else's in it survives, whatever its name. */
     #[Group('cli')]
-    public function testAnEmitDeletesTheFilesItNoLongerShipsAndNothingElse(): void
+    public function testAnEmitNeverDeletesAFileItDidNotWrite(): void
     {
-        $out = $this->temporaryPath('knossos-plugin-prune');
-        $outside = $this->temporaryPath('knossos-plugin-outside');
-        mkdir($out . '/hooks/lib/kept', 0o755, true);
+        $out = $this->temporaryPath('knossos-plugin-foreign');
+        mkdir($out . '/hooks/lib', 0o755, true);
         mkdir($out . '/hooks/scripts', 0o755, true);
-        mkdir($outside, 0o755, true);
-        file_put_contents($out . '/hooks/lib/trend.ts', 'export const old = 1');
-        file_put_contents($out . '/hooks/lib/kept/inner.ts', 'a subdirectory is not the plugin\'s');
-        // The host install's library: the container scripts are standalone and do not ship it.
-        file_put_contents($out . '/hooks/scripts/lib.sh', '# host');
-        file_put_contents($out . '/notes.txt', 'the target root may hold anything');
-        file_put_contents($outside . '/keep.ts', 'outside');
-        symlink($outside . '/keep.ts', $out . '/hooks/lib/linked.ts');
+        file_put_contents($out . '/hooks/my-guard.sh', '# a hook of the person\'s own');
+        file_put_contents($out . '/hooks/lib/trend.ts', 'export const mine = 1');
+        file_put_contents($out . '/hooks/scripts/lib.sh', '# theirs');
 
         $this->emitProse($out, []);
 
+        assertSame('# a hook of the person\'s own', (string) file_get_contents($out . '/hooks/my-guard.sh'));
+        assertSame('export const mine = 1', (string) file_get_contents($out . '/hooks/lib/trend.ts'));
+        assertSame('# theirs', (string) file_get_contents($out . '/hooks/scripts/lib.sh'));
+        assertSame(true, is_file($out . '/hooks/lib/layout.ts'));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /** An update deletes the files an earlier install left in the plugin's directories that this one no longer ships, and nothing else. */
+    #[Group('cli')]
+    public function testAnInstallDeletesOnlyTheFilesItNoLongerShipsInsideThePluginDirectories(): void
+    {
+        $root = $this->sourceRoot();
+        $out = $root . '/.plugin';
+        $outside = $this->temporaryPath('knossos-plugin-outside');
+        mkdir($out . '/hooks/lib/kept', 0o755, true);
+        mkdir($outside, 0o755, true);
+        file_put_contents($out . '/hooks/lib/trend.ts', 'export const old = 1');
+        file_put_contents($out . '/hooks/lib/kept/inner.ts', 'a subdirectory is not the plugin\'s');
+        file_put_contents($out . '/notes.txt', 'the root is not one of the plugin\'s directories');
+        file_put_contents($outside . '/keep.ts', 'outside');
+        symlink($outside . '/keep.ts', $out . '/hooks/lib/linked.ts');
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
         assertSame(false, file_exists($out . '/hooks/lib/trend.ts'));
-        assertSame(false, file_exists($out . '/hooks/scripts/lib.sh'));
         assertSame(false, is_link($out . '/hooks/lib/linked.ts'));
         assertSame('outside', (string) file_get_contents($outside . '/keep.ts'));
         assertSame(true, is_file($out . '/hooks/lib/kept/inner.ts'));
         assertSame(true, is_file($out . '/notes.txt'));
         assertSame(true, is_file($out . '/hooks/lib/layout.ts'));
 
-        exec('rm -rf ' . escapeshellarg($out) . ' ' . escapeshellarg($outside));
+        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($outside));
     }
 
     /** A plugin directory that is a link to somewhere else is never pruned: what is there is not the plugin's. */
     #[Group('cli')]
-    public function testAnEmitNeverDeletesThroughALinkedDirectory(): void
+    public function testAnInstallNeverDeletesThroughALinkedDirectory(): void
     {
-        $out = $this->temporaryPath('knossos-plugin-prune-link');
+        $root = $this->sourceRoot();
         $outside = $this->temporaryPath('knossos-plugin-outside');
-        mkdir($out, 0o755, true);
+        mkdir($root . '/.plugin', 0o755, true);
         mkdir($outside, 0o755, true);
         file_put_contents($outside . '/other.d.ts', 'someone else\'s');
-        symlink($outside, $out . '/types');
+        symlink($outside, $root . '/.plugin/types');
 
-        $this->emitProse($out, []);
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
 
         assertSame("someone else's", (string) file_get_contents($outside . '/other.d.ts'));
 
-        exec('rm -rf ' . escapeshellarg($out) . ' ' . escapeshellarg($outside));
+        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($outside));
     }
 
     /** The host install prunes the same way: its tree is exactly what it ships. */
@@ -1254,23 +1272,20 @@ final class PluginCommandTest extends KnossosTestCase
     #[Group('cli')]
     public function testAFailedInstallRestoresTheFilesItDeleted(): void
     {
-        $out = $this->temporaryPath('knossos-plugin-prune-fail');
+        $root = $this->sourceRoot();
+        $out = $root . '/.plugin';
         mkdir($out . '/hooks/lib', 0o755, true);
         file_put_contents($out . '/hooks/lib/trend.ts', 'export const old = 1');
         chmod($out . '/hooks/lib/trend.ts', 0o600);
+        // plugin.json is a directory, so the manifest cannot be written after the prune.
         mkdir($out . '/.claude-plugin/plugin.json', 0o755, true);
 
-        try {
-            (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['/srv/data']], $this->context());
-            self::fail('Expected an InvalidArgumentException.');
-        } catch (InvalidArgumentException) {
-            // Expected: plugin.json is a directory, so the manifest cannot be written.
-        }
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
 
         assertSame('export const old = 1', (string) file_get_contents($out . '/hooks/lib/trend.ts'));
         assertSame('0600', substr(sprintf('%o', fileperms($out . '/hooks/lib/trend.ts')), -4));
 
-        exec('rm -rf ' . escapeshellarg($out));
+        exec('rm -rf ' . escapeshellarg($root));
     }
 
     /** The plugin's slash command is `/knossos`, so no skill it ships may carry that name again. */

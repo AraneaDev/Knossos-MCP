@@ -243,7 +243,7 @@ final class PluginCommand implements CliCommand
             $this->read($root . '/' . self::LIBRARY_SCRIPT),
             ['__KNOSSOS_DATA_DIR__' => $this->singleQuoted($dataDir, 'data-dir')],
         );
-        $this->materialise($root, $pluginDirectory, $scripts);
+        $this->materialise($root, $pluginDirectory, $scripts, prune: true);
         foreach ($commands as $line) {
             $status = 0;
             passthru($line, $status);
@@ -310,7 +310,8 @@ final class PluginCommand implements CliCommand
                 ],
             );
         }
-        $existed = $this->materialise($root, $out, $scripts);
+        // Never pruned: `--out` names any directory (a person's own hooks directory among them), and what else is there is not the plugin's.
+        $existed = $this->materialise($root, $out, $scripts, prune: false);
 
         $message = sprintf('Wrote a container plugin to %s.', $out);
         if ($existed) {
@@ -359,9 +360,11 @@ final class PluginCommand implements CliCommand
      * inside it, is left exactly as it was found.
      *
      * @param array<string, string> $scripts installed relative path => content
+     * @param bool $prune whether to delete what an earlier install left that this one does not ship: only in the
+     *   plugin directory this command manages, never in a directory `--out` names
      * @return bool whether $out already existed before this call
      */
-    private function materialise(string $root, string $out, array $scripts): bool
+    private function materialise(string $root, string $out, array $scripts, bool $prune): bool
     {
         $existed = file_exists($out);
         $createdDirectories = [];
@@ -408,7 +411,9 @@ final class PluginCommand implements CliCommand
                     $createdFiles[] = $target;
                 }
             }
-            $this->pruneUnshipped($out, $scripts, $pruned);
+            if ($prune) {
+                $this->pruneUnshipped($out, $scripts, $pruned);
+            }
             // Read and rewritten rather than copied. Claude Code caches an
             // installed plugin by the version in this file, so a manifest
             // frozen at a placeholder can never be refreshed: `claude plugin
@@ -470,9 +475,11 @@ final class PluginCommand implements CliCommand
      * removed) is still bundled by the engine and read by nothing, and a file
      * there is what a person debugging the plugin reads first. Only the files
      * directly inside the directories a plugin is made of are looked at, never
-     * their subdirectories, never the target's own root (a `--out` directory
-     * may hold anything), and never a directory that is a link or resolves
-     * outside the target. Each file's bytes are kept so a later failure can
+     * their subdirectories, never the target's own root, and never a
+     * directory that is a link or resolves outside the target. Only the
+     * plugin directory the host install manages is pruned: a `--out`
+     * directory is whatever the person named, and a file of theirs in its
+     * `hooks/` is not the plugin's to delete. Each file's bytes are kept so a later failure can
      * restore it.
      *
      * @param array<string, string> $scripts installed relative path => content
