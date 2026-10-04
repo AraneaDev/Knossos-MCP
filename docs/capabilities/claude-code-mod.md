@@ -255,7 +255,7 @@ Knossos-MCP                          ● stale 11h   r: rescan
  Overview   2   3   4   5   6³
 
 9,186 components ▲12   7 boundaries   2 cycles ±0
-165 max degree ±0   3 dead code ▼1   0 diagnostics ±0
+165 max degree ±0   3 dead code   0 diagnostics ±0
 0 policy   24 drifted
 
 ── ± This session ──────────────────────────────────────────
@@ -283,8 +283,11 @@ A figure is in the text colour unless it deviates: cycles and diagnostics
 above zero in `warning`, policy violations in `error`, drifted files in the
 accent. Beside each figure, how it moved since the snapshot retained before
 this one (`▲12`, `▼1`, `±0`): the glyph says which way, and only a figure
-that is a status (cycles, dead code, diagnostics) colours it, a rise in
-`warning` and a fall in `success`. A tile draws its trend as a sparkline in
+that is a status (cycles, diagnostics) colours it, a rise in
+`warning` and a fall in `success`. Dead code counts the candidates the Issues
+tab lists, and has no delta or sparkline: the retained snapshots carry only
+the quality gate's wider count of components nothing references, which the
+health card draws as its own row, `gate unreferenced`. A tile draws its trend as a sparkline in
 the accent when it has room and five snapshots or more move. The drifted
 tile's label is the button that lists the drifted files. Each card is framed,
 and its tables add columns:
@@ -370,11 +373,15 @@ Drifted since the snapshot                                 3
     hold (tests and external code left out). `o` or a press on a bucket opens
     Hubs narrowed to it.
 
-    **Health over time:** one row per figure (cycles, unreferenced
-    candidates, maximum degree, diagnostics), each a small chart on its own
+    **Health over time:** one row per figure (cycles, `gate unreferenced`,
+    maximum degree, diagnostics), each a small chart on its own
     scale, all on one time axis (the same snapshots, column for column, oldest
     left), the newest value right-aligned and its range beside it (`no
 change` for a flat one, drawn faint). Only with five snapshots or more.
+    `gate unreferenced` is the quality gate's count of components nothing
+    references, and a line under the axis says so: it is wider than the
+    dead-code tile, which counts the candidates the Issues tab lists, so the
+    two numbers differ by design.
 
     **Cross-boundary flows:** the strongest dependencies from one boundary
     to another, `■ tests → ■ core` and a bar with the count; one a declared
@@ -470,8 +477,14 @@ snapshot>`, read again after each scan the watcher sees, one read at a
   the newest 60). A row too short for all of them keeps the newest behind a
   `…`. With
   no watcher (switched off, or a container install) the tab falls back to
-  what the session's turn briefs reported, added up, and says so; it does the
-  same when the ledger cannot account for every scan since the session began.
+  what the session's turn briefs reported, added up, and says so. When the
+  ledger cannot reach back to the session's start (a ledger an older knossos
+  pruned, or a scan it never recorded), the tab says so with the date the
+  session began, and lists every change since the oldest point the ledger
+  still answers for, with that date in the header (`since 2026-10-04 09:14`);
+  only when it answers for none does it fall back to the turn briefs. A
+  session that began among the scans the ledger keeps merged (see below)
+  lists what changed after it and says its start is approximate.
   Either way it lists every file (most dependents first, `+` added, `−` deleted)
   with its dependents and the boundary it sits in (blank when it sits in
   none, or only in one spanning the whole repository), the boundaries its
@@ -855,8 +868,16 @@ files, the policy violations each held before it. Read in order from the
 turn's snapshot, the first entry that changed a file says what that file was
 before the turn, so the brief's changed, added and deleted files and its
 before-and-after policy check stay the turn's own, whoever scanned the edits.
+A watcher records a scan for every save, so the ledger keeps the newest 200
+entries per project and merges older ones into one span instead of dropping
+them: the span keeps where its first scan started and its last ended, each
+file's hash before its first change and the newest 20 scans that changed it,
+and a short key for each of up to 5,000 of its scans, so a session that
+began among them is still found. A span keeps no policy baselines, and one
+for more than 2,000 files is cut like an entry. The merge runs in the same
+transaction as the recording that sets it off, under that writer's lease.
 When a scan since the turn began was not recorded (a scan of a directory
-below the project's root, say, or one older than the newest 200 entries), or
+below the project's root, say, or one older than the span's 5,000), or
 changed more than 2,000 files (a branch switch: such an entry keeps no file
 list, only that it was cut), the brief still names the files but leaves the
 policy unevaluated rather than guess.
@@ -901,8 +922,8 @@ rescan runs `knossos rescan`, the same incremental scan without the brief.
 The live watcher runs incremental scans as files change, each a `knossos scan`
 process of its own. Those are the only writes to the graph the mod makes, and
 each of them records what it changed in the `scan_ledger` table (migration 019, applied the
-first time an updated knossos opens the database; the newest 200 entries per
-project are kept). The watcher also writes its lock and state files under
+first time an updated knossos opens the database; past 200 entries per
+project the oldest are merged into one bounded span). The watcher also writes its lock and state files under
 `watch/` beside the database. They happen only for a project that
 is already scanned and inside an allowed root, never inside a hook dispatch,
 and never two at a time within a session. The pane's allow-root action writes

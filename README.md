@@ -395,7 +395,8 @@ the files, their dependents, the tests that reach them, and how old the figures 
 `/knossos` opens the pane. The Overview measures and leaves the lists to the Hubs tab. A row
 of stat tiles (components, boundaries, cycles, the largest degree, dead code, diagnostics,
 policy violations and drift) says how each figure moved since the previous snapshot, with a
-sparkline where it has a history. Under it: what this session touched and the way to its
+sparkline where it has a history; dead code counts the candidates the Issues tab lists, while
+the health card's `gate unreferenced` row is the quality gate's wider count. Under it: what this session touched and the way to its
 changes, with `t` to copy the command for the tests that reach them; the project as stacked
 bars by boundary, language and kind; how dependencies concentrate, an in-degree histogram
 whose buckets open the hubs in that range; health over time, one row per figure on a shared
