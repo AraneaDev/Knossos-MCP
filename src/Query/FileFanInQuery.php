@@ -153,6 +153,45 @@ final readonly class FileFanInQuery extends AbstractArchitectureQueryService
     }
 
     /**
+     * The files that depend on each of `$paths` most, by path: at most
+     * `$limit` each, most dependency edges first (ties by path), the file
+     * itself left out. One windowed query for the whole list, so a page of
+     * fan-in entries costs one pass over their edges.
+     *
+     * @param list<string> $paths
+     * @return array<string, list<string>>
+     */
+    public function topDependents(string $projectId, array $paths, int $limit): array
+    {
+        if ($paths === [] || $limit < 1) {
+            return [];
+        }
+        $kinds = implode(',', array_fill(0, count(self::IMPACT_EDGE_KINDS), '?'));
+        $listed = implode(',', array_fill(0, count($paths), '?'));
+        $statement = $this->pdo->prepare(<<<SQL
+            SELECT target, source FROM (
+                SELECT tf.relative_path AS target, sf.relative_path AS source,
+                       ROW_NUMBER() OVER (PARTITION BY tf.id ORDER BY COUNT(*) DESC, sf.relative_path) AS nth
+                  FROM edges e
+                  JOIN nodes tn ON tn.id = e.target_id
+                  JOIN files tf ON tf.id = tn.file_id
+                  JOIN nodes sn ON sn.id = e.source_id
+                  JOIN files sf ON sf.id = sn.file_id
+                 WHERE e.project_id = ? AND e.kind IN ($kinds) AND tf.project_id = ? AND tf.relative_path IN ($listed) AND sf.id <> tf.id
+                   AND tn.kind NOT LIKE 'external\_%' ESCAPE '\'
+                 GROUP BY tf.id, sf.id
+            ) WHERE nth <= ? ORDER BY target, nth
+            SQL);
+        $this->bindAll($statement, [$projectId, ...self::IMPACT_EDGE_KINDS, $projectId, ...$paths, $limit]);
+        $statement->execute();
+        $top = [];
+        foreach ($statement->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+            $top[(string) $row['target']][] = (string) $row['source'];
+        }
+        return $top;
+    }
+
+    /**
      * Bind positional parameters keeping integers as integers. PDO's execute()
      * sends every value as text, and SQLite orders an integer below any text,
      * so a bare `COUNT(...) >= '1'` would never hold.

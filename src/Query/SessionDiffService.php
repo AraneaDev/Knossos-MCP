@@ -47,7 +47,8 @@ final readonly class SessionDiffService
     }
 
     /**
-     * The commit `$path` is at now: what a session records when it starts.
+     * The commit `$path` is at now, and the branch checked out there: what a
+     * session records when it starts.
      *
      * @return array<string, mixed>
      */
@@ -55,7 +56,25 @@ final readonly class SessionDiffService
     {
         $absolute = realpath($path) ?: $path;
         $rev = (new GitHeadResolver($this->runner))->resolve($absolute);
-        return $rev === null ? ['status' => 'no-git', 'path' => $absolute, 'rev' => null] : ['status' => 'ok', 'path' => $absolute, 'rev' => $rev];
+        if ($rev === null) {
+            return ['status' => 'no-git', 'path' => $absolute, 'rev' => null, 'branch' => null];
+        }
+        return ['status' => 'ok', 'path' => $absolute, 'rev' => $rev, 'branch' => $this->branch($absolute)];
+    }
+
+    /**
+     * The branch `$dir` has checked out, by its short name; null on a detached
+     * head, or when git does not say. The pane's header names it beside the
+     * commit.
+     */
+    private function branch(string $dir): ?string
+    {
+        try {
+            $name = trim($this->git($dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']));
+        } catch (Throwable) {
+            return null;
+        }
+        return preg_match('/^[^\x00-\x1f\x7f]{1,200}$/', $name) === 1 ? $name : null;
     }
 
     /**

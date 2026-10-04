@@ -45,10 +45,12 @@ final class ScanLedgerTest extends KnossosTestCase
             assertSame(['a.php' => $violation, 'c.php' => null, 'b.php' => null], $since['baselines'] ?? null);
             // Which scans changed each file, by the snapshot each produced.
             assertSame(['a.php' => ['s1', 's2'], 'c.php' => ['s1'], 'b.php' => ['s2']], $since['scans'] ?? null);
+            // The scans themselves in recording order, each with how many files it changed.
+            assertSame([['s1', 2], ['s2', 2]], array_map(static fn(array $scan): array => [$scan['snapshot_id'], $scan['files']], $since['chain'] ?? []));
             // From the middle, only the second scan counts.
             assertSame(['a.php' => 'A1', 'b.php' => 'B0'], $ledger->since($projectId, 's1')['before'] ?? null);
             // Nothing since the active snapshot.
-            assertSame(['before' => [], 'baselines' => [], 'scans' => []], $ledger->since($projectId, 's2'));
+            assertSame(['before' => [], 'baselines' => [], 'scans' => [], 'chain' => []], $ledger->since($projectId, 's2'));
         } finally {
             $this->removeTempTree($root);
         }

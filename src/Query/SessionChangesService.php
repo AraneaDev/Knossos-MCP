@@ -24,7 +24,11 @@ use PDO;
  * Each file also names the snapshots the recorded scans that changed it
  * produced (`scans`, the newest {@see self::MAX_SCANS} in recording order),
  * so the caller can tell a change its own session's scans took in from one
- * scanned while it was idle.
+ * scanned while it was idle. `scans` lists the recorded scans since
+ * `$since` themselves, in recording order, the newest
+ * {@see self::MAX_TIMELINE} (`scans_truncated` past that): the snapshot
+ * each produced, when (Unix seconds) and how many files it changed, so the
+ * pane can draw the session's scans as a timeline.
  */
 final readonly class SessionChangesService
 {
@@ -36,6 +40,9 @@ final readonly class SessionChangesService
 
     /** Scans named per file, the newest kept: a file changed more often than this is still told by its latest. */
     public const MAX_SCANS = 20;
+
+    /** Scans listed in the timeline, the newest kept. */
+    public const MAX_TIMELINE = 60;
 
     /** Files the test search starts from: the most depended on, past it the rest are left to the turn briefs. */
     private const MAX_TEST_SOURCES = 100;
@@ -51,7 +58,7 @@ final readonly class SessionChangesService
     {
         $absolute = realpath($path) ?: $path;
         $envelope = ['path' => $absolute, 'project_root' => null, 'project_id' => null, 'snapshot_id' => null, 'since' => $since, 'complete' => false,
-            'files' => (object) [], 'files_truncated' => false, 'tests' => [], 'tests_truncated' => false];
+            'files' => (object) [], 'files_truncated' => false, 'tests' => [], 'tests_truncated' => false, 'scans' => [], 'scans_truncated' => false];
         $project = (new ProjectPathResolver($this->pdo))->resolve($absolute);
         if ($project === null || !is_string($project['active_scan_id']) || $project['active_scan_id'] === '') {
             return ['status' => 'unscanned'] + $envelope;
@@ -87,6 +94,8 @@ final readonly class SessionChangesService
             'files_truncated' => count($files) > self::MAX_FILES || count($live) > self::MAX_TEST_SOURCES,
             'tests' => JsTestRunner::annotate($root, array_slice($tests, 0, self::MAX_TESTS)),
             'tests_truncated' => count($tests) > self::MAX_TESTS,
+            'scans' => array_slice($absorbed['chain'], -self::MAX_TIMELINE),
+            'scans_truncated' => count($absorbed['chain']) > self::MAX_TIMELINE,
         ] + $base;
     }
 

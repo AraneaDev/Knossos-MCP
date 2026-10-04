@@ -107,27 +107,29 @@ final readonly class ScanLedger
      * violations they held then (null: that scan did not check them). `scans`
      * maps them to the snapshot each recorded scan that changed them produced,
      * in recording order, so a reader can tell whose scan took a change in.
-     * Null altogether when the ledger cannot account for every scan since: none
+     * `chain` lists those scans themselves, in recording order: the snapshot
+     * each produced, when it was recorded (Unix seconds) and how many files it
+     * changed. Null altogether when the ledger cannot account for every scan since: none
      * recorded starts at `$since`, one in between was not recorded or was
      * recorded cut ({@see self::MAX_FILES}), or the last recorded one is not
      * the project's active snapshot.
      *
-     * @return array{before: array<string, string|null>, baselines: array<string, array{violations: array<string, array<string, mixed>>, truncated: bool}|null>, scans: array<string, list<string>>}|null
+     * @return array{before: array<string, string|null>, baselines: array<string, array{violations: array<string, array<string, mixed>>, truncated: bool}|null>, scans: array<string, list<string>>, chain: list<array{snapshot_id: string, at: int, files: int}>}|null
      */
     public function since(string $projectId, string $since): ?array
     {
         $active = $this->activeSnapshot($projectId);
         if ($active === $since) {
-            return ['before' => [], 'baselines' => [], 'scans' => []];
+            return ['before' => [], 'baselines' => [], 'scans' => [], 'chain' => []];
         }
-        $statement = $this->pdo->prepare('SELECT from_snapshot, to_snapshot, changes_json FROM scan_ledger WHERE project_id = ? ORDER BY id');
+        $statement = $this->pdo->prepare('SELECT from_snapshot, to_snapshot, recorded_at, changes_json FROM scan_ledger WHERE project_id = ? ORDER BY id');
         $statement->execute([$projectId]);
         $rows = [];
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $changes = json_decode((string) $row['changes_json'], true, 512, JSON_THROW_ON_ERROR);
             // An entry recorded cut cannot rewind anything: no chain may pass through it.
             if (($changes['truncated'] ?? false) !== true) {
-                $rows[] = ['from' => (string) $row['from_snapshot'], 'to' => (string) $row['to_snapshot'], 'changes' => $changes];
+                $rows[] = ['from' => (string) $row['from_snapshot'], 'to' => (string) $row['to_snapshot'], 'at' => (int) $row['recorded_at'], 'changes' => $changes];
             }
         }
         $chain = $active === null ? null : self::chain($rows, $since, $active, -1);
@@ -137,8 +139,10 @@ final readonly class ScanLedger
         $before = [];
         $baselines = [];
         $scans = [];
+        $order = [];
         foreach ($chain as $index) {
             $changes = $rows[$index]['changes'];
+            $order[] = ['snapshot_id' => $rows[$index]['to'], 'at' => $rows[$index]['at'], 'files' => count($changes['before'])];
             foreach ($changes['before'] as $path => $hash) {
                 $path = (string) $path;
                 $scans[$path][] = $rows[$index]['to'];
@@ -150,7 +154,7 @@ final readonly class ScanLedger
             }
         }
 
-        return ['before' => $before, 'baselines' => $baselines, 'scans' => $scans];
+        return ['before' => $before, 'baselines' => $baselines, 'scans' => $scans, 'chain' => $order];
     }
 
     /**
@@ -162,7 +166,7 @@ final readonly class ScanLedger
      * reader meets first. Past `$active` a chain goes on only when a later
      * entry leads back to it.
      *
-     * @param list<array{from: string, to: string, changes: array<string, mixed>}> $rows
+     * @param list<array{from: string, to: string, at: int, changes: array<string, mixed>}> $rows
      * @param array<string, true> $dead the starts already known to lead nowhere, so no start is walked twice
      * @return list<int>|null indexes into `$rows`
      */

@@ -10,6 +10,7 @@
 #        knossos-run.sh session-changes <project-dir> --since=<snapshot>
 #        knossos-run.sh session-head <project-dir>
 #        knossos-run.sh session-diff <project-dir> --rev=<commit> --file=<file>
+#        knossos-run.sh boundary-couplings <project-dir> --from=<boundary> --to=<boundary>
 #
 # Every failure exits 0. All but one print nothing: the mod reads silence as
 # "no data", keeps its last figures with their age and asks again later, so a
@@ -42,7 +43,7 @@ case "$SUBCOMMAND" in
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     component-detail|file-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
-    session-changes|session-head|session-diff) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    session-changes|session-head|session-diff|boundary-couplings) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     watch) LIMIT=0 ;;
     *) exit 0 ;;
 esac
@@ -91,6 +92,14 @@ if [ "$SUBCOMMAND" = session-diff ]; then
     case "$1" in --rev=*[!0-9a-f]* | --rev=) exit 0 ;; --rev=*) ;; *) exit 0 ;; esac
     [ "${#1}" -ge 13 ] && [ "${#1}" -le 70 ] || exit 0
     case "$2" in --file=-* | --file=/* | --file= | --file=.. | --file=../* | --file=*/../* | --file=*/..) exit 0 ;; --file=*) ;; *) exit 0 ;; esac
+fi
+# boundary-couplings takes exactly the two boundaries of one heat map cell, the
+# one it runs from and the one it runs to, in that order, each a printable name:
+# any other option (`--db=...`) would read another graph.
+if [ "$SUBCOMMAND" = boundary-couplings ]; then
+    [ "$#" -eq 2 ] || exit 0
+    case "$1" in --from= | --from=*[![:print:]]*) exit 0 ;; --from=*) ;; *) exit 0 ;; esac
+    case "$2" in --to= | --to=*[![:print:]]*) exit 0 ;; --to=*) ;; *) exit 0 ;; esac
 fi
 # allow-root takes nothing but the root, and always writes: the pane runs it
 # only after the person confirmed, so a preview would answer a question nobody

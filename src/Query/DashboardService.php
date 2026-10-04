@@ -43,6 +43,8 @@ final readonly class DashboardService
     /** Members listed per cycle as `nodes`; `members` keeps every name the cycle search returned. */
     private const CYCLE_NODES = 40;
     private const TREND_POINTS = 20;
+    /** The files that depend on a listed component or file most, named per entry: what the pane's hover card shows. */
+    private const TOP_DEPENDENTS = 3;
     /** Boundaries listed with their member counts. */
     private const BOUNDARIES = 12;
 
@@ -94,6 +96,9 @@ final readonly class DashboardService
         $ranked = [...array_column($health['hubs'], 'component'), ...array_column($health['static_hotspots'], 'component')];
         $places = $this->places($ranked);
         $dependents = $this->dependentFiles($ranked);
+        $nearest = $this->topDependents($ranked);
+        $fanInListed = array_slice($fanIn, 0, $this->fanInCap);
+        $fanInTop = (new FileFanInQuery($this->pdo))->topDependents($id, array_column(array_slice($fanInListed, 0, self::TOP), 'path'), self::TOP_DEPENDENTS);
 
         return [
             'status' => 'ok',
@@ -108,11 +113,11 @@ final readonly class DashboardService
                     + (int) ($probe['added_files_since'] ?? 0)
                     + (int) ($probe['deleted_files_since'] ?? 0),
             ] + self::drifted($staleness->drift, $labels, $id),
-            'hubs' => array_map(static fn(array $h): array => self::listed($h['component'], $h['metrics'], $labels, $places, $dependents), $health['hubs']),
+            'hubs' => array_map(static fn(array $h): array => self::listed($h['component'], $h['metrics'], $labels, $places, $dependents, $nearest), $health['hubs']),
             'hubs_truncated' => $hubLimits !== [],
             'hubs_truncation_reasons' => $hubLimits,
             'hotspots' => array_map(
-                static fn(array $h): array => self::listed($h['component'], $h['factors'], $labels, $places, $dependents) + ['score' => $h['score']],
+                static fn(array $h): array => self::listed($h['component'], $h['factors'], $labels, $places, $dependents, $nearest) + ['score' => $h['score']],
                 $health['static_hotspots'],
             ),
             // The listed candidates are paged by the health limit, so the
@@ -127,7 +132,7 @@ final readonly class DashboardService
                 'largest' => array_map(static fn(array $c): array => self::cycle($c, $labels), array_slice($cycles, 0, self::LARGEST_CYCLES)),
             ],
             'trend' => self::trend($series),
-            'fan_in' => array_slice($fanIn, 0, $this->fanInCap),
+            'fan_in' => array_map(static fn(array $f): array => isset($fanInTop[$f['path']]) ? $f + ['top_dependents' => $fanInTop[$f['path']]] : $f, $fanInListed),
             'fan_in_truncated' => count($fanIn) > $this->fanInCap,
             'summary' => $findings->summary($id),
             'boundaries' => $labels->listed(self::BOUNDARIES),
@@ -234,9 +239,10 @@ final readonly class DashboardService
      * @param array<string, mixed> $metrics the degree walk's in, out and cross-boundary degrees
      * @param array<string, array{path: string, line: int|null}> $places
      * @param array<string, int> $dependents files referencing each component, by id
+     * @param array<string, list<string>> $nearest the files referencing each component most, by id
      * @return array<string, mixed>
      */
-    private static function listed(array $component, array $metrics, BoundaryLabels $labels, array $places = [], array $dependents = []): array
+    private static function listed(array $component, array $metrics, BoundaryLabels $labels, array $places = [], array $dependents = [], array $nearest = []): array
     {
         $id = (string) ($component['id'] ?? '');
         $place = $places[$id] ?? null;
@@ -249,6 +255,7 @@ final readonly class DashboardService
             'out_degree' => $metrics['out_degree'],
             'cross_boundary_degree' => $metrics['cross_boundary_degree'],
             'dependent_files' => $dependents[$id] ?? 0,
+            'top_dependents' => $nearest[$id] ?? [],
             'path' => $place['path'] ?? null,
             'line' => $place['line'] ?? null,
         ];
@@ -310,6 +317,39 @@ final readonly class DashboardService
                 'line' => isset($place['start_line']) ? (int) $place['start_line'] : null,
             ];
         }, $candidates);
+    }
+
+    /**
+     * The files that reference each component most, by id, at most
+     * {@see self::TOP_DEPENDENTS} each, most edges first (ties by path); the
+     * component's own file left out, as {@see self::dependentFiles()} counts
+     * them. One windowed query over the same indexed edges as that count.
+     *
+     * @param list<array<string, mixed>> $components
+     * @return array<string, list<string>>
+     */
+    private function topDependents(array $components): array
+    {
+        $ids = self::idsOf($components);
+        if ($ids === []) {
+            return [];
+        }
+        $statement = $this->pdo->prepare(
+            'SELECT target_id, relative_path FROM (SELECT e.target_id, f.relative_path, ' .
+            'ROW_NUMBER() OVER (PARTITION BY e.target_id ORDER BY COUNT(*) DESC, f.relative_path) AS nth ' .
+            'FROM edges e JOIN nodes n ON n.id = e.target_id JOIN files f ON f.id = e.file_id ' .
+            'WHERE e.file_id IS NOT NULL AND e.file_id IS NOT n.file_id AND e.target_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ') ' .
+            'GROUP BY e.target_id, e.file_id) WHERE nth <= ? ORDER BY target_id, nth',
+        );
+        foreach ([...$ids, self::TOP_DEPENDENTS] as $position => $value) {
+            $statement->bindValue($position + 1, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $statement->execute();
+        $top = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $top[(string) $row['target_id']][] = (string) $row['relative_path'];
+        }
+        return $top;
     }
 
     /**

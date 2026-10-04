@@ -13,6 +13,7 @@ use Knossos\Runtime\RuntimeFactory;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
+use function PHPUnit\Framework\assertNull;
 use function PHPUnit\Framework\assertSame;
 use function PHPUnit\Framework\assertStringContainsString;
 use function PHPUnit\Framework\assertStringStartsWith;
@@ -75,6 +76,12 @@ final class SessionDiffServiceTest extends KnossosTestCase
         [$root, $rev] = $this->repository();
         assertSame(1, preg_match('/^[0-9a-f]{40}$/', $rev));
         assertSame('no-git', (new SessionDiffService())->head($this->directory())['status']);
+        // The branch checked out is named beside the commit, by its short name; a detached head names none.
+        $this->git($root, ['checkout', '--quiet', '-b', 'feat/pane']);
+        assertSame('feat/pane', (new SessionDiffService())->head($root)['branch']);
+        $this->git($root, ['checkout', '--quiet', '--detach']);
+        assertSame([$rev, null], [(new SessionDiffService())->head($root)['rev'], (new SessionDiffService())->head($root)['branch']]);
+        assertNull((new SessionDiffService())->head($this->directory())['branch']);
     }
 
     #[Group('query')]

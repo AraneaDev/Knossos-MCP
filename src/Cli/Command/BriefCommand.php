@@ -9,13 +9,14 @@ use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Cli\ProjectDatabaseLocator;
-use Knossos\Query\{ComponentDetailService, DashboardService, FileDetailService, RescanService, SessionChangesService, TurnBriefService};
+use Knossos\Query\{BoundaryCouplingsService, ComponentDetailService, DashboardService, FileDetailService, RescanService, SessionChangesService, TurnBriefService};
 use Knossos\Runtime\RuntimeFactory;
 use Throwable;
 
 /**
- * `turn-brief`, `rescan`, `dashboard`, `component-detail`, `file-detail` and
- * `session-changes`: the calls the Claude Code mod makes.
+ * `turn-brief`, `rescan`, `dashboard`, `component-detail`, `file-detail`,
+ * `session-changes` and `boundary-couplings`: the calls the Claude Code mod
+ * makes.
  *
  * Addressed by path like `session-brief`, through the same database
  * resolution. All always exit 0, even on an unknown option or a stray
@@ -30,7 +31,7 @@ final class BriefCommand implements CliCommand
     /** {@inheritDoc} */
     public function supports(string $command): bool
     {
-        return in_array($command, ['turn-brief', 'rescan', 'dashboard', 'component-detail', 'file-detail', 'session-changes'], true);
+        return in_array($command, ['turn-brief', 'rescan', 'dashboard', 'component-detail', 'file-detail', 'session-changes', 'boundary-couplings'], true);
     }
 
     /**
@@ -55,6 +56,7 @@ final class BriefCommand implements CliCommand
             'turn-brief' => ['db', 'json', 'files', 'policies', 'no-policies', 'since', 'reuse-scan'],
             'rescan', 'component-detail', 'file-detail' => ['db', 'json'],
             'session-changes' => ['db', 'json', 'since'],
+            'boundary-couplings' => ['db', 'json', 'from', 'to'],
             default => ['db', 'json', 'fan-in-threshold'],
         };
     }
@@ -134,6 +136,11 @@ final class BriefCommand implements CliCommand
         if ($command === 'session-changes') {
             $since = $context->options->single($options, 'since') ?? throw new InvalidArgumentException('--since is required.');
             return (new SessionChangesService($pdo))->changes($path, $since);
+        }
+        if ($command === 'boundary-couplings') {
+            $from = $context->options->single($options, 'from') ?? throw new InvalidArgumentException('--from is required.');
+            $to = $context->options->single($options, 'to') ?? throw new InvalidArgumentException('--to is required.');
+            return (new BoundaryCouplingsService($pdo))->couplings($path, $from, $to);
         }
         if ($command === 'dashboard') {
             $threshold = $context->options->integer($options, 'fan-in-threshold', 20, 1, 100_000);

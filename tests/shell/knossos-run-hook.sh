@@ -161,6 +161,15 @@ expect_silent_success 'session-changes refuses another option' env KNOSSOS_BIN="
 expect_silent_success 'session-changes refuses a snapshot that is not a plain id' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj" '--since=a b'
 expect_silent_success 'session-changes refuses no snapshot' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj"
 expect_silent_success 'session-changes refuses a second argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj" --since=s1 --db=/tmp/x
+# boundary-couplings: one heat map cell spelled out, by its two boundaries, in that order and nothing else.
+expect_output 'boundary-couplings passes the two boundaries' "boundary-couplings|$ABS_PROJ|--from=namespace:App\\Core|--to=module:hooks (+ts)|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" boundary-couplings "$STUBS/proj" '--from=namespace:App\Core' '--to=module:hooks (+ts)'
+expect_silent_success 'boundary-couplings refuses another option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" boundary-couplings "$STUBS/proj" --from=a --db=/tmp/other.sqlite
+expect_silent_success 'boundary-couplings refuses the boundaries swapped' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" boundary-couplings "$STUBS/proj" --to=a --from=b
+expect_silent_success 'boundary-couplings refuses an empty boundary' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" boundary-couplings "$STUBS/proj" --from= --to=b
+expect_silent_success 'boundary-couplings refuses a boundary with a line break' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" boundary-couplings "$STUBS/proj" --from=a "--to=b
+c"
+expect_silent_success 'boundary-couplings refuses a third argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" boundary-couplings "$STUBS/proj" --from=a --to=b --json
 # session-head: the commit the session starts at, with nothing but the project.
 expect_output 'session-head asks for the project alone' "session-head|$ABS_PROJ|--json|" \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-head "$STUBS/proj"
@@ -184,8 +193,9 @@ if command -v git >/dev/null 2>&1 && command -v php >/dev/null 2>&1; then
     git init --quiet "$REPO" && printf 'one\n' > "$REPO/a.txt" \
         && git -C "$REPO" add a.txt && git -C "$REPO" -c user.name=t -c user.email=t@example.test -c commit.gpgsign=false commit --quiet -m one
     HEAD_REV=$(git -C "$REPO" rev-parse HEAD)
+    HEAD_BRANCH=$(git -C "$REPO" symbolic-ref --short HEAD)
     REAL_REPO=$(CDPATH='' cd -- "$REPO" && pwd -P)
-    expect_output 'session-head names the commit the project is at' "{\"status\":\"ok\",\"path\":\"$REAL_REPO\",\"rev\":\"$HEAD_REV\"}" \
+    expect_output 'session-head names the commit and the branch the project is at' "{\"status\":\"ok\",\"path\":\"$REAL_REPO\",\"rev\":\"$HEAD_REV\",\"branch\":\"$HEAD_BRANCH\"}" \
         env KNOSSOS_BIN="$HERE/../../bin/knossos" /bin/sh "$RUN" session-head "$REPO"
     printf 'two\n' >> "$REPO/a.txt"
     out=$(env KNOSSOS_BIN="$HERE/../../bin/knossos" /bin/sh "$RUN" session-diff "$REPO" "--rev=$HEAD_REV" --file=a.txt)
@@ -252,6 +262,10 @@ expect_output 'container session-changes reads since the snapshot it names' "img
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-changes "$STUBS/proj" --since=scan_ab12
 expect_silent_success 'container session-changes refuses another option' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-changes "$STUBS/proj" --db=/tmp/other.sqlite
+expect_output 'container boundary-couplings passes the two boundaries' "img:1|boundary-couplings|$ABS_PROJ|--from=Edge|--to=Core|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" boundary-couplings "$STUBS/proj" --from=Edge --to=Core
+expect_silent_success 'container boundary-couplings refuses another option' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" boundary-couplings "$STUBS/proj" --from=Edge --db=/tmp/other.sqlite
 expect_output 'container session-head runs as the caller' "user=$ME|img:1|session-head|$ABS_PROJ|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-head "$STUBS/proj"
 expect_silent_success 'container session-head refuses an option' \

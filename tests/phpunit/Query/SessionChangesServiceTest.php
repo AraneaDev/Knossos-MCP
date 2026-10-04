@@ -14,6 +14,8 @@ use PHPUnit\Framework\Attributes\Group;
 
 use function PHPUnit\Framework\assertCount;
 use function PHPUnit\Framework\assertSame;
+use function PHPUnit\Framework\assertFalse;
+use function PHPUnit\Framework\assertTrue;
 
 /**
  * What changed in a project since a session began, whoever changed it, read
@@ -81,9 +83,14 @@ final class SessionChangesServiceTest extends KnossosTestCase
             file_put_contents($root . '/src/Core/Added.php', "<?php\nnamespace App;\nfinal class Added {}\n");
             $this->ledgered($pdo, $root);
             $second = (string) $ledger->activeSnapshot($projectId);
-            $files = self::changes($pdo, $root, $since)['files'];
+            $changes = self::changes($pdo, $root, $since);
+            $files = $changes['files'];
             assertSame([$first, $second], $files['src/Core/Greeter.php']['scans']);
             assertSame([$second], $files['src/Core/Added.php']['scans']);
+            // The scans themselves, in the order they were recorded, each with when and how many files it changed.
+            assertSame([[$first, 1], [$second, 2]], array_map(static fn(array $scan): array => [$scan['snapshot_id'], $scan['files']], $changes['scans']));
+            assertTrue(is_int($changes['scans'][0]['at']) && $changes['scans'][0]['at'] <= $changes['scans'][1]['at']);
+            assertFalse($changes['scans_truncated']);
         } finally {
             $this->removeTempTree($root);
         }
@@ -111,6 +118,32 @@ final class SessionChangesServiceTest extends KnossosTestCase
             assertCount(SessionChangesService::MAX_SCANS, $scans);
             assertSame('s' . (SessionChangesService::MAX_SCANS + 4), $scans[SessionChangesService::MAX_SCANS - 1]);
             assertSame('s5', $scans[0]);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testTheTimelineKeepsTheNewestScansAndSaysItWasCut(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $ledger = new ScanLedger($pdo);
+            $since = (string) $ledger->activeSnapshot($projectId);
+            $hashes = $ledger->hashes($projectId);
+            $from = $since;
+            $pdo->exec('PRAGMA foreign_keys = OFF');
+            for ($i = 0; $i < SessionChangesService::MAX_TIMELINE + 3; ++$i) {
+                $after = ['src/Core/Greeter.php' => 'h' . $i] + $hashes;
+                $ledger->record($projectId, $from, 's' . $i, $hashes, $after);
+                $hashes = $after;
+                $from = 's' . $i;
+            }
+            $pdo->prepare('UPDATE projects SET active_scan_id = ? WHERE id = ?')->execute([$from, $projectId]);
+            $changes = self::changes($pdo, $root, $since);
+            assertCount(SessionChangesService::MAX_TIMELINE, $changes['scans']);
+            assertSame(['s3', 's' . (SessionChangesService::MAX_TIMELINE + 2)], [$changes['scans'][0]['snapshot_id'], $changes['scans'][SessionChangesService::MAX_TIMELINE - 1]['snapshot_id']]);
+            assertTrue($changes['scans_truncated']);
         } finally {
             $this->removeTempTree($root);
         }

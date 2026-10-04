@@ -8,6 +8,7 @@ use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\BoundaryLabels;
 use Knossos\Query\BoundaryMatrix;
 use Knossos\Query\DashboardService;
+use Knossos\Query\FileFanInQuery;
 use Knossos\Query\PolicyScope;
 use Knossos\Scan\ProjectScanService;
 use PDO;
@@ -19,6 +20,7 @@ use function PHPUnit\Framework\assertGreaterThan;
 use function PHPUnit\Framework\assertGreaterThanOrEqual;
 use function PHPUnit\Framework\assertIsInt;
 use function PHPUnit\Framework\assertLessThanOrEqual;
+use function PHPUnit\Framework\assertNotContains;
 use function PHPUnit\Framework\assertNotSame;
 use function PHPUnit\Framework\assertSame;
 
@@ -260,7 +262,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame($health['hubs'][0]['component']['display_name'], $d['hubs'][0]['name']);
             assertSame($health['hubs'][0]['component']['kind'], $d['hubs'][0]['kind']);
             assertSame(
-                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'dependent_files', 'path', 'line'],
+                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'dependent_files', 'top_dependents', 'path', 'line'],
                 array_keys($d['hubs'][0]),
             );
             // The pane shows the display name and looks the component up by the canonical one.
@@ -270,7 +272,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame($health['hubs'][0]['metrics']['out_degree'], $d['hubs'][0]['out_degree']);
             assertSame($health['hubs'][0]['metrics']['cross_boundary_degree'], $d['hubs'][0]['cross_boundary_degree']);
             assertSame(
-                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'dependent_files', 'path', 'line', 'score'],
+                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'dependent_files', 'top_dependents', 'path', 'line', 'score'],
                 array_keys($d['hotspots'][0]),
             );
             // A hotspot carries the same degrees the health walk measured for it.
@@ -312,6 +314,39 @@ final class DashboardServiceTest extends KnossosTestCase
             foreach ($d['hubs'] as $hub) {
                 assertLessThanOrEqual($hub['in_degree'], $hub['dependent_files']);
             }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Each ranked component and listed fan-in file names the files that depend on it most, for the pane's hover card. */
+    #[Group('query')]
+    public function testRankedComponentsAndFanInFilesNameTheirTopDependents(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $d = (new DashboardService($pdo))->dashboard($root, 1);
+            $files = $pdo->prepare(
+                'SELECT f.relative_path, COUNT(*) AS edges FROM edges e JOIN nodes n ON n.id = e.target_id JOIN files f ON f.id = e.file_id '
+                . 'WHERE n.project_id = :p AND n.canonical_name = :c AND e.file_id IS NOT NULL AND e.file_id IS NOT n.file_id '
+                . 'GROUP BY f.relative_path ORDER BY edges DESC, f.relative_path LIMIT 3',
+            );
+            $named = 0;
+            foreach ([...$d['hubs'], ...$d['hotspots']] as $ranked) {
+                $files->execute(['p' => $projectId, 'c' => $ranked['canonical_name']]);
+                assertSame(array_column($files->fetchAll(PDO::FETCH_ASSOC), 'relative_path'), $ranked['top_dependents'], $ranked['canonical_name']);
+                assertLessThanOrEqual(min(3, $ranked['dependent_files']), count($ranked['top_dependents']));
+                $named += count($ranked['top_dependents']);
+            }
+            assertGreaterThan(0, $named);
+            // A fan-in file names the files depending on it, never itself: the same files its own query lists.
+            $greeter = $d['fan_in'][0];
+            assertSame('src/Core/Greeter.php', $greeter['path']);
+            $expected = (new FileFanInQuery($pdo))->forPaths($projectId, ['src/Core/Greeter.php'], 10)['src/Core/Greeter.php']['top_dependents'];
+            $top = $greeter['top_dependents'];
+            sort($top);
+            assertSame($expected, $top);
+            assertNotContains('src/Core/Greeter.php', $top);
         } finally {
             $this->removeTempTree($root);
         }

@@ -87,6 +87,7 @@ Usage:
   knossos component-detail [path] <name> [--db=FILE] [--json]
   knossos file-detail <file> [--db=FILE] [--json]
   knossos session-changes [path] --since=SNAPSHOT [--db=FILE] [--json]
+  knossos boundary-couplings [path] --from=BOUNDARY --to=BOUNDARY [--db=FILE] [--json]
   knossos session-head [path] [--json]
   knossos session-diff [path] --rev=SHA --file=PATH [--json]
   knossos install-agent-plugin [--scope=user] [--data-dir=DIR] [--execute]

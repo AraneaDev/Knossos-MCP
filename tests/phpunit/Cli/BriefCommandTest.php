@@ -129,9 +129,10 @@ final class BriefCommandTest extends KnossosTestCase
         assertSame(true, $command->supports('file-detail'));
         assertSame(true, $command->supports('rescan'));
         assertSame(true, $command->supports('session-changes'));
+        assertSame(true, $command->supports('boundary-couplings'));
         assertSame(false, $command->supports('session-brief'));
         assertSame(false, $command->supports('scan'));
-        foreach (['turn-brief', 'rescan', 'dashboard', 'component-detail', 'file-detail', 'session-changes'] as $name) {
+        foreach (['turn-brief', 'rescan', 'dashboard', 'component-detail', 'file-detail', 'session-changes', 'boundary-couplings'] as $name) {
             assertSame([CliOptionParser::ANY], $command->allowedOptions($name));
         }
     }
@@ -409,6 +410,25 @@ final class BriefCommandTest extends KnossosTestCase
         assertStringContainsString('knossos component-detail [path] <name>', $help);
         assertStringContainsString('knossos rescan [path]', $help);
         assertStringContainsString('knossos file-detail <file>', $help);
+        assertStringContainsString('knossos boundary-couplings [path] --from=BOUNDARY --to=BOUNDARY', $help);
+    }
+
+    /** One heat map cell spelled out: both boundaries are required, nothing else is taken, and the answer is JSON. */
+    #[Group('cli')]
+    public function testBoundaryCouplingsPrintsTheEnvelopeAsJson(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        try {
+            [$status, $out] = $this->runJson('boundary-couplings', [$root], ['from' => ['Edge'], 'to' => ['Core']]);
+            assertSame([0, 'ok', 'Edge', 'Core'], [$status, $out['status'], $out['from'], $out['to']]);
+            assertIsList($out['couplings']);
+            foreach ([['from' => ['Edge']], ['to' => ['Core']], ['from' => ['Edge'], 'to' => ['Core'], 'since' => ['x']]] as $options) {
+                [$status, $out] = $this->runJson('boundary-couplings', [$root], $options);
+                assertSame([0, 'error'], [$status, $out['status']]);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
     }
 
     #[Group('cli')]
