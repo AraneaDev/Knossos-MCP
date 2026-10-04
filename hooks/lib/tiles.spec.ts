@@ -7,12 +7,12 @@ import { plainText, rawText } from './__tests__/plain-text'
 const WIDTHS = [40, 60, 80, 100, 130, 140, 200] as const
 
 const STATS: Stat[] = [
-  { key: 'components', label: 'components', value: '9,026', inSummary: true },
-  { key: 'boundaries', label: 'boundaries', value: '7', inSummary: true },
+  { key: 'components', label: 'components', value: '9,026' },
+  { key: 'boundaries', label: 'boundaries', value: '7' },
   { key: 'cycles', label: 'cycles', value: '2', tone: 'warn', trend: [0, 1, 1, 2, 4, 3, 3, 2] },
   { key: 'degree', label: 'max degree', value: '165', trend: [120, 130, 140, 150, 160, 165] },
   { key: 'dead', label: 'dead code', value: '0' },
-  { key: 'drifted', label: 'drifted', value: '10', tone: 'accent', press: 'drifted', inSummary: true },
+  { key: 'drifted', label: 'drifted', value: '10', tone: 'accent', press: 'drifted' },
   { key: 'policy', label: 'policy', value: '3', tone: 'alert' },
   { key: 'diagnostics', label: 'diagnostics', value: '0' },
 ]

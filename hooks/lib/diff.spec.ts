@@ -151,6 +151,7 @@ describe('the change as rows', () => {
       boundary: null,
       loc: null,
       dependents: { count: 0, truncated: false, boundaries: [], items: [] },
+      uses: { count: 0, truncated: false, items: [] },
       components: { count: 0, truncated: false, items: [] },
     }
     const keys = fileDetailRows({ label: 'src/Router.php', loading: false, messages: null, component: null, file, diff: viewOf(answer()) }, 60).map(r => r.key)

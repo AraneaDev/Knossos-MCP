@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ComponentDetail, Dashboard, KnossosView, PaneTab } from '../../types'
 import { detailInput, paneInput, paneLayout } from './layout'
-import type { PaneInput } from './layout'
+import type { DetailInput, PaneInput } from './layout'
 import { plainText, rawText } from './__tests__/plain-text'
 import { rowWidth } from './rows'
 
@@ -29,7 +29,7 @@ const answer: ComponentDetail = {
   candidates: [],
 }
 const peeked = detailInput({ name: 'App\\Hub1', label: 'Hub1' }, { snapshot_id: 's1', name: 'App\\Hub1', detail: answer, phase: 'done' }, ROOT)
-const pane = (v: KnossosView, peek = peeked, dash: Dashboard = d): PaneInput => paneInput(dash, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, v, 0, true, null, null, undefined, null, undefined, {}, peek)
+const pane = (v: KnossosView, peek: DetailInput | null = peeked, dash: Dashboard = d): PaneInput => paneInput(dash, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, v, 0, true, null, null, undefined, null, undefined, {}, peek)
 const has = (rows: { key: string }[]) => rows.some(r => r.key.includes('peek-'))
 
 describe('master-detail on a wide pane', () => {
