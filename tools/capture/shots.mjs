@@ -131,7 +131,7 @@ const openPane = (columns, beat = true) => [
 /** A row the marker stands on, naming `name`. */
 const marked = (name) => String.raw`›\s+${lit(name)}\s`;
 
-/** The finder's field, given the keyboard: `f` opens it, and a first key may not reach it. */
+/** The finder's field: `f` opens it with the keys in it, checked before typing, so a word can never reach the prompt. */
 const find = (text, fixture, delayMs = 0) => [
     press("f", String.raw`⌕ Find`),
     { do: "focus", field: true },

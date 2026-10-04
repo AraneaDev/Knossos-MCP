@@ -289,9 +289,9 @@ export function promptReady(screen, cursorX, expect, absent) {
 }
 
 /**
- * Sends a key to the pane. The pane can lose the keyboard between the check
- * and the key (it does as it redraws), so a printable key that turns up in
- * the prompt instead is taken back out. With `done`, a regex the key must
+ * Sends a key to the pane. Should the pane lose the keyboard between the
+ * check and the key, a printable key that turns up in the prompt instead is
+ * taken back out, so it can never be sent as a turn. With `done`, a regex the key must
  * bring on screen, a key that changed nothing is sent again after the
  * keyboard went back to the prompt (Escape) and into the pane afresh, since
  * something else above the prompt (the band's buttons) can hold it.
