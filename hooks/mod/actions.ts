@@ -15,7 +15,7 @@ import { currentInput, currentList } from './render'
 import type { Handlers } from './render'
 import { mod, PANE } from './state'
 import { requestRescan, scanSafely } from './watcher'
-import type { RenderSurface } from 'claude-code'
+import type { ProcessRunResult, RenderSurface } from 'claude-code'
 
 /** The wrapper bounds allow-root at 15 s. */
 const ALLOW_TIMEOUT_MS = 20_000
@@ -79,7 +79,7 @@ async function openLocation(io: Port, loc: Loc, surface?: RenderSurface): Promis
   const opened = await io.process
     .run([...EDITOR, target], { timeoutMs: EDITOR_TIMEOUT_MS })
     .then(
-      r => r.exitCode === 0,
+      (r: ProcessRunResult) => r.exitCode === 0,
       () => false,
     )
   if (opened) return say(io, '✓ opened in editor', 'ok')

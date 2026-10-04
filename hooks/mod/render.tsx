@@ -4,7 +4,7 @@
  * within the engine's bounds. Drawing reads state but acts on nothing: what
  * a press does is handed in ({@link Handlers}).
  */
-import type { Elements, RenderElement, RenderNode, RenderSurface } from 'claude-code'
+import type { Elements, PressedLink, RenderElement, RenderNode, RenderSurface, UiPressArgument } from 'claude-code'
 
 import { bandModel } from '../lib/band'
 import { diffView } from '../lib/diff'
@@ -121,7 +121,7 @@ function drawSegment(act: Handlers, ui: Elements[RenderSurface], row: Row, s: Se
     // Out of sight, there only for its hotkey (a tab drawn as its digit alone).
     return (
       <Box key={s.press.id} display="none">
-        <Button key={s.press.id} plain label={s.press.label} {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })} onPress={pressed => act.press(s.press!.id, pressed.surface)} />
+        <Button key={s.press.id} plain label={s.press.label} {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })} onPress={(pressed: UiPressArgument) => act.press(s.press!.id, pressed.surface)} />
       </Box>
     )
   }
@@ -135,7 +135,7 @@ function drawSegment(act: Handlers, ui: Elements[RenderSurface], row: Row, s: Se
         {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })}
         {...(s.dim ? { dimColor: true } : {})}
         {...hover}
-        onPress={pressed => act.press(s.press!.id, pressed.surface)}
+        onPress={(pressed: UiPressArgument) => act.press(s.press!.id, pressed.surface)}
       />,
     )
   }
@@ -146,7 +146,7 @@ function drawSegment(act: Handlers, ui: Elements[RenderSurface], row: Row, s: Se
         key={`${row.key}-link-${i}`}
         text={linkMarkdown(s.text, s.link)}
         {...(s.dim ? { dimColor: true } : {})}
-        onLinkPress={(link, pressed) => act.link(link.href, pressed.surface)}
+        onLinkPress={(link: PressedLink, pressed: UiPressArgument) => act.link(link.href, pressed.surface)}
       />,
     )
   }
@@ -378,7 +378,7 @@ export async function drawBand(io: Port, resolve: () => Elements[RenderSurface],
         </Text>
       </Box>
       {model.showDetails && <Button key="details" label="details" onPress={() => act.details()} />}
-      {copy !== undefined && <Button key="copy" label="copy" onPress={pressed => act.copy(copy, pressed.surface)} />}
+      {copy !== undefined && <Button key="copy" label="copy" onPress={(pressed: UiPressArgument) => act.copy(copy, pressed.surface)} />}
       <Button key="hide" label="hide" onPress={() => act.hide()} />
     </Box>
   )

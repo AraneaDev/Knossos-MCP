@@ -3,6 +3,8 @@
  * model's tool, start-up, the age tick, the end of a turn and of a session,
  * and the `/knossos` command with the pane it opens.
  */
+import type { ConfigRow, UiPane } from 'claude-code'
+
 import { CONTEXT_DESCRIPTION, CONTEXT_SCHEMA, CONTEXT_TOOL } from '../lib/agent'
 import { bandModel } from '../lib/band'
 import { NO_CHANGES, noGraphOf, paneStatus } from '../lib/layout'
@@ -110,7 +112,7 @@ async function tickAge(io: Port): Promise<void> {
   // A row already found to have nothing to show is not looked at again each tick: that would lay the pane out every second.
   if (mod.paneWide && (await io.state.peek.read()) === null && mod.peekNone !== peekKey(await io.state.view.read(), (await io.state.dashboard.read())?.snapshot_id ?? null)) await request(io, 'peek')
   // A pane closed by any means (the command, its own close key) stops drawing; stop ticking for it, and it is no longer wide.
-  if (mod.paneText !== null && !(await io.ui.panes()).some(pane => pane.id === PANE)) {
+  if (mod.paneText !== null && !(await io.ui.panes()).some((pane: UiPane) => pane.id === PANE)) {
     mod.paneText = null
     mod.paneWide = false
   }
@@ -131,7 +133,7 @@ async function tickAge(io: Port): Promise<void> {
  */
 async function retryEmpty(io: Port): Promise<void> {
   if (!mod.emptyShown || mod.disabled || mod.dashboardFlight?.isRunning === true) return
-  if (!(await io.ui.panes()).some(pane => pane.id === PANE)) {
+  if (!(await io.ui.panes()).some((pane: UiPane) => pane.id === PANE)) {
     mod.emptyShown = false
     return
   }
@@ -146,7 +148,7 @@ async function retryEmpty(io: Port): Promise<void> {
  * take as theme keys. A config that cannot be read leaves the dark default.
  */
 async function readTheme(io: Port): Promise<void> {
-  const row = (await io.config.list().catch(() => [])).find(r => r.key === 'theme')
+  const row = (await io.config.list().catch(() => [])).find((r: ConfigRow) => r.key === 'theme')
   if (typeof row?.value === 'string') await io.state.theme.update(() => row.value as string)
 }
 
@@ -160,7 +162,7 @@ export async function startUp(io: Port, openOnStart: boolean): Promise<void> {
   // Where the checkout stands, for the header: the baseline's own head read, when there was one, said it already.
   if (!mod.gitAsked) await readGitHead(io)
   await readTheme(io)
-  const root = await io.session.root().then(r => placed(io, r)).catch(() => null)
+  const root = await io.session.root().then((r: string) => placed(io, r)).catch(() => null)
   await io.state.sessionRoot.update(() => root)
   const stored = await refreshDashboard(io)
   if (mod.disabled) return
@@ -193,7 +195,7 @@ export async function runCommand(io: Port, args: string): Promise<string> {
     return 'Knossos pane opened.'
   }
   if (verb !== '') return USAGE
-  if ((await io.ui.panes()).some(pane => pane.id === PANE)) {
+  if ((await io.ui.panes()).some((pane: UiPane) => pane.id === PANE)) {
     await io.ui.close({ id: PANE }).catch(() => undefined)
     mod.paneText = null
     mod.paneWide = false
