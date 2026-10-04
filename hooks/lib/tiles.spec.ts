@@ -26,13 +26,13 @@ describe('stat tiles', () => {
     }
   })
 
-  it('collapse to the summary line when narrow, leaving out what the header already says', () => {
+  it('collapse to a line of every figure when narrow, the header saying none of them', () => {
     const rows = tileRows(STATS, 60, 'narrow')
     expect(rows.every(r => r.key.startsWith('tiles-line'))).toBe(true)
     const text = rows.map(rawText).join('\n')
-    expect(text).not.toContain('components')
-    expect(text).not.toContain('drifted')
-    expect(rawText(rows[0]!)).toMatch(/^2 cycles ▁▃▃▅█▆▆▅ {3}165 max degree [▁-█]{6}/)
+    expect(text).toContain('9,026 components')
+    expect(text).toContain('drifted')
+    expect(rawText(rows[0]!)).toMatch(/^9,026 components {3}7 boundaries {3}2 cycles ▁▃▃▅█▆▆▅/)
     // The deviating figures keep their colour on the line.
     expect(rows.flatMap(r => r.segments).find(s => s.text === '3')).toMatchObject({ color: 'error', bold: true })
   })

@@ -21,7 +21,7 @@
  * shorten to their minimum, then names are cut with an ellipsis, then the
  * boundary column goes, then the bars go. The numbers always stay.
  */
-import { ACCENT, boundaryColour, boundaryLabel, FAINT, HEADING, NO_HUES, SECONDARY } from './palette'
+import { ACCENT, boundaryColour, boundaryLabel, FAINT, HEADING, NO_HUES, SECONDARY, SELECTED_BG } from './palette'
 import type { Hues } from './palette'
 
 /** A pressable segment: drawn as a plain Button, `hotkey: label` when it has a hotkey. */
@@ -41,14 +41,20 @@ export type Field = { id: string; value: string; placeholder: string }
  */
 export type Cell = { glyph: string; fg?: string; bg?: string }
 /**
- * A run of text in one style. `color` is a Claude Code theme key (see
- * `palette.ts`); `dim` marks secondary text, drawn in the theme's `inactive`.
+ * A card that shows while the pointer rests on the row it belongs to (where
+ * the surface has a pointer): its rows, and how wide it is. It never takes a
+ * row of the pane: it is drawn over the rows below its own.
  */
+export type Preview = { key: string; rows: Row[]; width: number }
+
 /**
- * A run of text in one style. `hidden` marks a pressable with no text that is
- * drawn out of sight: it exists only so its `press.hotkey` keeps working.
+ * A run of text in one style. `color` is a Claude Code theme key (see
+ * `palette.ts`); `dim` marks secondary text, drawn in the theme's `inactive`;
+ * `bg` a theme key laid under it. `hidden` marks a pressable with no text
+ * that is drawn out of sight: it exists only so its `press.hotkey` keeps
+ * working. `preview` hangs a hover card off the segment's row.
  */
-export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; press?: Press; field?: Field; cell?: Cell; link?: Loc; hidden?: true }
+export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; bg?: string; press?: Press; field?: Field; cell?: Cell; link?: Loc; hidden?: true; preview?: Preview }
 /**
  * One line of the pane. Consecutive rows with the same `raster` key form a
  * grid the terminal may draw as one `Raster`; every surface can draw their
@@ -62,6 +68,8 @@ export type Row = {
   split?: number
   /** Drawn as the engine's diff element instead of its segments: unified-diff hunks, and the file they are of (its language). */
   code?: { source: string; path: string }
+  /** The background the whole row is tinted with (the marked row): a card's frame carries it to its inner edge. */
+  tint?: string
 }
 
 export const BAR_MIN = 4
@@ -131,6 +139,21 @@ export const padStart = (text: string, width: number): string => spaces(width - 
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 /** A count with thousands separated: 7,878. */
 export const grouped = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+
+/**
+ * A count in at most five cells, for a narrow column: as it is below a
+ * thousand, then in thousands or millions with one decimal while that is
+ * under a hundred (`31.7k`, `1.2M`), whole past it (`317k`). A trailing `.0`
+ * is dropped. Tiles and details keep the full {@link grouped} figure.
+ */
+export function compact(n: number): string {
+  const sign = n < 0 ? '-' : ''
+  const a = Math.abs(n)
+  if (a < 1_000) return `${sign}${a}`
+  const [scaled, unit] = a < 999_500 ? [a / 1_000, 'k'] : a < 999_500_000 ? [a / 1_000_000, 'M'] : [a / 1_000_000_000, 'G']
+  const text = scaled < 99.95 ? (Math.round(scaled * 10) / 10).toFixed(1).replace(/\.0$/, '') : String(Math.round(scaled))
+  return `${sign}${text}${unit}`
+}
 export const baseName = (path: string): string => path.slice(path.lastIndexOf('/') + 1)
 
 /** A file and line as the pane prints a place: the file's own name, then the line. */
@@ -211,11 +234,14 @@ export const boundaryStyle = (boundary: string | null, hues: Hues = NO_HUES): Pi
   return colour ? { color: colour } : { dim: true }
 }
 
-/** How a segment's `Text` is styled: its colour, else `inactive` when dim; bold. */
-export function textStyle(s: Segment): { color?: string; bold?: boolean } {
+/** How a segment's `Text` is styled: its colour, else `inactive` when dim; bold; the background laid under it. */
+export function textStyle(s: Segment): { color?: string; bold?: boolean; backgroundColor?: string } {
   const color = s.color ?? (s.dim ? SECONDARY : undefined)
-  return { ...(color === undefined ? {} : { color }), ...(s.bold ? { bold: true } : {}) }
+  return { ...(color === undefined ? {} : { color }), ...(s.bold ? { bold: true } : {}), ...(s.bg === undefined ? {} : { backgroundColor: s.bg }) }
 }
+
+/** `segments` with `bg` laid under each that has none of its own. */
+export const tinted = (segments: Segment[], bg: string): Segment[] => segments.map(s => (s.bg === undefined ? { ...s, bg } : s))
 
 /**
  * A component's name as the pane prints it: a method as `Class::method`
@@ -282,15 +308,6 @@ export function clip(segments: Segment[], columns: number): Segment[] {
   return out
 }
 
-/** Whole parts joined by ` · `, as many as fit, dropping from the end. */
-export function joinFitting(parts: string[], columns: number): string {
-  for (let n = parts.length; n > 0; n--) {
-    const text = parts.slice(0, n).join(' · ')
-    if (cells(text) <= columns) return text
-  }
-  return fit(parts[0] ?? '', columns)
-}
-
 /** Words wrapped onto as many rows as they need, none wider than `columns`. */
 export function wrapWords(text: string, columns: number): string[] {
   const lines: string[] = []
@@ -337,11 +354,15 @@ export function wrapGroups(key: string, groups: Segment[][], columns: number, ga
 export const blank = (key: string): Row => ({ key, segments: [{ text: ' ' }] })
 export const dimRow = (key: string, text: string, columns: number): Row => ({ key, segments: [{ text: fit(text, columns), dim: true }] })
 
-/** How a table of names, boundaries, a bar, numbers and (optionally) files fits `columns`. */
-export type TableSpec = { name: number; boundary: number; bar: number; numbers: number[]; place?: number; kind?: number }
+/** How a table of names, boundaries, a bar, numbers and (optionally) files fits `columns`; `compact` numbers (`31.7k`) on a narrow pane. */
+export type TableSpec = { name: number; boundary: number; bar: number; numbers: number[]; place?: number; kind?: number; compact?: true }
 
-/** What a table may add beyond names and numbers: the pane's tier (its bar shares), each row's file, and each row's kind. */
-export type TableOptions = { tier?: Tier; places?: string[]; kinds?: string[] }
+/**
+ * What a table may add beyond names and numbers: the pane's tier (its bar
+ * shares), each row's file, each row's kind, and whether its numbers are
+ * compact (narrow, unless the table is a detail's, whose figures stay whole).
+ */
+export type TableOptions = { tier?: Tier; places?: string[]; kinds?: string[]; compact?: boolean }
 
 /**
  * Fits a table to `columns` (see the module docblock for the order things
@@ -356,6 +377,7 @@ export type TableOptions = { tier?: Tier; places?: string[]; kinds?: string[] }
  */
 export function tableSpec(columns: number, names: string[], boundaries: string[], numbers: number[], nameMax = NAME_MAX, options: TableOptions = {}): TableSpec {
   const range = barRange(columns, options.tier ?? 'narrow')
+  const compacted = (options.compact ?? options.tier === 'narrow') ? { compact: true as const } : {}
   const longest = Math.max(1, ...names.map(cells))
   // From the medium tier on a whole name wins over a longer gauge; narrow, names stop at their cap so the bars still compare.
   const nameNeed = (options.tier ?? 'narrow') === 'narrow' ? Math.min(nameMax, longest) : longest
@@ -368,7 +390,7 @@ export function tableSpec(columns: number, names: string[], boundaries: string[]
     const boundary = withBoundary && boundaryNeed > 0 ? boundaryNeed : 0
     const fixed = MARK + numbers.reduce((n, w) => n + 1 + w, 0) + (place > 0 ? place + 1 : 0) + (kind > 0 ? kind + 1 : 0)
     const avail = columns - fixed - (boundary > 0 ? boundary + 1 : 0)
-    const placed = { ...(place > 0 ? { place } : {}), ...(kind > 0 ? { kind } : {}) }
+    const placed = { ...(place > 0 ? { place } : {}), ...(kind > 0 ? { kind } : {}), ...compacted }
     if (!withBar) return avail >= Math.min(NAME_MIN, nameNeed) ? { name: Math.min(avail, nameNeed), boundary, bar: 0, numbers, ...placed } : null
     const barWidth = Math.min(range.max, Math.max(range.min, avail - 1 - nameNeed))
     // Room the bar may not take goes to a name past its cap: a whole name says more than a longer gauge.
@@ -382,7 +404,7 @@ export function tableSpec(columns: number, names: string[], boundaries: string[]
     (placeNeed > 0 ? attempt(true, true, placeNeed) : null) ??
     attempt(true, true, 0) ??
     attempt(false, true, 0) ??
-    attempt(false, false, 0) ?? { name: Math.max(1, columns - MARK - numbers.reduce((n, w) => n + 1 + w, 0)), boundary: 0, bar: 0, numbers }
+    attempt(false, false, 0) ?? { name: Math.max(1, columns - MARK - numbers.reduce((n, w) => n + 1 + w, 0)), boundary: 0, bar: 0, numbers, ...compacted }
   )
 }
 
@@ -430,17 +452,24 @@ export type TableLine = {
   /** The file (and line) the row is declared in, for a table with a file column: a link to it. */
   place?: string
   placeLoc?: Loc | null
+  /** The card shown while the pointer rests on the row. */
+  preview?: Preview
 }
 
-/** One table row: marker, name (pressable when it has an id), boundary, bar and numbers. */
+/**
+ * One table row: marker, name (pressable when it has an id), boundary, bar
+ * and numbers. The marked row keeps its `›` (a surface without backgrounds
+ * still shows which) and is tinted across.
+ */
 export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hues = NO_HUES): Row {
   const style = boundaryStyle(line.boundary, hues)
   const name = line.cutStart ? fitStart(line.name, spec.name) : fit(line.name, spec.name)
+  const named = line.press === undefined ? linked(name, line.link ?? null) : button(line.press, name)
   const segments: Segment[] = [
     { text: line.selected ? '›' : ' ', color: ACCENT, bold: true },
     line.mark ?? { text: line.hotspotOnly ? '◆' : ' ', dim: true },
     { text: ' ' },
-    line.press === undefined ? linked(name, line.link ?? null) : button(line.press, name),
+    line.preview === undefined ? named : { ...named, preview: line.preview },
     { text: spaces(spec.name - cells(name)) },
   ]
   if ((spec.kind ?? 0) > 0) segments.push({ text: ' ' }, { text: padEnd(fit(line.kind ?? '', spec.kind ?? 0), spec.kind ?? 0), dim: true })
@@ -453,12 +482,15 @@ export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hu
     segments.push({ text: ' ' }, { text: glyphs, ...style }, { text: TRACK.repeat(spec.bar - cells(glyphs)), color: FAINT })
   }
   spec.numbers.forEach((w, i) => {
-    const text = ` ${padStart(grouped(line.values[i] ?? 0), w)}`
+    const text = ` ${padStart((spec.compact ? compact : grouped)(line.values[i] ?? 0), w)}`
     segments.push(line.sorted === undefined || line.sorted === i ? { text, color: HEADING } : { text, dim: true })
   })
   // Files are left-aligned and cut from the front: a column of them reads down the file names.
   if ((spec.place ?? 0) > 0 && (line.place ?? '') !== '') segments.push({ text: ' ' }, linked(fitStart(line.place ?? '', spec.place ?? 0), line.placeLoc ?? null, { dim: true }))
-  return { key, segments: segments.filter(s => s.text !== '') }
+  const kept = segments.filter(s => s.text !== '')
+  return line.selected ? { key, segments: tinted(kept, SELECTED_BG), tint: SELECTED_BG } : { key, segments: kept }
 }
 
-export const numberWidth = (title: string, values: number[]) => Math.max(cells(title), ...values.map(v => cells(grouped(v))))
+/** A number column's width: its title, or its widest figure as the table prints it (`compact` on a narrow pane). */
+export const numberWidth = (title: string, values: number[], tier?: Tier, compacted = tier === 'narrow') =>
+  Math.max(cells(title), ...values.map(v => cells(compacted ? compact(v) : grouped(v))))

@@ -19,10 +19,10 @@
  * scales up as a square, two glyphs wide for every row tall.
  */
 import type { Dashboard } from '../../types'
-import { ACCENT, boundaryLabel, FAINT, huesOf, NO_HUES, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryLabel, FAINT, HEADING, huesOf, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import { HEAT_KEYS } from './raster'
-import { boundaryStyle, cells, dimRow, fit, grouped, numberWidth, padEnd, spaces, tableHead, tableRow, tableSpec, wrapGroups } from './rows'
+import { boundaryStyle, button, cells, dimRow, fit, grouped, numberWidth, padEnd, padStart, shortName, spaces, tableHead, tableRow, tableSpec, wrapGroups } from './rows'
 import type { Row, Segment, TableSpec, Tier } from './rows'
 import { moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
@@ -144,10 +144,12 @@ const TILE = '▇'
  * filled as background in every row but its first, so its rows join into
  * one square with no seam. An empty cell's mark sits on its middle row.
  */
-function heatCell(value: number, max: number, forbidden: boolean, width: number, row = 0, rows = 1): Segment[] {
+function heatCell(value: number, max: number, forbidden: boolean, width: number, row = 0, rows = 1, marked = false): Segment[] {
   const glyphs = width > 1 ? width - 1 : 1
   const gap: Segment[] = width > 1 ? [{ text: ' ' }] : []
   const level = shade(value, max)
+  // The cell the marker is on: a solid tile in the text colour, standing out of the accent's steps whatever its own.
+  if (marked && level > 0) return [{ text: '█'.repeat(glyphs), color: HEADING, bold: true, cell: row === 0 ? { glyph: TILE, fg: HEADING } : { glyph: ' ', bg: HEADING } }, ...gap]
   if (level === 0) {
     if (row !== Math.floor((rows - 1) / 2)) return [{ text: spaces(glyphs) }, ...gap]
     const mark = forbidden ? { text: centred('×', glyphs), color: STATUS_COLOURS.alert } : { text: centred('·', glyphs), color: FAINT }
@@ -168,21 +170,32 @@ function heatCell(value: number, max: number, forbidden: boolean, width: number,
  * label on the middle one). A boundary's letter carries its colour, so the
  * map ties to the other tabs; its name and the cells stay out of it.
  */
-export function heatRows(input: BoundariesInput, columns: number, hues: Hues = NO_HUES, scale = 1): Row[] {
+export function heatRows(input: BoundariesInput, columns: number, hues: Hues = NO_HUES, scale = 1, marked: HeatCell | null = null): Row[] {
   const spec = heatSpec(input, columns, scale)
   const max = Math.max(0, ...input.cells.flat())
   const head: Segment[] = [{ text: spaces(INDENT) + padEnd(fit(CORNER, spec.label), spec.label) + ' ', dim: true }]
-  input.boundaries.forEach(b => head.push({ text: centred(b.code, spec.cell > 1 ? spec.cell - 1 : 1) + (spec.cell > 1 ? ' ' : ''), ...boundaryStyle(b.name, hues), bold: true }))
+  // The marked cell's column letter and row label stand on the marked row's tint, so the eye finds its cross.
+  const on = (seg: Segment, yes: boolean): Segment => (yes ? { ...seg, bg: SELECTED_BG } : seg)
+  input.boundaries.forEach((b, i) => {
+    const width = spec.cell > 1 ? spec.cell - 1 : 1
+    head.push(on({ text: centred(b.code, width), ...boundaryStyle(b.name, hues), bold: true }, marked?.to === i), ...(spec.cell > 1 ? [{ text: ' ' }] : []))
+  })
   const rows: Row[] = [{ key: 'heat-head', raster: 'heat', segments: head.filter(s => s.text !== '') }]
   const middle = Math.floor((spec.rows - 1) / 2)
   input.boundaries.forEach((b, from) => {
     for (let r = 0; r < spec.rows; r++) {
       const named = r === middle
       const segments: Segment[] = named
-        ? [{ text: spaces(INDENT) }, { text: b.code, ...boundaryStyle(b.name, hues), bold: true }, { text: padEnd(fit(` ${b.label}`, spec.label - cells(b.code)), spec.label - cells(b.code)) }, { text: ' ' }]
+        ? [
+            { text: spaces(INDENT) },
+            on({ text: b.code, ...boundaryStyle(b.name, hues), bold: true }, marked?.from === from),
+            on({ text: padEnd(fit(` ${b.label}`, spec.label - cells(b.code)), spec.label - cells(b.code)) }, marked?.from === from),
+            { text: ' ' },
+          ]
         : [{ text: spaces(INDENT + spec.label + 1) }]
       input.boundaries.forEach((_, to) => {
-        segments.push(...heatCell(input.cells[from]?.[to] ?? 0, max, input.forbidden[from]?.[to] ?? false, spec.cell, r, spec.rows))
+        const on = marked !== null && marked.from === from && marked.to === to
+        segments.push(...heatCell(input.cells[from]?.[to] ?? 0, max, input.forbidden[from]?.[to] ?? false, spec.cell, r, spec.rows, on))
       })
       // The named row keeps the boundary's key at every scale; the rows around it are numbered.
       rows.push({ key: named ? `heat-${from}` : `heat-${from}-${r}`, raster: 'heat', segments: segments.filter(s => s.text !== '') })
@@ -209,7 +222,7 @@ function legendRows(input: BoundariesInput, columns: number): Row[] {
 
 /** How the per-boundary table fits `columns`, and the names it lists. */
 function perBoundarySpec(input: BoundariesInput, columns: number, tier: Tier): { spec: TableSpec; names: string[] } {
-  const widths = PER_TITLES.map((t, i) => numberWidth(t, input.boundaries.map(b => perValues(b)[i] ?? 0)))
+  const widths = PER_TITLES.map((t, i) => numberWidth(t, input.boundaries.map(b => perValues(b)[i] ?? 0), tier))
   const names = input.boundaries.map(b => `${b.code} ${b.label}`)
   return { spec: tableSpec(columns, names, [], widths, undefined, { tier }), names }
 }
@@ -248,6 +261,31 @@ export function boundariesList(input: BoundariesInput | null): Openable[] {
   }))
 }
 
+/** One cell of the heat map: the boundary its row runs from and the one its column runs to, by index. */
+export type HeatCell = { from: number; to: number }
+
+/**
+ * The cell the marker is on: the marked boundary's row, and the column of
+ * `target` when the marked boundary depends on it, else of what it depends
+ * on most. Null when it depends on no other boundary.
+ */
+export function markedCell(input: BoundariesInput | null, marked: number, target?: string | null): HeatCell | null {
+  if (input === null || input.boundaries[marked] === undefined) return null
+  const links = linksOf(input, marked, 'out')
+  const chosen = links.find(l => l.line.name === target) ?? links[0]
+  return chosen === undefined ? null : { from: marked, to: input.boundaries.indexOf(chosen.line) }
+}
+
+/** The boundary after `target` among what the marked one depends on, most dependencies first, wrapping round: what `l` moves the cell to. */
+export function nextTarget(input: BoundariesInput | null, marked: number, target?: string | null): string | null {
+  if (input === null) return null
+  const links = linksOf(input, marked, 'out')
+  if (links.length === 0) return null
+  // No target, or one it no longer depends on, is the cell on what it depends on most: the next is the one after that.
+  const at = Math.max(0, links.findIndex(l => l.line.name === target))
+  return links[(at + 1) % links.length]!.line.name
+}
+
 /** The other boundaries `index` reaches (`out`) or is reached from (`in`), most dependencies first. */
 function linksOf(input: BoundariesInput, index: number, way: 'in' | 'out'): { line: BoundaryLine; count: number; forbidden: boolean }[] {
   return input.boundaries
@@ -264,17 +302,21 @@ function linksOf(input: BoundariesInput, index: number, way: 'in' | 'out'): { li
  * it, each other boundary in its colour with its count, and the boundaries a
  * policy forbids it to depend on. A crossed forbidden pair is in `error`.
  */
-function focusSection(input: BoundariesInput, index: number, columns: number, hues: Hues): Section | null {
+function focusSection(input: BoundariesInput, index: number, columns: number, hues: Hues, cell: HeatCell | null = null): Section | null {
   const b = input.boundaries[index]
   if (b === undefined) return null
   const label = (text: string): Segment[] => [{ text: padEnd(text, FOCUS_LABEL), dim: true }]
   const linked = (way: 'in' | 'out'): Segment[][] => {
     const links = linksOf(input, index, way)
     if (links.length === 0) return [[{ text: 'nothing outside itself', dim: true }]]
-    return links.map(l => [
-      { text: l.line.label, ...boundaryStyle(l.line.name, hues) },
-      { text: ` ${grouped(l.count)}`, ...(l.forbidden ? { color: STATUS_COLOURS.alert } : { dim: true }) },
-    ])
+    return links.map(l => {
+      const to = input.boundaries.indexOf(l.line)
+      // What it depends on: each a press that moves the cell there, the one the cell is on tinted.
+      const on = way === 'out' && cell !== null && cell.to === to
+      const name: Segment = way === 'out' ? { ...button(`cell:${to}`, l.line.label), ...boundaryStyle(l.line.name, hues) } : { text: l.line.label, ...boundaryStyle(l.line.name, hues) }
+      const count: Segment = { text: ` ${grouped(l.count)}`, ...(l.forbidden ? { color: STATUS_COLOURS.alert } : { dim: true }) }
+      return on ? [{ ...name, bg: SELECTED_BG }, { ...count, bg: SELECTED_BG }] : [name, count]
+    })
   }
   const forbidden = input.boundaries.filter((_, to) => to !== index && (input.forbidden[index]?.[to] ?? false))
   const line = (key: string, title: string, groups: Segment[][]): Row[] => wrapGroups(key, [label(title), ...groups], columns, 2, INDENT)
@@ -297,10 +339,88 @@ const FOCUS_LABEL = 'may not use'.length
 const PER_MIN = 5
 
 /** The heat map as a card: the map (each cell `scale` rows tall when it fits), and its key when `legend`; null without a map to draw. */
-export function heatSection(input: BoundariesInput | null, columns: number, hues: Hues = NO_HUES, legend = true, scale = 1): Section | null {
+export function heatSection(input: BoundariesInput | null, columns: number, hues: Hues = NO_HUES, legend = true, scale = 1, marked: HeatCell | null = null): Section | null {
   if (input === null || input.boundaries.length === 0) return null
   const note = [`${input.boundaries.length}${input.more ? '+' : ''} boundaries`, `${input.edges} deps`].join(' · ')
-  return { key: legend ? 'bounds' : 'map', title: legend ? 'Boundaries' : 'Boundary map', note: noteOf(note), body: [...heatRows(input, columns, hues, scale), ...(legend ? legendRows(input, columns) : [])] }
+  return { key: legend ? 'bounds' : 'map', title: legend ? 'Boundaries' : 'Boundary map', note: noteOf(note), body: [...heatRows(input, columns, hues, scale, marked), ...(legend ? legendRows(input, columns) : [])] }
+}
+
+/**
+ * One cell spelled out, as the pane last read it: loading, the couplings it
+ * holds (each a source and a target component, short names and full, and
+ * its edges), or nothing when knossos did not answer.
+ */
+export type CouplingView = {
+  phase: 'loading' | 'done' | 'silent'
+  edges: number | null
+  truncated: boolean
+  items: { source: string; target: string; sourceCanonical: string; targetCanonical: string; edges: number }[]
+}
+
+/**
+ * The marked cell spelled out: `A → B` in the title, how many dependencies
+ * run that way, and the component pairs that make up the most of them
+ * (`source → target`, with their edges), most first.
+ */
+export function couplingSection(input: BoundariesInput, cell: HeatCell, view: CouplingView | null, columns: number, hues: Hues = NO_HUES): Section | null {
+  const from = input.boundaries[cell.from]
+  const to = input.boundaries[cell.to]
+  if (from === undefined || to === undefined) return null
+  const count = view?.phase === 'done' && view.edges !== null ? view.edges : (input.cells[cell.from]?.[cell.to] ?? 0)
+  const forbidden = input.forbidden[cell.from]?.[cell.to] ?? false
+  const note: Segment[] = [
+    { text: `${grouped(count)}${view?.truncated === true ? '+' : ''}`, color: forbidden ? STATUS_COLOURS.alert : HEADING },
+    { text: count === 1 ? ' dep' : ' deps', dim: true },
+    ...(forbidden ? [{ text: ' · forbidden', color: STATUS_COLOURS.alert }] : []),
+  ]
+  const title = `${from.label} → ${to.label}`
+  const body: Row[] = []
+  if (view === null || view.phase === 'loading') body.push(dimRow('coupling-loading', '   reading the couplings…', columns))
+  else if (view.phase === 'silent') body.push(dimRow('coupling-silent', '   knossos did not say which components; press l to try another cell', columns))
+  else if (view.items.length === 0) body.push(dimRow('coupling-none', '   no component pair listed', columns))
+  else {
+    const width = Math.max(1, ...view.items.map(i => cells(grouped(i.edges))))
+    const room = Math.max(3, columns - INDENT - width - 1)
+    view.items.forEach((item, i) => {
+      const [a, b] = pairOf(item.source, item.target, room)
+      const used = cells(a) + 3 + cells(b)
+      body.push({
+        key: `coupling-${i}`,
+        segments: [
+          { text: spaces(INDENT) },
+          { text: a, ...boundaryStyle(from.name, hues) },
+          { text: ' → ', dim: true },
+          { text: b, ...boundaryStyle(to.name, hues) },
+          { text: spaces(Math.max(1, room - used + 1)) },
+          { text: padStart(grouped(item.edges), width), color: HEADING },
+        ],
+      })
+    })
+  }
+  return { key: 'coupling', title, note, body }
+}
+
+/** Two names joined by an arrow in `width`, each cut only as far as it must be. */
+function pairOf(a: string, b: string, width: number): [string, string] {
+  const room = width - 3
+  if (cells(a) + cells(b) <= room) return [a, b]
+  const half = Math.floor(room / 2)
+  const aw = Math.min(cells(a), Math.max(half, room - cells(b)))
+  return [fit(a, aw), fit(b, Math.max(1, room - aw))]
+}
+
+/** The couplings answer as the card draws it: short names, most edges first; null before anything was asked. */
+export function couplingView(state: { phase: 'loading' | 'done'; answer: { status: string; edges: number; truncated: boolean; couplings: { source: { name: string; canonical_name: string; kind: string }; target: { name: string; canonical_name: string; kind: string }; edges: number }[] } | null } | null): CouplingView | null {
+  if (state === null) return null
+  if (state.phase === 'loading') return { phase: 'loading', edges: null, truncated: false, items: [] }
+  const answer = state.answer
+  if (answer === null || answer.status !== 'ok') return { phase: 'silent', edges: null, truncated: false, items: [] }
+  return {
+    phase: 'done',
+    edges: answer.edges,
+    truncated: answer.truncated,
+    items: answer.couplings.map(c => ({ source: shortName(c.source.canonical_name), target: shortName(c.target.canonical_name), sourceCanonical: c.source.canonical_name, targetCanonical: c.target.canonical_name, edges: c.edges })),
+  }
 }
 
 /**
@@ -308,28 +428,32 @@ export function heatSection(input: BoundariesInput | null, columns: number, hues
  * Overview's small map stays small): with rows to spare once the lists have
  * theirs, each cell scales up a step (two rows, then three).
  */
-export function heatBlock(input: BoundariesInput | null, hues: Hues, legend: boolean, grows = true): Block {
+export function heatBlock(input: BoundariesInput | null, hues: Hues, legend: boolean, grows = true, marked: HeatCell | null = null): Block {
   const key = legend ? 'bounds' : 'map'
-  if (!grows) return { key, make: columns => heatSection(input, columns, hues, legend) }
-  return { key, grow: { length: HEAT_SCALE_MAX - 1, min: 0, late: true }, make: (columns, limit) => heatSection(input, columns, hues, legend, 1 + limit) }
+  if (!grows) return { key, make: columns => heatSection(input, columns, hues, legend, 1, marked) }
+  return { key, grow: { length: HEAT_SCALE_MAX - 1, min: 0, late: true }, make: (columns, limit) => heatSection(input, columns, hues, legend, 1 + limit, marked) }
 }
 
 /**
- * The Boundaries tab: the heat map with its key, the per-boundary table and
- * the marked boundary spelled out. Wide, the map stands left and the table
- * with the marked boundary right.
+ * The Boundaries tab: the heat map with its key, the per-boundary table, the
+ * marked boundary spelled out, and the cell the marker is on (its row the
+ * marked boundary, its column `target`, else what it depends on most)
+ * spelled out as the component pairs behind it. Wide, the map stands left
+ * and the rest right.
  */
-export function boundariesArrangement(input: BoundariesInput | null, tier: Tier, hues: Hues = NO_HUES, selected = 0): Arrangement {
+export function boundariesArrangement(input: BoundariesInput | null, tier: Tier, hues: Hues = NO_HUES, selected = 0, target: string | null = null, couplings: CouplingView | null = null): Arrangement {
   const said = (text: string): Block => ({ key: 'bounds', make: columns => ({ key: 'bounds', title: 'Boundaries', body: [dimRow('bounds-none', `   ${text}`, columns)] }) })
   if (input === null) return { left: [said('This knossos sends no boundary map; update it.')] }
   if (input.boundaries.length === 0) return { left: [said('no boundary labels a component')] }
   const marked = Math.min(Math.max(0, selected), input.boundaries.length - 1)
-  const heat = heatBlock(input, hues, true)
+  const cell = markedCell(input, marked, target)
+  const heat = heatBlock(input, hues, true, true, cell)
   const per: Block = {
     key: 'bounds-list',
     grow: { length: input.boundaries.length, min: PER_MIN },
     make: (columns, limit) => ({ key: 'bounds-list', title: 'Per boundary', note: noteOf('deps across'), body: perBoundaryRows(input, marked, columns, limit, tier, hues) }),
   }
-  const focus: Block = { key: 'focus', make: columns => focusSection(input, marked, columns, hues) }
-  return { left: [heat], right: [per, focus] }
+  const focus: Block = { key: 'focus', make: columns => focusSection(input, marked, columns, hues, cell) }
+  const coupling: Block[] = cell === null ? [] : [{ key: 'coupling', make: columns => couplingSection(input, cell, couplings, columns, hues) }]
+  return { left: [heat], right: [per, focus, ...coupling] }
 }

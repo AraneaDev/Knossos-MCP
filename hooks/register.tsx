@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register, RenderSurface, Timer } from 'claude-code'
+import type { Elements, EngineInterface, Register, RenderNode, RenderSurface, Timer } from 'claude-code'
 
 import { activeBetween, begin, counts, finish, FOLLOWED_SCAN_MS, lookbackMs, noActivity, scanWindow } from './lib/activity'
 import type { Activity } from './lib/activity'
@@ -8,23 +8,26 @@ import { BASELINES_KEY, baselinesOf, remember } from './lib/baseline'
 import type { Baseline } from './lib/baseline'
 import type { JobState } from './lib/band'
 import { diffView } from './lib/diff'
-import { parseAllowRoot, parseComponentDetail, parseDashboard, parseFileDetail, parseRescan, parseSessionDiff, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
+import { parseAllowRoot, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseRescan, parseSessionDiff, parseSessionHead, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { SessionLedger, TurnBrief } from './lib/envelopes'
-import { fromLedger } from './lib/changes'
+import { fromLedger, ownTimeline } from './lib/changes'
 import {
   accumulate,
   allowInput,
   askPrompt,
   cdFor,
+  couplingPair,
   detailInput,
   editTarget,
   emptyRows,
+  FEEDBACK_MS,
   fileDetailInput,
   fit,
   linkMarkdown,
   listFor,
   locOf,
   locText,
+  nextTarget,
   NO_CHANGES,
   noGraphOf,
   paneHeight,
@@ -38,7 +41,7 @@ import {
   subjectOf,
   TABS,
 } from './lib/layout'
-import type { Loc, Openable, PaneInput, Row } from './lib/layout'
+import type { Loc, Openable, PaneInput, Preview, Row, Segment } from './lib/layout'
 import { editNote, fanInIndex, freshViolations, readNote, testsNote, violationKey, violationNote } from './lib/notes'
 import { isWatching, LIVE_OFF, liveAfter, snapshotOf, watchLines, watchPollMsOf } from './lib/live'
 import { declaredOf, huesOf } from './lib/palette'
@@ -46,7 +49,7 @@ import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
-import type { AllowState, ComponentDetail, DetailState, DiffState, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
+import type { AllowState, ComponentDetail, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -99,6 +102,8 @@ const EMPTY_RETRY_MS = 15_000
 const LEDGER_TIMEOUT_MS = 20_000
 const HEAD_TIMEOUT_MS = 20_000
 const DIFF_TIMEOUT_MS = 20_000
+/** The wrapper bounds boundary-couplings at 15 s. */
+const COUPLINGS_TIMEOUT_MS = 20_000
 /** The most paths kept as the session's own edits, and the most snapshots kept as its own scans. */
 const EDITS_KEPT = 1_000
 const SCANS_KEPT = 1_000
@@ -143,6 +148,12 @@ const sessionScans = atom({ plugin: 'knossos', key: 'sessionScans' } as const, [
 const sessionRev = atom({ plugin: 'knossos', key: 'sessionRev' } as const, null as SessionRev | null)
 /** The change since the session began of the file the detail shows, as last read. */
 const fileDiff = atom({ plugin: 'knossos', key: 'fileDiff' } as const, null as DiffState | null)
+/** Where the checkout stands (commit and branch), for the header; null until read, and without git. */
+const gitHead = atom({ plugin: 'knossos', key: 'gitHead' } as const, null as GitHead)
+/** The Boundaries tab's marked heat map cell spelled out, as last read. */
+const couplings = atom({ plugin: 'knossos', key: 'couplings' } as const, null as CouplingState | null)
+/** What the footer says for a moment after an action in the pane. */
+const feedback = atom({ plugin: 'knossos', key: 'feedback' } as const, null as Feedback | null)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -168,6 +179,8 @@ const mod = {
   endedSession: null as string | null,
   /** Whether this session's commit was asked for: a silent answer is not asked again. */
   headAsked: false,
+  /** Whether where the checkout stands was asked for this load: start-up asks only when the baseline's own read did not. */
+  gitAsked: false,
   enforce: true,
   /** Set by an edit inside the project, cleared when a turn's scan is scheduled. */
   dirty: false,
@@ -351,6 +364,9 @@ async function tickAge($: EngineInterface): Promise<void> {
   // The watcher is kept running from here, never from what its own events start: no call loops back on itself.
   await ensureWatcher($)
   await retryEmpty($)
+  // The footer's word after an action fades once its time is up: a change of state, so the pane redraws without it.
+  const said = await read($, feedback)
+  if (said !== null && (await $.clock.now()) >= said.until) await update($, feedback, () => null)
   // A pane closed by any means (the command, its own close key) stops drawing; stop ticking for it.
   if (mod.paneText !== null && !(await $.ui.panes()).some(pane => pane.id === PANE)) mod.paneText = null
   if (mod.bandText === null && mod.paneText === null) return
@@ -462,6 +478,8 @@ async function loadDashboard($: EngineInterface): Promise<void> {
   // The pane open on a component follows the graph: a new snapshot looks it up again.
   const shown = (await read($, view)).inspect
   if (shown !== null) await requestDetail($, shown)
+  // And the Boundaries tab's cell: its couplings are read for the graph on show.
+  await requestCouplings($)
 }
 
 /**
@@ -495,10 +513,11 @@ async function loadLedger($: EngineInterface): Promise<void> {
  */
 async function shownChanges($: EngineInterface, root: string | null): Promise<SessionChanges> {
   const turns = await read($, changes)
-  if (mod.watcher === null || !isWatching(await read($, live))) return { ...turns, fallback: NO_WATCHER }
+  // Without the ledger the timeline holds the scans the session's own turns and rescans made.
+  if (mod.watcher === null || !isWatching(await read($, live))) return { ...turns, fallback: NO_WATCHER, timeline: ownTimeline(await read($, sessionScans)) }
   const ledger = await read($, sessionLedger)
   if (ledger === null || ledger.since !== (await read($, sessionStart))) return turns
-  if (!ledger.complete) return { ...turns, fallback: LEDGER_SHORT }
+  if (!ledger.complete) return { ...turns, fallback: LEDGER_SHORT, timeline: ownTimeline(await read($, sessionScans)) }
   const edits = (await read($, sessionEdits)).map(p => (p.startsWith('/') && root !== null ? (relativise(root, p) ?? p) : p))
   return fromLedger(ledger, turns, new Set(edits), new Set(await read($, sessionScans)))
 }
@@ -519,6 +538,8 @@ async function readTheme($: EngineInterface): Promise<void> {
 async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> {
   // First: where the session began, read back for a session continued here, else the commit it begins at, before anything of it can be committed.
   await settleBaseline($)
+  // Where the checkout stands, for the header: the baseline's own head read, when there was one, said it already.
+  if (!mod.gitAsked) await readGitHead($)
   await readTheme($)
   const root = await $.session.root().then(r => placed($, r)).catch(() => null)
   await update($, sessionRoot, () => root)
@@ -626,6 +647,60 @@ async function recordHead($: EngineInterface): Promise<void> {
   if (parseSessionDiff(stdout)?.status === 'no-binary') return disable($)
   const rev = parseSessionRev(stdout)
   if (rev !== null) await update($, sessionRev, () => rev)
+  await noteGitHead($, stdout)
+}
+
+/**
+ * Reads where the checkout stands, its commit and branch, for the header:
+ * at start-up and after each of the main loop's turns (one may commit or
+ * switch branches), always on a timer, never in a render.
+ */
+async function readGitHead($: EngineInterface): Promise<void> {
+  if (mod.disabled) return
+  const stdout = await wrapper($, 'session-head', [], HEAD_TIMEOUT_MS)
+  if (parseSessionDiff(stdout)?.status === 'no-binary') return disable($)
+  await noteGitHead($, stdout)
+}
+
+/** Keeps what a `session-head` answer says of the checkout; silence keeps what was read before. */
+async function noteGitHead($: EngineInterface, stdout: string): Promise<void> {
+  mod.gitAsked = true
+  const head = parseSessionHead(stdout)
+  if (head !== undefined) await update($, gitHead, () => head)
+}
+
+/**
+ * Starts reading the Boundaries tab's marked heat map cell (the component
+ * pairs behind it) unless that read is done or running for this cell of this
+ * graph. On a timer, never in a render: the card says it is reading until
+ * the answer is stored, and an answer for a cell the marker has left is
+ * dropped.
+ */
+async function requestCouplings($: EngineInterface): Promise<void> {
+  if (mod.disabled) return
+  const input = await currentInput($, true)
+  const pair = input === null ? null : couplingPair(input)
+  if (pair === null) return
+  const d = await read($, dashboard)
+  const snapshot = d?.snapshot_id ?? null
+  const current = await read($, couplings)
+  if (current !== null && current.from === pair.from && current.to === pair.to && current.snapshot === snapshot) return
+  await update($, couplings, (): CouplingState => ({ snapshot, from: pair.from, to: pair.to, phase: 'loading', answer: null }))
+  const root = d?.status === 'ok' ? (d.project_root ?? undefined) : undefined
+  $.clock.after(0, () => void loadCouplings($, pair.from, pair.to, snapshot, root).catch(() => undefined))
+}
+
+/** One read of a cell's couplings; stored only while the pane still marks that cell of that graph. */
+async function loadCouplings($: EngineInterface, from: string, to: string, snapshot: string | null, root: string | undefined): Promise<void> {
+  const parsed = parseCouplings(await wrapper($, 'boundary-couplings', [`--from=${from}`, `--to=${to}`], COUPLINGS_TIMEOUT_MS, root))
+  if (parsed?.status === 'no-binary') return disable($)
+  await update($, couplings, (c): CouplingState | null => (c !== null && c.from === from && c.to === to && c.snapshot === snapshot ? { ...c, phase: 'done', answer: parsed } : c))
+}
+
+/** What the footer says for {@link FEEDBACK_MS} after an action: the mod's clock decides when it fades (see `tickAge`). */
+async function say($: EngineInterface, text: string, tone: Feedback['tone']): Promise<void> {
+  const until = (await $.clock.now()) + FEEDBACK_MS
+  await update($, feedback, (): Feedback => ({ text, tone, until }))
 }
 
 /**
@@ -1163,7 +1238,8 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const stored = await read($, detail)
   const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
   if (shown !== null && v.inspect !== null) shown.diff = diffView(v.inspect, await read($, fileDiff), await read($, sessionRev))
-  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await shownChanges($, d.project_root), await read($, sessionRoot), await read($, live))
+  const extras = { git: await read($, gitHead), feedback: await read($, feedback), couplings: await read($, couplings) }
+  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await shownChanges($, d.project_root), await read($, sessionRoot), await read($, live), extras)
 }
 
 /** The rows the selection walks on what the pane shows, from state. */
@@ -1175,7 +1251,8 @@ async function currentList($: EngineInterface): Promise<Openable[]> {
 /** Moves the selection marker by `by` rows, kept inside the list. */
 async function moveSelection($: EngineInterface, by: number): Promise<void> {
   const length = (await currentList($)).length
-  await update($, view, v => ({ ...v, selected: Math.min(Math.max(0, v.selected + by), Math.max(0, length - 1)) }))
+  // A boundary marked anew starts on what it depends on most.
+  await update($, view, v => ({ ...v, selected: Math.min(Math.max(0, v.selected + by), Math.max(0, length - 1)), target: undefined }))
 }
 
 /** Opens the row at `index` (the marker's when absent) and leaves the marker there: a component or a file as its detail. */
@@ -1202,12 +1279,9 @@ async function openLocation($: EngineInterface, loc: Loc, surface?: RenderSurfac
       r => r.exitCode === 0,
       () => false,
     )
-  if (opened) {
-    $.ui.toast(`Opened ${target}`)
-    return
-  }
+  if (opened) return say($, '✓ opened in editor', 'ok')
   const copied = await $.ui.copy({ text: target, ...(surface === undefined ? {} : { surface }) })
-  $.ui.toast(copied.isCopied ? `No editor command to open it; copied ${target}` : `Could not open ${target}: ${copied.reason ?? 'no editor command, and the surface refused the copy'}`)
+  await say($, copied.isCopied ? '✗ no editor · path copied' : '✗ no editor', 'alert')
 }
 
 /** A press on a `file:` link the pane drew: opens its place. */
@@ -1236,7 +1310,7 @@ async function copyTestCommand($: EngineInterface, surface?: RenderSurface): Pro
   if (command === null) return
   const copied = await $.ui.copy({ text: command, ...(surface === undefined ? {} : { surface }) })
   const tests = input?.changes.tests.length ?? 0
-  $.ui.toast(copied.isCopied ? `Copied the command for ${tests === 1 ? '1 test' : `${tests} tests`}` : `Could not copy the test command: ${copied.reason ?? 'the surface refused'}`)
+  await say($, copied.isCopied ? `✓ copied the command for ${tests === 1 ? '1 test' : `${tests} tests`}` : '✗ the surface refused the copy', copied.isCopied ? 'ok' : 'alert')
 }
 
 /** Opens a component the detail lists (who uses it, what it uses): the detail moves to that one. */
@@ -1272,9 +1346,8 @@ async function copySubject($: EngineInterface, surface?: RenderSurface): Promise
   if (subject === null) return
   // A cycle copies its chain, said by its name in the toast; anything else its full name.
   const text = subject.copy ?? subject.canonical
-  const said = subject.copy === undefined || subject.copy === subject.canonical ? text : `${subject.name}: ${text}`
   const copied = await $.ui.copy({ text, ...(surface === undefined ? {} : { surface }) })
-  $.ui.toast(copied.isCopied ? `Copied ${said}` : `Could not copy ${said}: ${copied.reason ?? 'the surface refused'}`)
+  await say($, copied.isCopied ? `✓ copied ${subject.name}` : '✗ the surface refused the copy', copied.isCopied ? 'ok' : 'alert')
 }
 
 /**
@@ -1368,15 +1441,37 @@ function twinTarget(element: string): string | null | undefined {
   return before === undefined ? null : `tab:${before.id}`
 }
 
+/** What a press on the pane does, then the couplings of the cell it leaves marked, when it marks one. */
+async function pressPane($: EngineInterface, id: string, surface?: RenderSurface): Promise<void> {
+  await pressAction($, id, surface)
+  await requestCouplings($)
+}
+
+/** `l`, or a press on one of what the marked boundary depends on: the heat map cell moves to that column. */
+async function moveCell($: EngineInterface, to: number | null): Promise<void> {
+  const input = await currentInput($, true)
+  const boundaries = input?.boundaries ?? null
+  if (input === null || boundaries === null) return
+  const marked = Math.min(Math.max(0, input.selected), boundaries.boundaries.length - 1)
+  const target = to === null ? nextTarget(boundaries, marked, input.target) : (boundaries.boundaries[to]?.name ?? null)
+  if (target !== null) await update($, view, v => ({ ...v, target }))
+}
+
 /** What a press on the pane does, by the pressed element's id; `surface` is where the press came from. */
-async function pressPane($: EngineInterface, id: string, surface?: RenderSurface): Promise<unknown> {
+async function pressAction($: EngineInterface, id: string, surface?: RenderSurface): Promise<unknown> {
   if (id.startsWith('tab:') || id.startsWith('tabkey:')) {
     const tab = id.slice(id.indexOf(':') + 1) as PaneTab
-    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false, drift: false }))
+    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false, drift: false, target: undefined }))
     return
   }
+  if (id === 'target') return moveCell($, null)
+  if (id.startsWith('cell:')) return moveCell($, Number(id.slice(5)))
   if (id === 'drift' || id === 'drifted') return update($, view, v => ({ ...v, drift: v.drift !== true, selected: 0 }))
-  if (id.startsWith('row:')) return openRow($, Number(id.slice(4)))
+  if (id.startsWith('row:')) {
+    // A boundary has nothing to open: pressing one marks it, starting on what it depends on most.
+    if ((await read($, view)).tab === 'boundaries') await update($, view, v => ({ ...v, target: undefined }))
+    return openRow($, Number(id.slice(4)))
+  }
   if (id.startsWith('rel:')) return openRelated($, Number(id.slice(4)))
   if (id === 'down' || id === 'up') return moveSelection($, id === 'down' ? 1 : -1)
   if (id === 'open') return openRow($)
@@ -1397,16 +1492,91 @@ async function pressPane($: EngineInterface, id: string, surface?: RenderSurface
   if (id === 'allow-no') return update($, allow, (a): AllowState => (a.phase === 'confirming' ? { phase: 'idle', root: null, reason: null } : a))
 }
 
+/** A hover group's name for one card: the plugin's prefix and the card's key, within the engine's 64 characters. */
+const scopeOf = (preview: Preview): string => `knossos:${preview.key}`.slice(0, 64)
+
 /**
- * One laid-out row as elements: a pressable segment is a plain Button, a
+ * One segment as an element: a pressable segment is a plain Button, a
  * segment with a place a Markdown link to its `file:` URL (where `links`),
- * any other a Text. The layout already fitted the row, so nothing here wraps.
+ * a field an Input, any other a Text. A Button or a link with a background
+ * (the open tab, the marked row) stands in a Box of that colour, which they
+ * cannot take themselves. `scope` joins the segment to its row's hover card.
+ */
+function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, s: Segment, i: number, press: (id: string, surface?: RenderSurface) => void, links: boolean, scope?: string) {
+  const { Box, Button, Markdown, Text } = ui
+  // Every surface but mobile has a text field; there the filter is shown as text.
+  const Input = 'Input' in ui ? ui.Input : undefined
+  const hover = scope === undefined ? {} : { hover: { scope } }
+  const ground = (key: string, element: RenderNode) =>
+    s.bg === undefined ? element : (
+      <Box key={`${key}-bg`} backgroundColor={s.bg}>
+        {element}
+      </Box>
+    )
+  if (s.field && Input !== undefined) {
+    return (
+      <Input
+        key={s.field.id}
+        value={s.field.value}
+        placeholder={s.field.placeholder}
+        submitLabel="keep"
+        autoFocus
+        onInput={(value: string) => void typeFilter($, value).catch(() => undefined)}
+        onSubmit={(value: string) => void submitFilter($, value).catch(() => undefined)}
+      />
+    )
+  }
+  if (s.press && s.hidden) {
+    // Out of sight, there only for its hotkey (a tab drawn as its digit alone).
+    return (
+      <Box key={s.press.id} display="none">
+        <Button key={s.press.id} plain label={s.press.label} {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })} onPress={pressed => press(s.press!.id, pressed.surface)} />
+      </Box>
+    )
+  }
+  if (s.press) {
+    return ground(
+      s.press.id,
+      <Button
+        key={s.press.id}
+        plain
+        label={s.press.label}
+        {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })}
+        {...(s.dim ? { dimColor: true } : {})}
+        {...hover}
+        onPress={pressed => press(s.press!.id, pressed.surface)}
+      />,
+    )
+  }
+  if (s.link && links) {
+    return ground(
+      `${row.key}-link-${i}`,
+      <Markdown
+        key={`${row.key}-link-${i}`}
+        text={linkMarkdown(s.text, s.link)}
+        {...(s.dim ? { dimColor: true } : {})}
+        onLinkPress={(link, pressed) => void openLink($, link.href, pressed.surface).catch(() => undefined)}
+      />,
+    )
+  }
+  return (
+    <Text key={`${row.key}-${i}`} wrap="truncate-end" {...textStyle(s)} {...hover}>
+      {s.text}
+    </Text>
+  )
+}
+
+/**
+ * One laid-out row as elements (see {@link drawSegment}). The layout already
+ * fitted the row, so nothing here wraps. A row of the wide grid that hangs a
+ * hover card off one of its halves joins only that half's segments to the
+ * card's group: the pointer on the other card's half shows nothing.
  *
  * A link is the surface's own: ctrl- or cmd-click opens it as a link in a
  * reply would, and a plain click (`onLinkPress`) opens it in the editor.
  */
-function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, press: (id: string, surface?: RenderSurface) => void, links = false) {
-  const { Box, Button, Code, Markdown, Text } = ui
+function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, press: (id: string, surface?: RenderSurface) => void, links = false, hovers = false) {
+  const { Box, Code } = ui
   // A change's hunks: the engine's own diff, gutters, markers and colours as Claude Code draws them.
   if (row.code !== undefined) {
     return (
@@ -1415,63 +1585,76 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
       </Box>
     )
   }
-  // Every surface but mobile has a text field; there the filter is shown as text.
-  const Input = 'Input' in ui ? ui.Input : undefined
+  const at = hovers ? row.segments.findIndex(s => s.preview !== undefined) : -1
+  const preview = at < 0 ? undefined : row.segments[at]!.preview!
+  const half = row.split !== undefined && at >= 0 ? (at < row.split ? [0, row.split] : [row.split, row.segments.length]) : [0, row.segments.length]
+  const scoped = (i: number) => (preview !== undefined && i >= half[0]! && i < half[1]! ? scopeOf(preview) : undefined)
   return (
     <Box key={row.key} flexDirection="row">
-      {row.segments.map((s, i) =>
-        s.field && Input !== undefined ? (
-          <Input
-            key={s.field.id}
-            value={s.field.value}
-            placeholder={s.field.placeholder}
-            submitLabel="keep"
-            autoFocus
-            onInput={(value: string) => void typeFilter($, value).catch(() => undefined)}
-            onSubmit={(value: string) => void submitFilter($, value).catch(() => undefined)}
-          />
-        ) : s.press && s.hidden ? (
-          // Out of sight, there only for its hotkey (a tab drawn as its digit alone).
-          <Box key={s.press.id} display="none">
-            <Button key={s.press.id} plain label={s.press.label} {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })} onPress={pressed => press(s.press!.id, pressed.surface)} />
-          </Box>
-        ) : s.press ? (
-          <Button
-            key={s.press.id}
-            plain
-            label={s.press.label}
-            {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })}
-            {...(s.dim ? { dimColor: true } : {})}
-            onPress={pressed => press(s.press!.id, pressed.surface)}
-          />
-        ) : s.link && links ? (
-          <Markdown
-            key={`${row.key}-link-${i}`}
-            text={linkMarkdown(s.text, s.link)}
-            {...(s.dim ? { dimColor: true } : {})}
-            onLinkPress={(link, pressed) => void openLink($, link.href, pressed.surface).catch(() => undefined)}
-          />
-        ) : (
-          <Text key={`${row.key}-${i}`} wrap="truncate-end" {...textStyle(s)}>
-            {s.text}
-          </Text>
-        ),
-      )}
+      {row.segments.map((s, i) => drawSegment($, ui, row, s, i, press, links, scoped(i)))}
     </Box>
   )
+}
+
+/** A hover card where the pointer can reach it: under its row, or over it when the rows below cannot hold it; never past the right edge. */
+function cardPlace(row: number, rows: number, x: number, preview: Preview, columns: number): { top: number; left: number } {
+  const height = preview.rows.length
+  const below = row + 1 + height <= rows || row < height
+  return { top: below ? row + 1 : row - height, left: Math.max(0, Math.min(x, columns - preview.width)) }
+}
+
+/**
+ * The hover cards the rows hang, drawn out of the flow over the rows below
+ * their own (`position: absolute`), hidden until the pointer rests on a
+ * segment of their group. Nothing crosses to the mod when one shows: the
+ * surface reveals it alone. Only where the surface has a pointer.
+ */
+function drawCards(ui: Elements[RenderSurface], rows: Row[], columns: number) {
+  const { Box, Text } = ui
+  const cards = []
+  for (let y = 0; y < rows.length; y++) {
+    const row = rows[y]!
+    let x = 0
+    for (const s of row.segments) {
+      const preview = s.preview
+      if (preview !== undefined) {
+        const place = cardPlace(y, rows.length, x, preview, columns)
+        cards.push(
+          <Box key={preview.key} position="absolute" top={place.top} left={place.left} display="none" flexDirection="column" hover={{ scope: scopeOf(preview), display: 'flex' }}>
+            {preview.rows.map(line => (
+              <Box key={line.key} flexDirection="row">
+                {line.segments.map((c, i) => (
+                  <Text key={`${line.key}-${i}`} wrap="truncate-end" {...textStyle(c)}>
+                    {c.text}
+                  </Text>
+                ))}
+              </Box>
+            ))}
+          </Box>,
+        )
+        break
+      }
+      x += [...s.text].length
+    }
+  }
+  return cards
 }
 
 /**
  * The laid-out rows as elements. On the terminal, consecutive rows that share
  * a `raster` key (the heat map) are one `Raster` of coloured cells; every
- * other surface draws them as text, glyphs and colours alike.
+ * other surface draws them as text, glyphs and colours alike. Where the
+ * surface has a pointer (all but mobile), the hover cards follow the rows.
  */
-function drawRows($: EngineInterface, ui: Elements[RenderSurface], terminal: boolean, links: boolean, themeName: string, rows: Row[], press: (id: string, surface?: RenderSurface) => void) {
+function drawRows($: EngineInterface, ui: Elements[RenderSurface], surface: RenderSurface, themeName: string, rows: Row[], columns: number, press: (id: string, surface?: RenderSurface) => void) {
+  const terminal = surface === 'terminal'
+  const links = surface !== 'mobile'
+  const hovers = surface !== 'mobile'
   const drawn = []
   for (let i = 0; i < rows.length; i++) {
     const block = rows[i]!.raster
     if (!terminal || block === undefined) {
-      drawn.push(drawRow($, ui, rows[i]!, press, links))
+      drawn.push(drawRow($, ui, rows[i]!, press, links, hovers))
       continue
     }
     let end = i
@@ -1482,7 +1665,7 @@ function drawRows($: EngineInterface, ui: Elements[RenderSurface], terminal: boo
     drawn.push(<Raster key={`raster-${block}`} columns={raster.columns} rows={raster.rows} cells={raster.cells} />)
     i = end
   }
-  return drawn
+  return hovers ? [...drawn, ...drawCards(ui, rows, columns)] : drawn
 }
 
 export const register: Register = (on, options) => {
@@ -1495,6 +1678,7 @@ export const register: Register = (on, options) => {
   mod.baselineOf = null
   mod.endedSession = null
   mod.headAsked = false
+  mod.gitAsked = false
   mod.flight = null
   mod.rescanFlight = null
   mod.rescanQueued = false
@@ -1648,6 +1832,8 @@ export const register: Register = (on, options) => {
     mod.ranCommands = []
     // Still refused once the timed retries ran out: each turn's end asks again, a session being bound by now.
     if (!mod.disabled && !mod.commandRegistered && mod.registerTimer === null) await registerCommand($)
+    // The turn may have committed or switched branches: the header reads where the checkout stands again.
+    if (!mod.disabled) $.clock.after(0, () => void readGitHead($).catch(() => undefined))
     // No graph to draw yet (the person may just have asked Claude to scan): look again, once the turn is over.
     if (!mod.disabled && (await read($, dashboard))?.status !== 'ok') $.clock.after(0, () => void refreshDashboard($).catch(() => undefined))
     // Nothing to brief, now or held for later: no turn start may carry over to a later turn.
@@ -1713,7 +1899,10 @@ export const register: Register = (on, options) => {
     const redirected = e.element === undefined ? ({ ...e, key: twin } as typeof e) : { ...e, element: twin }
     const moved = await next(twin === undefined ? e : redirected)
     const index = typeof element === 'string' && element.startsWith('row:') ? Number(element.slice(4)) : Number.NaN
-    if (moved.deny === undefined && Number.isInteger(index)) await update($, view, v => ({ ...v, selected: index }))
+    if (moved.deny === undefined && Number.isInteger(index)) {
+      await update($, view, v => (v.selected === index ? v : { ...v, selected: index, target: undefined }))
+      await requestCouplings($)
+    }
     return moved
   })
 
@@ -1744,7 +1933,7 @@ export const register: Register = (on, options) => {
     // A press that outlives the session (a teardown under it) fails quietly.
     return (
       <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
-        {drawRows($, ui, e.surface === 'terminal', e.surface !== 'mobile', await read($, theme), paneRows(input, columns, paneHeight(e.props.scroll)), press)}
+        {drawRows($, ui, e.surface, await read($, theme), paneRows(input, columns, paneHeight(e.props.scroll)), columns, press)}
       </Box>
     )
   })

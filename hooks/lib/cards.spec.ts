@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { arrange, BALANCE_SLACK, balanceColumns, besideRows, cardInner, cardRows, DEFAULT_ROWS, figures, fitBlocks, gridColumns, LIST_SOFT, moreRows, paneHeight, topRow, windowOf } from './cards'
+import { arrange, BALANCE_SLACK, balanceColumns, besideRows, cardInner, cardRows, DEFAULT_ROWS, equalColumns, figures, fitBlocks, GLYPHS, gridColumns, gridRows, LIST_SOFT, moreRows, paneHeight, topRow, windowOf } from './cards'
+import { issueGrid } from './views'
 import type { Block, Section } from './cards'
 import { rawText } from './__tests__/plain-text'
 import { BAR_SHARE, barRange, button, percentile, rowWidth, tableSpec, tierOf } from './rows'
@@ -311,5 +312,72 @@ describe('notes', () => {
     expect(figures('10+ boundaries · 31,796 deps').map(s => s.text)).toEqual(['10+', ' boundaries · ', '31,796', ' deps'])
     expect(figures('')).toEqual([])
     expect(figures('partial')).toEqual([{ text: 'partial', dim: true }])
+  })
+})
+
+describe('card glyphs', () => {
+  it('mark each kind of card with one dim, one-cell glyph before its title, the same on every tab', () => {
+    for (const glyph of Object.values(GLYPHS)) expect([...glyph]).toHaveLength(1)
+    expect(GLYPHS).toMatchObject({ look: '◆', turn: '▤', map: '▦', bounds: '▦', cycles: '↻', policy: '⚠', diag: '⚠', dead: '⚠', large: '⚠', changes: '±' })
+    for (const tier of ['narrow', 'medium', 'wide'] as const) {
+      const head = topRow({ key: 'cycles', title: 'Cycles', note: [{ text: '2' }], body: [] }, 60, tier)
+      expect(head.segments.find(s => s.text === '↻ ')).toMatchObject({ dim: true })
+      expect(rowWidth(head)).toBe(60)
+    }
+    // A card of no listed kind has none; a section may name its own.
+    expect(rawText(topRow({ key: 'x', title: 'Plain', body: [] }, 40, 'medium'))).toMatch(/^╭─ Plain ─/)
+    expect(rawText(topRow({ key: 'x', title: 'Own', glyph: '✦', body: [] }, 40, 'medium'))).toMatch(/^╭─ ✦ Own ─/)
+    // The glyph gives way with the rule: a title cut for its note keeps it.
+    for (const width of [12, 16, 20, 30]) expect(rowWidth(topRow({ key: 'policy', title: 'Policy violations', note: [{ text: '✓ 0' }], body: [] }, width, 'medium')), `${width}`).toBeLessThanOrEqual(width)
+  })
+})
+
+describe('the marked row in a card', () => {
+  it('carries its tint to the inner edges of a framed card, and to the pane edge of a narrow one', () => {
+    const marked: Row = { key: 'm', segments: [{ text: '› x', bg: 'userMessageBackground' }], tint: 'userMessageBackground' }
+    const framed = cardRows({ key: 'c', title: 'C', body: [marked] }, 30, 'medium')[1]!
+    expect(framed.segments[0]).toMatchObject({ text: '│' })
+    expect(framed.segments.at(-1)).toMatchObject({ text: '│' })
+    expect(framed.segments.slice(1, -1).every(s => s.bg === 'userMessageBackground')).toBe(true)
+    expect(rowWidth(framed)).toBe(30)
+    const bare = cardRows({ key: 'c', title: 'C', body: [marked] }, 30, 'narrow')[1]!
+    expect(rowWidth(bare)).toBe(30)
+    expect(bare.segments.every(s => s.bg === 'userMessageBackground')).toBe(true)
+  })
+})
+
+describe('rows of cards of equal height', () => {
+  it('splits the width into equal columns, the first ones taking the remainder', () => {
+    expect(equalColumns(100, 2)).toEqual([49, 49])
+    expect(equalColumns(101, 2)).toEqual([50, 49])
+    expect(equalColumns(140, 3)).toEqual([46, 45, 45])
+  })
+
+  it('draws the cards of a row equally tall, the shorter stretched inside its frame, at every wide width and height', () => {
+    for (const width of [140, 200]) {
+      for (const height of [24, 40, 60]) {
+        const rows = gridRows([[listBlock('a', 3, 1), listBlock('b', 40, 3)], [listBlock('c', 50, 3)]], width, 'wide', height)
+        for (const r of rows) expect(rowWidth(r), `${width}x${height} ${r.key}`).toBeLessThanOrEqual(width)
+        const top = rows.filter(r => r.key.includes('|'))
+        // Each side of the shared row ends on the same row: both bottom edges sit in it.
+        const end = top.find(r => r.key.startsWith('a-end'))
+        expect(end?.key, `${width}x${height}`).toBe('a-end|b-end')
+        // The lone card spans the pane.
+        expect(rowWidth(rows.find(r => r.key === 'c-head')!)).toBe(width)
+        if (height >= 40) expect(rows.length, `${width}x${height}`).toBeLessThanOrEqual(height)
+      }
+    }
+  })
+
+  it('sets the Issues tab out with its empty cards side by side first, then its lists in pairs', () => {
+    const empty = (key: string): Block => ({ key, grow: { length: 0, min: 3 }, make: () => ({ key, title: key, body: [] }) })
+    expect(issueGrid([empty('policy'), listBlock('diag', 4, 3), empty('dead'), listBlock('large', 50, 3)]).map(r => r.map(b => b.key))).toEqual([['policy', 'dead'], ['diag', 'large']])
+    expect(issueGrid([empty('policy'), empty('diag'), empty('dead'), listBlock('large', 50, 3)]).map(r => r.map(b => b.key))).toEqual([['policy', 'diag', 'dead'], ['large']])
+    expect(issueGrid([empty('a'), empty('b'), empty('c'), empty('d')]).map(r => r.map(b => b.key))).toEqual([['a', 'b'], ['c', 'd']])
+    expect(issueGrid([listBlock('a', 5, 3), listBlock('b', 5, 3), listBlock('c', 5, 3)]).map(r => r.map(b => b.key))).toEqual([['a', 'b'], ['c']])
+    // Only wide: narrower panes stack them as before.
+    const arrangement = { left: [listBlock('a', 5, 3)], right: [listBlock('b', 50, 3)], rows: [[listBlock('a', 5, 3), listBlock('b', 50, 3)]] }
+    expect(arrange(arrangement, 100, 60).some(r => r.key.includes('|'))).toBe(false)
+    expect(arrange(arrangement, 140, 60).some(r => r.key === 'a-end|b-end')).toBe(true)
   })
 })

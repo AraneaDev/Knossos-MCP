@@ -180,25 +180,20 @@ describe('a file detail', () => {
 })
 
 describe('the drifted files', () => {
-  it('make the drift count a button where it stands, and d lists them', () => {
-    // Off the Overview the summary line says the figures; on it, from the medium tier, the tiles do.
+  it('are a key away on every tab, and a press on the drifted tile on the Overview', () => {
+    // The header is the project and the tabs alone: off the Overview `d` in the keys lists them.
     const rows = paneRows(pane({ view: { tab: 'hubs' } }), 90)
-    const summary = row(rows, 'summary')!
-    expect(plainText(summary)).toBe('1,234 components · 2 boundaries · 23 drifted · PHP')
-    // The count in the accent, the word after it the button: the one pressable thing on a quiet line looks it.
-    expect(summary.segments.find(s => s.press)?.press).toEqual({ id: 'drifted', label: 'drifted' })
-    expect(summary.segments.find(s => s.text === '23 ')).toMatchObject({ color: 'suggestion' })
+    expect(row(rows, 'summary')).toBeUndefined()
     expect(keysOf(rows)).toContain('d')
     expect(row(rows, 'drift-head')).toBeUndefined()
-    // On the Overview the drifted tile carries the same press, and the summary line keeps only the languages.
+    // On the Overview the drifted tile carries the press, its count in the accent.
     const overview = paneRows(pane(), 90)
-    expect(plainText(row(overview, 'summary')!)).toBe('PHP')
     const label = row(overview, 'tiles-0-label')!.segments.find(s => s.press)
     expect(label).toMatchObject({ text: 'drifted', press: { id: 'drifted', label: 'drifted' } })
     expect(row(overview, 'tiles-0-value')!.segments.find(s => s.text === '23')).toMatchObject({ color: 'suggestion', bold: true })
   })
 
-  it('are listed under the header, marked as Changes marks files, with how many more', () => {
+  it('are listed under the tabs, marked as Changes marks files, with how many more', () => {
     const open = pane({ view: { drift: true } })
     const rows = paneRows(open, 90)
     expect(plainText(row(rows, 'drift-head')!)).toMatch(/^Drifted since the snapshot +23$/)
@@ -206,7 +201,7 @@ describe('the drifted files', () => {
     expect(plainText(row(rows, 'drift-1')!)).toMatch(/^ \+ src\/Http\/New\.php/)
     expect(plainText(row(rows, 'drift-2')!)).toMatch(/^ − src\/Core\/Gone\.php +Core$/)
     expect(plainText(row(rows, 'drift-more')!)).toBe('   +20 not listed')
-    expect(rows.findIndex(r => r.key === 'drift-head')).toBeLessThan(rows.findIndex(r => r.key === 'tabs'))
+    expect(rows.findIndex(r => r.key === 'drift-head')).toBeGreaterThan(rows.findIndex(r => r.key === 'tabs'))
     // The marker is theirs while they are listed: the tab below draws none.
     expect(rows.filter(r => plainText(r).startsWith('›'))).toHaveLength(1)
     expect(listFor(open).map(o => [o.canonical, o.file])).toEqual([
@@ -223,7 +218,7 @@ describe('the drifted files', () => {
   it('are not offered by a knossos that only counts them', () => {
     const counted = dash({ freshness: { state: 'stale', age_seconds: 600, drift_files: 3 } })
     const rows = paneRows(pane({ d: counted, view: { drift: true } }), 90)
-    expect(row(rows, 'summary')!.segments.some(s => s.press)).toBe(false)
+    expect(rows.some(r => r.segments.some(s => s.press?.id === 'drifted'))).toBe(false)
     expect(keysOf(rows)).not.toContain('d')
     expect(row(rows, 'drift-head')).toBeUndefined()
   })

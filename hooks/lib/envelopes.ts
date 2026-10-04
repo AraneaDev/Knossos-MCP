@@ -1,4 +1,4 @@
-import type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, Listed, Related, Rescan, SessionDiff, SessionLedger, SessionRev, TurnBrief, Violation } from '../../types'
+import type { AllowRoot, BoundaryCouplings, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, GitHead, Listed, Related, Rescan, SessionDiff, SessionLedger, SessionRev, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
@@ -133,6 +133,33 @@ export function parseSessionRev(stdout: string): SessionRev | null {
   const parsed = parse(stdout, new Set(['ok', 'no-git']), [], []) as { status: string; rev?: unknown } | null
   if (parsed?.status === 'no-git') return { status: 'no-git' }
   return parsed?.status === 'ok' && typeof parsed.rev === 'string' && /^[0-9a-f]{7,64}$/.test(parsed.rev) ? { status: 'ok', rev: parsed.rev } : null
+}
+
+/**
+ * Where the checkout stands, from `session-head`'s stdout: its commit and
+ * branch (null on a detached head), null for a project git does not hold,
+ * undefined for silence or anything unexpected (asked again later).
+ */
+export function parseSessionHead(stdout: string): GitHead | undefined {
+  const parsed = parse(stdout, new Set(['ok', 'no-git']), [], []) as { status: string; rev?: unknown; branch?: unknown } | null
+  if (parsed?.status === 'no-git') return null
+  if (parsed?.status !== 'ok' || typeof parsed.rev !== 'string' || !/^[0-9a-f]{7,64}$/.test(parsed.rev)) return undefined
+  // A branch name with a control character in it is not printed: it could move the terminal's cursor.
+  const printable = (name: string) => [...name].every(ch => (ch.codePointAt(0) ?? 0) >= 0x20 && ch !== '\u007f')
+  const branch = typeof parsed.branch === 'string' && parsed.branch !== '' && printable(parsed.branch) ? parsed.branch : null
+  return { rev: parsed.rev, branch }
+}
+
+/** One heat map cell spelled out, from `boundary-couplings`' stdout; null for silence or anything unexpected. */
+export function parseCouplings(stdout: string): BoundaryCouplings | null {
+  const parsed = parse(stdout, DASH, ['couplings'], []) as BoundaryCouplings | null
+  if (parsed === null || parsed.status !== 'ok') return parsed
+  const listed = (c: unknown): boolean => {
+    const end = (e: unknown) => typeof e === 'object' && e !== null && typeof (e as Listed).canonical_name === 'string' && typeof (e as Listed).name === 'string'
+    const pair = c as { source?: unknown; target?: unknown; edges?: unknown }
+    return typeof c === 'object' && c !== null && end(pair.source) && end(pair.target) && typeof pair.edges === 'number'
+  }
+  return typeof parsed.edges === 'number' && parsed.couplings.every(listed) ? { ...parsed, truncated: parsed.truncated === true } : null
 }
 
 /** Why a rescan did not land, in a few words for the pane's header. */

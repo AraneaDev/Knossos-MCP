@@ -13,7 +13,9 @@
  * forms, and the ANSI ones, whose basic terminal colours are taken as xterm
  * paints them (a Raster cannot name a palette index). An unknown theme reads
  * as light when its name says so, else dark. The heat map's four steps are
- * the accent laid over the theme's background at rising strength.
+ * the accent laid over the theme's background at rising strength. A
+ * segment's own `bg` (the marked row's tint) is laid where its theme gives
+ * a value for it; elsewhere the cell keeps the terminal's background.
  */
 import type { Row } from './rows'
 
@@ -76,11 +78,11 @@ export type ThemeName = 'dark' | 'light' | 'dark-daltonized' | 'light-daltonized
 /** Each of Claude Code's themes' values for the keys a grid draws with. */
 export const RASTER_THEMES: Record<ThemeName, Palette> = {
   dark: palette(
-    { text: 0xffffff, inactive: 0x999999, subtle: 0x505050, suggestion: 0xb1b9f9, success: 0x4eba65, warning: 0xffc107, error: 0xff6b80 },
+    { text: 0xffffff, inactive: 0x999999, subtle: 0x505050, suggestion: 0xb1b9f9, success: 0x4eba65, warning: 0xffc107, error: 0xff6b80, userMessageBackground: 0x373737 },
     0x1e1e1e,
   ),
   light: palette(
-    { text: 0x000000, inactive: 0x666666, subtle: 0xafafaf, suggestion: 0x5769f7, success: 0x2c7a39, warning: 0x966c1e, error: 0xab2b3f },
+    { text: 0x000000, inactive: 0x666666, subtle: 0xafafaf, suggestion: 0x5769f7, success: 0x2c7a39, warning: 0x966c1e, error: 0xab2b3f, userMessageBackground: 0xf0f0f0 },
     0xffffff,
   ),
   'dark-daltonized': palette(
@@ -146,7 +148,7 @@ export function rasterOf(rows: Row[], columns: number, theme: Palette = RASTER_T
     let x = 0
     for (const s of row.segments) {
       const fg = colourValue(s.cell?.fg ?? s.color ?? (s.dim ? 'inactive' : undefined), theme)
-      const bg = colourValue(s.cell?.bg, theme)
+      const bg = colourValue(s.cell?.bg ?? s.bg, theme)
       for (const char of s.text) {
         if (x >= width) break
         words.set([printable(s.cell?.glyph ?? char), fg, bg], (y * width + x) * 3)

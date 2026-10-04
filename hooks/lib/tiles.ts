@@ -8,8 +8,8 @@
  * Pure. Medium and wide, the tiles are cells of one framed band, a faint
  * rule between them, spread evenly across the pane; when they do not fit on
  * one line they wrap onto as few as hold them, the same number on each.
- * Narrow, they collapse to a summary line (`2 cycles  165 max degree ...`),
- * wrapped, leaving out what the header's summary line already says.
+ * Narrow, they collapse to a summary line (`9,008 components  2 cycles ...`),
+ * wrapped.
  */
 import { FRAME } from './cards'
 import type { Block, Section } from './cards'
@@ -24,10 +24,8 @@ export type StatTone = 'warn' | 'alert' | 'accent'
 /**
  * One tile: its figure, its label, how it deviates, the series its trend is
  * drawn from, and the press its label carries (the drifted files' list).
- * `inSummary` marks a figure the header's summary line says too: the narrow
- * line leaves it out.
  */
-export type Stat = { key: string; label: string; value: string; tone?: StatTone; trend?: number[]; press?: string; inSummary?: true }
+export type Stat = { key: string; label: string; value: string; tone?: StatTone; trend?: number[]; press?: string }
 
 /** A trend is drawn only with this many points, and only when it moves. */
 export const TREND_MIN_POINTS = 5
@@ -114,10 +112,9 @@ function bandRows(stats: Stat[], width: number): Row[] {
 /** A band row inside its frame. */
 const framed = (key: string, segments: Segment[]): Row => ({ key, segments: [{ text: '│ ', color: FRAME }, ...segments, { text: ' │', color: FRAME }] })
 
-/** The narrow summary line: each figure the header does not already say, then its label, wrapped. */
+/** The narrow summary line: each figure, then its label, wrapped. */
 function lineRows(stats: Stat[], width: number): Row[] {
   const groups = stats
-    .filter(s => s.inSummary !== true)
     .map((s): Segment[] => [figure(s), { text: ' ' }, label(s, cells(s.label)), ...(moves(s.trend) ? [{ text: ` ${sparkline(s.trend.slice(-8))}`, dim: true }] : [])])
   return wrapGroups('tiles-line', groups, width, 3, 0)
 }

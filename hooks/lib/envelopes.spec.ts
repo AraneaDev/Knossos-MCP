@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countLabel, detailLines, fileDetailLines, parseAllowRoot, parseComponentDetail, parseDashboard, parseFileDetail, parseRescan, parseTurnBrief, rescanReason } from './envelopes'
+import { countLabel, detailLines, fileDetailLines, parseAllowRoot, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseRescan, parseSessionHead, parseTurnBrief, rescanReason } from './envelopes'
 
 describe('envelopes', () => {
   it('empty stdout is no data', () => expect(parseTurnBrief('')).toBeNull())
@@ -149,5 +149,38 @@ describe('file detail', () => {
     expect(fileDetailLines(not, 'src/Gone.php')).toEqual(['src/Gone.php is not in the graph: never scanned, ignored, or gone before the snapshot.'])
     expect(fileDetailLines({ ...not, status: 'unscanned' }, 'a.php')).toEqual(['No Knossos data for this project. Scan it with knossos scan.'])
     expect(fileDetailLines({ ...not, status: 'error' }, 'a.php')).toEqual(['knossos could not read a.php.'])
+  })
+})
+
+describe('parseSessionHead', () => {
+  const rev = '610c7731cafe0000000000000000000000000000'
+  it('reads the commit and the branch, a detached head as no branch, and no git as null', () => {
+    expect(parseSessionHead(JSON.stringify({ status: 'ok', rev, branch: 'feat/claude-code-mod' }))).toEqual({ rev, branch: 'feat/claude-code-mod' })
+    expect(parseSessionHead(JSON.stringify({ status: 'ok', rev, branch: null }))).toEqual({ rev, branch: null })
+    // An older knossos names no branch.
+    expect(parseSessionHead(JSON.stringify({ status: 'ok', rev }))).toEqual({ rev, branch: null })
+    expect(parseSessionHead(JSON.stringify({ status: 'no-git', rev: null }))).toBeNull()
+  })
+  it('reads silence, nonsense, a commit that is no hex id and a branch with control characters as nothing said', () => {
+    expect(parseSessionHead('')).toBeUndefined()
+    expect(parseSessionHead('{')).toBeUndefined()
+    expect(parseSessionHead(JSON.stringify({ status: 'ok', rev: 'HEAD' }))).toBeUndefined()
+    expect(parseSessionHead(JSON.stringify({ status: 'ok', rev, branch: 'a\u001bb' }))).toEqual({ rev, branch: null })
+  })
+})
+
+describe('parseCouplings', () => {
+  const pair = { source: { name: 'scan', canonical_name: 'T::scan', kind: 'method' }, target: { name: 'S', canonical_name: 'App\\S', kind: 'class' }, edges: 3 }
+  it('reads a cell spelled out, and an unscanned or no-binary answer as it is', () => {
+    expect(parseCouplings(JSON.stringify({ status: 'ok', from: 'tests', to: 'core', edges: 9, couplings: [pair], truncated: false }))).toMatchObject({ edges: 9, couplings: [pair], truncated: false })
+    expect(parseCouplings(JSON.stringify({ status: 'ok', edges: 9, couplings: [pair] }))?.truncated).toBe(false)
+    expect(parseCouplings(JSON.stringify({ status: 'unscanned', edges: 0, couplings: [] }))?.status).toBe('unscanned')
+    expect(parseCouplings('{"status":"no-binary"}')?.status).toBe('no-binary')
+  })
+  it('refuses silence and a malformed pair', () => {
+    expect(parseCouplings('')).toBeNull()
+    expect(parseCouplings(JSON.stringify({ status: 'ok', edges: 9, couplings: [{ ...pair, edges: '3' }] }))).toBeNull()
+    expect(parseCouplings(JSON.stringify({ status: 'ok', edges: 9, couplings: [{ ...pair, source: null }] }))).toBeNull()
+    expect(parseCouplings(JSON.stringify({ status: 'ok', couplings: [] }))).toBeNull()
   })
 })

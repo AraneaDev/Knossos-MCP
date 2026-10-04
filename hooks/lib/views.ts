@@ -13,7 +13,7 @@ import { moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
 import type { ComponentDetail, Counterpart, Dashboard, DetailState, Inspected } from '../../types'
 import { countLabel, detailLines } from './envelopes'
-import { ACCENT, boundaryColour, boundaryLabel, FAINT, NO_HUES, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryColour, boundaryLabel, FAINT, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import {
   absolute,
@@ -36,6 +36,7 @@ import {
   spaces,
   tableRow,
   tableSpec,
+  tinted,
   wrapGroups,
   wrapWords,
 } from './rows'
@@ -292,7 +293,8 @@ function entryRow(key: string, e: Entry, spec: EntrySpec, hues: Hues): Row {
   if (spec.boundary > 0) segments.push({ text: ' ' }, { text: padEnd(fit(boundaryLabel(e.boundary ?? null, hues), spec.boundary), spec.boundary), ...boundaryStyle(e.boundary ?? null, hues) })
   // Places are left-aligned: a column of file names reads down its left edge.
   if (spec.place > 0) segments.push({ text: ' ' }, linked(fitStart(e.place, spec.place), e.loc ?? null, { dim: true }))
-  return { key, segments: segments.filter(s => s.text !== '') }
+  const kept = segments.filter(s => s.text !== '')
+  return e.selected === true ? { key, segments: tinted(kept, SELECTED_BG), tint: SELECTED_BG } : { key, segments: kept }
 }
 
 /** Two names joined by an arrow in `width`, each cut only as far as it must be. */
@@ -402,7 +404,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
     make: (columns, limit) => {
       const window = windowOf(issues.largest.length, limit)
       const shown = issues.largest.slice(0, window.end)
-      const spec = tableSpec(columns, shown.map(f => f.path), [], [numberWidth('lines', shown.map(f => f.lines))], 56, { tier })
+      const spec = tableSpec(columns, shown.map(f => f.path), [], [numberWidth('lines', shown.map(f => f.lines), tier)], 56, { tier })
       const max = Math.max(0, ...issues.largest.map(f => f.lines))
       const body: Row[] = shown.map((f, i) => tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, cutStart: true, link: f.loc }, spec, hues))
       body.push(...moreRows('large-window', window, issues.largest.length, columns))
@@ -410,7 +412,20 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
       return { key: 'large', title: 'Largest files', note: noteOf(issues.largest.length > 0 ? 'lines' : ''), body }
     },
   }
-  return { left: [policyBlock, diagBlock], right: [deadBlock, largeBlock] }
+  return { left: [policyBlock, diagBlock], right: [deadBlock, largeBlock], rows: issueGrid([policyBlock, diagBlock, deadBlock, largeBlock]) }
+}
+
+/**
+ * How the wide Issues tab sets its four cards in rows of equal height: the
+ * cards with nothing listed first, side by side as one short row (two rows
+ * of two when all four are empty), then the lists in pairs, each pair as
+ * tall as its longer list allows; a list left over spans the pane.
+ */
+export function issueGrid(blocks: Block[]): Block[][] {
+  const empty = blocks.filter(b => (b.grow?.length ?? 0) === 0)
+  const listed = blocks.filter(b => (b.grow?.length ?? 0) > 0)
+  const pairs = (list: Block[]): Block[][] => Array.from({ length: Math.ceil(list.length / 2) }, (_, i) => list.slice(i * 2, i * 2 + 2))
+  return [...(empty.length > 3 ? pairs(empty) : empty.length > 0 ? [empty] : []), ...pairs(listed)]
 }
 
 /** The boundary most of a cycle's members are in (the first such, on a tie), or null when none has one. */
@@ -450,20 +465,26 @@ export function cyclesArrangement(input: CyclesInput, hues: Hues = NO_HUES, sele
   return { left: [list], right: [members], order: [list] }
 }
 
-/** The cycles in `window` as rows: a legend for the colours, then each cycle's line and its chain. */
+/**
+ * The cycles in `window` as rows: a legend for the colours, then each
+ * cycle's line and its chain. The chain opens with `↻` and runs member to
+ * member, each hop in its own boundary's colour, so the eye sees where the
+ * loop crosses from one boundary into another; it wraps across the width
+ * and closes with `→ ↻`, back to where it began.
+ */
 function cycleListRows(input: CyclesInput, columns: number, hues: Hues, selected: number, window: { start: number; end: number }): Row[] {
   const rows: Row[] = []
   const visible = input.cycles.slice(window.start, window.end)
-  // A legend for the members drawn in colour (those outside their cycle's own boundary), in the order they first appear.
+  // A legend for the members' colours, in the order they first appear.
   const seen = new Map<string, Segment[]>()
-  for (const node of visible.flatMap(c => c.nodes.filter(n => n.boundary !== homeBoundary(c)))) {
-    if (node.boundary === null || seen.has(node.boundary)) continue
+  for (const node of visible.flatMap(c => c.nodes)) {
+    if (node.boundary === null || seen.has(node.boundary) || boundaryColour(node.boundary, hues) === undefined) continue
     seen.set(node.boundary, [{ text: `■ ${boundaryLabel(node.boundary, hues)}`, color: boundaryColour(node.boundary, hues) }])
   }
-  if (seen.size > 0) rows.push(...wrapGroups('cycles-legend', [...seen.values()], columns, 2, MARK))
+  if (seen.size > 1) rows.push(...wrapGroups('cycles-legend', [...seen.values()], columns, 2, MARK))
   visible.forEach((cycle, n) => {
     const i = window.start + n
-    // The boundary most members share is named once, in its colour; only members outside it are coloured: they are where the cycle crosses.
+    // The boundary most members share is named once, in its colour.
     const home = homeBoundary(cycle)
     const head: Segment[] = [
       { text: i === selected ? '›' : ' ', color: ACCENT, bold: true },
@@ -472,19 +493,22 @@ function cycleListRows(input: CyclesInput, columns: number, hues: Hues, selected
       { text: ` · ${plural(cycle.size, 'member', 'members')}`, dim: true },
     ]
     if (home !== null) head.push({ text: ' · ', dim: true }, { text: boundaryLabel(home, hues), ...boundaryStyle(home, hues) })
-    if (n > 0 || seen.size > 0) rows.push(blank(`gap-cycle-${i}`))
-    rows.push({ key: `cycle-${i}`, segments: clip(head, columns) })
-    const room = Math.max(1, columns - MARK - 2)
-    const groups: Segment[][] = cycle.nodes.map((node, j) => {
-      const last = j === cycle.nodes.length - 1
-      const tail = last ? (cycle.more > 0 ? ' →' : ' ↺') : ' →'
-      const style = node.boundary === home ? {} : boundaryStyle(node.boundary, hues)
-      return [{ text: fit(node.name, room), ...style }, { text: tail, dim: true }]
-    })
-    if (cycle.more > 0) groups.push([{ text: `… +${cycle.more} more`, dim: true }])
-    rows.push(...wrapGroups(`chain-${i}`, groups, columns, 1, MARK))
+    if (n > 0 || seen.size > 1) rows.push(blank(`gap-cycle-${i}`))
+    rows.push(i === selected ? { key: `cycle-${i}`, segments: tinted(clip(head, columns), SELECTED_BG), tint: SELECTED_BG } : { key: `cycle-${i}`, segments: clip(head, columns) })
+    rows.push(...wrapGroups(`chain-${i}`, chainGroups(cycle, Math.max(1, columns - MARK - 4), hues), columns, 1, MARK))
   })
   return [...rows, ...moreRows('cycles-window', window, input.cycles.length, columns)]
+}
+
+/** A cycle's chain as groups that wrap whole: `↻`, then each member (in its boundary's colour) with the arrow after it, then the loop's close. */
+export function chainGroups(cycle: CycleLine, room: number, hues: Hues = NO_HUES): Segment[][] {
+  const groups: Segment[][] = [[{ text: '↻', color: ACCENT }]]
+  cycle.nodes.forEach((node, j) => {
+    const last = j === cycle.nodes.length - 1
+    groups.push([{ text: fit(node.name, room), ...boundaryStyle(node.boundary, hues) }, ...(last && cycle.more === 0 ? [] : [{ text: ' →', dim: true }])])
+  })
+  groups.push(cycle.more > 0 ? [{ text: `… +${cycle.more} more`, dim: true }] : [{ text: '→ ↻', dim: true }])
+  return groups
 }
 
 /** The widest a member's boundary label is drawn beside it. */
@@ -500,7 +524,7 @@ function memberSection(cycle: CycleLine, index: number, columns: number, hues: H
   const body: Row[] = cycle.nodes.map((node, j) =>
     tableRow(`member-${j}`, { name: node.name, boundary: node.boundary, values: [], max: 0, mark: { text: j === 0 ? '┌' : '│', color: FAINT }, repeat: node.boundary === home && j > 0 }, spec, hues),
   )
-  body.push({ key: 'member-close', segments: [{ text: ' ' }, { text: cycle.more > 0 ? '┆' : '└', color: FAINT }, { text: cycle.more > 0 ? ` … +${cycle.more} more` : ` ↺ back to ${fit(cycle.nodes[0]?.name ?? '', Math.max(1, columns - 12))}`, dim: true }] })
+  body.push({ key: 'member-close', segments: [{ text: ' ' }, { text: cycle.more > 0 ? '┆' : '└', color: FAINT }, { text: cycle.more > 0 ? ` … +${cycle.more} more` : ` ↻ back to ${fit(cycle.nodes[0]?.name ?? '', Math.max(1, columns - 12))}`, dim: true }] })
   return { key: 'cycle-members', title: `Cycle ${index + 1}`, note: noteOf(plural(cycle.size, 'member', 'members')), body }
 }
 
@@ -514,7 +538,7 @@ function sideSection(prefix: string, side: Side, offset: number, columns: number
   const flat = side.items.length > 1 && side.items.every(i => i.edges === side.items[0]!.edges)
   const boundaries = side.items.map(i => boundaryLabel(i.boundary, hues))
   const spec = counted
-    ? { ...tableSpec(columns, side.items.map(i => i.name), boundaries, [numberWidth('', side.items.map(i => i.edges))], undefined, { tier }), ...(flat ? { bar: 0 } : {}) }
+    ? { ...tableSpec(columns, side.items.map(i => i.name), boundaries, [numberWidth('', side.items.map(i => i.edges))], undefined, { tier, compact: false }), ...(flat ? { bar: 0 } : {}) }
     : { ...tableSpec(columns, side.items.map(i => i.name), boundaries, []), bar: 0 }
   const section = (body: Row[]): Section => ({ key: prefix, title: side.title, subtitle: side.count, note: noteOf(counted ? 'edges' : ''), body })
   if (side.items.length === 0) return section([none(`${prefix}-none`)])

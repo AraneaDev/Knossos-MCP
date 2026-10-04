@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, KnossosView, SessionChanges, SessionLedger, TurnBrief } from '../../types'
-import { accumulate, cdFor, changesInput, changesList, FILE_CAP, fromLedger, lookAtOf, NO_CHANGES, testCommand, testsRan } from './changes'
+import { accumulate, cdFor, changesInput, changesList, FILE_CAP, fromLedger, lookAtOf, NO_CHANGES, ownTimeline, testCommand, testsRan, timelineRow } from './changes'
 import { changesRows, lookAtRows } from './__tests__/tabs'
 import { editTarget, paneInput, paneRows } from './layout'
 import { findRow, plainText } from './__tests__/plain-text'
@@ -279,7 +279,7 @@ describe('look at now', () => {
       for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
     }
     // The tab carries how many files were touched.
-    expect(plainText(paneRows(pane, 90).find(r => r.key === 'tabs')!)).toContain('6: Changes ³')
+    expect(plainText(paneRows(pane, 90).find(r => r.key === 'tabs')!)).toContain(' Changes³ ')
   })
 })
 
@@ -400,5 +400,69 @@ describe('the changes since the session began, from the scan ledger', () => {
     expect(textOf(fallback)).toContain('2 turns')
     const empty = changesRows(changesInput(fromLedger({ ...ledger, files: {}, tests: [] }, NO_CHANGES, new Set()), ROOT), 0, 60)
     expect(textOf(empty)).toContain('Nothing changed in this project since this session began.')
+  })
+})
+
+describe("the session's scans as a timeline", () => {
+  const timeline = (origins: string) => [...origins].map(o => ({ origin: o === 's' ? ('session' as const) : ('outside' as const) }))
+
+  it('draws a dot a scan, oldest first, this session in the accent and outside dim, then the counts', () => {
+    const r = timelineRow({ timeline: timeline('ssoss'), earlier: false }, 60)!
+    expect(plainText(r)).toBe('   scans ●●●●●  4 this session · 1 outside')
+    const dots = r.segments.filter(s => s.text.includes('●'))
+    expect(dots.map(s => [s.text, s.color ?? (s.dim ? 'dim' : '')])).toEqual([
+      ['●●', 'suggestion'],
+      ['●', 'dim'],
+      ['●●', 'suggestion'],
+    ])
+    // Only the session's own: no outside count.
+    expect(plainText(timelineRow({ timeline: timeline('sss'), earlier: false }, 60)!)).toBe('   scans ●●●  3 this session')
+    expect(timelineRow({ timeline: [], earlier: false }, 60)).toBeNull()
+  })
+
+  it('keeps its newest scans behind a … when it is longer than the row, or older ones were left out', () => {
+    for (const columns of WIDTHS) {
+      const r = timelineRow({ timeline: timeline('s'.repeat(120)), earlier: false }, columns)!
+      expect(rowWidth(r), `${columns}`).toBeLessThanOrEqual(columns)
+      if (columns < 160) expect(plainText(r), `${columns}`).toContain('…●')
+      else expect(plainText(r), `${columns}`).toContain(`scans ${'●'.repeat(120)}  120 this session`)
+    }
+    expect(plainText(timelineRow({ timeline: timeline('so'), earlier: true }, 80)!)).toBe('   scans …●●  1 this session · 1 outside')
+  })
+
+  it('stands above the file list, from the ledger with each scan by whose changes it took in, else from the session\'s own', () => {
+    const ledger: SessionLedger = {
+      status: 'ok',
+      since: 's0',
+      snapshot_id: 's3',
+      complete: true,
+      files: { 'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'Http', scans: ['s1'] } },
+      files_truncated: false,
+      tests: [],
+      tests_truncated: false,
+      scans: [
+        { snapshot_id: 's1', at: 10, files: 1 },
+        { snapshot_id: 's2', at: 20, files: 3 },
+        { snapshot_id: 's3', at: 30, files: 1 },
+      ],
+      scans_truncated: true,
+    }
+    const changes = fromLedger(ledger, NO_CHANGES, new Set(), new Set(['s1', 's3']))
+    expect(changes.timeline).toEqual([
+      { snapshot: 's1', origin: 'session' },
+      { snapshot: 's2', origin: 'outside' },
+      { snapshot: 's3', origin: 'session' },
+    ])
+    expect(changes.timeline_truncated).toBe(true)
+    const rows = changesRows(changesInput(changes, ROOT), 0, 100)
+    const at = (key: string) => rows.findIndex(r => r.key.split('|').includes(key))
+    expect(at('changes-timeline')).toBeGreaterThan(at('changes-head'))
+    expect(at('changes-timeline')).toBeLessThan(at('change-0'))
+    expect(ownTimeline(['a', 'b'])).toEqual([
+      { snapshot: 'a', origin: 'session' },
+      { snapshot: 'b', origin: 'session' },
+    ])
+    // An older knossos names no scans: no timeline.
+    expect(fromLedger({ ...ledger, scans: undefined }, NO_CHANGES, new Set()).timeline).toEqual([])
   })
 })

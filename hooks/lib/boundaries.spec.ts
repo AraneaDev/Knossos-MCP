@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BoundaryMatrix, Dashboard } from '../../types'
-import { axisCode, boundariesInput, boundariesList, heatRows, heatSpec, shade, SHADES } from './boundaries'
+import { axisCode, boundariesArrangement, boundariesInput, boundariesList, couplingSection, couplingView, heatRows, heatSpec, markedCell, nextTarget, shade, SHADES } from './boundaries'
+import { arrange } from './cards'
 import { ACCENT, boundaryColour, NO_HUES } from './palette'
 import { HEAT_KEYS } from './raster'
 import { findRow, plainText } from './__tests__/plain-text'
@@ -185,7 +186,9 @@ describe('boundaryRows', () => {
     // The legend is part of the grid, so the terminal draws its swatches as the same tiles.
     expect(rows.filter(r => r.key.startsWith('heat-legend')).every(r => r.raster === 'heat')).toBe(true)
     expect(plainText(row(rows, 'bounds-cols')!)).toMatch(/boundary +comps +in +out$/)
-    expect(plainText(row(rows, 'bounds-1')!)).toMatch(/^ {3}B core +[━╸]+·* +1,633 +10,779 +0$/)
+    // A narrow column says its figures compactly; the wide one in full.
+    expect(plainText(row(rows, 'bounds-1')!)).toMatch(/^ {3}B core +[━╸]+·* +1\.6k +10\.8k +0$/)
+    expect(plainText(row(boundaryRows(boundariesInput(dash()), 100), 'bounds-1')!)).toMatch(/ 1,633 +10,779 +0$/)
     expect(plainText(row(rows, 'bounds-3')!)).toMatch(/^ {3}D hooks /)
   })
   it('says so when no boundary labels a component, and when knossos sends no map', () => {
@@ -193,5 +196,82 @@ describe('boundaryRows', () => {
       'no boundary labels a component',
     )
     expect(textOf(boundaryRows(null, 60))).toContain('sends no boundary map')
+  })
+})
+
+describe('the marked heat map cell', () => {
+  const input = boundariesInput(dash(matrix({ cells: [[12617, 10779, 40, 3], [0, 3513, 0, 0], [0, 0, 765, 0], [0, 0, 0, 438]] })))!
+  const answer = {
+    status: 'ok',
+    edges: 10779,
+    truncated: false,
+    couplings: [
+      { source: { name: 'scan', canonical_name: 'Tests\\ScanTest::scan', kind: 'method' }, target: { name: 'StableId', canonical_name: 'Knossos\\Store\\StableId', kind: 'class' }, edges: 812 },
+      { source: { name: 'Fixtures', canonical_name: 'Tests\\Support\\Fixtures', kind: 'class' }, target: { name: 'open', canonical_name: 'Knossos\\Store\\SqliteConnection::open', kind: 'method' }, edges: 97 },
+    ],
+  }
+
+  it('runs from the marked boundary to what it depends on most, and l steps it round the rest', () => {
+    expect(markedCell(input, 0)).toEqual({ from: 0, to: 1 })
+    // With no target the cell is on the most: the next is the second most.
+    expect(nextTarget(input, 0, null)).toBe('typescript-worker')
+    expect(nextTarget(input, 0, 'nowhere')).toBe('typescript-worker')
+    expect(nextTarget(input, 0, 'core')).toBe('typescript-worker')
+    expect(nextTarget(input, 0, 'typescript-worker')).toBe('module:hooks (+typescript:hooks/tsconfig.json)')
+    // Past the last it comes round again; a target it does not depend on falls back to the most.
+    expect(nextTarget(input, 0, 'module:hooks (+typescript:hooks/tsconfig.json)')).toBe('core')
+    expect(markedCell(input, 0, 'typescript-worker')).toEqual({ from: 0, to: 2 })
+    expect(markedCell(input, 0, 'nowhere')).toEqual({ from: 0, to: 1 })
+    // A boundary that depends on nothing outside itself has no cell to mark.
+    expect(markedCell(input, 1)).toBeNull()
+    expect(nextTarget(input, 1, null)).toBeNull()
+    expect(markedCell(null, 0)).toBeNull()
+  })
+
+  it('stands out of the map in the text colour, its row label and column letter on the tint', () => {
+    const rows = heatRows(input, 100, NO_HUES, 1, { from: 0, to: 2 })
+    const cell = row(rows, 'heat-0')!.segments.find(s => s.color === 'text' && s.cell !== undefined)
+    expect(cell?.cell).toEqual({ glyph: '▇', fg: 'text' })
+    expect(row(rows, 'heat-head')!.segments.filter(s => s.bg === 'userMessageBackground').map(s => s.text.trim())).toEqual(['C'])
+    expect(row(rows, 'heat-0')!.segments.filter(s => s.bg === 'userMessageBackground').map(s => s.text.trim())).toEqual(['A', 'tests'])
+    expect(row(rows, 'heat-1')!.segments.some(s => s.bg !== undefined)).toBe(false)
+  })
+
+  it('is spelled out as A → B, its deps, and the pairs behind it, most first, at every width', () => {
+    for (const columns of WIDTHS) {
+      const section = couplingSection(input, { from: 0, to: 1 }, couplingView({ phase: 'done', answer }), columns)!
+      expect(section.title).toBe('tests → core')
+      expect(section.note!.map(n => n.text).join('')).toBe('10,779 deps')
+      for (const r of section.body) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
+    }
+    const section = couplingSection(input, { from: 0, to: 1 }, couplingView({ phase: 'done', answer }), 80)!
+    expect(plainText(section.body[0]!)).toMatch(/^ {3}ScanTest::scan → StableId +812$/)
+    expect(plainText(section.body[1]!)).toMatch(/^ {3}Fixtures → SqliteConnection::open +97$/)
+    // A pair forbidden by a policy says so in the error colour.
+    const forbidden = couplingSection(input, { from: 1, to: 0 }, null, 80)!
+    expect(forbidden.note!.find(n => n.text === ' · forbidden')?.color).toBe('error')
+  })
+
+  it('says it is reading, that knossos did not say, or that no pair is listed', () => {
+    const said = (view: ReturnType<typeof couplingView>) => couplingSection(input, { from: 0, to: 1 }, view, 80)!.body.map(plainText).join('\n')
+    expect(said(null)).toContain('reading the couplings…')
+    expect(said(couplingView({ phase: 'loading', answer: null }))).toContain('reading the couplings…')
+    expect(said(couplingView({ phase: 'done', answer: null }))).toContain('knossos did not say which components')
+    expect(said(couplingView({ phase: 'done', answer: { ...answer, couplings: [] } }))).toContain('no component pair listed')
+    expect(couplingView({ phase: 'done', answer: { ...answer, truncated: true } })?.truncated).toBe(true)
+  })
+
+  it('sits under the marked boundary on the Boundaries tab, beside the map when wide', () => {
+    const view = couplingView({ phase: 'done', answer })
+    for (const columns of WIDTHS) {
+      const rows = arrange(boundariesArrangement(input, columns < 80 ? 'narrow' : columns <= 130 ? 'medium' : 'wide', NO_HUES, 0, null, view), columns, 1_000)
+      const at = (key: string) => rows.findIndex(r => r.key.split('|').includes(key))
+      expect(at('coupling-head'), `${columns}`).toBeGreaterThan(at('focus-head'))
+      for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
+    }
+    // What the marked boundary depends on is pressable: a press moves the cell there.
+    const rows = boundaryRows(input, 100)
+    const presses = rows.flatMap(r => r.segments.flatMap(s => (s.press?.id.startsWith('cell:') ? [s.press.id] : [])))
+    expect(presses).toEqual(['cell:1', 'cell:2', 'cell:3'])
   })
 })

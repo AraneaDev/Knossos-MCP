@@ -46,6 +46,8 @@ export type Listed = { name: string; canonical_name: string; kind: string }
 export type Ranked = Listed & {
   /** How many other files reference it; absent from a knossos older than the pane's wide tables. */
   dependent_files?: number
+  /** The files that reference it most, at most three (absent from a knossos older than the pane's hover cards). */
+  top_dependents?: string[]
   boundary?: string | null
   /** Where it is declared, relative to the project root; absent from a knossos older than the mod's live watcher. */
   path?: string | null
@@ -282,6 +284,30 @@ export type SessionDiff = {
 /** The commit the session began at, from `session-head`: its id, or that the project has no git history. */
 export type SessionRev = { status: 'ok'; rev: string } | { status: 'no-git' }
 
+/** Where the project's checkout stands, as the header names it: the commit and the branch (null on a detached head); null when it is no git checkout. */
+export type GitHead = { rev: string; branch: string | null } | null
+
+/**
+ * The `boundary-couplings` subcommand's answer: one heat map cell spelled
+ * out, the component pairs from boundary `from` to boundary `to` with the
+ * most dependency edges first, and how many edges the cell holds.
+ */
+export type BoundaryCouplings = {
+  status: 'ok' | 'unscanned' | 'error' | 'no-binary'
+  from?: string
+  to?: string
+  snapshot_id?: string | null
+  edges: number
+  couplings: { source: Listed; target: Listed; edges: number }[]
+  truncated: boolean
+}
+
+/** The cell the pane spelled out, loading until its answer lands (null: nothing answered). */
+export type CouplingState = { snapshot: string | null; from: string; to: string; phase: 'loading' | 'done'; answer: BoundaryCouplings | null }
+
+/** What the pane says for a moment after an action in it: `✓ copied`, `✗ no editor`; drawn until `until` (mod clock, ms). */
+export type Feedback = { text: string; tone: 'ok' | 'alert'; until: number }
+
 /** The diff the file detail shows: of `name` against `rev` at `snapshot`, loading until it lands (null: nothing answered). */
 export type DiffState = { name: string; rev: string; snapshot: string | null; phase: 'loading' | 'done'; diff: SessionDiff | null }
 
@@ -316,6 +342,9 @@ export type SessionChanges = {
   origins?: Record<string, 'session' | 'outside'>
   /** Why the view is the turn briefs' only (no live watcher, or a ledger that does not reach back far enough); absent when it is not. */
   fallback?: string
+  /** The session's scans, oldest first, each by whose changes it took in; `timeline_truncated` when older ones were left out. */
+  timeline?: { snapshot: string; origin: 'session' | 'outside' }[]
+  timeline_truncated?: boolean
 }
 
 /**
@@ -334,6 +363,9 @@ export type SessionLedger = {
   files_truncated: boolean
   tests: { path: string; distance: number; js_runner?: JsRunner | null }[]
   tests_truncated: boolean
+  /** The recorded scans since the session began, oldest first: each one's snapshot, when (Unix seconds) and how many files it changed (absent from an older knossos). */
+  scans?: { snapshot_id: string; at: number; files: number }[]
+  scans_truncated?: boolean
 }
 
 /** The degree the hubs tab sorts by, most first. */
@@ -354,8 +386,11 @@ export type KnossosView = {
   filtering: boolean
   sort: HubSort
   /** Whether the files drifted since the snapshot are listed under the header (absent: not). */
-  drift?: boolean  /** Where the tab's marker stood when a detail opened from it: `b` puts it back there. */
+  drift?: boolean
+  /** Where the tab's marker stood when a detail opened from it: `b` puts it back there. */
   opened?: number
+  /** On the Boundaries tab, the boundary the marked one's heat map cell runs to (its top dependency when absent or gone). */
+  target?: string
 }
 
 /** The `scan` subcommand's answer: an incremental rescan the person asked for from the pane. */
@@ -437,6 +472,12 @@ declare module 'claude-code' {
       sessionRev: SessionRev | null
       /** The change since the session began of the file the detail shows. */
       fileDiff: DiffState | null
+      /** Where the checkout stands now, for the header; null until read, and when there is no git. */
+      gitHead: GitHead
+      /** The heat map cell spelled out on the Boundaries tab, as last read. */
+      couplings: CouplingState | null
+      /** The footer's word after an action, until it fades. */
+      feedback: Feedback | null
     }
   }
 }

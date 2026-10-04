@@ -1,4 +1,8 @@
+import { GLYPHS } from '../cards'
 import type { Row } from '../rows'
+
+/** A card title's kind glyph and the space after it: what a spec reading the title's words leaves out. */
+const GLYPH = new RegExp(`^[${[...new Set(Object.values(GLYPHS))].join('')}] `, 'u')
 
 /** The row as the terminal shows it, colours aside, frame and all. */
 export const rawText = (row: Row): string => row.segments.map(s => s.text).join('')
@@ -7,14 +11,16 @@ export const rawText = (row: Row): string => row.segments.map(s => s.text).join(
  * The row as the terminal shows it, colours aside, with a card's frame taken
  * off: a body row loses its `│ ` and ` │` (and the padding before it), and a
  * card's top edge reads as its title, then its note, the rule's dashes as
- * spaces. What a spec compares when it asks what a row says.
+ * spaces, without the glyph that marks the card's kind. What a spec compares
+ * when it asks what a row says.
  */
 export const plainText = (row: Row): string => {
   const text = rawText(row)
   const top = /^(╭─|──) (.*?)( ─╮| ──|─╮|──)$/.exec(text)
-  if (top !== null) return top[2]!.replace(/ ─+( |$)/, (run, after: string) => ' '.repeat(run.length - after.length) + after).trimEnd()
+  if (top !== null) return top[2]!.replace(GLYPH, '').replace(/ ─+( |$)/, (run, after: string) => ' '.repeat(run.length - after.length) + after).trimEnd()
   if (text.startsWith('│ ') && text.endsWith('│')) return text.slice(2, -1).trimEnd()
-  return text
+  // A marked row is tinted to the card's edge: the spaces that carry the tint say nothing.
+  return row.tint === undefined ? text : text.trimEnd()
 }
 
 /**

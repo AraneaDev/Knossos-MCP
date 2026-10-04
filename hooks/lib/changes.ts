@@ -10,22 +10,25 @@
  * and a cap that bit says so.
  */
 import type { JsRunner, SessionChanges, SessionLedger, TouchStatus, TurnBrief } from '../../types'
-import { ACCENT, boundaryLabel, HEADING, NO_HUES, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryLabel, HEADING, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import {
   baseName,
   blank,
   boundaryStyle,
   button,
+  cells,
   clip,
   dimRow,
   grouped,
   numberWidth,
   padEnd,
   plural,
+  segmentsWidth,
   tableHead,
   tableRow,
   tableSpec,
+  tinted,
   wrapGroups,
   wrapWords,
 } from './rows'
@@ -131,8 +134,22 @@ export function fromLedger(ledger: SessionLedger, turns: SessionChanges, edited:
   }
   const origins: Record<string, 'session' | 'outside'> = {}
   for (const [path, file] of Object.entries(ledger.files)) origins[path] = edited.has(path) || (file.scans ?? []).some(s => scans.has(s)) ? 'session' : 'outside'
-  return { turns: turns.turns, files: ledger.files, tests, js_runners: runners, violations: turns.violations, truncated: ledger.files_truncated || ledger.tests_truncated, origins }
+  const timeline = (ledger.scans ?? []).map(scan => ({ snapshot: scan.snapshot_id, origin: scans.has(scan.snapshot_id) ? ('session' as const) : ('outside' as const) }))
+  return {
+    turns: turns.turns,
+    files: ledger.files,
+    tests,
+    js_runners: runners,
+    violations: turns.violations,
+    truncated: ledger.files_truncated || ledger.tests_truncated,
+    origins,
+    timeline,
+    ...(ledger.scans_truncated === true ? { timeline_truncated: true } : {}),
+  }
 }
+
+/** The session's own scans as a timeline, every one the session's: what the Changes tab draws without the scan ledger. */
+export const ownTimeline = (scans: readonly string[]): { snapshot: string; origin: 'session' }[] => scans.map(snapshot => ({ snapshot, origin: 'session' }))
 
 /** Single-quoted for a POSIX shell when it holds anything a shell would read. */
 const quote = (word: string): string => (/^[\w./@%+=:,-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`)
@@ -257,6 +274,9 @@ export type ChangesInput = {
   sinceStart: boolean
   /** Why only the turn briefs' files are listed, when that is so. */
   fallback: string | null
+  /** The session's scans, oldest first, by whose changes each took in; `earlier` counts the older ones left out. */
+  timeline: { origin: 'session' | 'outside' }[]
+  earlier: boolean
 }
 
 /**
@@ -290,8 +310,44 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
     truncated: changes.truncated,
     sinceStart: changes.origins !== undefined,
     fallback: changes.fallback ?? null,
+    timeline: (changes.timeline ?? []).map(t => ({ origin: t.origin })),
+    earlier: changes.timeline_truncated === true,
   }
 }
+
+/**
+ * The session's scans as one thin row: a dot per scan, oldest first, in the
+ * accent for one that took in this session's own changes and dim for one
+ * that took in changes made outside it, then the two counts. A timeline
+ * longer than the row keeps its newest scans behind a `…`. Null with no scan.
+ */
+export function timelineRow(input: Pick<ChangesInput, 'timeline' | 'earlier'>, columns: number): Row | null {
+  const scans = input.timeline
+  if (scans.length === 0) return null
+  const own = scans.filter(t => t.origin === 'session').length
+  const counts: Segment[] = [
+    { text: '  ' },
+    { text: grouped(own), color: ACCENT },
+    { text: ' this session', dim: true },
+    ...(own === scans.length ? [] : [{ text: ' · ', dim: true }, { text: grouped(scans.length - own), color: HEADING }, { text: ' outside', dim: true }]),
+  ]
+  const lead: Segment = { text: '   scans ', dim: true }
+  const room = Math.max(1, columns - cells(lead.text) - segmentsWidth(counts))
+  const cut = input.earlier || scans.length > room
+  const shown = scans.slice(-Math.max(1, cut ? room - 1 : room))
+  const dots: Segment[] = shown.map(t => (t.origin === 'session' ? { text: TIMELINE_DOT, color: ACCENT } : { text: TIMELINE_DOT, dim: true }))
+  // Runs of one origin as one segment: a long timeline is a handful of segments, not one per scan.
+  const runs = dots.reduce<Segment[]>((out, d) => {
+    const last = out[out.length - 1]
+    if (last !== undefined && last.color === d.color && last.dim === d.dim) out[out.length - 1] = { ...last, text: last.text + d.text }
+    else out.push(d)
+    return out
+  }, [])
+  return { key: 'changes-timeline', segments: clip([lead, ...(cut ? [{ text: '…', dim: true }] : []), ...runs, ...(columns - cells(lead.text) - shown.length - (cut ? 1 : 0) >= segmentsWidth(counts) ? counts : [])], columns) }
+}
+
+/** One scan on the timeline. */
+const TIMELINE_DOT = '●'
 
 /** The files the Changes tab walks: each opens as a file's detail (who depends on it), and `e` opens it in the editor. */
 export function changesList(input: ChangesInput): Openable[] {
@@ -333,7 +389,8 @@ export function lookAtSection(look: LookAt, columns: number, hues: Hues = NO_HUE
       ...(f.boundary === null ? [] : [{ text: ' ' }, { text: boundaryLabel(f.boundary, hues), ...boundaryStyle(f.boundary, hues) }]),
       { text: ` · ${plural(f.dependents, 'dependent', 'dependents')}`, dim: true },
     ]
-    rows.push({ key: 'look-file', segments: clip(segments.filter(s => s.text !== ''), columns) })
+    const kept = clip(segments.filter(s => s.text !== ''), columns)
+    rows.push(selected === 0 ? { key: 'look-file', segments: tinted(kept, SELECTED_BG), tint: SELECTED_BG } : { key: 'look-file', segments: kept })
   }
   const section = (body: Row[]): Section => ({ key: 'look', title: 'Look at now', note: noteOf('this session'), body })
   if (look.tests === 0) {
@@ -392,6 +449,8 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
   const rows: Row[] = []
   const said = (key: string, text: string) => wrapWords(text, Math.max(1, columns - 3)).forEach((line, i) => rows.push(dimRow(`${key}-${i}`, `   ${line}`, columns)))
   const title = 'Changes this session'
+  const timeline = timelineRow(input, columns)
+  if (timeline !== null) rows.push(timeline)
   if (input.files.length === 0) {
     if (input.fallback !== null) said('changes-fallback', input.fallback)
     said(
@@ -405,7 +464,7 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
   const deps = input.files.reduce((n, f) => n + f.dependents, 0)
   // Every change since the session began says where it came from, in a column of its own at the end.
   const origin = input.sinceStart && columns > ORIGIN_WIDTH + 20 ? ORIGIN_WIDTH + 1 : 0
-  const spec = tableSpec(columns - origin, input.files.map(f => f.path), input.files.map(f => boundaryLabel(f.boundary)), [numberWidth('deps', input.files.map(f => f.dependents))], PATH_MAX, { tier })
+  const spec = tableSpec(columns - origin, input.files.map(f => f.path), input.files.map(f => boundaryLabel(f.boundary)), [numberWidth('deps', input.files.map(f => f.dependents), tier)], PATH_MAX, { tier })
   const max = Math.max(0, ...input.files.map(f => f.dependents))
   const note = `${input.sinceStart ? 'since it began' : plural(input.turns, 'turn', 'turns')}${input.truncated ? ' · partial' : ''}`
   if (input.fallback !== null) said('changes-fallback', input.fallback)
@@ -422,7 +481,8 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
     const line = tableRow(`change-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, selected: i === selected, mark: statusMark(f.status), cutStart: true, press: `row:${i}` }, spec, hues)
     if (origin === 0 || f.origin === undefined) return rows.push(line)
     const label: Segment = f.origin === 'session' ? { text: padEnd(ORIGIN_LABELS.session, ORIGIN_WIDTH), color: ACCENT } : { text: padEnd(ORIGIN_LABELS.outside, ORIGIN_WIDTH), dim: true }
-    return rows.push({ ...line, segments: [...line.segments, { text: ' ' }, label] })
+    const added: Segment[] = [{ text: ' ' }, label]
+    return rows.push({ ...line, segments: [...line.segments, ...(line.tint === undefined ? added : tinted(added, line.tint))] })
   })
   rows.push(...moreRows('changes-more', window, input.files.length, columns))
   return { key: 'changes', title, note: noteOf(note), body: rows }

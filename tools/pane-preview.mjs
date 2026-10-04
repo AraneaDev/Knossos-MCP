@@ -204,6 +204,12 @@ function sampleBrief(d) {
   }
 }
 
+/** What the first boundary depends on second most: where one press of `l` moves its cell. */
+function secondTarget(d) {
+  const input = layout.paneInput(d, null, FETCHED, IDLE, { ...BASE_VIEW, tab: 'boundaries' }, 0, true)
+  return layout.nextTarget(input.boundaries, 0, null) ?? undefined
+}
+
 function detailOf(d) {
   const top = layout.mergeRanked(d)[0]
   if (top === undefined) return null
@@ -266,7 +272,10 @@ function sampleSession(d, first) {
       { path: 'hooks/lib/changes.spec.ts', distance: 1, js_runner: 'vitest' },
     ],
   }
-  return [first, second, first].reduce((s, b) => layout.accumulate(s, b), layout.NO_CHANGES)
+  const summed = [first, second, first].reduce((s, b) => layout.accumulate(s, b), layout.NO_CHANGES)
+  // A made-up timeline to go with it: the session's scans, a few of them another writer's.
+  const origins = 'sssossssosssss'
+  return { ...summed, timeline: [...origins].map((o, i) => ({ snapshot: `sample-${i}`, origin: o === 's' ? 'session' : 'outside' })) }
 }
 
 /**
@@ -282,7 +291,9 @@ function ledgerSession(first) {
   }
   const diff = spawnSync('git', ['-C', PROJECT, 'diff', '--name-only', `${args['session-rev']}..HEAD`], { encoding: 'utf8' })
   const edited = new Set((diff.stdout ?? '').split('\n').filter(line => line !== ''))
-  return changesLib.fromLedger(ledger, layout.accumulate(layout.NO_CHANGES, first), edited)
+  // The scans that took in those files are the session's, as the mod attributes a scan that took in its own edits.
+  const scans = new Set(Object.entries(ledger.files).flatMap(([path, f]) => (edited.has(path) ? (f.scans ?? []) : [])))
+  return changesLib.fromLedger(ledger, layout.accumulate(layout.NO_CHANGES, first), edited, scans)
 }
 
 const NOW = Date.now()
@@ -302,11 +313,64 @@ const session = README ? ledgerSession(brief) : sampleSession(dashboard, brief)
 const root = dashboard.project_root ?? PROJECT
 const refused = { ...brief, status: 'not-allowed', refused_root: root, roots_file: join(DATA_DIR, 'roots.json') }
 
+/** Where the checkout stands, as the header names it: read once, as the mod reads it at start-up. */
+const GIT = envelopes.parseSessionHead(wrapper('session-head')) ?? null
+
+/**
+ * The Boundaries tab's marked cell spelled out, read as the mod reads it
+ * (`boundary-couplings` through the wrapper), for the cell `input` marks;
+ * null off that tab.
+ */
+function couplingsFor(input) {
+  const pair = layout.couplingPair(input)
+  if (pair === null) return null
+  const answer = envelopes.parseCouplings(wrapper('boundary-couplings', `--from=${pair.from}`, `--to=${pair.to}`))
+  return { snapshot: dashboard.snapshot_id ?? null, from: pair.from, to: pair.to, phase: 'done', answer }
+}
+
 /** The pane for a state: the view over BASE_VIEW, and what else the state holds. */
-function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null, live = LIVE } = {}) {
-  const input = layout.paneInput(dashboard, turn, refresh, rescan, { ...BASE_VIEW, ...view }, NOW, true, shown, allow, changes, null, live)
-  // Sized by the pane's height too: its lists grow with the rows it has.
-  return Object.assign((columns, height = layout.DEFAULT_ROWS) => layout.paneRows(input, columns, height), { sized: true })
+function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null, live = LIVE, feedback = null, hover = false } = {}) {
+  const make = extras => layout.paneInput(dashboard, turn, refresh, rescan, { ...BASE_VIEW, ...view }, NOW, true, shown, allow, changes, null, live, extras)
+  const base = { git: GIT, feedback }
+  const input = make({ ...base, couplings: couplingsFor(make(base)) })
+  // Sized by the pane's height too: its lists grow with the rows it has. `hover` draws the marked row's card as a resting pointer shows it.
+  return Object.assign((columns, height = layout.DEFAULT_ROWS) => (hover ? hovered(layout.paneRows(input, columns, height), columns) : layout.paneRows(input, columns, height)), { sized: true })
+}
+
+/**
+ * The rows with the marked row's hover card painted over the rows below it,
+ * where the render hook places it: under the row's name, kept inside the
+ * pane, over the row when the rows below cannot hold it.
+ */
+function hovered(laidOut, columns) {
+  const y = laidOut.findIndex(row => row.segments.some(s => s.preview !== undefined && s.bg !== undefined))
+  if (y < 0) return laidOut
+  const row = laidOut[y]
+  let x = 0
+  let preview = null
+  for (const s of row.segments) {
+    if (s.preview !== undefined && s.bg !== undefined) {
+      preview = s.preview
+      break
+    }
+    x += [...s.text].length
+  }
+  const height = preview.rows.length
+  const top = y + 1 + height <= laidOut.length || y < height ? y + 1 : y - height
+  const left = Math.max(0, Math.min(x, columns - preview.width))
+  const out = laidOut.map(r => ({ ...r }))
+  preview.rows.forEach((line, i) => {
+    const target = out[top + i]
+    if (target === undefined) return
+    const cells = []
+    for (const s of target.segments) for (const ch of s.text) cells.push({ ...s, text: ch, preview: undefined })
+    while (cells.length < left + preview.width) cells.push({ text: ' ' })
+    const card = []
+    for (const s of line.segments) for (const ch of s.text) card.push({ ...s, text: ch })
+    // A row a raster draws is drawn as text here: the card covers it.
+    out[top + i] = { key: target.key, segments: [...cells.slice(0, left), ...card, ...cells.slice(left + card.length)] }
+  })
+  return out
 }
 
 /** The band above the prompt as the mod draws it: the model's text in its tone, then its buttons. */
@@ -353,6 +417,10 @@ const VIEWS = [
   ['overview-fresh', pane({ tab: 'overview' }, { changes: layout.NO_CHANGES })],
   ['overview-keys', pane({ tab: 'overview', showKeys: true }, { turn: brief })],
   ['hubs', pane({ tab: 'hubs', selected: 1 })],
+  ['hubs-hover', pane({ tab: 'hubs', selected: 2 }, { hover: true })],
+  ['overview-hover', pane({ tab: 'overview', selected: 4 }, { turn: brief, hover: true })],
+  ['hubs-copied', pane({ tab: 'hubs', selected: 1 }, { feedback: { text: '✓ copied StableId', tone: 'ok', until: NOW + 2000 } })],
+  ['hubs-no-editor', pane({ tab: 'hubs', selected: 1 }, { feedback: { text: '✗ no editor · path copied', tone: 'alert', until: NOW + 2000 } })],
   ['hubs-filtering', pane({ tab: 'hubs', filtering: true, filter: 'query' })],
   ['hubs-filtered', pane({ tab: 'hubs', filter: 'query' })],
   ['hubs-no-match', pane({ tab: 'hubs', filter: 'zebra' })],
@@ -360,6 +428,8 @@ const VIEWS = [
   ['boundaries', pane({ tab: 'boundaries' })],
   // Marked on the first boundary a policy binds, so the spelled-out block shows what it may not use.
   ['boundaries-marked', pane({ tab: 'boundaries', selected: dashboard.boundary_matrix?.forbidden?.[0]?.[0] ?? 0 })],
+  // The first boundary's cell stepped on once with `l`: its second dependency spelled out.
+  ['boundaries-cell', pane({ tab: 'boundaries', selected: 0, target: secondTarget(dashboard) })],
   ['cycles', pane({ tab: 'cycles' })],
   ['issues', pane({ tab: 'issues' })],
   ['changes', pane({ tab: 'changes', selected: 1 }, { turn: brief })],
@@ -420,20 +490,22 @@ function colourOf(colour, theme, term) {
 function rowCells(row, theme, term) {
   const out = []
   for (const s of row.segments) {
+    // A background is a theme key, laid under the segment's cells (a Button stands in a Box of it).
+    const bg = s.bg === undefined ? null : colourOf(s.bg, theme, term)
     if (s.press !== undefined) {
       // A plain Button: the hotkey in the accent, a colon, the label; dimColor dims it all.
       const hot = s.press.hotkey === undefined ? 0 : [...`${s.press.hotkey}`].length
       ;[...s.text].forEach((ch, i) => {
         let fg = i < hot ? theme.suggestion : term.fg
         if (s.dim) fg = mix(fg, term.bg, 0.5)
-        out.push({ ch, fg, bg: null, bold: false })
+        out.push({ ch, fg, bg, bold: false })
       })
       continue
     }
     const style = rows.textStyle(s)
     const fg = colourOf(style.color, theme, term)
     // A link is drawn underlined, as a terminal draws an OSC 8 hyperlink.
-    for (const ch of s.text) out.push({ ch, fg, bg: null, bold: style.bold === true, link: s.link !== undefined })
+    for (const ch of s.text) out.push({ ch, fg, bg, bold: style.bold === true, link: s.link !== undefined })
   }
   return out
 }

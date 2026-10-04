@@ -86,7 +86,7 @@ export function fileDetailList(file: FileView): Openable[] {
 
 /** A table of one number per row, its bar dropped when every row has the same number: such bars compare nothing. */
 function countedSpec(columns: number, names: string[], boundaries: string[], values: number[], tier: Tier): TableSpec {
-  const spec = tableSpec(columns, names, boundaries, [numberWidth('', values)], PATH_MAX, { tier })
+  const spec = tableSpec(columns, names, boundaries, [numberWidth('', values)], PATH_MAX, { tier, compact: false })
   return values.length > 1 && values.every(v => v === values[0]) ? { ...spec, bar: 0 } : spec
 }
 

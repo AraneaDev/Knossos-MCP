@@ -90,6 +90,12 @@ describe('rasterOf', () => {
     expect(cells[5]).toEqual([0x78, 0xab2b3f, DEFAULT_COLOUR])
     expect(cells[6]).toEqual([0x2587, RASTER_THEMES.light['heat-2'], DEFAULT_COLOUR])
   })
+  it("lays a segment's own background where its theme gives it a value, and the terminal's elsewhere", () => {
+    const row = [{ key: 'a', segments: [{ text: 'm', bg: 'userMessageBackground' }] }]
+    expect(decode(rasterOf(row, 1, RASTER_THEMES.dark).cells)[0]).toEqual([0x6d, DEFAULT_COLOUR, 0x373737])
+    expect(decode(rasterOf(row, 1, RASTER_THEMES.light).cells)[0]).toEqual([0x6d, DEFAULT_COLOUR, 0xf0f0f0])
+    expect(decode(rasterOf(row, 1, RASTER_THEMES['dark-ansi']).cells)[0]).toEqual([0x6d, DEFAULT_COLOUR, DEFAULT_COLOUR])
+  })
   it('cuts a row at the width and draws a character it cannot place as ?', () => {
     const cells = decode(rasterOf([{ key: 'a', segments: [{ text: 'ab\u0007😀cd' }] }], 4).cells)
     expect(cells.map(c => String.fromCodePoint(c[0]!)).join('')).toBe('ab??')

@@ -21,6 +21,17 @@ export const FAINT = 'subtle'
 /** The selection marker, the active tab and the heat map's hue. */
 export const ACCENT = 'suggestion'
 
+/**
+ * The few backgrounds the pane lays: the marked row's faint tint and the
+ * language chips (`userMessageBackground`, the grey Claude Code lays under
+ * the person's own prompts), the hover card's ground (the same), and the
+ * text set on a solid fill (the active tab, the status pill): `inverseText`.
+ */
+export const SELECTED_BG = 'userMessageBackground'
+export const CHIP_BG = 'userMessageBackground'
+export const CARD_BG = 'userMessageBackground'
+export const ON_FILL = 'inverseText'
+
 export const STATUS_COLOURS = { ok: 'success', warn: 'warning', alert: 'error' } as const
 export type Tone = keyof typeof STATUS_COLOURS
 
