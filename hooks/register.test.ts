@@ -713,7 +713,24 @@ describe('knossos mod', () => {
       },
     })
     const touched = brief({ changed_files: Array.from({ length: 30 }, (_, i) => path(i)), impact: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [path(i), { path: path(i), dependent_files: 300 - i, boundaries: bounds.slice(0, 4), boundary: bounds[i % 12] }])), tests: Array.from({ length: 30 }, (_, i) => ({ path: `tests/${name(i)}Test.php`, distance: 1 })) })
-    const w = world(on, { dashboard: [{ stdout: big }], brief: [{ stdout: touched }], detail: [{ stdout: fullDetailOf('Router') }], file: [{ stdout: fileDetailOf(path(0)) }] })
+    const placed = (i: number) => ({ name: name(i), canonical_name: `App\\${name(i)}`, kind: 'method', path: path(i), line: i + 1, boundary: bounds[i % 12] })
+    const branched = JSON.stringify({
+      status: 'no-snapshot',
+      branch: 'feat/a-branch-with-a-very-long-name-indeed',
+      default_branch: 'origin/main',
+      merge_base: { rev: 'fd137146c3bbdbe4a2ef4756cd2394a670441a58', at: 1_790_953_266 },
+      ahead: 1_234,
+      base: { snapshot_id: 's0', rev: '4054d3a2fc5346529576462db547efe648538fb0', at: '2026-10-04T11:05:02Z', match: 'after', commits: 1_000 },
+      comparison: {
+        crossing: { count: 5_000, items: Array.from({ length: 8 }, (_, i) => ({ source: placed(i), target: placed(i + 8) })) },
+        cycles: { count: 50, items: Array.from({ length: 8 }, (_, i) => ({ size: 40, members: Array.from({ length: 8 }, (_, j) => placed(i * 8 + j)) })) },
+        hubs: { count: 900, items: Array.from({ length: 8 }, (_, i) => ({ component: placed(i), before: 100 + i, after: 9_000 + i })) },
+        dead_code: { count: 5_000, items: Array.from({ length: 8 }, (_, i) => placed(i + 20)) },
+        violations: { count: 100, truncated: true, items: Array.from({ length: 8 }, (_, i) => ({ policy_id: 'a-policy-with-a-long-id', source: `App\\${name(i)}`, source_kind: 'method', target: `App\\${name(i + 1)}`, target_kind: 'method' })) },
+      },
+    })
+    const found = JSON.stringify({ status: 'ok', query: 'x', truncated: true, results: Array.from({ length: 20 }, (_, i) => ({ type: i % 2 === 0 ? 'component' : 'file', ...placed(i), ...(i % 2 === 0 ? {} : { name: path(i), canonical_name: path(i), kind: 'file', line: null }) })) })
+    const w = world(on, { dashboard: [{ stdout: big }], brief: [{ stdout: touched }], detail: [{ stdout: fullDetailOf('Router') }], file: [{ stdout: fileDetailOf(path(0)) }], branch: [{ stdout: branched }], search: [{ stdout: found }] })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/${path(0)}`)
@@ -722,9 +739,14 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       for (const [bodyColumns, bodyRows] of [[200, 60], [140, 120], [100, 60], [60, 60]] as const) {
         const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows } } })
-        for (const step of ['tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'tab:issues', 'tab:changes', 'keys', 'tab:hubs', 'row:0', 'back', 'row:50']) {
-          if ((await ui.find({ key: step })) === undefined) continue
-          await ui.press({ key: step })
+        for (const step of ['tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'tab:issues', 'tab:changes', 'tab:branch', 'keys', 'tab:hubs', 'row:0', 'back', 'row:50', 'find', 'typed', 'find-close']) {
+          if (step === 'typed') {
+            await ui.input({ key: 'find', text: 'x', kind: 'change' })
+            await w.clock.advance(200)
+          } else {
+            if ((await ui.find({ key: step })) === undefined) continue
+            await ui.press({ key: step })
+          }
           await w.clock.settle()
           const size = treeSize(await ui.drawn())
           const at = `${surface} ${bodyColumns}x${bodyRows} after ${step}: ${JSON.stringify(size)}`
@@ -762,7 +784,23 @@ describe('knossos mod', () => {
     const file = JSON.parse(fileDetailOf(path)) as { file: { dependents: { items: unknown[] } } }
     file.file.dependents.items = [{ path, edges: 99_999, boundary: 'module:cli (+composer:app/cli)' }]
     const touched = brief({ changed_files: [path], impact: { [path]: { path, dependent_files: 123_456, boundaries: ['Core', 'Http'], boundary: 'Core' } } })
-    const w = world(on, { dashboard: [{ stdout: withFlows }], detail: [{ stdout: JSON.stringify(detail) }], file: [{ stdout: JSON.stringify(file) }], brief: [{ stdout: touched }] })
+    const placed = (n: (typeof nodes)[number]) => ({ ...n, path, line: 123_456 })
+    const branched = JSON.stringify({
+      status: 'ok',
+      branch: `feat/${long}`,
+      default_branch: 'origin/main',
+      merge_base: { rev: 'fd137146c3bbdbe4a2ef4756cd2394a670441a58', at: 1_790_953_266 },
+      ahead: 123_456,
+      base: { snapshot_id: 's0', rev: 'fd137146c3bbdbe4a2ef4756cd2394a670441a58', at: '2026-10-02T15:01:06Z', match: 'before', commits: 99_999 },
+      comparison: {
+        crossing: { count: 123_456, items: nodes.slice(0, 3).map((n, i) => ({ source: placed(n), target: placed(nodes[i + 1]!) })) },
+        cycles: { count: 2, items: [{ size: 14, members: nodes.slice(0, 8).map(placed) }] },
+        hubs: { count: 3, items: nodes.slice(0, 3).map((n, i) => ({ component: placed(n), before: 1_000 + i, after: 1_234_567 + i })) },
+        dead_code: { count: 99_999, items: nodes.slice(0, 3).map(placed) },
+        violations: { count: 7, truncated: true, items: [{ policy_id: long, source: nodes[0]!.canonical_name, source_kind: 'method', target: nodes[1]!.canonical_name, target_kind: 'method' }] },
+      },
+    })
+    const w = world(on, { dashboard: [{ stdout: withFlows }], detail: [{ stdout: JSON.stringify(detail) }], file: [{ stdout: JSON.stringify(file) }], brief: [{ stdout: touched }], branch: [{ stdout: branched }] })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/${path}`)
@@ -773,7 +811,7 @@ describe('knossos mod', () => {
       for (const bodyColumns of [40, 60, 100, 140, 200]) {
         for (const bodyRows of [24, 60]) {
           const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows } } })
-          for (const step of ['tab:overview', 'row:3', 'tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'next:1', 'tab:issues', 'tab:changes', 'keys', 'tab:hubs', 'row:0', 'back', `row:${hubs.length}`]) {
+          for (const step of ['tab:overview', 'row:3', 'tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'next:1', 'tab:issues', 'tab:changes', 'tab:branch', 'keys', 'tab:hubs', 'row:0', 'back', `row:${hubs.length}`, 'find', 'find-close']) {
             if ((await ui.find({ key: step })) === undefined) continue
             await ui.press({ key: step })
             await w.clock.settle()
@@ -1510,7 +1548,7 @@ describe('knossos mod', () => {
       const tabs = await ui.findAll({ type: 'Button' })
       // Six tabs at 60 columns, narrow: the active one by name, the others by digit, none drawing a hotkey.
       const labelled = (t: (typeof tabs)[number]) => (t.props.hotkey === undefined ? String(t.text) : `${String(t.props.hotkey)}: ${t.text}`)
-      expect(tabs.filter(t => String(t.key).startsWith('tab:')).map(labelled)).toEqual([' Overview ', ' 2 ', ' 3 ', ' 4 ', ' 5 ', ' 6 '])
+      expect(tabs.filter(t => String(t.key).startsWith('tab:')).map(labelled)).toEqual([' Overview ', ' 2 ', ' 3 ', ' 4 ', ' 5 ', ' 6 ', ' 7 '])
       // The open tab stands on the selection colour.
       expect((await ui.find({ key: 'tab:overview-bg' }))?.props.backgroundColor).toBe('selectionBg')
       expect(await ui.find({ key: 'tab:hubs-bg' })).toBeUndefined()
@@ -1522,6 +1560,7 @@ describe('knossos mod', () => {
         '4 tabkey:cycles',
         '5 tabkey:issues',
         '6 tabkey:changes',
+        '7 tabkey:branch',
       ])
       await ui.press({ key: 'tabkey:cycles' })
       expect((await ui.find({ key: 'tab:cycles' }))?.text).toBe(' Cycles ')
@@ -2608,6 +2647,49 @@ describe('knossos mod', () => {
       await ui.unmount()
     }
     expect(w.prompts).toEqual([])
+  })
+
+  test('the Branch tab compares the branch with its merge base only while open, once per graph, and opens what it lists', async ($, on) => {
+    const item = (name: string, boundary: string) => ({ name, canonical_name: `App\\${name}`, kind: 'class', path: `src/${name}.php`, line: 4, boundary })
+    const diff = JSON.stringify({
+      status: 'no-snapshot',
+      branch: 'feat/x',
+      default_branch: 'main',
+      merge_base: { rev: 'fd137146c3bbdbe4a2ef4756cd2394a670441a58', at: 1_790_953_266 },
+      ahead: 12,
+      base: { snapshot_id: 's0', rev: '4054d3a2fc5346529576462db547efe648538fb0', at: '2026-10-04T11:05:02Z', match: 'after', commits: 9 },
+      comparison: {
+        crossing: { count: 1, items: [{ source: item('Greeter', 'Core'), target: item('Caller', 'Http') }] },
+        cycles: { count: 0, items: [] },
+        hubs: { count: 0, items: [] },
+        dead_code: { count: 1, items: [item('Unused', 'Core')] },
+        violations: null,
+      },
+    })
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], branch: [{ stdout: diff }], detail: [{ stdout: fullDetailOf('Greeter') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.branchRuns()).toHaveLength(0)
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface, 120)
+      expect((await ui.findAll({ key: 'tabkey:branch' })).map(b => b.props.hotkey)).toContain('7')
+      await ui.press({ key: 'tab:branch' })
+      await w.clock.settle()
+      const text = drawn((await ui.find({ key: 'pane' }))?.text ?? '')
+      // Said plainly: no snapshot near the merge base, and how partial the comparison is.
+      expect(text).toContain('No snapshot near the merge base is retained')
+      expect(text).toContain("already holds 9 of the branch's 12 commits")
+      expect(titled(text)).toMatch(/New cross-boundary dependencies +▲ 1/)
+      expect(titled(text)).toMatch(/New cycles +✓ 0/)
+      await ui.press({ key: 'row:0' })
+      await w.clock.settle()
+      expect(w.detailRuns().at(-1)?.at(-1)).toBe('App\\Greeter')
+      await ui.press({ key: 'back' })
+      await ui.press({ key: 'tab:overview' })
+      await ui.unmount()
+    }
+    // Once for this graph, however often the tab was opened.
+    expect(w.branchRuns()).toHaveLength(1)
   })
 
   test('s sorts the hubs by in, out, then cross degree', async ($, on) => {

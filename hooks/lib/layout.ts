@@ -7,7 +7,7 @@
  * shared primitives (segments, cutting, bars, the self-fitting table) are in
  * `rows.ts`; the Issues and Cycles tabs and the component detail in `views.ts`.
  */
-import type { AllowState, CouplingState, Dashboard, Feedback, GitHead, HubSort, KnossosView, LiveState, PaneTab, Ranked, RefreshState, RescanState, SearchState, SessionChanges, TurnBrief } from '../../types'
+import type { AllowState, BranchState, CouplingState, Dashboard, Feedback, GitHead, HubSort, KnossosView, LiveState, PaneTab, Ranked, RefreshState, RescanState, SearchState, SessionChanges, TurnBrief } from '../../types'
 import { formatAge } from './band'
 import { boundariesArrangement, boundariesInput, boundariesList, couplingView, markedCell } from './boundaries'
 import type { BoundariesInput, CouplingView } from './boundaries'
@@ -51,6 +51,8 @@ import { tilesBlock } from './tiles'
 import type { Stat } from './tiles'
 import { compositionBlock, concentrationBlock, flowsBlock, healthBlock, overviewData, overviewList as overviewWalk, sessionBlock } from './overview'
 import type { OverviewData } from './overview'
+import { branchArrangement, branchCount, branchInput, branchList } from './branch'
+import type { BranchInput } from './branch'
 import { litAt } from './flash'
 import { finderBlock, finderInput, finderList } from './finder'
 import type { FinderInput } from './finder'
@@ -159,12 +161,14 @@ export type PaneInput = {
   lit: ReadonlySet<string>
   /** The finder, while it is open over the pane (`f`); null otherwise. */
   finder: FinderInput | null
+  /** The Branch tab: the branch against the snapshot at its merge base. */
+  branch: BranchInput
 }
 
 /** A refused root the pane offers to allow: the root, the roots file it would join, and where the action stands. */
 export type AllowInput = { root: string; rootsFile: string | null; phase: AllowState['phase']; reason: string | null }
 
-/** The tabs in hotkey order; Changes came last, so the older tabs keep their digits. */
+/** The tabs in hotkey order; each new one came last, so the older tabs keep their digits. */
 export const TABS: { id: PaneTab; full: string; hotkey: string }[] = [
   { id: 'overview', full: 'Overview', hotkey: '1' },
   { id: 'hubs', full: 'Hubs', hotkey: '2' },
@@ -172,6 +176,7 @@ export const TABS: { id: PaneTab; full: string; hotkey: string }[] = [
   { id: 'cycles', full: 'Cycles', hotkey: '4' },
   { id: 'issues', full: 'Issues', hotkey: '5' },
   { id: 'changes', full: 'Changes', hotkey: '6' },
+  { id: 'branch', full: 'Branch', hotkey: '7' },
 ]
 
 export const SORTS: HubSort[] = ['in', 'out', 'cross']
@@ -229,13 +234,13 @@ export function fileHubList(files: FileHub[], filter: string): FileHub[] {
 }
 
 /** What a list addresses: the fields the selection, `o`, `e`, `c` and `q` read. */
-export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'degree' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries' | 'lookAt' | 'overview' | 'drift' | 'driftOpen' | 'fileHubs'> & Partial<Pick<PaneInput, 'finder'>>
+export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'degree' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries' | 'lookAt' | 'overview' | 'drift' | 'driftOpen' | 'fileHubs'> & Partial<Pick<PaneInput, 'finder' | 'branch'>>
 
 /** A file row of a list: it opens as the file's detail, and `e` opens the file. */
 const fileRow = (path: string, loc: Loc | null): Openable => ({ name: path, canonical: path, loc, file: true })
 
 /** The pane's state the layout does not read from the dashboard: where the checkout stands, the footer's word, and the Boundaries tab's cell. */
-export type PaneExtras = { git?: GitHead | undefined; feedback?: Feedback | null; couplings?: CouplingState | null; flash?: Flash | null; search?: SearchState | null }
+export type PaneExtras = { git?: GitHead | undefined; feedback?: Feedback | null; couplings?: CouplingState | null; flash?: Flash | null; search?: SearchState | null; branch?: BranchState | null }
 
 /**
  * The Overview's walkable rows, in the order a narrow pane draws them: the
@@ -267,6 +272,7 @@ export function listFor(input: ListInput): Openable[] {
   if (input.tab === 'changes') return changesList(input.changes)
   if (input.tab === 'cycles') return cyclesList(input.cycles)
   if (input.tab === 'boundaries') return boundariesList(input.boundaries)
+  if (input.tab === 'branch') return input.branch === undefined ? [] : branchList(input.branch)
   return input.tab === 'issues' ? issuesList(input.issues) : []
 }
 
@@ -450,6 +456,7 @@ export function paneInput(
     couplings: shownCouplings(boundaries, view, d.snapshot_id ?? null, extras.couplings ?? null),
     lit,
     finder: view.finding === true && extras.search !== undefined && extras.search !== null ? finderInput(extras.search, d.project_root) : null,
+    branch: branchInput(extras.branch ?? null, d.project_root),
   }
 }
 
@@ -1041,9 +1048,11 @@ export function paneLayout(input: PaneInput, columns: number, height: number = D
   if (input.detail === null) {
     const count = issueCount(input.issues)
     const touched = input.changes.files.length
+    const branched = branchCount(input.branch)
     const badges: Partial<Record<PaneTab, string>> = {
       ...(count.n > 0 ? { issues: superscript(count.n, count.plus) } : {}),
       ...(touched > 0 ? { changes: superscript(touched, input.changes.truncated) } : {}),
+      ...(branched > 0 ? { branch: superscript(branched) } : {}),
     }
     if (!short) rows.push(blank('head-gap'))
     rows.push(...tabRows(input.tab, inner, input.terminal, badges, tier === 'narrow').map(row => padded(row, pad, width)))
@@ -1088,5 +1097,6 @@ function tabArrangement(input: PaneInput, selected: number, tier: Tier): Arrange
   if (input.tab === 'hubs') return hubsArrangement(input, selected, tier)
   if (input.tab === 'issues') return issuesArrangement(input.issues, selected, tier, input.hues)
   if (input.tab === 'cycles') return cyclesArrangement(input.cycles, tier, input.hues, selected)
+  if (input.tab === 'branch') return branchArrangement(input.branch, selected, input.hues)
   return boundariesArrangement(input.boundaries, tier, input.hues, selected, input.target, input.couplings, input.lit)
 }

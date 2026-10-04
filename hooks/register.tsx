@@ -8,7 +8,7 @@ import { BASELINES_KEY, baselinesOf, remember } from './lib/baseline'
 import type { Baseline } from './lib/baseline'
 import type { JobState } from './lib/band'
 import { diffView } from './lib/diff'
-import { parseAllowRoot, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseGraphSearch, parseRescan, parseSessionDiff, parseSessionHead, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
+import { parseAllowRoot, parseBranchDiff, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseGraphSearch, parseRescan, parseSessionDiff, parseSessionHead, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { SessionLedger, TurnBrief } from './lib/envelopes'
 import { ledgerChanges, ownTimeline } from './lib/changes'
 import {
@@ -51,7 +51,7 @@ import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { cells, pressLabel, textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
-import type { AllowState, ComponentDetail, Dashboard, SearchState, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
+import type { AllowState, BranchState, ComponentDetail, Dashboard, SearchState, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -115,8 +115,9 @@ const NO_WATCHER = "No live watcher, so only what this session's turns reported 
 const NO_SEARCH: SearchState = { query: '', for: null, phase: 'idle', answer: null }
 /** How long the finder waits after a keystroke before it asks: a word typed fast is one search. */
 const SEARCH_DEBOUNCE_MS = 150
-/** The wrapper bounds graph-search at 15 s. */
+/** The wrapper bounds graph-search at 15 s, and branch-diff (two whole graphs compared) at 30 s. */
 const SEARCH_TIMEOUT_MS = 20_000
+const BRANCH_TIMEOUT_MS = 35_000
 
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
@@ -165,6 +166,8 @@ const couplings = atom({ plugin: 'knossos', key: 'couplings' } as const, null as
 const feedback = atom({ plugin: 'knossos', key: 'feedback' } as const, null as Feedback | null)
 /** The finder's search: what was typed, and what `graph-search` answered for the query last read. */
 const search = atom({ plugin: 'knossos', key: 'search' } as const, NO_SEARCH as SearchState)
+/** The Branch tab's comparison with the merge base, for the snapshot it was read at. */
+const branch = atom({ plugin: 'knossos', key: 'branch' } as const, null as BranchState | null)
 /** The rows the latest scan changed, lit for a moment after it landed. */
 const flash = atom({ plugin: 'knossos', key: 'flash' } as const, null as Flash | null)
 
@@ -503,8 +506,9 @@ async function loadDashboard($: EngineInterface): Promise<void> {
   // The pane open on a component follows the graph: a new snapshot looks it up again.
   const shown = (await read($, view)).inspect
   if (shown !== null) await requestDetail($, shown)
-  // And the Boundaries tab's cell: its couplings are read for the graph on show.
+  // And the Boundaries tab's cell: its couplings are read for the graph on show; and the Branch tab's comparison.
   await requestCouplings($)
+  await requestBranch($)
 }
 
 /**
@@ -1273,7 +1277,7 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const stored = await read($, detail)
   const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
   if (shown !== null && v.inspect !== null) shown.diff = diffView(v.inspect, await read($, fileDiff), await read($, sessionRev))
-  const extras = { git: await read($, gitHead), feedback: await read($, feedback), couplings: await read($, couplings), flash: await read($, flash), search: await read($, search) }
+  const extras = { git: await read($, gitHead), feedback: await read($, feedback), couplings: await read($, couplings), flash: await read($, flash), search: await read($, search), branch: await read($, branch) }
   return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await shownChanges($, d.project_root), await read($, sessionRoot), await read($, live), extras)
 }
 
@@ -1555,6 +1559,34 @@ function twinTarget(element: string): string | null | undefined {
 async function pressPane($: EngineInterface, id: string, surface?: RenderSurface): Promise<void> {
   await pressAction($, id, surface)
   await requestCouplings($)
+  await requestBranch($)
+}
+
+/**
+ * Starts comparing the branch with its merge base while the Branch tab is
+ * open, unless that comparison is done or running for this graph: a new
+ * snapshot compares again, the last answer kept on show meanwhile. On a
+ * timer, never in a render.
+ */
+async function requestBranch($: EngineInterface): Promise<void> {
+  if (mod.disabled) return
+  const v = await read($, view)
+  if (v.tab !== 'branch' || v.inspect !== null) return
+  const d = await read($, dashboard)
+  if (d?.status !== 'ok') return
+  const snapshot = d.snapshot_id ?? null
+  const current = await read($, branch)
+  if (current !== null && current.snapshot === snapshot) return
+  await update($, branch, (b): BranchState => ({ snapshot, phase: 'loading', answer: b?.answer ?? null }))
+  const root = d.project_root ?? undefined
+  $.clock.after(0, () => void loadBranch($, snapshot, root).catch(() => undefined))
+}
+
+/** One comparison; stored only while it is still for the graph on show. */
+async function loadBranch($: EngineInterface, snapshot: string | null, root: string | undefined): Promise<void> {
+  const parsed = parseBranchDiff(await wrapper($, 'branch-diff', [], BRANCH_TIMEOUT_MS, root))
+  if (parsed?.status === 'no-binary') return disable($)
+  await update($, branch, (b): BranchState | null => (b !== null && b.snapshot === snapshot ? { snapshot, phase: 'done', answer: parsed } : b))
 }
 
 /** `l`, or a press on one of what the marked boundary depends on: the heat map cell moves to that column. */
@@ -1738,6 +1770,17 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
   let x = 0
   for (let i = 0; i < row.segments.length; i++) {
     const s = row.segments[i]!
+    if (s.field !== undefined) {
+      // A field takes the blank cells laid out after it, and stops where the row's next drawn segment (a card's frame) begins.
+      let next = i + 1
+      while (next < row.segments.length && plain(row.segments[next]!) && row.segments[next]!.bg === undefined && /^ *$/.test(row.segments[next]!.text)) next++
+      const trailing = row.segments.slice(next).reduce((n, t) => n + (t.hidden === true ? 0 : cells(t.text)), 0)
+      const room = Math.max(1, columns - x - trailing)
+      drawn.push(drawSegment($, ui, row, s, i, press, links, terminal, room, scoped(i)))
+      x += room
+      i = next - 1
+      continue
+    }
     if (!plain(s)) {
       drawn.push(drawSegment($, ui, row, s, i, press, links, terminal, columns - x, scoped(i)))
       x += s.hidden === true ? 0 : cells(s.text)
