@@ -58,6 +58,10 @@ final class SessionChangesServiceTest extends KnossosTestCase
             assertSame('added', $changes['files']['src/Core/Added.php']['status']);
             assertSame('deleted', $changes['files']['src/Edge/Caller.php']['status']);
             assertSame(['tests/GreeterTest.php'], array_column($changes['tests'], 'path'));
+            // Each file still there says how many tests reach it: none reaches the added class.
+            assertSame(1, $changes['files']['src/Core/Greeter.php']['tests']);
+            assertSame(0, $changes['files']['src/Core/Added.php']['tests']);
+            assertSame(false, array_key_exists('tests', $changes['files']['src/Edge/Caller.php']));
             assertSame(false, $changes['files_truncated']);
             // A file put back as it was is no change.
             file_put_contents($root . '/src/Core/Added.php', '');

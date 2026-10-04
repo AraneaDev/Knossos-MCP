@@ -95,6 +95,8 @@ final class TurnBriefServiceTest extends KnossosTestCase
             assertSame([], $brief['deleted_files']);
             assertGreaterThan(0, $brief['impact'][self::TARGET]['dependent_files']);
             assertSame(self::TARGET, $brief['impact'][self::TARGET]['path']);
+            // How many tests reach the edited file, so the pane can mark one none reaches.
+            assertSame(1, $brief['impact'][self::TARGET]['tests']);
             // The file's own boundary, not the boundary of the caller that depends on it.
             assertSame('Core', $brief['impact'][self::TARGET]['boundary']);
             assertSame(true, in_array('Edge', $brief['impact'][self::TARGET]['boundaries'], true));

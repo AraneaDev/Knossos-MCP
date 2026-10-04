@@ -26,6 +26,11 @@ use PDO;
  * later scans changed and `start_approximate` is true
  * ({@see ScanLedger::since()}).
  *
+ * Each file still there says how many test files reach it (`tests`, at
+ * most {@see FileTestReach::COUNTED}) where that is known: the most depended
+ * on first, within {@see FileTestReach}'s cap and deadline, so the pane can
+ * mark a changed file no test reaches.
+ *
  * Each file also names the snapshots the recorded scans that changed it
  * produced (`scans`, the newest {@see self::MAX_SCANS} in recording order),
  * so the caller can tell a change its own session's scans took in from one
@@ -112,6 +117,9 @@ final readonly class SessionChangesService
         uksort($files, static fn(string $a, string $b): int => $files[$b]['dependents'] <=> $files[$a]['dependents'] ?: strcmp($a, $b));
         $sources = array_slice(array_values(array_filter(array_keys($files), static fn(string $f): bool => $files[$f]['status'] !== 'deleted')), 0, self::MAX_TEST_SOURCES);
         $tests = $sources === [] ? [] : $this->tests($projectId, $sources);
+        foreach ((new FileTestReach($this->pdo))->reach($projectId, $sources) as $file => $reached) {
+            $files[$file]['tests'] = $reached;
+        }
         return [
             'files' => (object) array_slice($files, 0, self::MAX_FILES, true),
             'files_truncated' => count($files) > self::MAX_FILES || count($live) > self::MAX_TEST_SOURCES,

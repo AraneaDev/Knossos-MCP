@@ -133,7 +133,7 @@ final readonly class TurnBriefService
             'changed_files' => $changed,
             'added_files' => $added,
             'deleted_files' => $deleted,
-            'impact' => (new FileFanInQuery($this->pdo))->forPaths($projectId, $live, self::TOP_DEPENDENTS),
+            'impact' => self::withTests((new FileFanInQuery($this->pdo))->forPaths($projectId, $live, self::TOP_DEPENDENTS), (new FileTestReach($this->pdo))->reach($projectId, $live)),
             'tests' => $live === [] ? [] : JsTestRunner::annotate($root, $this->tests($queries, $projectId, $live)),
             'policy' => self::policy($enforcePolicies, $edited, $baseline, $baseline === null ? null : $violations->inFiles($projectId, $policies, $edited)),
         ] + $envelope;
@@ -307,6 +307,24 @@ final readonly class TurnBriefService
         }
         $directory = realpath(dirname($path));
         return $directory === false ? $path : rtrim($directory, '/') . '/' . basename($path);
+    }
+
+    /**
+     * Each file's fan-in with `tests`, how many test files reach it, where
+     * that is known ({@see FileTestReach}); a file without a count has none.
+     *
+     * @param array<string, array<string, mixed>> $impact
+     * @param array<string, int> $reach
+     * @return array<string, array<string, mixed>>
+     */
+    private static function withTests(array $impact, array $reach): array
+    {
+        foreach ($reach as $file => $tests) {
+            if (isset($impact[$file])) {
+                $impact[$file]['tests'] = $tests;
+            }
+        }
+        return $impact;
     }
 
     /**
