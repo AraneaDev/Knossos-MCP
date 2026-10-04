@@ -161,7 +161,77 @@ final class SessionChangesServiceTest extends KnossosTestCase
             assertSame('ok', $changes['status']);
             assertSame(false, $changes['complete']);
             assertSame([], $changes['files']);
+            assertSame(null, $changes['reached']);
             assertSame('unscanned', self::changes($pdo, sys_get_temp_dir() . '/knossos-stale-nowhere', $since)['status']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A ledger that lost the session's start (an older knossos dropped its
+     * oldest entries) still lists what it can account for: the changes since
+     * the oldest snapshot it reaches, named with when, and not called complete.
+     */
+    #[Group('query')]
+    public function testASessionOlderThanTheLedgerGetsTheChangesSinceTheOldestPointItReaches(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $since = (string) (new ScanLedger($pdo))->activeSnapshot($projectId);
+            file_put_contents($root . '/src/Core/Greeter.php', "\n// first\n", FILE_APPEND);
+            $this->ledgered($pdo, $root);
+            $reached = (string) (new ScanLedger($pdo))->activeSnapshot($projectId);
+            file_put_contents($root . '/src/Core/Added.php', "<?php\nnamespace App;\nfinal class Added {}\n");
+            $this->ledgered($pdo, $root);
+            // The first entry dropped, as an older ledger's pruning did.
+            $pdo->exec('DELETE FROM scan_ledger WHERE id = (SELECT MIN(id) FROM scan_ledger)');
+            $changes = self::changes($pdo, $root, $since);
+            assertSame('ok', $changes['status']);
+            assertFalse($changes['complete']);
+            assertSame($reached, $changes['reached']['snapshot_id'] ?? null);
+            assertTrue(is_int($changes['reached']['at'] ?? null));
+            assertSame(['src/Core/Added.php'], array_keys($changes['files']));
+            // Nothing reachable at all: no list, and nothing named.
+            $pdo->exec('DELETE FROM scan_ledger');
+            $none = self::changes($pdo, $root, $since);
+            assertSame([[], null], [$none['files'], $none['reached']]);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A session that began among scans the ledger merged lists what changed after it, and says its start is approximate. */
+    #[Group('query')]
+    public function testASessionThatBeganAmongMergedScansIsListedWithAnApproximateStart(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $ledger = new ScanLedger($pdo);
+            $pdo->exec('PRAGMA foreign_keys = OFF');
+            $hashes = $ledger->hashes($projectId);
+            $session = null;
+            for ($i = 1; $i <= ScanLedger::KEPT + 1; ++$i) {
+                $from = (string) $ledger->activeSnapshot($projectId);
+                $path = $i < 10 ? 'src/Core/Greeter.php' : 'src/Edge/Caller.php';
+                $next = [$path => 'scan-' . $i] + $hashes;
+                $to = 'scan_' . hash('sha256', (string) $i);
+                $pdo->prepare('UPDATE projects SET active_scan_id = ? WHERE id = ?')->execute([$to, $projectId]);
+                $ledger->record($projectId, $from, $to, $hashes, $next);
+                $hashes = $next;
+                $session = $i === 20 ? $to : $session;
+            }
+            // The graph as those scans left it: both files differ from what the ledger says they began as.
+            $set = $pdo->prepare('UPDATE files SET content_hash = ? WHERE project_id = ? AND relative_path = ?');
+            $set->execute(['scan-9', $projectId, 'src/Core/Greeter.php']);
+            $set->execute(['scan-' . (ScanLedger::KEPT + 1), $projectId, 'src/Edge/Caller.php']);
+            $changes = self::changes($pdo, $root, (string) $session);
+            assertTrue($changes['complete']);
+            assertTrue($changes['start_approximate']);
+            assertSame(['src/Edge/Caller.php'], array_keys($changes['files']));
+            // The merged scans are one item of the timeline, which keeps the newest.
+            assertTrue($changes['scans_truncated']);
+            assertSame('scan_' . hash('sha256', (string) (ScanLedger::KEPT + 1)), $changes['scans'][count($changes['scans']) - 1]['snapshot_id']);
         } finally {
             $this->removeTempTree($root);
         }

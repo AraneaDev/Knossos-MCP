@@ -17,9 +17,14 @@ use PDO;
  * is left out. Each comes with its dependents and boundaries, and the tests
  * that reach the files still there; every list is bounded and says when it
  * was cut. When the ledger cannot account for every scan since `$since` (one
- * was not recorded, or the session began before the oldest entry kept),
- * `complete` is false and no file is listed: a partial list would read as
- * the whole story.
+ * was not recorded, or the session began before the oldest scan the ledger
+ * still holds), `complete` is false. The files are then those changed since
+ * the oldest snapshot the ledger can still answer for, which `reached` names
+ * with when its scan was recorded (Unix seconds), so the caller can say so;
+ * with no such snapshot, `reached` is null and no file is listed. When
+ * `$since` lies among scans the ledger has merged, the files are those its
+ * later scans changed and `start_approximate` is true
+ * ({@see ScanLedger::since()}).
  *
  * Each file also names the snapshots the recorded scans that changed it
  * produced (`scans`, the newest {@see self::MAX_SCANS} in recording order),
@@ -58,7 +63,7 @@ final readonly class SessionChangesService
     {
         $absolute = realpath($path) ?: $path;
         $envelope = ['path' => $absolute, 'project_root' => null, 'project_id' => null, 'snapshot_id' => null, 'since' => $since, 'complete' => false,
-            'files' => (object) [], 'files_truncated' => false, 'tests' => [], 'tests_truncated' => false, 'scans' => [], 'scans_truncated' => false];
+            'files' => (object) [], 'files_truncated' => false, 'tests' => [], 'tests_truncated' => false, 'scans' => [], 'scans_truncated' => false, 'reached' => null, 'start_approximate' => false];
         $project = (new ProjectPathResolver($this->pdo))->resolve($absolute);
         if ($project === null || !is_string($project['active_scan_id']) || $project['active_scan_id'] === '') {
             return ['status' => 'unscanned'] + $envelope;
@@ -69,8 +74,27 @@ final readonly class SessionChangesService
         $base = ['status' => 'ok', 'project_root' => $root, 'project_id' => $projectId, 'snapshot_id' => $ledger->activeSnapshot($projectId)] + $envelope;
         $absorbed = $ledger->since($projectId, $since);
         if ($absorbed === null) {
-            return $base;
+            // The oldest point still answered for, unless that is where the session began (then nothing was recorded since).
+            $reached = $ledger->reach($projectId);
+            $absorbed = $reached === null || $reached['snapshot_id'] === $since ? null : $ledger->since($projectId, $reached['snapshot_id']);
+            if ($absorbed === null || $reached === null) {
+                return $base;
+            }
+            return ['complete' => false, 'reached' => $reached] + $this->listed($projectId, $root, $absorbed) + $base;
         }
+        return ['complete' => true, 'start_approximate' => $absorbed['approximate']] + $this->listed($projectId, $root, $absorbed) + $base;
+    }
+
+    /**
+     * The files `$absorbed` says changed, as they stand now, with their reach
+     * and the tests that reach them, and the scans that changed them.
+     *
+     * @param array{before: array<string, string|null>, scans: array<string, list<string>>, chain: list<array<string, mixed>>} $absorbed
+     * @return array<string, mixed>
+     */
+    private function listed(string $projectId, string $root, array $absorbed): array
+    {
+        $ledger = new ScanLedger($this->pdo);
         $statuses = self::statuses($absorbed['before'], $ledger->hashes($projectId));
         $live = array_keys(array_filter($statuses, static fn(string $s): bool => $s !== 'deleted'));
         $impact = (new FileFanInQuery($this->pdo))->forPaths($projectId, $live, 0);
@@ -89,14 +113,13 @@ final readonly class SessionChangesService
         $sources = array_slice(array_values(array_filter(array_keys($files), static fn(string $f): bool => $files[$f]['status'] !== 'deleted')), 0, self::MAX_TEST_SOURCES);
         $tests = $sources === [] ? [] : $this->tests($projectId, $sources);
         return [
-            'complete' => true,
             'files' => (object) array_slice($files, 0, self::MAX_FILES, true),
             'files_truncated' => count($files) > self::MAX_FILES || count($live) > self::MAX_TEST_SOURCES,
             'tests' => JsTestRunner::annotate($root, array_slice($tests, 0, self::MAX_TESTS)),
             'tests_truncated' => count($tests) > self::MAX_TESTS,
             'scans' => array_slice($absorbed['chain'], -self::MAX_TIMELINE),
             'scans_truncated' => count($absorbed['chain']) > self::MAX_TIMELINE,
-        ] + $base;
+        ];
     }
 
     /**
