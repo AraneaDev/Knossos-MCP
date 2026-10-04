@@ -243,7 +243,7 @@ export async function snapshot(
         const db = new DatabaseSync(origin);
         try {
             // One step: a multi-step backup restarts whenever another connection writes in between.
-            await backup(db, to, { rate: -1 });
+            await backup(db, to, { rate: 2 ** 31 - 1 });
         } finally {
             db.close();
         }
