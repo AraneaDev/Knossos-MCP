@@ -123,6 +123,25 @@ final class BranchDiffServiceTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testAMethodFulfillingASupertypeMemberIsNotNewDeadCode(): void
+    {
+        [$pdo, $root] = $this->repository();
+        try {
+            $this->git($root, ['checkout', '--quiet', '-b', 'feat']);
+            // `count()` fulfils Countable's member: nothing in the project calls it, the runtime does.
+            file_put_contents($root . '/src/Core/Unused.php', "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfinal class Unused implements \\Countable\n{\n    public function count(): int\n    {\n        return 0;\n    }\n}\n");
+            $this->git($root, ['add', '.']);
+            $this->git($root, ['commit', '--quiet', '-m', 'branch work']);
+            $this->rescan($pdo, $root);
+            $c = (new BranchDiffService($pdo))->diff($root)['comparison'];
+            assertSame(['App\\Unused'], array_column($c['dead_code']['items'], 'canonical_name'));
+            assertSame(1, $c['dead_code']['count']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
     public function testANewerDefaultBranchIsMatchedToTheNearestSnapshotBeforeItsMergeBase(): void
     {
         [$pdo, $root] = $this->repository();

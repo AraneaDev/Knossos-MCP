@@ -11,12 +11,13 @@ use PDO;
 /**
  * One snapshot's graph, read with only the columns a comparison of two
  * graphs uses: which component is which (id, kind, names, origin, file and
- * line), which impact edges join them, their roles, the diagnostics'
- * severities and the files' paths.
+ * line, and the attributes that excuse it from the dead-code count), which
+ * impact edges join them, their roles, the diagnostics' severities and the
+ * files' paths.
  *
- * A stored row carries far more (attributes, owners, hashes, the scan it
- * came from), and a snapshot holds tens of thousands of rows: reading every
- * column of two whole graphs cost a branch comparison about 425 MB. The
+ * A stored row carries far more (owners, hashes, the scan it came from),
+ * and a snapshot holds tens of thousands of rows: reading every column of
+ * two whole graphs cost a branch comparison about 425 MB. The
  * active graph is read with a column list; an archived one is inflated and
  * read a row at a time, so its JSON and its decoded rows are never held
  * whole.
@@ -26,7 +27,8 @@ final readonly class SnapshotGraphReader
     /** The columns kept, per table: everything {@see ProjectCatalogQueryService::branchComparison()} reads. */
     public const COLUMNS = [
         'files' => ['id', 'relative_path'],
-        'nodes' => ['id', 'kind', 'canonical_name', 'display_name', 'origin', 'file_id', 'start_line'],
+        // `attributes_json`: the dead-code count leaves out what the attributes say is reached another way (an override, a runtime-invoked member, a script, a type).
+        'nodes' => ['id', 'kind', 'canonical_name', 'display_name', 'origin', 'file_id', 'start_line', 'attributes_json'],
         'edges' => ['kind', 'source_id', 'target_id'],
         'classifications' => ['node_id', 'role'],
         'diagnostics' => ['severity'],
