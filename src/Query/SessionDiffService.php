@@ -74,7 +74,7 @@ final readonly class SessionDiffService
         } catch (Throwable) {
             return null;
         }
-        return preg_match('/^[^\x00-\x1f\x7f]{1,200}$/', $name) === 1 ? $name : null;
+        return preg_match('/^[^\x00-\x1f\x7f]{1,200}$/D', $name) === 1 ? $name : null;
     }
 
     /**
@@ -92,7 +92,7 @@ final readonly class SessionDiffService
         if (!is_dir($dir) || !$this->succeeds($dir, ['rev-parse', '--show-toplevel'])) {
             return ['status' => 'no-git'] + $envelope;
         }
-        if (preg_match('/^[0-9a-f]{7,64}$/', $rev) !== 1 || !$this->succeeds($dir, ['cat-file', '-e', $rev . '^{commit}'])) {
+        if (preg_match('/^[0-9a-f]{7,64}$/D', $rev) !== 1 || !$this->succeeds($dir, ['cat-file', '-e', $rev . '^{commit}'])) {
             return ['status' => 'unknown-rev'] + $envelope;
         }
         $before = $this->succeeds($dir, ['cat-file', '-e', $rev . ':./' . $file]);

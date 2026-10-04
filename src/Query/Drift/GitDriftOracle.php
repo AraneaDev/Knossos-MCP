@@ -172,7 +172,7 @@ final readonly class GitDriftOracle implements DriftOracle
         $statement->execute(['id' => $activeScanId]);
         $head = $statement->fetchColumn();
         // The two lengths git emits, SHA-1 and SHA-256, and nothing between them.
-        if (!is_string($head) || preg_match('/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/', $head) !== 1) {
+        if (!is_string($head) || preg_match('/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/D', $head) !== 1) {
             return null;
         }
         // Before any subprocess: a scan with no trustworthy dirty set cannot
