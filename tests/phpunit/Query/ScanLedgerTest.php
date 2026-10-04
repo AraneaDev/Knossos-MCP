@@ -9,7 +9,9 @@ use Knossos\Query\ScanLedgerSpan;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use Closure;
 use PDO;
+use PDOStatement;
 use PHPUnit\Framework\Attributes\Group;
 
 use function PHPUnit\Framework\assertCount;
@@ -352,6 +354,53 @@ final class ScanLedgerTest extends KnossosTestCase
             assertLessThan(200, $size);
             self::activate($pdo, $projectId, 's1');
             assertNull($ledger->since($projectId, $start));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testTheActiveSnapshotAndTheEntriesAreReadAsOneMoment(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root);
+        $path = $root . '/knossos.sqlite';
+        try {
+            $pdo = SqliteConnection::open($path);
+            (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+            $pdo->exec('PRAGMA foreign_keys = OFF');
+            $projectId = 'p';
+            $pdo->prepare("INSERT INTO projects(id, name, root_realpath, config_json, active_scan_id, created_at, updated_at) VALUES ('p', 'p', ?, '{}', 'start', 'now', 'now')")->execute([$root]);
+            $start = 'start';
+            $ledger = new ScanLedger($pdo);
+            $ledger->record($projectId, $start, 's1', ['a.php' => 'A0'], ['a.php' => 'A1']);
+            self::activate($pdo, $projectId, 's1');
+            // A reader whose connection lets another writer in between its two reads.
+            $reader = new class ('sqlite:' . $path) extends PDO {
+                /** Runs once, just before the first read of the entries. */
+                public ?Closure $between = null;
+
+                /** @param array<int, mixed> $options */
+                public function prepare(string $query, array $options = []): PDOStatement|false
+                {
+                    if ($this->between !== null && str_contains($query, 'FROM scan_ledger')) {
+                        ($this->between)();
+                        $this->between = null;
+                    }
+                    return parent::prepare($query, $options);
+                }
+            };
+            $reader->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $reader->exec('PRAGMA busy_timeout = 2000');
+            // Between the active snapshot and the entries, a writer moves the project on and drops the entries that led to s1.
+            $reader->between = static function () use ($pdo, $projectId): void {
+                $pdo->exec('PRAGMA foreign_keys = OFF');
+                $pdo->beginTransaction();
+                $pdo->prepare('UPDATE projects SET active_scan_id = ? WHERE id = ?')->execute(['s2', $projectId]);
+                $pdo->exec('DELETE FROM scan_ledger');
+                $pdo->commit();
+            };
+            assertSame(['a.php' => 'A0'], (new ScanLedger($reader))->since($projectId, $start)['before'] ?? null);
         } finally {
             $this->removeTempTree($root);
         }

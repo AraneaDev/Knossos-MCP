@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Closure;
 use PDO;
 use Throwable;
 
@@ -154,6 +155,16 @@ final readonly class ScanLedger
      */
     public function since(string $projectId, string $since): ?array
     {
+        return $this->readingAsOne(fn(): ?array => $this->sinceNow($projectId, $since));
+    }
+
+    /**
+     * {@see self::since()}, read inside whatever transaction the caller holds.
+     *
+     * @return array{before: array<string, string|null>, baselines: array<string, array{violations: array<string, array<string, mixed>>, truncated: bool}|null>, scans: array<string, list<string>>, chain: list<array{snapshot_id: string, at: int, files: int, merged?: int}>, approximate: bool}|null
+     */
+    private function sinceNow(string $projectId, string $since): ?array
+    {
         $active = $this->activeSnapshot($projectId);
         if ($active === $since) {
             return ['before' => [], 'baselines' => [], 'scans' => [], 'chain' => [], 'approximate' => false];
@@ -205,6 +216,16 @@ final readonly class ScanLedger
      */
     public function reach(string $projectId): ?array
     {
+        return $this->readingAsOne(fn(): ?array => $this->reachNow($projectId));
+    }
+
+    /**
+     * {@see self::reach()}, read inside whatever transaction the caller holds.
+     *
+     * @return array{snapshot_id: string, at: int}|null
+     */
+    private function reachNow(string $projectId): ?array
+    {
         $active = $this->activeSnapshot($projectId);
         if ($active === null) {
             return null;
@@ -217,6 +238,30 @@ final readonly class ScanLedger
         }
 
         return null;
+    }
+
+    /**
+     * `$read` in one read transaction (unless the caller already holds one):
+     * the active snapshot and the entries are then one moment's, and a writer
+     * that moves the project on and merges or drops entries in between
+     * cannot leave a chain that leads nowhere.
+     *
+     * @template T
+     * @param Closure(): T $read
+     * @return T
+     */
+    private function readingAsOne(Closure $read): mixed
+    {
+        if ($this->pdo->inTransaction()) {
+            return $read();
+        }
+        $this->pdo->beginTransaction();
+        try {
+            return $read();
+        } finally {
+            // Nothing was written: ending the read is all a rollback does here.
+            $this->pdo->rollBack();
+        }
     }
 
     /**
