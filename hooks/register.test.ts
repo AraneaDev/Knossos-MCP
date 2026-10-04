@@ -3066,7 +3066,9 @@ describe('knossos mod', () => {
         const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows } } })
         expect(titled((await ui.find({ key: 'health-head' }))?.text)).toMatch(/^Health over time +6 snapshots$/)
         expect((await ui.find({ key: 'health-0' }))?.text).toMatch(/│ cycles +[▁-█]+ +3 +1–4 /)
-        expect((await ui.find({ key: 'health-1' }))?.text).toMatch(/│ unreferenced +[▁-█]+ +4 +4–9 /)
+        expect((await ui.find({ key: 'health-1' }))?.text).toMatch(/│ gate unreferenced +[▁-█]+ +4 +4–9 /)
+        // The gate's count is named apart from the dead-code tile, which counts the listed candidates.
+        expect((await ui.find({ key: 'health-said' }))?.text).toContain("gate unreferenced: the quality gate's count, wider than the dead-code list")
         expect((await ui.find({ key: 'health-3' }))?.text).toMatch(/│ diagnostics +▁+ +0 +no change /)
         expect(await ui.find({ type: 'Raster' })).toBeUndefined()
         expect((await ui.find({ key: 'tiles-0-value' }))?.text).toMatch(/[▁-█]{5}/)

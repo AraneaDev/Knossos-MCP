@@ -130,7 +130,8 @@ describe('the overview data', () => {
 
   it('takes the buckets, the health figures and the flows as sent, and nothing an older knossos does not send', () => {
     expect(data.buckets.map(bucketLabel)).toEqual(['0', '1–5', '6–20', '21–100', '101+'])
-    expect(data.health.map(s => s.label)).toEqual(['cycles', 'unreferenced', 'max degree', 'diagnostics'])
+    // The gate's count of unreferenced components is named apart from the dead-code tile's.
+    expect(data.health.map(s => s.label)).toEqual(['cycles', 'gate unreferenced', 'max degree', 'diagnostics'])
     expect(data.flows.map(f => [f.from, f.to, f.edges, f.forbidden])).toEqual([
       ['tests', 'core', 11_076, false],
       ['hooks', 'types', 188, false],
@@ -227,6 +228,8 @@ describe('the overview cards', () => {
     expect(plots[3]!.color).toBe('subtle')
     expect(plainText(rows.find(r => r.key === 'health-3')!)).toMatch(/diagnostics +▁+ +0 +no change/)
     expect(plainText(rows.find(r => r.key === 'health-axis')!)).toMatch(/oldest─+newest/)
+    // The gate's count is told apart from the dead-code tile in so many words.
+    expect(plainText(rows.find(r => r.key === 'health-said')!)).toContain("gate unreferenced: the quality gate's count, wider than the dead-code list")
     expect(healthBlock({ ...data, health: data.health.map(s => ({ ...s, values: s.values.slice(-4) })) })).toBeNull()
   })
 

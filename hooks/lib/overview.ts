@@ -84,7 +84,13 @@ const POINT_MAX = 8
 const LEVELS = '▁▂▃▄▅▆▇█'
 /** The width a card's row label takes: the longest label of its kind. */
 const COMPOSITION_LABEL = 'boundaries'.length
-const HEALTH_LABEL = 'unreferenced'.length
+/**
+ * The health row of the quality gate's count of components nothing references
+ * (the snapshot metric): wider than the dead-code tile, which counts the
+ * candidates the Issues tab lists, so it is named for what it is.
+ */
+const UNREFERENCED = 'gate unreferenced'
+const HEALTH_LABEL = UNREFERENCED.length
 /** The cells between two columns of a legend. */
 const LEGEND_GAP = 3
 /** Below this many columns a stacked bar's label stands above it rather than beside it. */
@@ -131,7 +137,7 @@ export function overviewData(d: Dashboard, hues: Hues): OverviewData {
     const values = points.map(pick)
     return values.every(isCount) ? [{ label, values: values as number[] }] : []
   }
-  const health = points.length < HEALTH_MIN_POINTS ? [] : [...series('cycles', p => p.cycles), ...series('unreferenced', p => p.dead_code), ...series('max degree', p => p.max_degree), ...series('diagnostics', p => p.diagnostics)]
+  const health = points.length < HEALTH_MIN_POINTS ? [] : [...series('cycles', p => p.cycles), ...series(UNREFERENCED, p => p.dead_code), ...series('max degree', p => p.max_degree), ...series('diagnostics', p => p.diagnostics)]
   const flows: Flow[] =
     m !== undefined && Array.isArray(m.flows)
       ? m.flows.flatMap(f => {
@@ -405,6 +411,8 @@ export function healthBlock(data: OverviewData): Block | null {
       const lead = spaces(HEALTH_LABEL + 1)
       const ends = drawnWidth >= 'oldest'.length + 'newest'.length + 3 ? `oldest${'─'.repeat(drawnWidth - 12)}newest` : '─'.repeat(drawnWidth)
       body.push({ key: 'health-axis', segments: [{ text: lead }, { text: ends.slice(0, 6), dim: true }, { text: ends.slice(6, ends.length - 6), color: FAINT }, { text: ends.slice(ends.length - 6), dim: true }].filter(s => s.text !== '') })
+      // Two counts of unused code stand on one screen: the row says which one it is.
+      if (series.some(s => s.label === UNREFERENCED)) body.push({ key: 'health-said', segments: [{ text: fit(`   ${UNREFERENCED}: the quality gate's count, wider than the dead-code list`, columns), dim: true }] })
       const said = plural(points, 'snapshot', 'snapshots')
       return { key: 'health', title: 'Health over time', note: noteOf(said), body }
     },

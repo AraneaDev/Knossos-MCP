@@ -299,7 +299,10 @@ describe('paneRows', () => {
     const line = (rows: Row[]) => rows.filter(r => r.key.startsWith('tiles-line')).map(plainText).join(' / ')
     expect(line(paneRows(input(), 60))).toBe('2 cycles   161 max degree   55 dead code   0 policy / 41 drifted')
     const moved = dash({ deltas: { against: 's4', components: 0, cycles: 1, max_degree: -3, dead_code: 0, diagnostics: 0 } })
-    expect(line(paneRows(input({}, moved), 60))).toBe('2 cycles ▲1   161 max degree ▼3   55 dead code ±0   0 policy / 41 drifted')
+    expect(line(paneRows(input({}, moved), 60))).toBe('2 cycles ▲1   161 max degree ▼3   55 dead code   0 policy / 41 drifted')
+    // Dead code counts the listed candidates; the trend carries the gate's wider count, so the tile takes neither its delta nor its trend.
+    const gate = dash({ deltas: { against: 's4', components: 0, cycles: 0, max_degree: 0, dead_code: 25, diagnostics: 0 } })
+    expect(line(paneRows(input({}, gate), 60))).toContain('55 dead code   0 policy')
     for (const gone of ['Most depended on', 'Last turn', 'Files most depended on', 'Look at now']) expect(text).not.toContain(gone)
     // Nothing changed this session and no chart sent: nothing to walk, and the session card is one line.
     expect(listFor(input())).toEqual([])

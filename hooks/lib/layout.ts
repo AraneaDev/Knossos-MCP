@@ -299,13 +299,15 @@ const languagesOf = (d: Dashboard): string => (d.summary?.languages ?? []).map(l
 /**
  * The stat tiles: components and boundaries (from a dashboard that reports
  * them), cycles, the largest degree, dead code and the diagnostics (when they
- * were read), each with how it moved since the previous snapshot and its
- * trend when every snapshot carries one, then the policy violations (when
- * checked) and the drifted files (a press that lists them, when the
- * dashboard names them). Each says how it deviates: cycles and diagnostics
- * above zero warn, violations above zero are errors, drift above zero is the
- * accent. Cycles, dead code and diagnostics are statuses: their deltas take
- * the status colours.
+ * were read), each but dead code with how it moved since the previous
+ * snapshot and its trend when every snapshot carries one, then the policy
+ * violations (when checked) and the drifted files (a press that lists them,
+ * when the dashboard names them). Dead code is the candidates the Issues tab
+ * lists; the snapshots carry only the quality gate's wider count, which the
+ * health card draws under its own name, so the tile has no delta or trend
+ * of its own. Each says how it deviates: cycles and diagnostics above zero
+ * warn, violations above zero are errors, drift above zero is the accent.
+ * Cycles and diagnostics are statuses: their deltas take the status colours.
  */
 export function statsOf(d: Dashboard, summary: string[], policy: string | null, diagnostics: number | null, drift: boolean): Stat[] {
   const above = (value: string) => value !== '0'
@@ -315,7 +317,7 @@ export function statsOf(d: Dashboard, summary: string[], policy: string | null, 
   const drifted = d.freshness.drift_files
   const deltas = d.deltas ?? null
   // How a figure moved since the previous snapshot, when the dashboard says; `worse` for a figure that is a status.
-  const moved = (figure: 'components' | 'cycles' | 'max_degree' | 'dead_code' | 'diagnostics', worse = false): Pick<Stat, 'delta' | 'worse'> =>
+  const moved = (figure: 'components' | 'cycles' | 'max_degree' | 'diagnostics', worse = false): Pick<Stat, 'delta' | 'worse'> =>
     deltas === null || typeof deltas[figure] !== 'number' ? {} : { delta: deltas[figure], ...(worse ? { worse: 'up' as const } : {}) }
   // A series only when every snapshot carries it: an older knossos sends cycles and the largest degree alone.
   const series = (pick: (t: Dashboard['trend'][number]) => number | undefined): Pick<Stat, 'trend'> => {
@@ -330,7 +332,8 @@ export function statsOf(d: Dashboard, summary: string[], policy: string | null, 
       : [...counted(summary[0], 'components', { ...moved('components'), ...series(t => t.components) }), ...counted(summary[1], summary[1]?.endsWith('boundary') ? 'boundary' : 'boundaries')]),
     { key: 'cycles', label: d.cycles.count === 1 && !d.cycles.truncated ? 'cycle' : 'cycles', value: cycles, ...series(t => t.cycles), ...moved('cycles', true), ...(above(cycles) ? { tone: 'warn' as const } : {}) },
     ...(maxDegree === null ? [] : [{ key: 'degree', label: 'max degree', value: String(maxDegree), ...series(t => t.max_degree), ...moved('max_degree') }]),
-    { key: 'dead', label: 'dead code', value: dead, ...series(t => t.dead_code), ...moved('dead_code', true) },
+    // The candidates Issues lists; the trend's `dead_code` is the gate's wider count, drawn on the health card under its own name.
+    { key: 'dead', label: 'dead code', value: dead },
     ...(diagnostics === null ? [] : [{ key: 'diagnostics', label: 'diagnostics', value: grouped(diagnostics), ...series(t => t.diagnostics), ...moved('diagnostics', true), ...(diagnostics > 0 ? { tone: 'warn' as const } : {}) }]),
     ...(policy === null ? [] : [{ key: 'policy', label: 'policy', value: policy, ...(above(policy) ? { tone: 'alert' as const } : {}) }]),
     { key: 'drifted', label: 'drifted', value: grouped(drifted), ...(drifted > 0 ? { tone: 'accent' as const } : {}), ...(drift ? { press: 'drifted' } : {}) },
