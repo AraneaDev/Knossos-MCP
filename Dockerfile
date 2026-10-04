@@ -15,7 +15,7 @@ RUN cargo build --release --locked
 FROM php:8.5-cli-trixie@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS runtime
 
 # x-release-please-start-version
-LABEL org.opencontainers.image.title="Knossos MCP" \
+LABEL org.opencontainers.image.title="Knossos" \
       org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
       org.opencontainers.image.version="0.17.5"
 # x-release-please-end
@@ -163,6 +163,7 @@ RUN apt-get update \
     && cd / \
     && rm -rf /tmp/pcov /tmp/pcov.tar.gz /tmp/pcov.sha256 \
     && docker-php-ext-enable pcov \
+    && docker-php-ext-install pcntl \
     && python3 -m pip install --break-system-packages --no-cache-dir \
         coverage==7.14.3 mypy==2.3.0 pre-commit==4.6.0 pytest==8.4.2 ruff==0.15.12 \
     && curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \

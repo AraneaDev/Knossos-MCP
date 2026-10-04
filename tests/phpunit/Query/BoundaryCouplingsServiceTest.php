@@ -69,6 +69,8 @@ final class BoundaryCouplingsServiceTest extends KnossosTestCase
     public function testACellOfMoreComponentsThanOneStatementBindsIsListed(): void
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        // A quarter of a million copies do not fit PHP's default 128 MB once the coverage collector is loaded, and the run still holds them afterwards, so the limit stays raised.
+        ini_set('memory_limit', '1G');
         try {
             // Copies of an Edge component, each depending on a Core one: more ids than SQLite binds in one statement
             // (32,766 by default, 250,000 as some distributions build it).

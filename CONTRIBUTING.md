@@ -1,4 +1,4 @@
-# Contributing to Knossos MCP
+# Contributing to Knossos
 
 ## Development Setup
 

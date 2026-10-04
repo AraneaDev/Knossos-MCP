@@ -11,8 +11,8 @@ permissions:
 # Tagged by commit so a lane can only run the image built for the commit it is
 # testing, and lowercased because a registry reference must be.
 env:
-  QUALITY_IMAGE: ghcr.io/araneadev/knossos-mcp:quality-${{ github.sha }}
-  RUNTIME_IMAGE: ghcr.io/araneadev/knossos-mcp:runtime-${{ github.sha }}
+  QUALITY_IMAGE: ghcr.io/araneadev/knossos:quality-${{ github.sha }}
+  RUNTIME_IMAGE: ghcr.io/araneadev/knossos:runtime-${{ github.sha }}
 
 # One run per branch. A second push cancels the first, because whoever pushed
 # again has already answered the question the running job was asked. The runs
