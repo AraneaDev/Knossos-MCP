@@ -1244,3 +1244,24 @@ function tabArrangement(input: PaneInput, selected: number, tier: Tier): Arrange
   if (input.tab === 'churn') return churnArrangement(input.churn, selected, tier, input.hues)
   return boundariesArrangement(input.boundaries, tier, input.hues, selected, input.target, input.couplings, input.lit)
 }
+
+/** How many proportional tries {@link shrinkRows} makes before it lays the lists out at their fewest rows. */
+const SHRINK_TRIES = 4
+
+/**
+ * A pane drawn with fewer rows until its weight (`draw`'s, as the engine
+ * bounds a tree) is within `budget`: each try lays out fewer rows than the
+ * last, in proportion to the budget, and once those tries are spent with the
+ * lists still above `fewest` rows, one more draw at `fewest` decides. So at
+ * most {@link SHRINK_TRIES} + 1 draws, and the caller falls back to less
+ * only when even `fewest` rows are too heavy. `first` is the draw already made
+ * at `rows`.
+ */
+export function shrinkRows<T>(rows: number, fewest: number, budget: number, first: { tree: T; weight: number }, draw: (rows: number) => { tree: T; weight: number }): { tree: T; weight: number; rows: number } {
+  let drawn = { ...first, rows }
+  for (let tries = 0; drawn.weight > budget && drawn.rows > fewest; tries++) {
+    const next = tries < SHRINK_TRIES ? Math.max(fewest, Math.min(drawn.rows - 2, Math.floor((drawn.rows * budget) / drawn.weight) - 2)) : fewest
+    drawn = { ...draw(next), rows: next }
+  }
+  return drawn
+}

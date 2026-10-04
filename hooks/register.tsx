@@ -39,6 +39,7 @@ import {
   refusedRoot,
   rowWidth,
   SCAN_PROMPT,
+  shrinkRows,
   SORTS,
   subjectOf,
   TABS,
@@ -2740,18 +2741,16 @@ export const register: Register = (on, options) => {
       )
     }
     let tree = draw(height, false)
-    let weight = treeWeight(tree)
-    if (weight <= TREE_BUDGET) return tree
+    if (treeWeight(tree) <= TREE_BUDGET) return tree
     tree = draw(height, true)
-    weight = treeWeight(tree)
-    // Lists make most of the weight: each try lays out fewer rows than were drawn, in proportion to the budget.
-    let rows = Math.min(height, used)
-    for (let tries = 0; weight > TREE_BUDGET && rows > SHORT_ROWS && tries < 4; tries++) {
-      rows = Math.max(SHORT_ROWS, Math.min(rows - 2, Math.floor((rows * TREE_BUDGET) / weight) - 2))
-      tree = draw(rows, true)
-      weight = treeWeight(tree)
-    }
-    if (weight <= TREE_BUDGET) return tree
+    // Lists make most of the weight: fewer rows each try, in proportion to the budget, down to SHORT_ROWS at the last.
+    const lean = { tree, weight: treeWeight(tree) }
+    const fitted = shrinkRows(Math.min(height, used), SHORT_ROWS, TREE_BUDGET, lean, rows => {
+      const drawn = draw(rows, true)
+      return { tree: drawn, weight: treeWeight(drawn) }
+    })
+    if (fitted.weight <= TREE_BUDGET) return fitted.tree
+    const { weight, rows } = fitted
     // Still past the budget at the fewest rows: one line says so, rather than a tree the engine would refuse.
     if (!mod.tooLargeLogged) {
       mod.tooLargeLogged = true

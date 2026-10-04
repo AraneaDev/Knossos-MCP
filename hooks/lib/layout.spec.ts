@@ -27,7 +27,7 @@ import { paneRows } from './__tests__/pane'
 import type { PaneInput, Row } from './layout'
 import { findRow, plainText, rawText } from './__tests__/plain-text'
 import { compact, fitStart, shortName, wrapGroups } from './rows'
-import { gitLabel, titleRow } from './layout'
+import { gitLabel, shrinkRows, titleRow } from './layout'
 import { chainGroups, cyclesInput } from './cycles'
 import { issueCount, issuesInput, issuesList, superscript } from './views'
 
@@ -1447,5 +1447,29 @@ describe('cycles as chains', () => {
     expect(groups[1]![1]!.color).toBeUndefined()
     expect(groups[3]![0]).toEqual({ text: 'c' })
     expect(chainGroups({ ...cycle, more: 7 }, 20).at(-1)!.map(x => x.text).join('')).toBe('… +7 more')
+  })
+})
+
+describe('shrinkRows', () => {
+  // A pane whose header weighs 54,000 characters whatever its height, and each list row 1,000 more.
+  const weigh = (rows: number) => ({ tree: rows, weight: 54_000 + rows * 1_000 })
+
+  it('keeps giving rows back until the fewest before it lets the caller fall back', () => {
+    const drawn: number[] = []
+    const fitted = shrinkRows(200, 16, 70_000, weigh(200), rows => {
+      drawn.push(rows)
+      return weigh(rows)
+    })
+    // The proportional tries alone stop at 19 rows, still 73,000; 16 rows fit.
+    expect(fitted).toEqual({ tree: 16, weight: 70_000, rows: 16 })
+    expect(drawn.length).toBeLessThanOrEqual(5)
+    expect(drawn.at(-1)).toBe(16)
+  })
+
+  it('draws nothing more when the first fits, and stops at the fewest when even that is too heavy', () => {
+    expect(shrinkRows(30, 16, 70_000, weigh(10), () => weigh(0))).toEqual({ tree: 10, weight: 64_000, rows: 30 })
+    const heavy = (rows: number) => ({ tree: rows, weight: 100_000 + rows })
+    const fitted = shrinkRows(200, 16, 70_000, heavy(200), heavy)
+    expect([fitted.rows, fitted.weight > 70_000]).toEqual([16, true])
   })
 })
