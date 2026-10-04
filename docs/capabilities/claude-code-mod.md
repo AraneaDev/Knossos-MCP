@@ -367,8 +367,8 @@ its styled pieces nested in it, a list grows to at most 28 rows however tall
 the pane (then `n more ↓`, scrolling to the marker), and at most eight hover
 cards hang off the rows nearest the marker. Should a drawing still pass
 70,000 characters, the pane drops its hover cards and every link but the
-marked row's, then gives its lists fewer rows until it fits. Should it pass
-even at the fewest rows (a pane thousands of columns wide), the pane draws one
+marked row's, then gives its lists fewer rows until it fits, down to 16
+rows before it gives up. Should it pass even at the fewest rows (a pane thousands of columns wide), the pane draws one
 line saying it is too large to draw there, and the debug log says so once.
 
 Lists size themselves to the rows the pane's body has: every list starts at
@@ -872,8 +872,9 @@ with the other path named. The hunks are drawn with Claude Code's own diff
 element, line numbers, markers and colours as its own diffs have them,
 under `Changed since the session began` and the lines added and removed.
 A hunk longer than 40 lines is folded with how many lines are left out;
-past twelve hunks, or once the hunks drawn hold 24,000 characters together,
-the rest are counted; `session-diff` returns at most
+past twelve hunks, or once the hunks drawn hold 24,000 characters together
+(counted serialized, as the engine counts them: a quote or a backslash
+counts twice), the rest are counted; `session-diff` returns at most
 2,000 lines and 200 KB, and a cut diff says so. Lines longer than 200
 characters are cut, and control characters other than a tab show as `�`.
 The diff is read by `knossos session-diff --rev=<commit> --file=<path>` on
