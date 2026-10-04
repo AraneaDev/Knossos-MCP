@@ -20,8 +20,9 @@ use Throwable;
  * ({@see FileFanInQuery}). Files the graph does not hold (deleted since, or
  * not scanned) are left out.
  *
- * Read-only, never scans. Without git, or when git does not answer, the
- * status says `no-git` and nothing is listed.
+ * Read-only, never scans. Without git, or when git cannot name the commit
+ * checked out, the status says `no-git` and nothing is listed; a log too
+ * large to read whole is read shorter and `truncated`.
  */
 final readonly class ChurnService
 {
@@ -30,6 +31,9 @@ final readonly class ChurnService
 
     /** The most commits read from the window, newest first. */
     public const COMMITS = 500;
+
+    /** The commits read again when the whole window's log is more than git may print. */
+    private const FEWER = 50;
 
     /** The most files ranked: the ones changed most often. */
     private const FILES = 300;
@@ -68,7 +72,7 @@ final readonly class ChurnService
         if ($log === null) {
             return ['status' => 'no-git'] + $envelope;
         }
-        [$head, $commits, $counts] = $log;
+        [$head, $commits, $counts, $cut] = $log;
         arsort($counts);
         $counts = array_slice($counts, 0, self::FILES, true);
         $known = $this->known($id, array_map('strval', array_keys($counts)));
@@ -85,16 +89,23 @@ final readonly class ChurnService
             'status' => 'ok',
             'head' => $head,
             'commits' => $commits,
-            'truncated' => $commits >= self::COMMITS,
+            'truncated' => $cut || $commits >= self::COMMITS,
             'files' => array_slice($files, 0, self::LIMIT),
         ] + $envelope;
     }
 
     /**
-     * The commit the window ends at, how many commits it read and how many of
-     * them changed each file (relative to the project root); null without git.
+     * The commit the window ends at, how many commits it read, how many of
+     * them changed each file (relative to the project root), and whether the
+     * log was cut short; null without git.
      *
-     * @return array{0: string, 1: int, 2: array<string, int>}|null
+     * A window whose log git cannot print within its bounds (a huge commit,
+     * or a slow repository) is read again over the newest
+     * {@see self::FEWER} commits, and said to be cut; only when that fails
+     * too is nothing read. The repository is there either way: it is never
+     * called `no-git` for being large.
+     *
+     * @return array{0: string, 1: int, 2: array<string, int>, 3: bool}|null
      */
     private function log(string $root): ?array
     {
@@ -102,16 +113,25 @@ final readonly class ChurnService
         $runner = $this->runner ?? new GitProcessRunner();
         try {
             $head = trim($runner->run([...$git, 'rev-parse', '--verify', '-q', 'HEAD'], self::GIT_TIMEOUT_MS, 'churn'));
-            if ($head === '') {
-                return null;
-            }
-            $out = $runner->run([...$git, 'log', '--since=' . self::DAYS . '.days.ago', '--max-count=' . self::COMMITS, '--no-merges', '--no-renames', '--format=%x1e', '--name-only', '--relative', '--', '.'], self::GIT_TIMEOUT_MS, 'churn');
         } catch (Throwable) {
             return null;
         }
+        if ($head === '') {
+            return null;
+        }
+        $out = null;
+        foreach ([self::COMMITS, self::FEWER] as $count) {
+            try {
+                $out = $runner->run([...$git, 'log', '--since=' . self::DAYS . '.days.ago', '--max-count=' . $count, '--no-merges', '--no-renames', '--format=%x1e', '--name-only', '--relative', '--', '.'], self::GIT_TIMEOUT_MS, 'churn');
+                break;
+            } catch (Throwable) {
+                continue;
+            }
+        }
+        $cut = $count !== self::COMMITS;
         $counts = [];
         $commits = 0;
-        foreach (explode("\x1E", $out) as $index => $record) {
+        foreach (explode("\x1E", $out ?? '') as $index => $record) {
             if ($index === 0) {
                 continue;
             }
@@ -122,7 +142,7 @@ final readonly class ChurnService
             }
         }
 
-        return [$head, $commits, $counts];
+        return [$head, $commits, $counts, $cut];
     }
 
     /**

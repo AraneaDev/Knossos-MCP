@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query;
 
+use Knossos\Git\GitProcessRunnerInterface;
 use Knossos\Query\BlastRadiusService;
 use Knossos\Query\ChurnService;
 use Knossos\Query\PaneQueries;
@@ -12,6 +13,7 @@ use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
+use RuntimeException;
 
 use function PHPUnit\Framework\assertSame;
 use function PHPUnit\Framework\assertStringContainsString;
@@ -62,6 +64,38 @@ final class PaneQueriesTest extends KnossosTestCase
                 array_map(static fn(array $f): array => [$f['path'], $f['commits'], $f['dependents'], $f['score'], $f['boundary']], array_values(array_filter($churn['files'], static fn(array $f): bool => $f['path'] !== 'knossos.json' && $f['path'] !== 'composer.json'))),
             );
             assertSame('unscanned', (new ChurnService($pdo))->churn(sys_get_temp_dir())['status']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testALogTooLargeToReadWholeIsReadShorterAndSaidToBeCut(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            // A repository whose full window outruns git's output bound: only a shorter log can be read.
+            $runner = new class implements GitProcessRunnerInterface {
+                /** @var list<string> */
+                public array $asked = [];
+
+                public function run(array $command, int $timeoutMs, string $operation): string
+                {
+                    if (in_array('rev-parse', $command, true)) {
+                        return str_repeat('a', 40) . "\n";
+                    }
+                    $count = (string) current(array_filter($command, static fn(string $arg): bool => str_starts_with($arg, '--max-count=')));
+                    $this->asked[] = $count;
+                    if ($count === '--max-count=' . ChurnService::COMMITS) {
+                        throw new RuntimeException('Git churn output exceeded its configured byte limit.');
+                    }
+                    return "\x1e\nsrc/Core/Greeter.php\n\x1e\nsrc/Core/Greeter.php\n";
+                }
+            };
+            $churn = (new ChurnService($pdo, $runner))->churn($root);
+            assertSame(['ok', 2, true], [$churn['status'], $churn['commits'], $churn['truncated']]);
+            assertSame('src/Core/Greeter.php', $churn['files'][0]['path']);
+            assertSame(2, count($runner->asked));
         } finally {
             $this->removeTempTree($root);
         }
