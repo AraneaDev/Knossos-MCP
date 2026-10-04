@@ -35,6 +35,13 @@ final readonly class GraphSearchService
     /** The longest query searched; the rest is ignored. */
     public const QUERY_MAX = 80;
 
+    /**
+     * The case pair Unicode leaves out: `ß` upper-cases to `SS`, and the
+     * capital `ẞ` (U+1E9E) lower-cases to `ß` but nothing maps back to it, so
+     * a name spelled with one would never be required in the other.
+     */
+    private const SHARP_S = ['ß' => ['ẞ'], 'ẞ' => ['ß']];
+
     /** The kinds a person looks for by name, in the order a tie is broken by. */
     private const KINDS = ['class', 'interface', 'trait', 'enum', 'module', 'function', 'method'];
 
@@ -176,7 +183,8 @@ final readonly class GraphSearchService
     }
 
     /**
-     * Each distinct non-ASCII letter of `$needle`, as the forms it may take in a name: itself, upper case and title case.
+     * Each distinct non-ASCII letter of `$needle`, as the forms it may take in a name: itself, upper case and title case,
+     * and for a sharp s the capital one too.
      *
      * @return list<list<string>>
      */
@@ -185,7 +193,7 @@ final readonly class GraphSearchService
         $letters = array_unique(array_filter(preg_split('//u', $needle, -1, PREG_SPLIT_NO_EMPTY) ?: [], static fn(string $c): bool => strlen($c) > 1));
 
         return array_values(array_map(static fn(string $c): array => array_values(array_unique([
-            $c, mb_strtoupper($c), mb_convert_case($c, MB_CASE_TITLE),
+            $c, mb_strtoupper($c), mb_convert_case($c, MB_CASE_TITLE), ...(self::SHARP_S[$c] ?? []),
         ])), $letters));
     }
 

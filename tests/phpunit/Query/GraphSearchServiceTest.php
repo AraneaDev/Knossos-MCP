@@ -8,6 +8,7 @@ use Knossos\Query\GraphSearchService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
+use function PHPUnit\Framework\assertContains;
 use function PHPUnit\Framework\assertGreaterThan;
 use function PHPUnit\Framework\assertNotContains;
 use function PHPUnit\Framework\assertSame;
@@ -81,6 +82,23 @@ final class GraphSearchServiceTest extends KnossosTestCase
                 assertSame('App\\Écran', $first['canonical_name'] ?? null, $typed);
             }
             assertNotContains('App\\Écran', array_column($service->search($root, 'ëcran')['results'], 'canonical_name'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testASharpSFindsTheCapitalSharpSAndTheReverse(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            // No case mapping pairs ß with ẞ (U+1E9E): ß upper-cases to SS, and ẞ lower-cases to ß only one way.
+            file_put_contents($root . '/src/Core/Sharp.php', "<?php\nnamespace App;\nfinal class FUẞBALL {}\nfinal class Maße {}\n");
+            (new \Knossos\Scan\ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+            $service = new GraphSearchService($pdo);
+            foreach (['fußball' => 'App\\FUẞBALL', 'FUẞBALL' => 'App\\FUẞBALL', 'ß' => 'App\\FUẞBALL', 'maße' => 'App\\Maße', 'MAẞE' => 'App\\Maße'] as $typed => $expected) {
+                assertContains($expected, array_column($service->search($root, $typed)['results'], 'canonical_name'), $typed);
+            }
         } finally {
             $this->removeTempTree($root);
         }
