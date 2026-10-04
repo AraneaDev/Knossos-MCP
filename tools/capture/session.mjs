@@ -8,15 +8,20 @@
  * user's real config or data dir; guardEnv refuses a session that would.
  */
 import { execFile } from "node:child_process";
+import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import {
+    access,
+    copyFile,
     cp,
     mkdir,
     mkdtemp,
+    open,
     readdir,
     readFile,
     rm,
+    stat,
     writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -45,48 +50,64 @@ export async function runCleanups() {
 }
 
 /**
- * A handler that runs the cleanups once and then exits with `code`. A second
- * call while the first is still cleaning up (a repeated Ctrl-C, an error
- * thrown from a cleanup step) is ignored.
+ * One way out for the whole process: the first handler to fire runs the
+ * cleanups and then exits with its own code; every later one, of any kind (a
+ * repeated Ctrl-C, a SIGTERM during a SIGINT's cleanup, an error thrown from a
+ * cleanup step), joins that same run instead of exiting while it is still
+ * stopping the session or removing its files.
  */
-export function exitHandler(
-    code,
-    {
-        exit = (c) => process.exit(c),
-        log = (m) => process.stderr.write(m),
-    } = {},
-) {
-    let busy = false;
-    return (reason) => {
-        if (busy) return undefined;
-        busy = true;
+export function exitGroup({
+    exit = (c) => process.exit(c),
+    log = (m) => process.stderr.write(m),
+} = {}) {
+    let leaving = null;
+    return (code) => (reason) => {
         if (reason instanceof Error) log(`${reason.stack ?? reason.message}\n`);
-        return runCleanups().finally(() => exit(code));
+        leaving ??= runCleanups().then(() => exit(code));
+        return leaving;
     };
 }
 
+const leave = exitGroup();
 let installed = false;
 
 /** Makes sure a signal, an uncaught exception or an unhandled rejection still leaves nothing behind. */
 export function installExitHandlers() {
     if (installed) return;
     installed = true;
-    process.on("SIGINT", exitHandler(130));
-    process.on("SIGTERM", exitHandler(143));
-    const fatal = exitHandler(1);
-    process.on("uncaughtException", fatal);
-    process.on("unhandledRejection", fatal);
+    process.on("SIGINT", leave(130));
+    process.on("SIGTERM", leave(143));
+    process.on("uncaughtException", leave(1));
+    process.on("unhandledRejection", leave(1));
 }
 
-/** The real path of `p`: its deepest existing ancestor resolved through any links, plus the rest. */
-function real(p) {
+/**
+ * The real path of `p`: its deepest existing ancestor resolved through any
+ * links, plus the rest. A dangling link on the way is followed to where it
+ * points, so a link to a dir that does not exist yet is judged by its target.
+ */
+export function real(p, depth = 0) {
     const absolute = path.resolve(p);
+    if (depth > 40) throw new Error(`too many links resolving ${p}`);
     const rest = [];
     let probe = absolute;
     for (;;) {
         try {
             return path.join(realpathSync.native(probe), ...rest);
         } catch {
+            let target = null;
+            try {
+                if (lstatSync(probe).isSymbolicLink())
+                    target = readlinkSync(probe);
+            } catch {
+                // Not there at all: go up a level.
+            }
+            if (target !== null) {
+                return real(
+                    path.resolve(path.dirname(probe), target, ...rest),
+                    depth + 1,
+                );
+            }
             const parent = path.dirname(probe);
             if (parent === probe) return absolute;
             rest.unshift(path.basename(probe));
@@ -97,7 +118,10 @@ function real(p) {
 
 const inside = (p, root) => {
     const r = path.relative(real(root), real(p));
-    return r === "" || (!r.startsWith("..") && !path.isAbsolute(r));
+    return (
+        r === "" ||
+        (r !== ".." && !r.startsWith(`..${path.sep}`) && !path.isAbsolute(r))
+    );
 };
 
 /**
@@ -118,28 +142,87 @@ export function guardEnv(env, { realDataDir, realConfigDir }) {
 }
 
 const DATABASE = /\.(sqlite|db)$/;
-const DATABASE_SIDECAR = /\.(sqlite|db)-(wal|shm|journal)$/;
+const SIDECAR = /-(wal|shm|journal)$/;
+const MAGIC = Buffer.from("SQLite format 3\0", "latin1");
+
+/** True for a regular file that starts with SQLite's header; any other `.db` is just a file. */
+async function isSqlite(file) {
+    const info = await stat(file).catch(() => null);
+    if (info === null || !info.isFile()) return false;
+    const handle = await open(file, "r");
+    try {
+        const { buffer, bytesRead } = await handle.read(
+            Buffer.alloc(16),
+            0,
+            16,
+            0,
+        );
+        return bytesRead === 16 && buffer.equals(MAGIC);
+    } finally {
+        await handle.close();
+    }
+}
+
+const exists = (file) =>
+    access(file).then(
+        () => true,
+        () => false,
+    );
 
 /**
- * Copies a data dir for a capture. Each database is copied through SQLite's
- * online backup from a read-only connection, so the copy is one consistent
- * snapshot even while the user's watcher writes; its -wal and -shm files are
- * never copied as files. The rest is copied as is, except the watch locks
- * (they name the user's live watcher, which the copy must never mistake for
- * its own), the backups and the logs.
+ * Backs one database up into `to` as one consistent snapshot. With both
+ * sidecars present a writer is live, and a read-only connection to the
+ * original creates nothing new. Without them, opening it would create them in
+ * the user's data dir, so the files are copied to a temp dir first and the
+ * backup is taken from there.
+ */
+async function snapshot(from, to) {
+    let scratch = null;
+    let origin = from;
+    if (!((await exists(`${from}-wal`)) && (await exists(`${from}-shm`)))) {
+        scratch = await mkdtemp(path.join(os.tmpdir(), "knossos-capture-db-"));
+        origin = path.join(scratch, path.basename(from));
+        await copyFile(from, origin);
+        for (const side of ["-wal", "-journal"]) {
+            if (await exists(from + side))
+                await copyFile(from + side, origin + side);
+        }
+    }
+    try {
+        const db = new DatabaseSync(origin, { readOnly: scratch === null });
+        try {
+            // One step: a multi-step backup restarts whenever another connection writes in between.
+            await backup(db, to, { rate: -1 });
+        } finally {
+            db.close();
+        }
+    } finally {
+        if (scratch !== null)
+            await rm(scratch, { recursive: true, force: true });
+    }
+}
+
+/**
+ * Copies a data dir for a capture. Each SQLite database is taken as one
+ * consistent snapshot (see snapshot) even while the user's watcher writes;
+ * its -wal, -shm and -journal files are never copied as files. The rest is
+ * copied as is, except the watch locks (they name the user's live watcher,
+ * which the copy must never mistake for its own), the backups and the logs.
  */
 export async function copyData(source, dest) {
     const databases = [];
     await cp(source, dest, {
         recursive: true,
-        filter: (from) => {
+        filter: async (from) => {
             const rel = path.relative(source, from);
             if (rel === "") return true;
             if (["watch", "backups"].includes(rel.split(path.sep)[0]))
                 return false;
-            if (rel.endsWith(".log") || DATABASE_SIDECAR.test(rel))
+            if (rel.endsWith(".log")) return false;
+            const base = from.replace(SIDECAR, "");
+            if (base !== from && DATABASE.test(base) && (await isSqlite(base)))
                 return false;
-            if (DATABASE.test(rel)) {
+            if (DATABASE.test(rel) && (await isSqlite(from))) {
                 databases.push(rel);
                 return false;
             }
@@ -148,13 +231,7 @@ export async function copyData(source, dest) {
     });
     for (const rel of databases) {
         await mkdir(path.dirname(path.join(dest, rel)), { recursive: true });
-        const db = new DatabaseSync(path.join(source, rel), { readOnly: true });
-        try {
-            // One step: a multi-step backup restarts whenever another connection writes in between.
-            await backup(db, path.join(dest, rel), { rate: -1 });
-        } finally {
-            db.close();
-        }
+        await snapshot(path.join(source, rel), path.join(dest, rel));
     }
 }
 

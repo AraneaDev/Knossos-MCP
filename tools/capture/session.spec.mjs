@@ -5,6 +5,7 @@ import {
     readdir,
     readFile,
     rm,
+    stat,
     symlink,
     writeFile,
 } from "node:fs/promises";
@@ -14,7 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import {
     copyData,
-    exitHandler,
+    exitGroup,
     guardEnv,
     ownWatchers,
     registerCleanup,
@@ -143,23 +144,121 @@ describe("guardEnv with links", () => {
     });
 });
 
-describe("exitHandler", () => {
-    it("cleans up once, exits with its code, and ignores a repeat while cleaning", async () => {
+describe("exitGroup", () => {
+    it("cleans up once, exits with its code, and folds a repeat into the same run", async () => {
         const seen = [];
         const exits = [];
         registerCleanup(async () => {
             await new Promise((r) => setTimeout(r, 10));
             seen.push("stop");
         });
-        const handler = exitHandler(143, {
-            exit: (c) => exits.push(c),
-            log: () => {},
-        });
+        const leave = exitGroup({ exit: (c) => exits.push(c), log: () => {} });
+        const handler = leave(143);
         const first = handler();
-        expect(handler()).toBeUndefined();
+        expect(handler()).toBe(first);
         await first;
         expect(seen).toEqual(["stop"]);
         expect(exits).toEqual([143]);
+    });
+    it("exits once, after the first cleanup ends, with the first code, when other handlers fire meanwhile", async () => {
+        const events = [];
+        let release;
+        registerCleanup(() =>
+            new Promise((r) => (release = r)).then(() =>
+                events.push("cleaned"),
+            ),
+        );
+        const leave = exitGroup({
+            exit: (c) => events.push(`exit ${c}`),
+            log: () => {},
+        });
+        const sigint = leave(130)();
+        await new Promise((r) => setTimeout(r, 5));
+        const sigterm = leave(143)();
+        const rejection = leave(1)(new Error("late"));
+        await new Promise((r) => setTimeout(r, 5));
+        expect(events).toEqual([]);
+        release();
+        await Promise.all([sigint, sigterm, rejection]);
+        expect(events).toEqual(["cleaned", "exit 130"]);
+    });
+});
+
+describe("guardEnv edges", () => {
+    it("refuses a dangling link whose target lies in a real dir that does not have it yet", async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), "guard-"));
+        try {
+            const realData = path.join(root, "knossos");
+            await mkdir(realData);
+            await mkdir(path.join(root, "tmp"));
+            await symlink(
+                path.join(realData, "not-yet-there"),
+                path.join(root, "tmp", "data"),
+            );
+            const real = {
+                realDataDir: realData,
+                realConfigDir: path.join(root, "claude"),
+            };
+            expect(() =>
+                guardEnv(
+                    {
+                        KNOSSOS_DATA_DIR: path.join(root, "tmp", "data"),
+                        CLAUDE_CONFIG_DIR: path.join(root, "c"),
+                    },
+                    real,
+                ),
+            ).toThrow(/real data dir/);
+            expect(() =>
+                guardEnv(
+                    {
+                        KNOSSOS_DATA_DIR: path.join(
+                            root,
+                            "tmp",
+                            "data",
+                            "deeper",
+                        ),
+                        CLAUDE_CONFIG_DIR: path.join(root, "c"),
+                    },
+                    real,
+                ),
+            ).toThrow(/real data dir/);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+    it("refuses a dir inside the real one whose name starts with two dots", () => {
+        const real = {
+            realDataDir: "/tmp/guard-x/knossos",
+            realConfigDir: "/tmp/guard-x/claude",
+        };
+        const elsewhere = "/tmp/guard-y";
+        expect(() =>
+            guardEnv(
+                {
+                    KNOSSOS_DATA_DIR: "/tmp/guard-x/knossos/..data",
+                    CLAUDE_CONFIG_DIR: elsewhere,
+                },
+                real,
+            ),
+        ).toThrow(/real data dir/);
+        expect(() =>
+            guardEnv(
+                {
+                    KNOSSOS_DATA_DIR: elsewhere,
+                    CLAUDE_CONFIG_DIR: "/tmp/guard-x/claude/..config",
+                },
+                real,
+            ),
+        ).toThrow(/real config/);
+        expect(() =>
+            guardEnv(
+                {
+                    KNOSSOS_DATA_DIR: "/tmp/guard-x/..data",
+                    CLAUDE_CONFIG_DIR: "/tmp/guard-x/..config",
+                },
+                real,
+            ),
+        ).not.toThrow();
     });
 });
 
@@ -311,6 +410,69 @@ describe("stopWatchers", () => {
         } finally {
             ours.child.kill("SIGKILL");
             theirs.child.kill("SIGKILL");
+        }
+    });
+});
+
+describe("copyData without a live writer", () => {
+    it("leaves the source dir untouched when its WAL database has no sidecars", async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), "copy-"));
+        const source = path.join(root, "src");
+        await mkdir(source);
+        const db = new DatabaseSync(path.join(source, "knossos.sqlite"));
+        db.exec(
+            "PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES (1), (2), (3);",
+        );
+        db.close();
+        const listing = async () =>
+            (await readdir(source)).sort().map(async (name) => {
+                const info = await stat(path.join(source, name));
+                return `${name} ${info.size} ${info.mtimeMs}`;
+            });
+        try {
+            const before = await Promise.all(await listing());
+            expect(before.map((l) => l.split(" ")[0])).toEqual([
+                "knossos.sqlite",
+            ]);
+            await copyData(source, path.join(root, "dest"));
+            expect(await Promise.all(await listing())).toEqual(before);
+            const copy = new DatabaseSync(
+                path.join(root, "dest", "knossos.sqlite"),
+                { readOnly: true },
+            );
+            expect(copy.prepare("SELECT count(*) AS n FROM t").get().n).toBe(3);
+            copy.close();
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+    it("backs up only real SQLite files: another .db is copied as is, a .db dir as a dir", async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), "copy-"));
+        const source = path.join(root, "src");
+        const dest = path.join(root, "dest");
+        await mkdir(path.join(source, "cache.db"), { recursive: true });
+        await writeFile(path.join(source, "cache.db", "inner.txt"), "inner");
+        await writeFile(
+            path.join(source, "notes.db"),
+            "plain text, not a database",
+        );
+        await writeFile(path.join(source, "notes.db-journal"), "also plain");
+        try {
+            await copyData(source, dest);
+            expect(await readFile(path.join(dest, "notes.db"), "utf8")).toBe(
+                "plain text, not a database",
+            );
+            expect(
+                await readFile(path.join(dest, "notes.db-journal"), "utf8"),
+            ).toBe("also plain");
+            expect(
+                await readFile(
+                    path.join(dest, "cache.db", "inner.txt"),
+                    "utf8",
+                ),
+            ).toBe("inner");
+        } finally {
+            await rm(root, { recursive: true, force: true });
         }
     });
 });
