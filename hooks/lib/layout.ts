@@ -9,9 +9,9 @@
  */
 import type { AllowState, CouplingState, Dashboard, Feedback, GitHead, HubSort, KnossosView, LiveState, PaneTab, Ranked, RefreshState, RescanState, SessionChanges, TurnBrief } from '../../types'
 import { formatAge } from './band'
-import { boundariesArrangement, boundariesInput, boundariesList, couplingView, heatBlock, markedCell } from './boundaries'
+import { boundariesArrangement, boundariesInput, boundariesList, couplingView, markedCell } from './boundaries'
 import type { BoundariesInput, CouplingView } from './boundaries'
-import { changesArrangement, changesInput, changesList, lookAtList, lookAtOf, lookAtSection, NO_CHANGES } from './changes'
+import { changesArrangement, changesInput, changesList, lookAtOf, NO_CHANGES } from './changes'
 import type { ChangesInput, LookAt } from './changes'
 import { countLabel } from './envelopes'
 import { driftInput, driftList, driftSection, fileDetailArrangement, fileDetailList } from './files'
@@ -49,8 +49,8 @@ import { LIVE_OFF } from './live'
 import { CARD_MAX, componentFigures, fileFigures, previewCard } from './hover'
 import { tilesBlock } from './tiles'
 import type { Stat } from './tiles'
-import { trendBlock } from './trend'
-import type { Series } from './trend'
+import { compositionBlock, concentrationBlock, flowsBlock, healthBlock, overviewData, overviewList as overviewWalk, sessionBlock } from './overview'
+import type { OverviewData } from './overview'
 import { cycleSteps, cyclesArrangement, cyclesInput, cyclesList, unfoldPress } from './cycles'
 import type { CyclesInput } from './cycles'
 import { detailArrangement, detailList, issueCount, issuesArrangement, issuesInput, issuesList, locIn, superscript } from './views'
@@ -71,7 +71,7 @@ export { detailInput } from './views'
 export { driftInput, fileDetailInput } from './files'
 export type { DriftInput } from './files'
 export type { Stat } from './tiles'
-export type { Series } from './trend'
+export type { OverviewData } from './overview'
 
 /** One component in a list the selection walks: hubs and hotspots merged. */
 export type Item = {
@@ -95,13 +95,6 @@ export type Item = {
 /** The header's status: its tone, the words in its pill, and why, when the pill alone does not say. */
 export type PaneStatus = { tone: Tone; text: string; note?: string }
 
-export type LastTurn = {
-  files: number
-  dependents: number
-  tests: number
-  impact: { name: string; path: string; boundary: string | null; dependents: number; loc: Loc | null }[]
-}
-
 /** A file many others depend on, as the fan-in map lists it: `loc` opens it. */
 export type FileHub = { path: string; dependents: number; boundary: string | null; loc: Loc | null; top: string[] }
 
@@ -120,13 +113,14 @@ export type PaneInput = {
   terminal: boolean
   items: Item[]
   partial: boolean
-  lastTurn: LastTurn | null
   /** The stat tiles across the top of the Overview. */
   stats: Stat[]
-  /** The series the Overview's trend chart may draw. */
-  trend: Series[]
+  /** What the Overview's charts draw. */
+  overview: OverviewData
   /** The files most depended on, most first. */
   fileHubs: FileHub[]
+  /** The in-degree range Hubs is narrowed to (an Overview bucket pressed), and how many components the bucket counts; null for none. */
+  degree: { from: number; to: number | null; components: number | null } | null
   /** The hubs tab's filter text, whether its field is open, and its sort. */
   filter: string
   filtering: boolean
@@ -174,9 +168,6 @@ export const TABS: { id: PaneTab; full: string; hotkey: string }[] = [
 
 export const SORTS: HubSort[] = ['in', 'out', 'cross']
 
-/** The fewest components and last-turn files the overview lists, however short the pane. */
-const TOP_MIN = 3
-const TURN_MIN = 3
 /** The fewest hubs the Hubs tab lists, however short the pane. */
 const HUBS_MIN = 5
 /** The fewest files most depended on any tab lists, however short the pane. */
@@ -230,7 +221,7 @@ export function fileHubList(files: FileHub[], filter: string): FileHub[] {
 }
 
 /** What a list addresses: the fields the selection, `o`, `e`, `c` and `q` read. */
-export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries' | 'lookAt' | 'lastTurn' | 'drift' | 'driftOpen' | 'fileHubs'>
+export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'degree' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries' | 'lookAt' | 'overview' | 'drift' | 'driftOpen' | 'fileHubs'>
 
 /** A file row of a list: it opens as the file's detail, and `e` opens the file. */
 const fileRow = (path: string, loc: Loc | null): Openable => ({ name: path, canonical: path, loc, file: true })
@@ -240,20 +231,29 @@ export type PaneExtras = { git?: GitHead | undefined; feedback?: Feedback | null
 
 /**
  * The Overview's walkable rows, in the order a narrow pane draws them: the
- * file "Look at now" points at, the last turn's files, the components most
- * depended on, then the files most depended on.
+ * way to this session's changes, the in-degree buckets, then the
+ * cross-boundary flows. Each opens another tab (see `overview.ts`).
  */
-export function overviewList(input: Pick<PaneInput, 'items' | 'lookAt' | 'lastTurn' | 'fileHubs'>): Openable[] {
-  const turn = (input.lastTurn?.impact ?? []).map(f => fileRow(f.path, f.loc))
-  return [...lookAtList(input.lookAt), ...turn, ...input.items, ...input.fileHubs.map(f => fileRow(f.path, f.loc))]
+export function overviewList(input: Pick<PaneInput, 'overview' | 'changes'>): Openable[] {
+  return overviewWalk(input.overview, input.changes)
 }
+
+/** The Hubs list, narrowed to the in-degree range when one is set. */
+function hubsShown(input: Pick<PaneInput, 'items' | 'filter' | 'sort' | 'degree'>): Item[] {
+  const listed = hubList(input.items, input.filter, input.sort)
+  const range = input.degree
+  return range === null ? listed : listed.filter(i => i.in >= range.from && (range.to === null || i.in <= range.to))
+}
+
+/** The files Hubs lists beside the components: none while an in-degree range narrows it, since a file has no in-degree. */
+const filesShown = (input: Pick<PaneInput, 'fileHubs' | 'filter' | 'degree'>): FileHub[] => (input.degree === null ? fileHubList(input.fileHubs, input.filter) : [])
 
 /** The rows the selection walks: the detail's counterparts, else the drifted files when listed, else the tab's list. */
 export function listFor(input: ListInput): Openable[] {
   if (input.detail !== null) return input.detail.file === undefined ? detailList(input.detail) : input.detail.file === null ? [] : fileDetailList(input.detail.file)
   if (input.driftOpen && input.drift !== null) return driftList(input.drift)
   if (input.tab === 'overview') return overviewList(input)
-  if (input.tab === 'hubs') return [...hubList(input.items, input.filter, input.sort), ...fileHubList(input.fileHubs, input.filter).map(f => fileRow(f.path, f.loc))]
+  if (input.tab === 'hubs') return [...hubsShown(input), ...filesShown(input).map(f => fileRow(f.path, f.loc))]
   if (input.tab === 'changes') return changesList(input.changes)
   if (input.tab === 'cycles') return cyclesList(input.cycles)
   if (input.tab === 'boundaries') return boundariesList(input.boundaries)
@@ -291,22 +291,6 @@ export function needsRescan(d: Dashboard): boolean {
   return d.freshness.state !== 'fresh' || d.freshness.drift_files > 0
 }
 
-/**
- * The last turn's impact from a fresh brief, or null when there is none to
- * show. Each file is labelled with its own boundary (none when it sits in
- * none), never with its dependents'. `root` places the files on disk, so
- * their names open them.
- */
-export function lastTurnOf(brief: TurnBrief | null, root: string | null = null): LastTurn | null {
-  if (brief === null || brief.status !== 'ok') return null
-  const impact = Object.values(brief.impact)
-    .sort((a, b) => b.dependent_files - a.dependent_files || a.path.localeCompare(b.path))
-    .map(f => ({ name: baseName(f.path), path: f.path, boundary: f.boundary ?? null, dependents: f.dependent_files, loc: locIn(root, f.path) }))
-  const files = brief.changed_files.length + brief.added_files.length
-  if (files === 0 && impact.length === 0) return null
-  return { files, dependents: impact.reduce((n, f) => n + f.dependents, 0), tests: brief.tests.length, impact }
-}
-
 const LANGUAGES: Record<string, string> = { php: 'PHP', javascript: 'JS', typescript: 'TS', python: 'PY', rust: 'RS', go: 'GO', ruby: 'RB', java: 'JAVA' }
 
 /** The project's languages as the summary line names them, most files first; empty when the dashboard does not say. */
@@ -314,11 +298,14 @@ const languagesOf = (d: Dashboard): string => (d.summary?.languages ?? []).map(l
 
 /**
  * The stat tiles: components and boundaries (from a dashboard that reports
- * them), cycles and the largest degree with their trends, dead code, the
- * drifted files (a press that lists them, when the dashboard names them),
- * then the policy violations and diagnostics when they were checked. Each
- * says how it deviates: cycles and diagnostics above zero warn, violations
- * above zero are errors, drift above zero is the accent.
+ * them), cycles, the largest degree, dead code and the diagnostics (when they
+ * were read), each with how it moved since the previous snapshot and its
+ * trend when every snapshot carries one, then the policy violations (when
+ * checked) and the drifted files (a press that lists them, when the
+ * dashboard names them). Each says how it deviates: cycles and diagnostics
+ * above zero warn, violations above zero are errors, drift above zero is the
+ * accent. Cycles, dead code and diagnostics are statuses: their deltas take
+ * the status colours.
  */
 export function statsOf(d: Dashboard, summary: string[], policy: string | null, diagnostics: number | null, drift: boolean): Stat[] {
   const above = (value: string) => value !== '0'
@@ -326,16 +313,27 @@ export function statsOf(d: Dashboard, summary: string[], policy: string | null, 
   const dead = countLabel(d.dead_code_candidates, d.dead_code_truncated)
   const maxDegree = d.trend.at(-1)?.max_degree ?? null
   const drifted = d.freshness.drift_files
+  const deltas = d.deltas ?? null
+  // How a figure moved since the previous snapshot, when the dashboard says; `worse` for a figure that is a status.
+  const moved = (figure: 'components' | 'cycles' | 'max_degree' | 'dead_code' | 'diagnostics', worse = false): Pick<Stat, 'delta' | 'worse'> =>
+    deltas === null || typeof deltas[figure] !== 'number' ? {} : { delta: deltas[figure], ...(worse ? { worse: 'up' as const } : {}) }
+  // A series only when every snapshot carries it: an older knossos sends cycles and the largest degree alone.
+  const series = (pick: (t: Dashboard['trend'][number]) => number | undefined): Pick<Stat, 'trend'> => {
+    const values = d.trend.map(pick)
+    return values.every((v): v is number => typeof v === 'number') ? { trend: values } : {}
+  }
   // From the summary line's own parts, so a figure reads the same in both: `9,008 components`, `7+ boundaries`.
-  const counted = (part: string | undefined, label: string): Stat[] => (part === undefined ? [] : [{ key: label, label, value: part.slice(0, part.indexOf(' ')) }])
+  const counted = (part: string | undefined, label: string, extra: Partial<Stat> = {}): Stat[] => (part === undefined ? [] : [{ key: label, label, value: part.slice(0, part.indexOf(' ')), ...extra }])
   return [
-    ...(d.summary === undefined ? [] : [...counted(summary[0], 'components'), ...counted(summary[1], summary[1]?.endsWith('boundary') ? 'boundary' : 'boundaries')]),
-    { key: 'cycles', label: d.cycles.count === 1 && !d.cycles.truncated ? 'cycle' : 'cycles', value: cycles, trend: d.trend.map(t => t.cycles), ...(above(cycles) ? { tone: 'warn' as const } : {}) },
-    ...(maxDegree === null ? [] : [{ key: 'degree', label: 'max degree', value: String(maxDegree), trend: d.trend.map(t => t.max_degree) }]),
-    { key: 'dead', label: 'dead code', value: dead },
-    { key: 'drifted', label: 'drifted', value: grouped(drifted), ...(drifted > 0 ? { tone: 'accent' as const } : {}), ...(drift ? { press: 'drifted' } : {}) },
+    ...(d.summary === undefined
+      ? []
+      : [...counted(summary[0], 'components', { ...moved('components'), ...series(t => t.components) }), ...counted(summary[1], summary[1]?.endsWith('boundary') ? 'boundary' : 'boundaries')]),
+    { key: 'cycles', label: d.cycles.count === 1 && !d.cycles.truncated ? 'cycle' : 'cycles', value: cycles, ...series(t => t.cycles), ...moved('cycles', true), ...(above(cycles) ? { tone: 'warn' as const } : {}) },
+    ...(maxDegree === null ? [] : [{ key: 'degree', label: 'max degree', value: String(maxDegree), ...series(t => t.max_degree), ...moved('max_degree') }]),
+    { key: 'dead', label: 'dead code', value: dead, ...series(t => t.dead_code), ...moved('dead_code', true) },
+    ...(diagnostics === null ? [] : [{ key: 'diagnostics', label: 'diagnostics', value: grouped(diagnostics), ...series(t => t.diagnostics), ...moved('diagnostics', true), ...(diagnostics > 0 ? { tone: 'warn' as const } : {}) }]),
     ...(policy === null ? [] : [{ key: 'policy', label: 'policy', value: policy, ...(above(policy) ? { tone: 'alert' as const } : {}) }]),
-    ...(diagnostics === null ? [] : [{ key: 'diagnostics', label: 'diagnostics', value: grouped(diagnostics), ...(diagnostics > 0 ? { tone: 'warn' as const } : {}) }]),
+    { key: 'drifted', label: 'drifted', value: grouped(drifted), ...(drifted > 0 ? { tone: 'accent' as const } : {}), ...(drift ? { press: 'drifted' } : {}) },
   ]
 }
 
@@ -413,15 +411,12 @@ export function paneInput(
     terminal,
     items,
     partial: d.hubs_truncated,
-    lastTurn: lastTurnOf(brief, d.project_root),
     stats: statsOf(d, summary, policy, diagnostics, drift !== null),
-    trend: [
-      { label: 'cycles', values: d.trend.map(t => t.cycles) },
-      { label: 'max degree', values: d.trend.map(t => t.max_degree) },
-    ],
+    overview: overviewData(d, hues),
     fileHubs: [...d.fan_in]
       .sort((a, b) => b.dependent_files - a.dependent_files || a.path.localeCompare(b.path))
       .map(f => ({ path: f.path, dependents: f.dependent_files, boundary: f.boundary ?? null, loc: locIn(d.project_root, f.path), top: f.top_dependents ?? [] })),
+    degree: degreeOf(d, view),
     filter: view.filter ?? '',
     filtering: view.filtering ?? false,
     sort: view.sort ?? 'in',
@@ -440,6 +435,14 @@ export function paneInput(
     target: view.target ?? null,
     couplings: shownCouplings(boundaries, view, d.snapshot_id ?? null, extras.couplings ?? null),
   }
+}
+
+/** The in-degree range Hubs is narrowed to, with how many components the Overview's bucket for it counts. */
+function degreeOf(d: Dashboard, view: KnossosView): PaneInput['degree'] {
+  const range = view.degree
+  if (range === undefined || range === null) return null
+  const bucket = (d.in_degree?.buckets ?? []).find(b => b.from === range.from && b.to === range.to)
+  return { from: range.from, to: range.to, components: bucket?.components ?? null }
 }
 
 /**
@@ -730,34 +733,19 @@ function componentRows(prefix: string, items: Item[], selected: number, spec: Ta
   ]
 }
 
-/** The last turn: what it touched and how much depends on it, `limit` files around the marker, each a row it walks from `offset`. */
-function lastTurnSection(turn: LastTurn, columns: number, limit: number, tier: Tier, hues: Hues, selected = -1, offset = 0): Section {
-  const note = `${plural(turn.files, 'file', 'files')} → ${grouped(turn.dependents)} dependents · ${plural(turn.tests, 'test', 'tests')}`
-  const local = selected - offset
-  const window = windowOf(turn.impact.length, limit, local >= 0 && local < turn.impact.length ? local : -1)
-  const spec = tableSpec(columns, turn.impact.map(f => f.name), turn.impact.map(f => boundaryLabel(f.boundary, hues)), [numberWidth('', turn.impact.map(f => f.dependents), tier)], undefined, { tier })
-  const max = Math.max(0, ...turn.impact.map(f => f.dependents))
-  const body = turn.impact.slice(window.start, window.end).map((f, n) => {
-    const i = window.start + n
-    const repeat = i > window.start && f.boundary !== null && f.boundary === turn.impact[i - 1]!.boundary
-    return tableRow(`turn-${i}`, { name: f.name, boundary: f.boundary, values: [f.dependents], max, selected: offset + i === selected, press: `row:${offset + i}`, repeat }, spec, hues)
-  })
-  return { key: 'turn', title: 'Last turn', note: noteOf(note), body: [...body, ...moreRows('turn-window', window, turn.impact.length, columns)] }
-}
-
 /** The keys and what each does, for the key list. */
 const KEY_HELP: [string, string][] = [
   ['1–6', 'switch tabs (or click one)'],
   ['j k', 'move the marker (or Tab, or a click)'],
-  ['o', 'open the marked row: a component or a file shows what depends on it'],
+  ['o', 'open the marked row: a component or a file shows what depends on it, an Overview bar the tab it counts'],
   ['e', "open the marked row's file in your editor"],
   ['b', 'back from a detail'],
   ['c', "copy the marked row's full name or path"],
   ['q', 'ask Claude about the marked row: your press sends the prompt'],
-  ['t', "copy the command for the tests that reach this session's changes"],
+  ['t', "on Overview and Changes: copy the command for the tests that reach this session's changes"],
   ['d', 'list the files drifted since the snapshot, or hide them'],
   ['l', "on Boundaries: move the marked cell to the next boundary the marked one depends on, and spell it out"],
-  ['f s x', 'on Hubs: filter (type, then Enter), sort by in, out or cross, clear'],
+  ['f s x', 'on Hubs: filter (type, then Enter), sort by in, out or cross, clear the filter or the in-degree range'],
   ['r', 'rescan a stale snapshot'],
   ['a', 'allow a refused root (asks first)'],
 ]
@@ -809,12 +797,12 @@ export function footerRows(input: PaneInput, columns: number, hasList: boolean, 
   if (editTarget(input) !== null) actions.push(button('edit', 'edit', 'e'))
   if (subjectOf(input) !== null) actions.push(button('copy', 'copy', 'c'), button('ask', 'ask Claude', 'q'))
   if (onTab && input.tab === 'boundaries' && input.boundaries !== null && markedCell(input.boundaries, input.selected, input.target) !== null) actions.push(button('target', 'next cell', 'l'))
-  // On Overview `t` stands beside the tests it copies, in "Look at now".
+  // On Overview `t` stands beside the tests it copies, in "This session".
   if (onTab && input.tab === 'changes' && input.changes.command !== null) actions.push(button('tests', 'copy test command', 't'))
   if (input.detail === null && input.drift !== null) actions.push(button('drift', input.driftOpen ? 'hide drifted' : 'drifted files', 'd'))
   if (onTab && input.tab === 'hubs') {
     actions.push(button('filter', 'filter', 'f'), button('sort', `sort: ${input.sort}`, 's'))
-    if (input.filter !== '') actions.push(button('clear', 'clear', 'x'))
+    if (input.filter !== '' || input.degree !== null) actions.push(button('clear', 'clear', 'x'))
   }
   actions.push(button('keys', input.showKeys ? 'hide keys' : 'keys', 'h'))
   const pad = padOf(tier)
@@ -853,6 +841,7 @@ function joinGroups(groups: Segment[][]): Segment[] {
 /** The hubs tab: one card with the filter field or line, and the filtered, sorted table, as long as the pane allows. */
 function hubsBlock(input: PaneInput, list: Item[], selected: number, tier: Tier): Block {
   const hotspots = input.items.some(i => i.hotspotOnly) ? '◆ hotspot only' : ''
+  const range = input.degree
   const note = sharedNote(list, [hotspots, input.partial ? 'partial' : ''].filter(s => s !== '').join(' · '), input.hues)
   return {
     key: 'hubs',
@@ -864,8 +853,13 @@ function hubsBlock(input: PaneInput, list: Item[], selected: number, tier: Tier)
       } else if (input.filter !== '') {
         rows.push(dimRow('filter-row', `   filter "${input.filter}" · ${list.length} of ${input.items.length}`, columns))
       }
+      if (range !== null) {
+        // The list holds the most depended on only: the bucket may count many more than it lists.
+        const counted = range.components === null ? '' : ` of ${grouped(range.components)}`
+        rows.push(dimRow('degree-row', `   in-degree ${range.to === null ? `${range.from}+` : range.from === range.to ? `${range.from}` : `${range.from}–${range.to}`} · ${list.length} listed${counted}`, columns))
+      }
       const section = (body: Row[]): Section => ({ key: 'hubs', title: 'Hubs and hotspots', subtitle: `sorted by ${input.sort}`, note: noteOf(note), body })
-      if (list.length === 0) return section([...rows, dimRow('hubs-none', input.filter === '' ? '   none' : `   no hub matches "${input.filter}"`, columns)])
+      if (list.length === 0) return section([...rows, dimRow('hubs-none', input.filter === '' ? (range === null ? '   none' : '   none of the listed hubs is in this range') : `   no hub matches "${input.filter}"`, columns)])
       const spec = componentSpec(list, columns, true, input.hues, tier)
       const local = selected < list.length ? selected : -1
       const window = windowOf(list.length, limit, local)
@@ -876,11 +870,11 @@ function hubsBlock(input: PaneInput, list: Item[], selected: number, tier: Tier)
 
 /** The Hubs tab: the components most depended on and, beside them when wide, the files; the filter narrows both. */
 function hubsArrangement(input: PaneInput, selected: number, tier: Tier): Arrangement {
-  const list = hubList(input.items, input.filter, input.sort)
+  const list = hubsShown(input)
   const hubs = hubsBlock(input, list, selected, tier)
-  const files = fileHubsBlock(fileHubList(input.fileHubs, input.filter), selected, list.length, tier, input.hues, input.filter === '' ? '' : `filter "${input.filter}"`)
-  // The components' table has more columns than the files': it takes the larger share.
-  return files === null ? { left: [hubs] } : { left: [hubs], right: [files], split: 0.6 }
+  const files = fileHubsBlock(filesShown(input), selected, list.length, tier, input.hues, input.filter === '' ? '' : `filter "${input.filter}"`)
+  // The components' table has more columns than the files': it takes the larger share, in a grid row of fixed columns.
+  return files === null ? { left: [hubs] } : { left: [hubs], right: [files], rows: [[hubs, files]], split: 0.6 }
 }
 
 /** What "ask Claude to scan it" asks: the model scans through the Knossos server, into the graph the pane reads. */
@@ -957,44 +951,28 @@ function fileHubsBlock(files: FileHub[], selected: number, offset: number, tier:
 }
 
 /**
- * The Overview: the stat tiles across the top, what to look at now (once
- * this session changed something), the last turn, the components and the
- * files most depended on, and, with rows to spare, the trend. Wide, the
- * components stand right with the trend under them; the boundary map and
- * the files go under whichever column leaves the two closest in height. One marker walks
- * the lists in the order they are drawn on a narrow pane.
+ * The Overview: the stat tiles across the top, then the charts. Wide, a
+ * fixed grid of two equal columns, the cards of a row drawn equally tall:
+ * this session across the pane, composition beside dependency
+ * concentration, health over time beside the cross-boundary flows.
+ * Narrower, one column in the same order. The marker walks the way to
+ * Changes, the buckets and the flows, in that order; the lists themselves
+ * are on Hubs.
  */
 function overviewArrangement(input: PaneInput, selected: number, tier: Tier): Arrangement {
-  const looked = lookAtList(input.lookAt).length
-  const turned = input.lastTurn?.impact.length ?? 0
-  const left: Block[] = []
-  const look = input.lookAt
-  if (look !== null) left.push({ key: 'look', make: columns => lookAtSection(look, columns, input.hues, selected) })
-  const turn = input.lastTurn
-  if (turn !== null) left.push({ key: 'turn', grow: { length: turned, min: TURN_MIN }, make: (columns, limit) => lastTurnSection(turn, columns, limit, tier, input.hues, selected, looked) })
-  const offset = looked + turned
-  // Narrow, the in-degree alone; from medium on, out and cross and the file beside it.
-  const withDegrees = tier !== 'narrow'
-  const top: Block = {
-    key: 'top',
-    grow: { length: input.items.length, min: TOP_MIN },
-    make: (columns, limit) => {
-      const said = withDegrees ? (input.partial ? 'partial' : '') : input.partial ? 'partial · in' : 'in'
-      const section = (body: Row[]): Section => ({ key: 'top', title: 'Most depended on', note: noteOf(sharedNote(input.items, said, input.hues)), body })
-      if (input.items.length === 0) return section([dimRow('top-none', '   none', columns)])
-      const local = selected - offset
-      const window = windowOf(input.items.length, limit, local >= 0 ? local : -1)
-      const spec = componentSpec(input.items, columns, withDegrees, input.hues, tier)
-      return section([...componentRows('top', input.items, selected, spec, withDegrees, input.hues, 'in', offset, window, columns), ...moreRows('top-window', window, input.items.length, columns)])
-    },
-  }
+  const data = input.overview
+  const session = input.changes.files.length > 0 ? 1 : 0
   const tiles = input.stats.length > 0 ? [tilesBlock(input.stats, tier)] : []
-  const files = fileHubsBlock(input.fileHubs, selected, offset + input.items.length, tier, input.hues)
-  const trend = trendBlock(input.trend)
-  const map: Block[] = tier === 'wide' && input.boundaries !== null && input.boundaries.boundaries.length > 0 ? [heatBlock(input.boundaries, input.hues, false, false)] : []
-  const charts = trend === null ? [] : [trend]
-  // The components' table on the right has the most columns: it takes the larger share, and the trend under it.
-  return { top: tiles, left, right: [top, ...charts], float: [...map, ...(files === null ? [] : [files])], split: 0.45, order: [...tiles, ...left, top, ...(files === null ? [] : [files]), ...(trend === null ? [] : [trend])] }
+  const sessionCard = sessionBlock(input.changes, input.lookAt, selected)
+  const composition = compositionBlock(data)
+  const concentration = concentrationBlock(data, selected, session)
+  const health = healthBlock(data)
+  const flows = flowsBlock(data, input.hues, selected, session + data.buckets.length)
+  const present = (blocks: (Block | null)[]): Block[] => blocks.filter((b): b is Block => b !== null)
+  // A card with nothing to show is one line: it stands on a row of its own rather than beside a card it cannot match in height.
+  const quiet = data.flows.length === 0
+  const rows = [[sessionCard], present([composition, concentration]), present([health, ...(quiet ? [] : [flows])]), ...(quiet ? [[flows]] : [])].filter(line => line.length > 0)
+  return { top: tiles, left: [], rows, split: 0.5, order: [...tiles, sessionCard, ...present([composition, concentration, health, flows])] }
 }
 
 /**

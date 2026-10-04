@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { cells, rowWidth } from './rows'
-import { moves, tileRows, tileSlots, tilesBlock } from './tiles'
+import { rowWidth } from './rows'
+import { deltaSegment, moves, tileRows, tileSlots, tilesBlock } from './tiles'
 import type { Stat } from './tiles'
-import { chartRows, trendBlock } from './trend'
 import { plainText, rawText } from './__tests__/plain-text'
 
 const WIDTHS = [40, 60, 80, 100, 130, 140, 200] as const
@@ -62,10 +61,34 @@ describe('stat tiles', () => {
     expect(figures.find(s => s.text === '10')).toMatchObject({ color: 'suggestion' })
     expect(figures.find(s => s.text === '3')).toMatchObject({ color: 'error' })
     expect(figures.filter(s => s.text === '0').every(s => s.color === 'text')).toBe(true)
-    // Room enough: each moving series draws its sparkline in its tile, dim.
-    expect(figures.find(s => /^[▁-█]+$/.test(s.text))).toMatchObject({ dim: true })
+    // Room enough: each moving series draws its sparkline in its tile, in the accent (the data's one hue).
+    expect(figures.find(s => /^[▁-█]+$/.test(s.text))).toMatchObject({ color: 'suggestion' })
     // The drifted label is the press that lists the drifted files.
     expect(rows.find(r => r.key === 'tiles-0-label')!.segments.find(s => s.press)?.press).toEqual({ id: 'drifted', label: 'drifted' })
+  })
+
+  it('say how each figure moved since the previous snapshot: a status in its colours, anything else dim', () => {
+    const moved: Stat[] = [
+      { key: 'components', label: 'components', value: '9,186', delta: 12 },
+      { key: 'cycles', label: 'cycles', value: '2', tone: 'warn', delta: 1, worse: 'up' },
+      { key: 'dead', label: 'dead code', value: '3', delta: -2, worse: 'up' },
+      { key: 'degree', label: 'max degree', value: '165', delta: 0 },
+      { key: 'drifted', label: 'drifted', value: '0' },
+    ]
+    expect(deltaSegment(moved[0]!)).toEqual({ text: '▲12', dim: true })
+    expect(deltaSegment(moved[1]!)).toEqual({ text: '▲1', color: 'warning' })
+    expect(deltaSegment(moved[2]!)).toEqual({ text: '▼2', color: 'success' })
+    expect(deltaSegment(moved[3]!)).toEqual({ text: '±0', dim: true })
+    expect(deltaSegment(moved[4]!)).toBeNull()
+    expect(deltaSegment({ delta: 12_345 })?.text).toBe('▲12,345')
+    for (const columns of WIDTHS) {
+      const tier = columns < 80 ? 'narrow' : columns <= 130 ? 'medium' : 'wide'
+      const rows = tileRows(moved, columns, tier)
+      for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
+      expect(rows.map(rawText).join('\n'), `${columns}`).toMatch(/9,186 (components )?▲12/)
+    }
+    // The delta follows the figure, a space apart, on the tile's first line.
+    expect(rawText(tileRows(moved, 140, 'wide').find(r => r.key === 'tiles-0-value')!)).toMatch(/^│ 9,186 ▲12 +│ 2 ▲1 +│ 3 ▼2 +│ 165 ±0 +│ 0 +│$/)
   })
 
   it('draw nothing without figures, and frame themselves as a bare section', () => {
@@ -81,42 +104,5 @@ describe('stat tiles', () => {
     expect(moves([2, 2, 2, 2, 2])).toBe(false)
     expect(moves([2, 2, 2, 2, 3])).toBe(true)
     expect(moves(undefined)).toBe(false)
-  })
-})
-
-describe('trend chart', () => {
-  const series = { label: 'cycles', values: [0, 1, 1, 2, 4, 3, 3, 2, 2, 2] }
-
-  it('draws a column per point, as tall as asked, its range on the axis', () => {
-    const rows = chartRows(series, 60, 4, 'c')!
-    expect(rows).toHaveLength(5)
-    expect(rows.slice(0, 4).every(r => r.raster === 'trend')).toBe(true)
-    // The axis stands right of a gutter as wide as the label under it.
-    expect(rawText(rows[0]!)).toMatch(/^ {3} {5}4 ┤/)
-    expect(rawText(rows[3]!)).toMatch(/^ {3} {5}0 ┤/)
-    // The highest point reaches the top row whole; the lowest keeps an eighth on the bottom row.
-    expect(rawText(rows[0]!)).toContain('█')
-    const plot = rawText(rows[3]!).indexOf('┤') + 1
-    expect(rawText(rows[3]!).slice(plot, plot + 1)).toBe('▁')
-    expect(plainText(rows[4]!).trim()).toBe('cycles')
-    for (const r of rows) expect(rowWidth(r)).toBeLessThanOrEqual(60)
-  })
-
-  it('keeps every row within the width, and draws nothing with no room for five points', () => {
-    for (const columns of WIDTHS) for (const r of chartRows(series, columns, 6, 'c') ?? []) expect(cells(rawText(r))).toBeLessThanOrEqual(columns)
-    expect(chartRows(series, 14, 4, 'c')).toBeNull()
-    expect(chartRows({ label: 'flat', values: [3, 3, 3, 3, 3, 3] }, 60, 4, 'c')).toBeNull()
-  })
-
-  it('grows late: nothing without spare rows, a row taller per row given', () => {
-    const block = trendBlock([series, { label: 'flat', values: [1, 1, 1, 1, 1] }])!
-    expect(block.grow).toMatchObject({ min: 0, late: true })
-    expect(block.make(60, 0)).toBeNull()
-    const small = block.make(60, 1)!
-    const large = block.make(60, 3)!
-    expect(large.body.length - small.body.length).toBe(2)
-    // The flat series draws no chart.
-    expect(small.body.some(r => r.key.startsWith('trend-1'))).toBe(false)
-    expect(trendBlock([{ label: 'flat', values: [1, 1, 1, 1, 1] }])).toBeNull()
   })
 })

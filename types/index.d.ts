@@ -123,7 +123,12 @@ export type Dashboard = {
     /** `nodes` and `nodes_truncated` are optional: a knossos older than the mod sends names only. */
     largest: { size: number; members: string[]; nodes?: CycleNode[]; nodes_truncated?: boolean }[]
   }
-  trend: { snapshot_id: string; cycles: number; max_degree: number }[]
+  /**
+   * Oldest first, ending at the active snapshot. `dead_code` (the candidates
+   * nothing references), `diagnostics` (errors and warnings) and
+   * `components` are absent from a knossos older than the Overview's charts.
+   */
+  trend: { snapshot_id: string; cycles: number; max_degree: number; dead_code?: number; diagnostics?: number; components?: number }[]
   fan_in: FanIn[]
   fan_in_truncated: boolean
   // Optional from here on: a knossos older than the mod sends none of them.
@@ -163,7 +168,24 @@ export type Dashboard = {
     files_truncated?: boolean
   }
   boundary_matrix?: BoundaryMatrix
+  /**
+   * How the newest snapshot moved since the one retained before it (`against`),
+   * each figure the newer less the older; null with one snapshot only.
+   */
+  deltas?: Deltas | null
+  /**
+   * Every component the hub ranking could hold (tests and external code left
+   * out), bucketed by how many depend on it; `to` null for the open top
+   * bucket, `truncated` when the walk stopped early.
+   */
+  in_degree?: { buckets: InDegreeBucket[]; truncated: boolean }
 }
+
+/** How the newest snapshot's figures moved since `against`, the snapshot retained before it. */
+export type Deltas = { against: string; components: number; cycles: number; max_degree: number; dead_code: number; diagnostics: number }
+
+/** One bucket of the in-degree histogram: the in-degrees it spans (`to` null for no upper end) and how many components. */
+export type InDegreeBucket = { from: number; to: number | null; components: number }
 
 /**
  * How much each boundary depends on each other one: `cells[from][to]` counts
@@ -179,6 +201,10 @@ export type BoundaryMatrix = {
   boundaries_truncated: boolean
   cells: number[][]
   forbidden: [number, number][]
+  /** Every component that carries a label, the axes' or not (absent from an older knossos). */
+  labelled?: number
+  /** The strongest cells off the diagonal, by axis index, most edges first (absent from an older knossos). */
+  flows?: { from: number; to: number; edges: number; forbidden: boolean }[]
   edges: number
   truncated: boolean
   truncation_reasons: string[]
@@ -395,6 +421,8 @@ export type KnossosView = {
   target?: string
   /** On the Cycles tab, the cycles whose folded middle the person opened, by index. */
   unfolded?: number[]
+  /** On the Hubs tab, the in-degree range the list is narrowed to (an Overview bucket's), `to` null for no upper end. */
+  degree?: { from: number; to: number | null } | null
 }
 
 /** The `scan` subcommand's answer: an incremental rescan the person asked for from the pane. */

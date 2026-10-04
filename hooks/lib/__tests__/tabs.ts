@@ -1,8 +1,8 @@
 import { boundariesArrangement } from '../boundaries'
 import type { BoundariesInput } from '../boundaries'
 import { arrange, cardInner, cardRows, fitBlocks } from '../cards'
-import { changesArrangement, lookAtSection } from '../changes'
-import type { ChangesInput, LookAt } from '../changes'
+import { changesArrangement } from '../changes'
+import type { ChangesInput } from '../changes'
 import { diffSection } from '../diff'
 import type { DiffView } from '../diff'
 import { driftSection, fileDetailArrangement } from '../files'
@@ -23,9 +23,6 @@ const TALL = 1_000
 
 export const changesRows = (input: ChangesInput, selected: number, columns: number, hues: Hues = NO_HUES): Row[] =>
   arrange(changesArrangement(input, selected, tierOf(columns), hues), columns, TALL)
-
-export const lookAtRows = (look: LookAt, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] =>
-  cardRows(lookAtSection(look, cardInner(columns, tierOf(columns)), hues, selected), columns, tierOf(columns))
 
 export const boundaryRows = (input: BoundariesInput | null, columns: number, hues: Hues = NO_HUES, selected = 0): Row[] =>
   arrange(boundariesArrangement(input, tierOf(columns), hues, selected), columns, TALL)

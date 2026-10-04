@@ -28,8 +28,10 @@ import type { Row, Segment, Tier } from './rows'
  * right edge, and its rows. A `bare` section is drawn without a card: its
  * rows alone (the stat tiles, which draw their own frames). `glyph` is the
  * small mark before the title, when not the one its kind has ({@link GLYPHS}).
+ * A section with no rows and an `empty` word collapses to one line: its title
+ * and that word set into a rule (`── ! Policy ───── none ──`), at every tier.
  */
-export type Section = { key: string; title: string; subtitle?: string; note?: Segment[]; body: Row[]; bare?: true; glyph?: string }
+export type Section = { key: string; title: string; subtitle?: string; note?: Segment[]; body: Row[]; bare?: true; glyph?: string; empty?: string }
 
 /**
  * The mark before each kind of card's title, drawn dim: one glyph per kind
@@ -66,6 +68,11 @@ export const GLYPHS: Readonly<Record<string, string>> = {
   notes: '✎',
   diff: '±',
   drift: 'Δ',
+  session: '±',
+  composition: '▥',
+  concentration: '◎',
+  health: '∿',
+  flows: '⇄',
 }
 
 /** The frame's ink: the faintest theme key, so the cards order the pane without competing with it. */
@@ -156,6 +163,7 @@ function bareRow(row: Row, width: number): Row {
 
 /** A card's rows at `width`: its top edge, its rows (framed where the tier frames them) and, framed, its bottom edge. */
 export function cardRows(section: Section, width: number, tier: Tier): Row[] {
+  if (section.body.length === 0 && section.empty !== undefined) return [topRow({ ...section, subtitle: undefined, note: [{ text: section.empty, dim: true }] }, width, 'narrow')]
   if (section.bare === true) return section.body.map(row => (row.code !== undefined || rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))
   const head = topRow(section, width, tier)
   if (tier === 'narrow') return [head, ...section.body.map(row => bareRow(row, width))]
@@ -334,14 +342,15 @@ function stretched(rows: Row[], width: number, height: number, tier: Tier, key: 
 }
 
 /**
- * Rows of cards side by side, each grid row's cards equally wide and drawn
- * equally tall: a shorter card is stretched to the tallest one's height, so
+ * Rows of cards side by side, each grid row's cards equally wide (a row of
+ * two at `split` when given: the fixed ratio of a tab whose left card holds
+ * the wider table) and drawn equally tall: a shorter card is stretched to the tallest one's height, so
  * no column of the row ends half way. The lists share the height the way
  * {@link fitBlocks} shares it, one row at a time each while the whole fits;
  * a list beside a taller card grows for free up to that card's height.
  */
-export function gridRows(grid: Block[][], width: number, tier: Tier, budget: number): Row[] {
-  const placed = grid.filter(line => line.length > 0).map(line => ({ line, widths: equalColumns(width, line.length) }))
+export function gridRows(grid: Block[][], width: number, tier: Tier, budget: number, split?: number): Row[] {
+  const placed = grid.filter(line => line.length > 0).map(line => ({ line, widths: line.length === 2 && split !== undefined ? gridColumns(width, split) : equalColumns(width, line.length) }))
   const blocks = placed.flatMap(p => p.line.map((block, i) => ({ block, width: p.widths[i]! })))
   const limits = blocks.map(({ block }) => (block.grow === undefined ? 0 : Math.min(block.grow.min, block.grow.length)))
   const cache = new Map<string, Row[]>()
@@ -391,7 +400,7 @@ export function arrange(arrangement: Arrangement, width: number, budget: number)
   if (tier === 'wide' && arrangement.rows !== undefined) {
     const above = fitBlocks(top, width, tier, 0)
     const below = fitBlocks(arrangement.bottom ?? [], width, tier, 0)
-    return [...above, ...gridRows(arrangement.rows, width, tier, budget - above.length - below.length), ...below]
+    return [...above, ...gridRows(arrangement.rows, width, tier, budget - above.length - below.length, arrangement.split), ...below]
   }
   const right = arrangement.right ?? []
   const float = arrangement.float ?? []

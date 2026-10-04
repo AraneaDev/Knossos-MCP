@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, KnossosView, SessionChanges, SessionLedger, TurnBrief } from '../../types'
 import { accumulate, cdFor, changesInput, changesList, FILE_CAP, fromLedger, lookAtOf, NO_CHANGES, ownTimeline, testCommand, testsRan, timelineRow } from './changes'
-import { changesRows, lookAtRows } from './__tests__/tabs'
+import { changesRows } from './__tests__/tabs'
 import { editTarget, paneInput, paneRows } from './layout'
 import { findRow, plainText } from './__tests__/plain-text'
 import { fileHref, linkMarkdown, locOf, rowWidth } from './rows'
@@ -244,38 +244,31 @@ describe('changesRows', () => {
 })
 
 describe('look at now', () => {
-  it('draws a file in no boundary without a gap where the boundary would be', () => {
-    const none = accumulate(NO_CHANGES, brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: null } } }))
-    expect(plainText(row(lookAtRows(lookAtOf(changesInput(none, ROOT))!, 60), 'look-file')!)).toBe('   Router.php · 41 dependents')
-  })
   it('points at the riskiest file still there, and counts the tests that reach the changes', () => {
     const look = lookAtOf(changesInput(session(), ROOT))!
     expect(look.file?.path).toBe('src/Router.php')
     expect(look.tests).toBe(2)
-    // Scoped in its header: these counts are the session's, never the last turn's.
-    const rows = lookAtRows(look, 60, undefined, 0)
-    expect(plainText(row(rows, 'look-head')!)).toMatch(/^Look at now +this session$/)
-    // The first row the Overview's marker walks: pressed, it opens as the file's detail.
-    expect(plainText(row(rows, 'look-file')!)).toBe('›  Router.php Http · 42 dependents')
-    expect(row(rows, 'look-file')!.segments.find(s => s.press)?.press?.id).toBe('row:0')
-    expect(plainText(row(rows, 'look-tests')!)).toBe('   t: copy test command   2 tests reach these changes')
-    // Narrow, the count goes onto its own line rather than off the edge.
-    const narrow = lookAtRows(look, 40).filter(r => r.key.startsWith('look-tests'))
-    expect(narrow.map(r => plainText(r).trim())).toEqual(['t: copy test command', '2 tests reach these changes'])
+    expect(look.command).not.toBeNull()
     expect(lookAtOf(changesInput(NO_CHANGES, ROOT))).toBeNull()
   })
-  it('sits first on the Overview, marked, where e opens its file, at every width', () => {
+  it('sums the session up on the Overview, under the tiles: the way to Changes first, marked, and t beside it', () => {
     const d = { ...dash(), project_root: ROOT } as Dashboard
     const v: KnossosView = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
     const pane = paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, v, 0, true, null, null, session())
-    expect(editTarget(pane)).toEqual({ path: '/work/app/src/Router.php', line: null })
+    // The way to Changes has no file of its own: `e` opens nothing there.
+    expect(editTarget(pane)).toBeNull()
     for (const columns of WIDTHS) {
       const rows = paneRows(pane, columns)
       const at = (key: string) => rows.findIndex(r => r.key.split('|').includes(key))
-      expect(at('look-head')).toBeGreaterThanOrEqual(0)
-      // Under the stat tiles (the band, or its line when narrow), before the most depended on.
-      expect(at(columns < 80 ? 'tiles-line' : 'tiles-top')).toBeLessThan(at('look-head'))
-      expect(at('look-head')).toBeLessThanOrEqual(at('top-head'))
+      expect(at('session-head')).toBeGreaterThanOrEqual(0)
+      // Under the stat tiles (the band, or its line when narrow).
+      expect(at(columns < 80 ? 'tiles-line' : 'tiles-top')).toBeLessThan(at('session-head'))
+      const open = rows.find(r => r.key.split('|').includes('session-open'))!
+      expect(open.tint).toBe('userMessageBackground')
+      expect(open.segments.find(s => s.press?.id === 'row:0')?.text).toBe('Changes')
+      expect(rows.flatMap(r => r.segments).some(s => s.press?.id === 'tests' && s.press.hotkey === 't'), `${columns}`).toBe(true)
+      const said = rows.filter(r => r.key.split('|').some(k => k.startsWith('session-said'))).map(r => plainText(r).trim()).join(' ')
+      expect(said, `${columns}`).toContain('3 files · 45 dependents · 2 tests reach them')
       for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
     }
     // The tab carries how many files were touched.

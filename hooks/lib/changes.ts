@@ -1,6 +1,6 @@
 /**
  * What this session changed: the turn briefs added up, the Changes tab that
- * lists it, and the Overview's "Look at now" that points at the riskiest part.
+ * lists it, and what the Overview's "This session" card sums up from it.
  *
  * Pure, like the rest of the layout. `accumulate` folds one `ok` brief into
  * the session's running total (the mod stores it after each turn's scan);
@@ -10,13 +10,12 @@
  * and a cap that bit says so.
  */
 import type { JsRunner, SessionChanges, SessionLedger, TouchStatus, TurnBrief } from '../../types'
-import { ACCENT, boundaryLabel, HEADING, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryLabel, HEADING, NO_HUES, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import {
   baseName,
   blank,
   boundaryStyle,
-  button,
   cells,
   clip,
   dimRow,
@@ -354,52 +353,14 @@ export function changesList(input: ChangesInput): Openable[] {
   return input.files.map(f => ({ name: f.path, canonical: f.path, loc: f.loc, file: true, changed: true }))
 }
 
-/** What the Overview points at: the touched file with the most dependents, and how many tests reach the changes. */
+/** What the Overview's session card reads: the touched file with the most dependents, how many tests reach the changes, and their command. */
 export type LookAt = { file: TouchedFile | null; tests: number; command: string | null; plus: boolean }
 
-/** "Look at now" from the session's changes; null before anything changed. */
+/** The session card's figures from the session's changes; null before anything changed. */
 export function lookAtOf(input: ChangesInput): LookAt | null {
   if (input.files.length === 0) return null
   const file = input.files.find(f => f.status !== 'deleted') ?? null
   return { file, tests: input.tests.length, command: input.command, plus: input.truncated }
-}
-
-/** Count of `n` with a `+` when a cap made it a floor. */
-const floor = (n: number, plus: boolean) => `${grouped(n)}${plus ? '+' : ''}`
-
-/** The Overview list rows "Look at now" adds before the last turn's: its file, when there is one. */
-export const lookAtList = (look: LookAt | null): Openable[] =>
-  look?.file ? [{ name: look.file.path, canonical: look.file.path, loc: look.file.loc, file: true, changed: true }] : []
-
-/**
- * The Overview's "Look at now", scoped to this session in its note: the
- * riskiest file it touched, the first row the marker walks (so `o` shows who
- * depends on it and `e` opens it, as on any file row), and the tests that
- * reach these changes, a key (`t`) away from a copied command; a warning
- * when no test reaches them.
- */
-export function lookAtSection(look: LookAt, columns: number, hues: Hues = NO_HUES, selected = -1): Section {
-  const rows: Row[] = []
-  if (look.file !== null) {
-    const f = look.file
-    const segments: Segment[] = [
-      { text: selected === 0 ? '›' : ' ', color: ACCENT, bold: true },
-      { text: '  ' },
-      button('row:0', baseName(f.path)),
-      ...(f.boundary === null ? [] : [{ text: ' ' }, { text: boundaryLabel(f.boundary, hues), ...boundaryStyle(f.boundary, hues) }]),
-      { text: ` · ${plural(f.dependents, 'dependent', 'dependents')}`, dim: true },
-    ]
-    const kept = clip(segments.filter(s => s.text !== ''), columns)
-    rows.push(selected === 0 ? { key: 'look-file', segments: tinted(kept, SELECTED_BG), tint: SELECTED_BG } : { key: 'look-file', segments: kept })
-  }
-  const section = (body: Row[]): Section => ({ key: 'look', title: 'Look at now', note: noteOf('this session'), body })
-  if (look.tests === 0) {
-    rows.push({ key: 'look-tests', segments: clip([{ text: '   ' }, { text: '▲ no test reaches these changes', color: STATUS_COLOURS.warn }], columns) })
-    return section(rows)
-  }
-  const said = `${floor(look.tests, look.plus)} ${look.tests === 1 && !look.plus ? 'test reaches' : 'tests reach'} these changes`
-  const groups: Segment[][] = [...(look.command === null ? [] : [[button('tests', 'copy test command', 't')]]), [{ text: said, dim: true }]]
-  return section([...rows, ...wrapGroups('look-tests', groups, columns, 3, 3)])
 }
 
 /**

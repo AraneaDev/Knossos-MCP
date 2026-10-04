@@ -30,12 +30,25 @@ export const longDashboard: Dashboard = {
   dead_code_candidates: 12_345,
   dead_code_truncated: true,
   cycles: { count: 2, truncated: true, truncation_reasons: ['result_limit'], largest: [{ size: 14, members: nodes.map(n => n.name), nodes, nodes_truncated: false }, { size: 2, members: [LONG, LONG], nodes: nodes.slice(0, 2), nodes_truncated: false }] },
-  trend: Array.from({ length: 8 }, (_, i) => ({ snapshot_id: `s${i}`, cycles: i % 3, max_degree: 100 + i })),
+  trend: Array.from({ length: 8 }, (_, i) => ({ snapshot_id: `s${i}`, cycles: i % 3, max_degree: 100 + i, dead_code: 90_000 + i * 7, diagnostics: i, components: 1_234_567 + i })),
   fan_in: [{ path: PATH, dependent_files: 123_456, boundaries: ['core'], boundary: 'module:cli (+composer:app/cli)', top_dependents: [PATH] }],
   fan_in_truncated: true,
   summary: { components: 1_234_567, kinds: [{ kind: 'method', count: 1_000_000 }, { kind: 'class', count: 234_567 }], kinds_truncated: false, files: 9_999, languages: [{ language: 'php', files: 9_000 }, { language: 'typescript', files: 999 }], languages_truncated: false },
   boundaries: { items: [{ name: 'core', source: 'explicit', members: 900_000 }, { name: 'module:cli (+composer:app/cli)', source: 'inferred', members: 300_000 }], truncated: false },
-  boundary_matrix: { boundaries: ['core', 'module:cli (+composer:app/cli)'], members: [900_000, 300_000], boundaries_truncated: false, cells: [[10, 123_456], [7, 3]], forbidden: [[0, 1]], edges: 123_476, truncated: false, truncation_reasons: [] },
+  boundary_matrix: {
+    boundaries: ['core', 'module:cli (+composer:app/cli)'],
+    members: [900_000, 300_000],
+    labelled: 1_200_000,
+    boundaries_truncated: false,
+    cells: [[10, 123_456], [7, 3]],
+    forbidden: [[0, 1]],
+    flows: [{ from: 0, to: 1, edges: 123_456, forbidden: true }, { from: 1, to: 0, edges: 7, forbidden: false }],
+    edges: 123_476,
+    truncated: true,
+    truncation_reasons: ['edge_limit'],
+  },
+  deltas: { against: 's6', components: 123_456, cycles: -1, max_degree: 12_345, dead_code: 99_999, diagnostics: 0 },
+  in_degree: { buckets: [{ from: 0, to: 0, components: 1_234_567 }, { from: 1, to: 99_999, components: 3 }, { from: 100_000, to: null, components: 1 }], truncated: true },
 }
 
 const VIEW: KnossosView = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: true, filter: '', filtering: false, sort: 'in' }

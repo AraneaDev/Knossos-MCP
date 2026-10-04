@@ -68,13 +68,13 @@ describe('hover cards', () => {
     expect(componentFigures(null, 3, 2).map(s => s.text).join('')).toBe('in 3 · out 2')
   })
 
-  it('hang off every hub and file row of the Overview and Hubs at every width and height, and off nothing else', () => {
+  it('hang off every hub and file row of Hubs at every width and height, and off nothing else: the Overview lists none', () => {
     for (const columns of WIDTHS) {
       for (const height of HEIGHTS) {
         for (const tab of ['overview', 'hubs'] as const) {
           const input = paneInput(dash, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, { inspect: null, isBandHidden: false, tab, selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }, 0, true)
           const hung = cards(paneRows(input, columns, height))
-          expect(hung.map(c => c.key).sort(), `${columns}x${height} ${tab}`).toEqual([tab === 'hubs' ? 'card-hub-0' : 'card-top-0', 'card-files-0'].sort())
+          expect(hung.map(c => c.key).sort(), `${columns}x${height} ${tab}`).toEqual(tab === 'hubs' ? ['card-files-0', 'card-hub-0'] : [])
           for (const c of hung) expect(c.width, `${columns}x${height}`).toBeLessThanOrEqual(columns)
         }
         const cycles = paneInput(dash, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, { inspect: null, isBandHidden: false, tab: 'cycles', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }, 0, true)

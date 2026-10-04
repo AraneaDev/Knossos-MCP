@@ -2,8 +2,9 @@
  * The stat tiles across the top of the Overview: one figure per tile with
  * its label under it, the figure in the text colour unless it deviates
  * (cycles and diagnostics in `warning`, policy violations in `error`, drifted
- * files in the accent), a trend beside it when the tile has room and the
- * series moves.
+ * files in the accent), how it moved since the previous snapshot beside it
+ * (`▲3`), and a sparkline in the accent inside the tile when it has room and
+ * the series moves over five points or more.
  *
  * Pure. Medium and wide, the tiles are cells of one framed band, a faint
  * rule between them, spread evenly across the pane; when they do not fit on
@@ -14,7 +15,7 @@
 import { FRAME } from './cards'
 import type { Block, Section } from './cards'
 import { ACCENT, HEADING, STATUS_COLOURS } from './palette'
-import { cells, padEnd, spaces, wrapGroups } from './rows'
+import { cells, grouped, padEnd, spaces, wrapGroups } from './rows'
 import type { Row, Segment, Tier } from './rows'
 import { sparkline } from './sparkline'
 
@@ -24,8 +25,12 @@ export type StatTone = 'warn' | 'alert' | 'accent'
 /**
  * One tile: its figure, its label, how it deviates, the series its trend is
  * drawn from, and the press its label carries (the drifted files' list).
+ * `delta` is how the figure moved since the previous snapshot; `worse` says
+ * the figure is a status (cycles, dead code, diagnostics), so a rise is drawn
+ * in its warning colour and a fall in its success colour; a figure that is
+ * not a status keeps its delta dim.
  */
-export type Stat = { key: string; label: string; value: string; tone?: StatTone; trend?: number[]; press?: string }
+export type Stat = { key: string; label: string; value: string; tone?: StatTone; trend?: number[]; press?: string; delta?: number; worse?: 'up' }
 
 /** A trend is drawn only with this many points, and only when it moves. */
 export const TREND_MIN_POINTS = 5
@@ -50,8 +55,28 @@ function label(stat: Stat, width: number): Segment {
   return stat.press === undefined ? { text, dim: true } : { text: stat.label, press: { id: stat.press, label: stat.label } }
 }
 
-/** The fewest cells a tile needs: its label, or its figure. */
-const need = (stat: Stat): number => Math.max(cells(stat.label), cells(stat.value))
+/**
+ * How a figure moved since the previous snapshot: `▲3`, `▼2`, or `±0`, the
+ * glyph saying which way so the colour never has to. Coloured only for a
+ * status (see {@link Stat}); empty when the dashboard says nothing.
+ */
+export function deltaSegment(stat: Pick<Stat, 'delta' | 'worse'>): Segment | null {
+  const d = stat.delta
+  if (d === undefined) return null
+  if (d === 0) return { text: '±0', dim: true }
+  const text = `${d > 0 ? '▲' : '▼'}${grouped(Math.abs(d))}`
+  if (stat.worse !== 'up') return { text, dim: true }
+  return { text, color: d > 0 ? STATUS_COLOURS.warn : STATUS_COLOURS.ok }
+}
+
+/** A figure and its delta, a space apart. */
+function figureWidth(stat: Stat): number {
+  const delta = deltaSegment(stat)
+  return cells(stat.value) + (delta === null ? 0 : 1 + cells(delta.text))
+}
+
+/** The fewest cells a tile needs: its label, or its figure with its delta. */
+const need = (stat: Stat): number => Math.max(cells(stat.label), figureWidth(stat))
 
 /**
  * How many tiles go on each line of a band `inner` wide, and how wide each
@@ -80,13 +105,15 @@ function share(widths: number[], extra: number): number[] {
   return widths.map((w, i) => w + each + (i < rest ? 1 : 0))
 }
 
-/** A tile's figure line: the figure, then its trend against the slot's right edge when there is room for five points. */
+/** A tile's figure line: the figure and its delta, then its trend against the slot's right edge when there is room for five points. */
 function figureLine(stat: Stat, width: number): Segment[] {
-  const value = figure(stat)
-  const room = width - cells(stat.value) - 1
-  if (!moves(stat.trend) || room < TREND_MIN_POINTS) return [value, { text: spaces(width - cells(stat.value)) }]
+  const delta = deltaSegment(stat)
+  const lead: Segment[] = [figure(stat), ...(delta === null ? [] : [{ text: ' ' }, delta])]
+  const used = figureWidth(stat)
+  const room = width - used - 1
+  if (!moves(stat.trend) || room < TREND_MIN_POINTS) return [...lead, { text: spaces(width - used) }]
   const glyphs = sparkline(stat.trend.slice(-Math.min(TREND_MAX_POINTS, room)))
-  return [value, { text: spaces(width - cells(stat.value) - cells(glyphs)) }, { text: glyphs, dim: true }]
+  return [...lead, { text: spaces(width - used - cells(glyphs)) }, { text: glyphs, color: ACCENT }]
 }
 
 /** The tiles as one framed band `width` wide: a line of figures and a line of labels per line of tiles. */
@@ -115,7 +142,10 @@ const framed = (key: string, segments: Segment[]): Row => ({ key, segments: [{ t
 /** The narrow summary line: each figure, then its label, wrapped. */
 function lineRows(stats: Stat[], width: number): Row[] {
   const groups = stats
-    .map((s): Segment[] => [figure(s), { text: ' ' }, label(s, cells(s.label)), ...(moves(s.trend) ? [{ text: ` ${sparkline(s.trend.slice(-8))}`, dim: true }] : [])])
+    .map((s): Segment[] => {
+      const delta = deltaSegment(s)
+      return [figure(s), { text: ' ' }, label(s, cells(s.label)), ...(delta === null ? [] : [{ text: ' ' }, delta]), ...(moves(s.trend) ? [{ text: ` ${sparkline(s.trend.slice(-8))}`, color: ACCENT }] : [])]
+    })
   return wrapGroups('tiles-line', groups, width, 3, 0)
 }
 

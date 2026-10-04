@@ -652,15 +652,19 @@ describe('knossos mod', () => {
       hotspots: [],
       fan_in: [{ path, dependent_files: 123_456, boundaries: ['Core'], boundary: 'module:cli (+composer:app/cli)', top_dependents: [path] }],
       cycles: { count: 2, truncated: true, truncation_reasons: ['result_limit'], largest: [{ size: 14, members: nodes.map(n => n.name), nodes, nodes_truncated: false }, { size: 2, members: [long, long], nodes: nodes.slice(0, 2), nodes_truncated: false }] },
-      trend: Array.from({ length: 8 }, (_, i) => ({ snapshot_id: `s${i}`, cycles: i % 3, max_degree: 100 + i })),
+      trend: Array.from({ length: 8 }, (_, i) => ({ snapshot_id: `s${i}`, cycles: i % 3, max_degree: 100 + i, dead_code: 90_000 + i, diagnostics: i, components: 1_234_567 + i })),
+      deltas: { against: 's6', components: 123_456, cycles: -1, max_degree: 12_345, dead_code: 99_999, diagnostics: 0 },
+      in_degree: { buckets: [{ from: 0, to: 0, components: 1_234_567 }, { from: 1, to: 99_999, components: 3 }, { from: 100_000, to: null, components: 1 }], truncated: true },
     })
+    const matrix = (JSON.parse(d) as { boundary_matrix: Record<string, unknown> }).boundary_matrix
+    const withFlows = JSON.stringify({ ...(JSON.parse(d) as object), boundary_matrix: { ...matrix, flows: [{ from: 2, to: 0, edges: 1_234_567, forbidden: true }, { from: 0, to: 2, edges: 3, forbidden: false }] } })
     const detail = JSON.parse(fullDetailOf('Router')) as { component: Record<string, unknown> }
     detail.component.display_name = long
     detail.component.used_by = { count: 9, truncated: false, names: [], items: nodes.slice(0, 9).map((n, i) => ({ ...n, edges: 1000 + i })) }
     const file = JSON.parse(fileDetailOf(path)) as { file: { dependents: { items: unknown[] } } }
     file.file.dependents.items = [{ path, edges: 99_999, boundary: 'module:cli (+composer:app/cli)' }]
     const touched = brief({ changed_files: [path], impact: { [path]: { path, dependent_files: 123_456, boundaries: ['Core', 'Http'], boundary: 'Core' } } })
-    const w = world(on, { dashboard: [{ stdout: d }], detail: [{ stdout: JSON.stringify(detail) }], file: [{ stdout: JSON.stringify(file) }], brief: [{ stdout: touched }] })
+    const w = world(on, { dashboard: [{ stdout: withFlows }], detail: [{ stdout: JSON.stringify(detail) }], file: [{ stdout: JSON.stringify(file) }], brief: [{ stdout: touched }] })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/${path}`)
@@ -671,7 +675,7 @@ describe('knossos mod', () => {
       for (const bodyColumns of [40, 60, 100, 140, 200]) {
         for (const bodyRows of [24, 60]) {
           const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows } } })
-          for (const step of ['tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'next:1', 'tab:issues', 'tab:changes', 'keys', 'tab:hubs', 'row:0', 'back', `row:${hubs.length}`]) {
+          for (const step of ['tab:overview', 'row:3', 'tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'next:1', 'tab:issues', 'tab:changes', 'keys', 'tab:hubs', 'row:0', 'back', `row:${hubs.length}`]) {
             if ((await ui.find({ key: step })) === undefined) continue
             await ui.press({ key: step })
             await w.clock.settle()
@@ -1171,7 +1175,8 @@ describe('knossos mod', () => {
     await slash($, '')
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'top-0' }))?.text).toContain('Router')
+    await ui.press({ key: 'tab:hubs' })
+    expect((await ui.find({ key: 'hub-0' }))?.text).toContain('Router')
     expect((await ui.find({ key: 'title' }))?.text).toContain('● refresh failed 1s')
     await ui.unmount()
   })
@@ -1205,7 +1210,8 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const ui = await mountPane($)
     expect((await ui.find({ key: 'title' }))?.text).toMatch(/● refresh failed 11s $/)
-    expect((await ui.find({ key: 'top-0' }))?.text).toContain('Router')
+    await ui.press({ key: 'tab:hubs' })
+    expect((await ui.find({ key: 'hub-0' }))?.text).toContain('Router')
     await ui.unmount()
   })
 
@@ -1214,7 +1220,6 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'top-head' }))?.text).toContain('partial')
     await ui.press({ key: 'tab:hubs' })
     expect((await ui.find({ key: 'hubs-head' }))?.text).toContain('partial')
     await ui.unmount()
@@ -1319,7 +1324,7 @@ describe('knossos mod', () => {
     expect(w.opened).toEqual([])
   })
 
-  test('the overview shows health and the most depended on, on both surfaces', async ($, on) => {
+  test('the overview shows the figures and lists nothing, on both surfaces; the hubs are on Hubs', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
     await $.session.start(START)
     await w.clock.settle()
@@ -1330,13 +1335,46 @@ describe('knossos mod', () => {
       expect(await ui.find({ key: 'summary' })).toBeUndefined()
       // Narrow, the stat tiles are a line of figures under the tabs.
       expect(await tilesLine(ui)).toMatch(/^1 cycle +12 max degree +4 dead code +0 drifted$/)
+      expect(await ui.find({ key: 'top-0' })).toBeUndefined()
+      expect(titled((await ui.find({ key: 'session-head' }))?.text)).toMatch(/^This session +nothing changed yet$/)
+      await ui.press({ key: 'tab:hubs' })
       // The marked row is tinted to the card's edge: the spaces that carry the tint end it.
-      expect((await ui.find({ key: 'top-0' }))?.text).toMatch(/^› +Router .*41 *$/)
+      expect((await ui.find({ key: 'hub-0' }))?.text).toMatch(/^› +Router .*41/)
       // A hotspot that is not a hub is listed once, marked.
-      expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/◆ Kernel/)
-      expect(await ui.find({ key: 'tab-rule' })).toBeUndefined()
+      expect((await ui.find({ key: 'hub-1' }))?.text).toMatch(/◆ Kernel/)
+      await ui.press({ key: 'tab:overview' })
       await ui.unmount()
     }
+  })
+
+  test('an Overview bucket opens Hubs narrowed to it, x clears it; a flow opens its cell on Boundaries; the way to Changes opens Changes', async ($, on) => {
+    const in_degree = { buckets: [{ from: 0, to: 0, components: 30 }, { from: 1, to: 40, components: 12 }, { from: 41, to: null, components: 2 }], truncated: false }
+    const d = JSON.parse(boundariesDashboard({ in_degree })) as { boundary_matrix: Record<string, unknown> }
+    d.boundary_matrix.flows = [{ from: 1, to: 0, edges: 3, forbidden: true }]
+    const w = world(on, { dashboard: [{ stdout: JSON.stringify(d) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 60 } } })
+      // The top bucket is the hubs: Router has 41 dependents.
+      expect((await ui.find({ key: 'row:2' }))?.props.label).toBe('41+')
+      expect((await ui.find({ key: 'degree-2' }))?.text).toMatch(/◆ 41\+ .* 2 hubs/)
+      await ui.press({ key: 'row:2' })
+      expect((await ui.find({ key: 'degree-row' }))?.text).toMatch(/in-degree 41\+ · 1 listed of 2/)
+      expect((await ui.find({ key: 'hub-0' }))?.text).toContain('Router')
+      expect(await ui.find({ key: 'hub-1' })).toBeUndefined()
+      await ui.press({ key: 'clear' })
+      expect(await ui.find({ key: 'degree-row' })).toBeUndefined()
+      expect((await ui.find({ key: 'hub-1' }))?.text).toContain('Kernel')
+      // A flow, forbidden, opens the Boundaries tab with its source marked and its cell run to its target.
+      await ui.press({ key: 'tab:overview' })
+      expect((await ui.find({ key: 'flow-0' }))?.text).toMatch(/Core +→ ■ Http .* 3 × forbidden/)
+      await ui.press({ key: 'row:3' })
+      expect(titled((await ui.find({ key: 'coupling-head' }))?.text)).toMatch(/^Core → Http/)
+      await ui.press({ key: 'tab:overview' })
+      await ui.unmount()
+    }
+    expect(w.prompts).toEqual([])
   })
 
   test('truncated counts read as lower bounds', async ($, on) => {
@@ -1404,7 +1442,7 @@ describe('knossos mod', () => {
       expect((await ui.find({ key: 'pane' }))?.text).toContain('sends no boundary map')
       expect(await ui.find({ key: 'hub-0' })).toBeUndefined()
       await ui.press({ key: 'tab:overview' })
-      expect(await ui.find({ key: 'top-0' })).toBeDefined()
+      expect(await ui.find({ key: 'session-head' })).toBeDefined()
       await ui.unmount()
     }
   })
@@ -1414,14 +1452,15 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     expect((await ui.find({ key: 'down' }))?.props.hotkey).toBe('j')
     expect((await ui.find({ key: 'up' }))?.props.hotkey).toBe('k')
     expect((await ui.find({ key: 'open' }))?.props.hotkey).toBe('o')
     await ui.press({ key: 'up' })
-    expect((await ui.find({ key: 'top-0' }))?.text).toMatch(/^›/)
+    expect((await ui.find({ key: 'hub-0' }))?.text).toMatch(/^›/)
     await ui.press({ key: 'down' })
-    expect((await ui.find({ key: 'top-0' }))?.text).toMatch(/^ /)
-    expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
+    expect((await ui.find({ key: 'hub-0' }))?.text).toMatch(/^ /)
+    expect((await ui.find({ key: 'hub-1' }))?.text).toMatch(/^›/)
     await ui.press({ key: 'open' })
     await w.clock.settle()
     expect((await ui.find({ key: 'detail' }))?.text).toContain('App\\Kernel')
@@ -1434,17 +1473,18 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     expect(await $.ui.focus({ requestId: 'knossos', key: 'row:1' } as never)).toEqual({})
-    expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
+    expect((await ui.find({ key: 'hub-1' }))?.text).toMatch(/^›/)
     // Onto a tab: the marker stays on the list.
     await $.ui.focus({ requestId: 'knossos', key: 'tab:hubs' } as never)
-    expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
+    expect((await ui.find({ key: 'hub-1' }))?.text).toMatch(/^›/)
     // Enter on the focused row presses it.
     await ui.press({ key: 'row:1' })
     await w.clock.settle()
     expect((await ui.find({ key: 'detail' }))?.text).toContain('App\\Kernel')
     await ui.press({ key: 'back' })
-    expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
+    expect((await ui.find({ key: 'hub-1' }))?.text).toMatch(/^›/)
     await ui.unmount()
   })
 
@@ -1712,11 +1752,12 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     const loads = w.dashboardRuns().length
     await ui.press({ key: 'rescan' })
     await w.clock.settle()
     expect((await ui.find({ key: 'title' }))?.text).toMatch(/not an allowed root +● scan failed /)
-    expect((await ui.find({ key: 'top-0' }))?.text).toContain('Router')
+    expect((await ui.find({ key: 'hub-0' }))?.text).toContain('Router')
     expect(w.dashboardRuns().length).toBe(loads)
     // Still stale, so it can be tried again; silence is a failure too.
     await ui.press({ key: 'rescan' })
@@ -1863,6 +1904,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     const detail = (await ui.find({ key: 'detail' }))?.text
@@ -1882,6 +1924,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:1' })
     await w.clock.settle()
     expect((await ui.find({ key: 'detail' }))?.text).toContain('App\\Kernel')
@@ -1895,6 +1938,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:0' })
     // Drawn from state alone: no process has run inside the render.
     expect((await ui.find({ key: 'detail' }))?.text).toContain('Inspecting Router…')
@@ -1911,6 +1955,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     await ui.press({ key: 'back' })
@@ -1930,6 +1975,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     await ui.press({ key: 'back' })
@@ -1963,11 +2009,11 @@ describe('knossos mod', () => {
             expect(width, `${surface} ${bodyColumns} ${tab} ${String(row.key)}`).toBeLessThanOrEqual(bodyColumns)
           }
         }
-        await ui.press({ key: 'tab:overview' })
+        await ui.press({ key: 'tab:hubs' })
         const grid = (await ui.findAll({ type: 'Box' })).some(b => typeof b.key === 'string' && b.key.includes('|'))
         expect(grid, `${surface} ${bodyColumns}`).toBe(bodyColumns > 130)
-        // Framed from 80 columns on, a light top rule below; wide, the components' card stands right in the grid.
-        const keyed = (await ui.findAll({ type: 'Box' })).find(b => typeof b.key === 'string' && (bodyColumns > 130 ? b.key.endsWith('|top-head') : b.key === 'top-head'))
+        // Framed from 80 columns on, a light top rule below; wide, the files' card stands right in the grid.
+        const keyed = (await ui.findAll({ type: 'Box' })).find(b => typeof b.key === 'string' && (bodyColumns > 130 ? b.key.endsWith('|files-head') : b.key === 'hubs-head'))
         const text = keyed?.text ?? ''
         const head = bodyColumns > 130 ? text.slice(text.lastIndexOf('╭─ ')) : text
         expect(head.startsWith(bodyColumns >= 80 ? '╭─ ' : '── '), `${surface} ${bodyColumns}: ${head}`).toBe(true)
@@ -2015,6 +2061,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     await ui.press({ key: 'back' })
@@ -2035,6 +2082,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     await ui.press({ key: 'back' })
@@ -2083,6 +2131,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     expect((await ui.find({ key: 'detail' }))?.text).toContain('No details for Router')
@@ -2155,7 +2204,8 @@ describe('knossos mod', () => {
     await w.clock.advance(5_000)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'top-0' }))?.text).toContain('Newer')
+    await ui.press({ key: 'tab:hubs' })
+    expect((await ui.find({ key: 'hub-0' }))?.text).toContain('Newer')
     await ui.unmount()
   })
 
@@ -2318,6 +2368,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     for (const surface of ['terminal', 'desktop'] as const) {
       const wide = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 140 } })
+      await wide.press({ key: 'tab:hubs' })
       await wide.press({ key: 'row:0' })
       await w.clock.settle()
       expect(titled((await wide.find({ key: 'detail-head' }))?.text)).toMatch(/^Router +class · Http$/)
@@ -2446,13 +2497,13 @@ describe('knossos mod', () => {
       const ui = await mountPane($, surface)
       // Narrow: the tiles' line says every figure, the title row the name and the pill alone.
       expect(await ui.find({ key: 'summary' })).toBeUndefined()
-      expect(await tilesLine(ui)).toMatch(/^1,234 components +2 boundaries .*2 policy +1 diagnostics$/)
+      expect(await tilesLine(ui)).toMatch(/^1,234 components +2 boundaries .*1 diagnostics +2 policy +0 drifted$/)
       await ui.unmount()
       // From the medium tier the tiles say the figures, and the languages are chips in the title row.
       const wide = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 140, scroll: { offset: 0, bodyRows: 40 } } })
       expect((await wide.findAll({ type: 'Text' })).filter(t => t.props.backgroundColor === 'userMessageBackground').map(t => t.text).slice(0, 2)).toEqual([' PHP ', ' TS '])
-      expect((await wide.find({ key: 'tiles-0-label' }))?.text).toMatch(/components +│ boundaries +│ cycles? +│ .*│ policy +│ diagnostics +│$/)
-      expect((await wide.find({ key: 'tiles-0-value' }))?.text).toMatch(/1,234 +│ 2 +│ .*│ 2 +│ 1 +│$/)
+      expect((await wide.find({ key: 'tiles-0-label' }))?.text).toMatch(/components +│ boundaries +│ cycles? +│ .*│ diagnostics +│ policy +│ drifted +│$/)
+      expect((await wide.find({ key: 'tiles-0-value' }))?.text).toMatch(/1,234 +│ 2 +│ .*│ 1 +│ 2 +│ 0 +│$/)
       await wide.unmount()
     }
   })
@@ -2543,6 +2594,7 @@ describe('knossos mod', () => {
     }
     // In the detail, the component on show.
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     await ui.press({ key: 'copy' })
@@ -2569,8 +2621,8 @@ describe('knossos mod', () => {
       await ui.press({ key: 'ask' })
       await w.clock.settle()
       expect(w.prompts).toHaveLength(surface === 'terminal' ? 1 : 2)
-      // The marker starts on the file the turn touched ("Look at now"): the prompt is about it.
-      expect(w.prompts.at(-1)).toBe('Using the Knossos graph, what depends on src/Router.php and what would break if I changed it?')
+      // The marker starts on the way to this session's changes: the prompt is about what they reached.
+      expect(w.prompts.at(-1)).toBe('Using the Knossos graph, what did the changes in this session reach, and which tests should I run?')
       await ui.unmount()
     }
   })
@@ -2711,6 +2763,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     const place = await ui.find({ type: 'Markdown' })
@@ -2781,7 +2834,7 @@ describe('knossos mod', () => {
     expect(w.prompts).toEqual([])
   })
 
-  test('a changed file opens a detail that names who depends on it, from Changes, Last turn and Look at now', async ($, on) => {
+  test('a changed file opens a detail that names who depends on it, from Changes', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], file: [{ stdout: fileDetailOf('src/Router.php') }], detail: [{ stdout: fullDetailOf('Router') }] })
     await $.session.start(START)
     await w.clock.settle()
@@ -2790,8 +2843,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
-      // Look at now is row 0, the last turn's file row 1; each opens the same file's detail.
-      for (const [tab, key] of [['tab:overview', 'row:0'], ['tab:overview', 'row:1'], ['tab:changes', 'row:0']] as const) {
+      for (const [tab, key] of [['tab:changes', 'row:0']] as const) {
         await ui.press({ key: tab })
         await ui.press({ key })
         await w.clock.settle()
@@ -2805,7 +2857,7 @@ describe('knossos mod', () => {
         expect(titled(text)).toMatch(/Declares · 2 components/)
         await ui.press({ key: 'back' })
         // Back on the tab, the marker stands where the detail was opened from.
-        expect((await ui.find({ key: key === 'row:1' ? 'turn-0' : tab === 'tab:changes' ? 'change-0' : 'look-file' }))?.text).toMatch(/^›/)
+        expect((await ui.find({ key: 'change-0' }))?.text, `${tab} ${key}`).toMatch(/^›/)
       }
       await ui.unmount()
     }
@@ -2924,57 +2976,51 @@ describe('knossos mod', () => {
     }
   })
 
-  test('the trend grows into a chart with rows to spare: a Raster on the terminal, glyphs elsewhere', async ($, on) => {
-    const trend = [1, 3, 2, 2, 4, 3].map((cycles, i) => ({ snapshot_id: `s${i}`, cycles, max_degree: 10 }))
+  test('health over time is one row per figure on one axis, as text on every surface; the tiles carry a sparkline', async ($, on) => {
+    const trend = [1, 3, 2, 2, 4, 3].map((cycles, i) => ({ snapshot_id: `s${i}`, cycles, max_degree: 10, dead_code: 9 - i, diagnostics: 0 }))
     const w = world(on, { dashboard: [{ stdout: paneDashboard({ trend }) }] })
     await $.session.start(START)
     await w.clock.settle()
-    const tall = { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 80 } }
-    const term = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: tall })
-    expect(titled((await term.find({ key: 'trend-head' }))?.text)).toMatch(/^Trend +6 scans$/)
-    expect((await term.findAll({ type: 'Raster' })).map(r => r.key)).toContain('raster-trend')
-    await term.unmount()
-    const desk = await $.ui.mount({ plugin: 'knossos', surface: 'desktop', component: 'Pane', requestId: 'knossos', props: tall })
-    expect(await desk.find({ type: 'Raster' })).toBeUndefined()
-    expect((await desk.find({ key: 'trend-0-0' }))?.text).toMatch(/4 ┤/)
-    await desk.unmount()
-    // Short, no chart: the tiles' sparkline says it.
-    const short = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: { ...tall, scroll: { offset: 0, bodyRows: 24 } } })
-    expect(await short.find({ key: 'trend-head' })).toBeUndefined()
-    expect((await short.find({ key: 'tiles-0-value' }))?.text).toMatch(/[▁-█]{5}/)
-    await short.unmount()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      for (const bodyRows of [24, 80]) {
+        const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows } } })
+        expect(titled((await ui.find({ key: 'health-head' }))?.text)).toMatch(/^Health over time +6 snapshots$/)
+        expect((await ui.find({ key: 'health-0' }))?.text).toMatch(/│ cycles +[▁-█]+ +3 +1–4 /)
+        expect((await ui.find({ key: 'health-1' }))?.text).toMatch(/│ unreferenced +[▁-█]+ +4 +4–9 /)
+        expect((await ui.find({ key: 'health-3' }))?.text).toMatch(/│ diagnostics +▁+ +0 +no change /)
+        expect(await ui.find({ type: 'Raster' })).toBeUndefined()
+        expect((await ui.find({ key: 'tiles-0-value' }))?.text).toMatch(/[▁-█]{5}/)
+        await ui.unmount()
+      }
+    }
   })
 
-  test('look at now: the marker starts on the riskiest file touched, e opens the marked row and t copies the test command', async ($, on) => {
+  test('this session: the way to Changes is marked first, t copies the test command, and o opens Changes', async ($, on) => {
     const covered = brief({ tests: [{ path: 'hooks/lib/band.spec.ts', distance: 1, js_runner: 'vitest' }] })
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }], brief: [{ stdout: covered }] })
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect(await ui.find({ key: 'look-head' })).toBeUndefined()
+    expect(titled((await ui.find({ key: 'session-head' }))?.text)).toMatch(/^This session +nothing changed yet$/)
     await edit($, `${ROOT}/src/Router.php`)
     await $.turn.complete(TURN)
     await w.clock.settle()
-    expect(titled((await ui.find({ key: 'look-head' }))?.text)).toMatch(/Look at now +this session/)
-    expect((await ui.find({ key: 'look-file' }))?.text).toMatch(/^› +Router\.php Http · 41 dependents/)
-    expect((await ui.find({ key: 'look-tests' }))?.text).toContain('1 test reaches these changes')
-    await ui.press({ key: 'edit' })
+    expect((await ui.find({ key: 'session-said' }))?.text).toContain('1 file · 41 dependents · 1 test reaches them')
+    expect((await ui.find({ key: 'session-open' }))?.text).toMatch(/^› +Changes/)
+    expect((await ui.find({ key: 'tests' }))?.props.hotkey).toBe('t')
+    // The way to Changes has no file: `e` is not offered.
+    expect(await ui.find({ key: 'edit' })).toBeUndefined()
     await ui.press({ key: 'tests' })
     await w.clock.settle()
-    expect(w.editorRuns()).toEqual([['code', '-g', '/repo/src/Router.php']])
     expect(w.copies.at(-1)?.text).toBe('npx vitest run hooks/lib/band.spec.ts')
-    // Past the two file rows the marker is on the hub, which has no file: `e` goes, and opens nothing.
-    await ui.press({ key: 'down' })
-    await ui.press({ key: 'down' })
-    expect(await ui.find({ key: 'edit' })).toBeUndefined()
     await ui.press({ key: 'open' })
-    await w.clock.settle()
-    expect(w.detailRuns().at(-1)?.slice(2)).toEqual(['component-detail', ROOT, 'App\\Router'])
-    expect(w.editorRuns()).toHaveLength(1)
+    expect((await ui.find({ key: 'tab:changes-bg' }))?.props.backgroundColor).toBe('selectionBg')
+    expect((await ui.find({ key: 'change-0' }))?.text).toMatch(/^› .*src\/Router\.php/)
+    await ui.press({ key: 'tab:overview' })
     await ui.unmount()
   })
 
-  test('look at now warns when no test reaches the changes', async ($, on) => {
+  test('this session warns when no test reaches the changes', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
     await $.session.start(START)
     await w.clock.settle()
@@ -2982,7 +3028,7 @@ describe('knossos mod', () => {
     await $.turn.complete(TURN)
     await w.clock.settle()
     const again = await mountPane($)
-    expect((await again.find({ key: 'look-tests' }))?.text).toContain('▲ no test reaches these changes')
+    expect((await again.find({ key: 'session-said' }))?.text).toContain('▲ no test reaches them')
     expect(await again.find({ key: 'tests' })).toBeUndefined()
     await again.unmount()
   })
@@ -3601,6 +3647,8 @@ describe("the pane's header, marked rows, hover cards and heat map cells", () =>
     for (const surface of ['terminal', 'desktop'] as const) {
       // Tall enough for everything: blank rows above the name, between it and the tabs, and before the rule; the bar the last row of the pane.
       const tall = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...WIDE, scroll: { offset: 0, bodyRows: 80 } } })
+      // On Hubs, whose list gives rows back to a short pane.
+      await tall.press({ key: 'tab:hubs' })
       const rows = ((await tall.find({ key: 'pane' }))!.children as { key?: unknown; props?: { key?: unknown; position?: unknown } }[]).filter(c => c.props?.position !== 'absolute').map(c => String(c.key ?? c.props?.key))
       expect(rows.slice(0, 6)).toEqual(['head-top', 'title', 'head-gap', 'tabs', 'head-end', 'head-rule'])
       expect(rows).toHaveLength(80)
@@ -3613,13 +3661,14 @@ describe("the pane's header, marked rows, hover cards and heat map cells", () =>
       expect(await short.find({ key: 'bar' })).toBeUndefined()
       await short.press({ key: 'keys' })
       const bar = await short.find({ key: 'bar' })
-      expect(bar?.props).toMatchObject({ position: 'absolute', top: 15 })
+      // Hubs offers more keys than fit one row at 60 columns: the bar is three rows.
+      expect(bar?.props).toMatchObject({ position: 'absolute', top: 13 })
       expect(bar?.text).not.toContain('● fresh')
       await short.unmount()
       const scrolled = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...WIDE, bodyColumns: 60, scroll: { offset: 6, bodyRows: 16 } } })
       // The key list is still open: the view outlives the mount.
-      // Its state takes the bar a second row.
-      expect((await scrolled.find({ key: 'bar' }))?.props).toMatchObject({ position: 'absolute', top: 20 })
+      // Its state joins the bar's last row.
+      expect((await scrolled.find({ key: 'bar' }))?.props).toMatchObject({ position: 'absolute', top: 19 })
       expect((await scrolled.find({ key: 'bar' }))?.text).toContain('● fresh 1s')
       await scrolled.press({ key: 'keys' })
       await scrolled.unmount()

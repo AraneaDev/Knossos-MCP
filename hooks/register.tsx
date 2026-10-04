@@ -1261,6 +1261,12 @@ async function openRow($: EngineInterface, index?: number): Promise<void> {
   const item = (await currentList($))[at]
   if (item === undefined) return
   await update($, view, v => ({ ...v, selected: at }))
+  // An Overview chart's bar opens the tab it counts: Hubs narrowed to a bucket, a flow's cell on Boundaries, Changes.
+  const jump = item.jump
+  if (jump !== undefined) {
+    await update($, view, (v): KnossosView => ({ ...v, tab: jump.tab, selected: jump.selected ?? 0, degree: jump.degree ?? null, filtering: false, drift: false, target: jump.target }))
+    return
+  }
   // A boundary opens nothing: marking it is what spells it out.
   if (item.inert === true) return
   await showComponent($, { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}), ...(item.changed === true ? { changed: true } : {}) })
@@ -1468,7 +1474,7 @@ async function unfoldCycle($: EngineInterface, id: string): Promise<void> {
 async function pressAction($: EngineInterface, id: string, surface?: RenderSurface): Promise<unknown> {
   if (id.startsWith('tab:') || id.startsWith('tabkey:')) {
     const tab = id.slice(id.indexOf(':') + 1) as PaneTab
-    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false, drift: false, target: undefined }))
+    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false, drift: false, target: undefined, degree: null }))
     return
   }
   if (id === 'target') return moveCell($, null)
@@ -1490,7 +1496,7 @@ async function pressAction($: EngineInterface, id: string, surface?: RenderSurfa
   if (id === 'back') return update($, view, v => ({ ...v, inspect: null, selected: v.opened ?? 0 }))
   if (id === 'keys') return update($, view, v => ({ ...v, showKeys: !v.showKeys }))
   if (id === 'filter') return openFilter($)
-  if (id === 'clear') return update($, view, v => ({ ...v, filter: '', filtering: false, selected: 0 }))
+  if (id === 'clear') return update($, view, v => ({ ...v, filter: '', filtering: false, degree: null, selected: 0 }))
   if (id === 'sort') return update($, view, v => ({ ...v, sort: SORTS[(SORTS.indexOf(v.sort) + 1) % SORTS.length] ?? 'in', selected: 0 }))
   if (id === 'rescan') return requestRescan($)
   if (id === 'copy') return copySubject($, surface)

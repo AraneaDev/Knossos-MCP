@@ -11,7 +11,7 @@ import { diffBlock } from './diff'
 import type { DiffView } from './diff'
 import { moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
-import type { ComponentDetail, Counterpart, Dashboard, DetailState, Inspected } from '../../types'
+import type { ComponentDetail, Counterpart, Dashboard, DetailState, Inspected, PaneTab } from '../../types'
 import { countLabel, detailLines } from './envelopes'
 import { ACCENT, boundaryColour, boundaryLabel, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
 import { DIAGRAM_MIN, neighbourhood } from './diagram'
@@ -61,7 +61,16 @@ export type Openable = {
   ask?: string
   /** A file the session's changes list: its detail shows the change since the session began. */
   changed?: true
+  /** Opens another tab instead of a detail (an Overview chart's bar): the tab, and how it opens. */
+  jump?: Jump
 }
+
+/**
+ * Where a press on an Overview chart takes the pane: a tab, the in-degree
+ * range Hubs narrows to, the row its marker starts on, and the boundary a
+ * Boundaries cell runs to.
+ */
+export type Jump = { tab: PaneTab; degree?: { from: number; to: number | null }; selected?: number; target?: string }
 
 export type ViolationLine = { source: Openable & { boundary: string | null }; target: string; targetBoundary: string | null; place: string }
 export type DeadLine = Openable & { boundary: string | null; place: string; testOnly: boolean }

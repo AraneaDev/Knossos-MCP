@@ -253,16 +253,15 @@ describe('the drifted files', () => {
 describe('the key model', () => {
   const session = accumulate(NO_CHANGES, brief())
 
-  it('e on Overview opens the marked row, whatever list the marker is in', () => {
+  it('e on Overview opens nothing: its rows open other tabs, never a file', () => {
     const overview = pane({ session })
-    // Look at now, then the last turn's file, then the most depended on.
-    expect(listFor(overview).map(o => o.canonical)).toEqual(['src/Http/Router.php', 'src/Http/Router.php', 'App\\Http\\Router'])
-    expect(editTarget(overview)).toEqual({ path: `${ROOT}/src/Http/Router.php`, line: null })
-    expect(editTarget({ ...overview, selected: 1 })).toEqual({ path: `${ROOT}/src/Http/Router.php`, line: null })
-    // A hub has no file on the dashboard: no `e` there, and its button goes with it.
-    expect(editTarget({ ...overview, selected: 2 })).toBeNull()
-    expect(keysOf(paneRows({ ...overview, selected: 2 }, 90))).not.toContain('e')
-    expect(keysOf(paneRows(overview, 90))).toEqual(['j', 'k', 'o', 'e', 'c', 'q', 'd', 'h'])
+    // The way to Changes first; the charts' bars after it, when the dashboard sends them.
+    expect(listFor(overview).map(o => o.canonical)).toEqual(['Changes'])
+    expect(listFor(overview)[0]?.jump).toEqual({ tab: 'changes' })
+    expect(editTarget(overview)).toBeNull()
+    // `t` stands in the session card, beside the tests it copies, not in the bar.
+    expect(keysOf(paneRows(overview, 90))).toEqual(['j', 'k', 'o', 'c', 'q', 'd', 'h'])
+    expect(paneRows(overview, 90).flatMap(r => r.segments).filter(s => s.press?.hotkey === 't')).toHaveLength(1)
   })
 
   it('keeps the same keys on Changes: c copies the marked file, t the test command', () => {
@@ -273,23 +272,22 @@ describe('the key model', () => {
 
   it('lists every key in the help, t and d among them', () => {
     const text = textOf(paneRows({ ...pane({ session }), showKeys: true }, 90))
-    expect(text).toMatch(/\n {2}o +open the marked row: a component or a file shows what depends on it/)
+    expect(text).toMatch(/\n {2}o +open the marked row: a component or a file shows what depends on/)
     expect(text).toMatch(/\n {2}e +open the marked row's file in your editor\n/)
-    expect(text).toMatch(/\n {2}t +copy the command for the tests that reach this session's changes/)
+    expect(text).toMatch(/\n {2}t +on Overview and Changes: copy the command for the tests/)
     expect(text).toMatch(/\n {2}d +list the files drifted since the snapshot/)
   })
 })
 
 describe('the scope of every count', () => {
-  it("says which counts are this session's and which the last turn's, on Overview and Changes alike", () => {
+  it("says the counts are this session's, on Overview and Changes alike", () => {
     // Two turns: the session reaches two tests, the last turn one.
     const first = brief({ tests: [{ path: 'tests/Http/RouterTest.php', distance: 1 }, { path: 'tests/Core/KernelTest.php', distance: 2 }] })
     const last = brief()
     const session = accumulate(accumulate(NO_CHANGES, first), last)
     const overview = textOf(paneRows(pane({ session, turn: last }), 90))
-    expect(overview).toMatch(/Look at now +this session/)
-    expect(overview).toContain('2 tests reach these changes')
-    expect(overview).toMatch(/Last turn +1 file → 41 dependents · 1 test/)
+    expect(overview).toMatch(/This session/)
+    expect(overview).toMatch(/1 file · 41 dependents · 2 tests reach them/)
     const changes = textOf(paneRows(pane({ session, turn: last, view: { tab: 'changes' } }), 90))
     expect(changes).toMatch(/Changes this session +2 turns/)
     expect(changes).toMatch(/Tests that reach these changes · 2/)
