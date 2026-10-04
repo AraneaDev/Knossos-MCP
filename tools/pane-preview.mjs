@@ -329,6 +329,40 @@ const GIT = envelopes.parseSessionHead(wrapper('session-head')) ?? null
 /** The Branch tab's comparison with the merge base, read as the mod reads it (`branch-diff`), once. */
 const BRANCH = { snapshot: dashboard.snapshot_id ?? null, phase: 'done', answer: envelopes.parseBranchDiff(wrapper('branch-diff')) }
 
+/** The Churn tab's hotspots, read as the mod reads them (`churn`), once, for the commit the checkout is at. */
+const CHURN = { head: GIT?.rev ?? null, phase: 'done', answer: envelopes.parseChurn(wrapper('churn')) }
+
+/** The blast radius of the component the detail shows, read as the mod reads it (`blast-radius`). */
+const RINGS =
+  detail?.component == null
+    ? null
+    : { name: detail.component.canonical, snapshot: dashboard.snapshot_id ?? null, phase: 'done', answer: envelopes.parseBlastRadius(wrapper('blast-radius', `--component=${detail.component.canonical}`)) }
+
+/**
+ * A route the path explorer draws: from the first component three hops out
+ * in the detail's rings to the component the detail shows, read as the mod
+ * reads it (`path-between`). Null when the rings name none that far.
+ */
+const ROUTE_ENDS = (() => {
+  const far = RINGS?.answer?.rings?.find(r => r.hop >= 3)?.items?.[0] ?? RINGS?.answer?.rings?.find(r => r.hop === 2)?.items?.[0]
+  if (far === undefined || detail?.component == null) return null
+  return { from: { name: far.canonical_name, label: far.name }, to: { name: detail.component.canonical, label: detail.component.name }, index: 0, back: null }
+})()
+const ROUTE = ROUTE_ENDS === null ? null : { from: ROUTE_ENDS.from.name, to: ROUTE_ENDS.to.name, snapshot: dashboard.snapshot_id ?? null, phase: 'done', answer: envelopes.parsePathBetween(wrapper('path-between', `--from=${ROUTE_ENDS.from.name}`, `--to=${ROUTE_ENDS.to.name}`)) }
+
+/** The detail of the file the Churn tab ranks first: what its panel shows beside the list. */
+const churnDetail = (() => {
+  const path = CHURN.answer?.files?.[0]?.path
+  if (path === undefined) return null
+  const shown = { name: path, label: path, file: true }
+  const answer = envelopes.parseFileDetail(wrapper('file-detail', path))
+  return layout.fileDetailInput(shown, { snapshot_id: dashboard.snapshot_id, name: path, file: true, detail: null, fileDetail: answer, phase: 'done' }, dashboard.project_root, palette.huesOf(dashboard))
+})()
+
+/** A note being added on the detail's component: as typed, and as knossos checked it before the person says yes. */
+const NOTE_TYPED = detail?.component == null ? null : { component: detail.component.canonical, phase: 'editing', value: 'Every stable id goes through here: keep it pure', previous: null, reason: null }
+const NOTE_ASKED = NOTE_TYPED === null ? null : { ...NOTE_TYPED, phase: 'confirming', previous: null }
+
 /** The finder over the pane, as after typing `dash`: the matches `graph-search` reads for it. */
 const FOUND = { query: 'dash', for: 'dash', phase: 'idle', answer: envelopes.parseGraphSearch(wrapper('graph-search', '--query=dash')) }
 
@@ -355,9 +389,9 @@ function couplingsFor(input) {
 }
 
 /** The pane for a state: the view over BASE_VIEW, and what else the state holds. */
-function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null, live = LIVE, feedback = null, hover = false, peek = null, flash = null, search = null } = {}) {
+function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null, live = LIVE, feedback = null, hover = false, peek = null, flash = null, search = null, note = null } = {}) {
   const make = extras => layout.paneInput(dashboard, turn, refresh, rescan, { ...BASE_VIEW, ...view }, NOW, true, shown, allow, changes, null, live, extras, peek)
-  const base = { git: GIT, feedback, branch: BRANCH, flash, search }
+  const base = { git: GIT, feedback, branch: BRANCH, flash, search, churn: CHURN, rings: RINGS, route: ROUTE, note }
   const input = make({ ...base, couplings: couplingsFor(make(base)) })
   // Sized by the pane's height too: its lists grow with the rows it has. `hover` draws the marked row's card as a resting pointer shows it.
   // As the window shows it scrolled to the top: a pane taller than its height has its footer bar over the last rows.
@@ -476,6 +510,12 @@ const VIEWS = [
   ['hubs-flash', pane({ tab: 'hubs', selected: 0 }, { flash: FLASH })],
   ['overview-flash', pane({ tab: 'overview' }, { turn: brief, flash: FLASH })],
   ['branch', pane({ tab: 'branch' })],
+  ['churn', pane({ tab: 'churn' })],
+  ['churn-marked', pane({ tab: 'churn', selected: 2 })],
+  ...(churnDetail === null ? [] : [['churn-peek', pane({ tab: 'churn', selected: 0 }, { peek: churnDetail })]]),
+  ...(detail === null || NOTE_TYPED === null ? [] : [['detail-note', pane({ tab: 'hubs' }, { shown: detail, note: NOTE_TYPED })], ['detail-note-ask', pane({ tab: 'hubs' }, { shown: detail, note: NOTE_ASKED })]]),
+  ...(ROUTE_ENDS === null || detail === null ? [] : [['route', pane({ tab: 'hubs', route: ROUTE_ENDS }, { shown: detail })], ['route-marked', pane({ tab: 'hubs', route: ROUTE_ENDS, selected: 1 }, { shown: detail })]]),
+  ...(detail === null ? [] : [['finder-route', pane({ tab: 'hubs', finding: true, picking: { name: detail.component?.canonical ?? '', label: detail.label } }, { shown: detail, search: FOUND })]]),
   ['branch-marked', pane({ tab: 'branch', selected: 1 })],
   ['finder', pane({ tab: 'issues', finding: true }, { search: FOUND })],
   ['finder-empty', pane({ tab: 'issues', finding: true }, { search: { query: '', for: null, phase: 'idle', answer: null } })],
