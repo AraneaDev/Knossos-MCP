@@ -5,8 +5,8 @@
  * them. The session's tools change files from every loop (the main one and
  * each subagent's) and by every route: the edit tools, but also a shell
  * command (`sed -i`, a heredoc, `git mv`, a formatter's `--write`). So the
- * mod keeps when its session's tool calls ran, and a scan whose changes were
- * noticed while one ran (or within a moment after it ended) is the
+ * mod keeps when its session's tool calls that can write ran, and a scan
+ * whose changes were noticed while one ran (or within a moment after it ended) is the
  * session's; one whose changes were noticed while the session was idle came
  * from outside it: the person's editor, another terminal, another session.
  *
@@ -32,6 +32,14 @@ export const WAITING_TOOLS: ReadonlySet<string> = new Set([
   'ExitPlanMode',
 ])
 
+/**
+ * Tools that only read: a call to one changes no file, so the time it runs is
+ * not the session at work on the project, and a change another writer made
+ * meanwhile is not the session's. The mod's own `knossos_context` tool is
+ * matched by its name in whatever plugin namespace the engine lists it.
+ */
+export const READING_TOOLS: ReadonlySet<string> = new Set(['Read', 'Grep', 'Glob'])
+
 /** How long after a call ends a change it made may still turn up, on top of the watcher's poll and debounce. */
 export const ACTIVITY_GRACE_MS = 1_500
 /**
@@ -50,8 +58,8 @@ export type Activity = { running: Map<string, number>; spans: { start: number; e
 
 export const noActivity = (): Activity => ({ running: new Map(), spans: [] })
 
-/** Whether a call to `tool` counts as the session at work. */
-export const counts = (tool: string): boolean => !WAITING_TOOLS.has(tool)
+/** Whether a call to `tool` counts as the session at work: one that can write, not one that waits or only reads. */
+export const counts = (tool: string): boolean => !WAITING_TOOLS.has(tool) && !READING_TOOLS.has(tool) && tool !== 'knossos_context' && !tool.endsWith('__knossos_context')
 
 /** A call `id` started at `now`. */
 export function begin(activity: Activity, id: string, now: number): void {
