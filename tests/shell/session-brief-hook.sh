@@ -63,5 +63,26 @@ expect_silent_success "missing lib.sh" \
     env KNOSSOS_BIN="$NOLIB/knossos" CLAUDE_PROJECT_DIR=/tmp sh "$NOLIB/session-brief.sh"
 rm -rf "$NOLIB"
 
+# The container hook names the mounted project as git's safe directory: the container's user does not own it.
+BOX=$(mktemp -d)
+mkdir -p "$BOX/bin" "$BOX/proj"
+sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|/srv/data|" "${HOOK%/*}/session-brief-container.sh" > "$BOX/hook.sh"
+cat > "$BOX/bin/docker" <<'STUB'
+#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    [ "$1" = -e ] && printf '%s\n' "$2" >> "${0%/*}/env"
+    shift
+done
+STUB
+chmod +x "$BOX/bin/docker"
+env PATH="$BOX/bin:$PATH" CLAUDE_PROJECT_DIR="$BOX/proj" sh "$BOX/hook.sh" >/dev/null 2>&1
+if [ "$(cat "$BOX/bin/env" 2>/dev/null)" = "KNOSSOS_GIT_SAFE_DIRECTORY=$(CDPATH='' cd -- "$BOX/proj" && pwd -P)" ]; then
+    printf 'ok   %s\n' 'container hook names the project as git'"'"'s safe directory'
+else
+    printf 'FAIL %s: env=%s\n' 'container hook names the project as git'"'"'s safe directory' "$(cat "$BOX/bin/env" 2>/dev/null)"
+    failures=$((failures + 1))
+fi
+rm -rf "$BOX"
+
 [ "$failures" -eq 0 ] || exit 1
 printf 'all hook failure modes silent\n'

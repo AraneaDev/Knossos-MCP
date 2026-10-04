@@ -1155,16 +1155,18 @@ other with only the columns the comparison uses), 15 for
 `session-changes`, `session-head`, `session-diff`, `boundary-couplings` and
 `allow-root`. `churn` takes nothing but the project; `blast-radius` exactly
 `--component=`; `path-between` exactly `--from=` and `--to=`, in that order;
-`annotate` exactly `--component=` and `--value=` (one printable line of at
+`annotate` exactly `--component=` and `--value=` (one line of text of at
 most 2,000 characters) and, last, `--execute` when you confirmed the note,
 without which it writes nothing. `file-context` takes one file inside the project directory, as
-`file-detail` does; `graph-search` exactly `--query=` with one printable line
-of at most 200 characters; `branch-diff` nothing but the project. The
-container wrapper runs `file-context`, `branch-diff` and `churn` as the image's user,
-so git may refuse the mounted repository there: the context then has no
-commits, and the Branch tab says there is no git.
+`file-detail` does; `graph-search` exactly `--query=` with one line of text
+of at most 200 characters; `branch-diff` nothing but the project. A line of
+text has no control character and may hold any other character, in whatever
+locale the hook runs, counted by its characters rather than its bytes. The
+container wrapper runs `file-context`, `branch-diff` and `churn` as the
+image's user, and names the mounted project as git's safe directory, so git
+reads it although that user does not own it.
 `boundary-couplings` takes exactly `--from=` and `--to=`, in that order, each
-a printable, non-empty boundary name. `session-diff` takes only a
+a non-empty boundary name of one line of text. `session-diff` takes only a
 hex commit id and a file inside the project directory. The container
 wrapper takes the same commands with the same checks, except `watch`.
 `watch` is not bounded: the wrapper replaces itself with the watcher, so

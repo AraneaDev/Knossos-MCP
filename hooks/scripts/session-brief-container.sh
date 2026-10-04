@@ -6,7 +6,8 @@
 #
 # The project is mounted at the same path inside the container as outside. That
 # is not cosmetic: projects are keyed by `root_realpath`, so a project scanned
-# as /work would never match a session starting in /home/me/project.
+# as /work would never match a session starting in /home/me/project. It is
+# also named as git's safe directory: the container's user does not own it.
 set -u
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
@@ -43,6 +44,7 @@ find_timeout() {
 # bounded: a session start must never wait on a stuck daemon.
 if TIMEOUT_BIN="$(find_timeout)"; then
     OUTPUT="$("$TIMEOUT_BIN" 10 docker run --rm \
+        -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
         "$IMAGE" session-brief "$PROJECT_DIR" 2>/dev/null)" || exit 0
@@ -52,6 +54,7 @@ else
     # hook's own "timeout" to 15, and Claude Code enforces that ceiling on
     # the whole process regardless of what runs inside it.
     OUTPUT="$(docker run --rm \
+        -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
         "$IMAGE" session-brief "$PROJECT_DIR" 2>/dev/null)" || exit 0

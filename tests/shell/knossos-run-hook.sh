@@ -277,13 +277,14 @@ fi
 # The container variant, emitted with its placeholders filled, against a docker stand-in.
 mkdir -p "$STUBS/container" "$STUBS/dockerbin"
 sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|/srv/data|" "$SCRIPTS/knossos-run-container.sh" > "$STUBS/container/knossos-run.sh"
-# Drops `run --rm` and the `-v` mounts, says `user=<uid:gid>` when the run names a user, then prints the image and its argv.
+# Drops `run --rm` and the `-v` mounts, writes each `-e` to `env` beside it, says `user=<uid:gid>` when the run names a user, then prints the image and its argv.
 cat > "$STUBS/dockerbin/docker" <<'STUB'
 #!/bin/sh
 shift 2
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -v) shift 2 ;;
+        -e) printf '%s\n' "$2" >> "${0%/*}/env"; shift 2 ;;
         --user=*) printf 'user=%s|' "${1#--user=}"; shift ;;
         *) break ;;
     esac
@@ -297,6 +298,13 @@ expect_output 'container graph-search passes a non-ASCII query under the C local
     env LC_ALL=C PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" graph-search "$STUBS/proj" '--query=écran'
 expect_silent_success 'container graph-search refuses 201 non-ASCII characters' \
     env LC_ALL=C PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" graph-search "$STUBS/proj" "--query=${E200}é"
+rm -f "$STUBS/dockerbin/env"
+env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" churn "$STUBS/proj" >/dev/null
+if [ "$(cat "$STUBS/dockerbin/env" 2>/dev/null)" = "KNOSSOS_GIT_SAFE_DIRECTORY=$ABS_PROJ" ]; then
+    printf 'ok   %s\n' 'container names the mounted project as git'"'"'s safe directory'
+else
+    printf 'FAIL %s (env %s)\n' 'container names the mounted project as git'"'"'s safe directory' "$(cat "$STUBS/dockerbin/env" 2>/dev/null)"; failures=$((failures + 1))
+fi
 expect_output 'container dashboard keeps its arguments' "img:1|dashboard|$ABS_PROJ|--fan-in-threshold=20|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj" --fan-in-threshold=20
 expect_output 'container with a relative project directory mounts and passes the absolute path' "img:1|dashboard|$ABS_PROJ|--json|" \

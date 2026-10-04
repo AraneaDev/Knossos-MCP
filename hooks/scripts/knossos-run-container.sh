@@ -29,9 +29,9 @@
 # user and group: git refuses a repository another user owns, and the image's
 # user owns none of the caller's. They read the project only, never the data.
 # `file-context`, `branch-diff` and `churn` read the graph as well, so they run
-# as the image's user like the rest: git may then refuse the mounted
-# repository, and they answer without commits, or with `no-git`, rather than
-# not at all.
+# as the image's user like the rest. Every run names the mounted project as
+# git's safe directory (`KNOSSOS_GIT_SAFE_DIRECTORY`, passed to git as
+# `-c safe.directory=`), so git reads it whoever owns it.
 #
 # `watch` is not offered here and answers with silence, so the mod falls back
 # to scanning at the end of a turn: a container outlives the docker client
@@ -224,12 +224,14 @@ esac
 
 if TIMEOUT_BIN="$(find_timeout)"; then
     OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" docker run --rm ${USER_ARG:+"$USER_ARG"} \
+        -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
         "$IMAGE" "$COMMAND" "$TARGET" "$@" --json 2>/dev/null)" || exit 0
 else
     # No timeout tool: the mod's own $.process.run timeoutMs is the bound.
     OUTPUT="$(docker run --rm ${USER_ARG:+"$USER_ARG"} \
+        -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
         "$IMAGE" "$COMMAND" "$TARGET" "$@" --json 2>/dev/null)" || exit 0

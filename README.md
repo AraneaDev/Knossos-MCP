@@ -351,7 +351,10 @@ its optional session-brief hook.
 - Docker runs the service as `www-data`. A host Git checkout owned by another
   UID can therefore produce Git's `dubious ownership` warning; scanning still
   works, but Git-aware metadata and change-impact queries may be degraded until
-  the container's Git safe-directory policy is configured for that path.
+  the path is named safe. Set `KNOSSOS_GIT_SAFE_DIRECTORY` to the mounted
+  project's absolute path and Knossos passes it to every git call as
+  `-c safe.directory=`; the Claude Code plugin's container hooks do this for
+  you.
 
 ### Session orientation for Claude Code
 
