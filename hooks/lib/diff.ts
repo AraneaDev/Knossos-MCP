@@ -24,6 +24,12 @@ export const HUNKS_SHOWN = 12
 export const LINE_MAX = 200
 /** The element's own limit on its text. */
 const SOURCE_MAX = 10_000
+/**
+ * The most text the card's hunks draw together: the engine refuses a tree past
+ * 100,000 characters, and twelve hunks of forty full lines would be most of it.
+ * Past it the rest of the hunks are counted, as those past {@link HUNKS_SHOWN} are.
+ */
+export const DIFF_TEXT_MAX = 24_000
 
 /** One hunk: where it starts on each side, and its lines, each with its ` `, `+` or `-` marker. */
 export type Hunk = { oldStart: number; newStart: number; heading: string; lines: string[] }
@@ -140,13 +146,22 @@ export function diffSection(view: DiffView, columns: number, asText = false): Se
   ]
   const rows: Row[] = []
   if (view.renamed !== null) rows.push(dimRow('diff-renamed', `   ${pathText(view.renamed, Math.max(1, columns - 3))}`, columns))
-  view.hunks.slice(0, asText ? TEXT_HUNKS : HUNKS_SHOWN).forEach((hunk, i) => {
+  // The hunks drawn, within their count and, as diff elements, within DIFF_TEXT_MAX together.
+  let spent = 0
+  let drawn = 0
+  for (const [i, hunk] of view.hunks.slice(0, asText ? TEXT_HUNKS : HUNKS_SHOWN).entries()) {
     const { shown, more } = folded(hunk, asText ? TEXT_LINES : HUNK_LINES)
     if (asText) rows.push(...hunkRows(`diff-hunk-${i}`, hunk, shown, columns))
-    else rows.push({ key: `diff-hunk-${i}`, segments: [], code: { source: hunkSource(hunk, shown), path: view.path } })
+    else {
+      const source = hunkSource(hunk, shown)
+      if (spent + source.length > DIFF_TEXT_MAX) break
+      spent += source.length
+      rows.push({ key: `diff-hunk-${i}`, segments: [], code: { source, path: view.path } })
+    }
+    drawn++
     if (more > 0) rows.push(dimRow(`diff-more-${i}`, `   ${plural(more, 'more line', 'more lines')}`, columns))
-  })
-  const hidden = view.hunks.length - (asText ? TEXT_HUNKS : HUNKS_SHOWN)
+  }
+  const hidden = view.hunks.length - drawn
   if (hidden > 0) rows.push(dimRow('diff-hunks-more', `   ${plural(hidden, 'more change', 'more changes')} further down the file`, columns))
   if (view.truncated) rows.push(dimRow('diff-cut', '   The diff is cut here: open the file to see the rest.', columns))
   return { key: 'diff', title, note: counts, body: rows }

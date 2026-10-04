@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DiffState, Inspected, SessionDiff } from '../../types'
-import { diffSection, diffView, folded, HUNK_LINES, hunkSource, HUNKS_SHOWN, LINE_MAX, parseHunks } from './diff'
+import { DIFF_TEXT_MAX, diffSection, diffView, folded, HUNK_LINES, hunkSource, HUNKS_SHOWN, LINE_MAX, parseHunks } from './diff'
 import type { DiffView } from './diff'
 import { parseSessionDiff, parseSessionRev } from './envelopes'
 import { diffRows, fileDetailRows } from './__tests__/tabs'
@@ -121,6 +121,17 @@ describe('the change as rows', () => {
     const rows = diffRows(viewOf(answer({ diff: many })), 90)
     expect(rows.filter(r => r.code !== undefined)).toHaveLength(HUNKS_SHOWN)
     expect(text(rows.find(r => r.key === 'diff-hunks-more')!).trim()).toBe('3 more changes further down the file')
+  })
+
+  it('keeps the hunks it draws within one total, as large as session-diff answers, and counts the rest', () => {
+    // As much as session-diff sends: 200,000 bytes, 14 hunks of 70 full lines.
+    const line = (h: number, i: number) => `+${`h${h} line ${i} `.padEnd(LINE_MAX - 1, 'x')}`
+    const full = Array.from({ length: 14 }, (_, h) => `@@ -${h * 100 + 1},0 +${h * 100 + 1},70 @@\n${Array.from({ length: 70 }, (_, i) => line(h, i)).join('\n')}`).join('\n')
+    const rows = diffRows(viewOf(answer({ diff: `${full}\n` })), 200)
+    const drawn = rows.filter(r => r.code !== undefined)
+    expect(drawn.reduce((sum, r) => sum + (r.code?.source.length ?? 0), 0)).toBeLessThanOrEqual(DIFF_TEXT_MAX)
+    expect(drawn.length).toBeGreaterThan(0)
+    expect(text(rows.find(r => r.key === 'diff-hunks-more')!).trim()).toBe(`${14 - drawn.length} more changes further down the file`)
   })
 
   it('stands below the dependents in the file detail, and under the message of a file no longer in the graph', () => {
