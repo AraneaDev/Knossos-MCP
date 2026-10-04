@@ -829,10 +829,6 @@ final readonly class GraphReconciler
     }
 
     /**
-     * @param array<string, string> $fileIds
-     * @return array{0: string, 1: array<string, mixed>}
-     */
-    /**
      * Turn "the member `m` of what `Type`'s property `$a`, then that value's
      * property `$b`, holds" into a plain member reference.
      *
@@ -1245,7 +1241,6 @@ final readonly class GraphReconciler
         );
     }
 
-    /** @param array<string, string> $versions */
     /**
      * The file rows this scan wrote, indexed for node attachment.
      *

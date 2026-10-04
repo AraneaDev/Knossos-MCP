@@ -995,6 +995,12 @@ final readonly class ProjectDiscoverer
         'php', 'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'vue', 'svelte', 'astro', 'py', 'pyi', 'rs',
     ];
 
+    /** The globs one brace pattern may name before it is dropped as hostile. */
+    private const BRACE_EXPANSION_LIMIT = 256;
+
+    /** The order react-scripts resolves `src/index` in; the first that exists is built. */
+    private const CREATE_REACT_APP_EXTENSIONS = ['web.mjs', 'mjs', 'web.js', 'js', 'web.ts', 'ts', 'web.tsx', 'tsx', 'web.jsx', 'jsx'];
+
     /**
      * Config keys whose value names a file the tool LOADS.
      *
@@ -1003,12 +1009,6 @@ final readonly class ProjectDiscoverer
      * turns out to be dead — suppressing it would hide the finding this
      * analysis exists to produce.
      */
-    /** The globs one brace pattern may name before it is dropped as hostile. */
-    private const BRACE_EXPANSION_LIMIT = 256;
-
-    /** The order react-scripts resolves `src/index` in; the first that exists is built. */
-    private const CREATE_REACT_APP_EXTENSIONS = ['web.mjs', 'mjs', 'web.js', 'js', 'web.ts', 'ts', 'web.tsx', 'tsx', 'web.jsx', 'jsx'];
-
     private const CONFIG_REFERENCE_KEYS = [
         'setupFiles', 'setupFilesAfterEnv', 'globalSetup', 'globalTeardown', 'entry', 'input',
         // Vite's server-side entry, and Cypress's plugins and support files.

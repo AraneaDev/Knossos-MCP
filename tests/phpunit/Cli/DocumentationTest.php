@@ -103,6 +103,30 @@ final class DocumentationTest extends KnossosTestCase
      * The fixture below is deliberately BROKEN: it must be skipped because it is
      * ignored, not because its link happens to resolve.
      */
+    /** A docblock describes the declaration after it: one followed by another describes nothing, and the docs generator reads only the last. */
+    #[Group('cli')]
+    public function testNoDocblockIsLeftWithoutTheDeclarationItDescribes(): void
+    {
+        $orphans = [];
+        $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(self::repositoryRoot() . '/src', \FilesystemIterator::SKIP_DOTS));
+        foreach ($files as $file) {
+            if (!str_ends_with((string) $file, '.php')) {
+                continue;
+            }
+            $previous = null;
+            foreach (token_get_all((string) file_get_contents((string) $file)) as $token) {
+                if (is_array($token) && $token[0] === T_WHITESPACE) {
+                    continue;
+                }
+                if ($previous === T_DOC_COMMENT && is_array($token) && $token[0] === T_DOC_COMMENT) {
+                    $orphans[] = substr((string) $file, strlen(self::repositoryRoot()) + 1) . ':' . $token[2];
+                }
+                $previous = is_array($token) ? $token[0] : null;
+            }
+        }
+        self::assertSame([], $orphans);
+    }
+
     #[Group('documentation')]
     public function testDocumentationLinkCheckSkipsGitIgnoredFiles(): void
     {
