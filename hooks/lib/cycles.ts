@@ -36,7 +36,6 @@ export type CycleLine = { size: number; nodes: CycleNode[]; more: number }
 /** The cycles, largest first, and the ones the person unfolded (by index). */
 export type CyclesInput = { count: string; cycles: CycleLine[]; unfolded: number[] }
 
-
 /** The most boxes a cycle shows before its middle folds, per tier. */
 export const FOLD_AT: Record<Tier, number> = { narrow: 6, medium: 10, wide: 16 }
 

@@ -137,7 +137,6 @@ const centred = (mark: string, width: number): string => padEnd(spaces(Math.floo
 /** How a heat cell fills its grid cell on the terminal: seven eighths high, so stacked cells keep a hairline apart. */
 const TILE = '▇'
 
-
 /**
  * One row of one heat cell: its glyphs and the gap after it. On the
  * terminal's grid the cell is a solid tile in its step of the accent (or

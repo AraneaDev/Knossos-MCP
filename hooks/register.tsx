@@ -2596,7 +2596,6 @@ export const register: Register = (on, options) => {
     })
   })
 
-
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     mod.turnNotes.delete(e.agentId ?? '')

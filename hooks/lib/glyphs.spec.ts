@@ -63,3 +63,14 @@ describe('text glyphs only', () => {
     expect(offenders('► ◄ ▲ ▼ ✓ ✗ ● ◆ ↻ ╫ !')).toEqual([])
   })
 })
+
+describe("the mod's sources", () => {
+  // Prettier's rule, kept by hand: `format:check` does not read TypeScript.
+  it('hold no two blank lines in a row', () => {
+    for (const file of sources) {
+      const lines = readFileSync(file, 'utf8').split('\n')
+      const doubled = lines.flatMap((line, i) => (i > 0 && line.trim() === '' && lines[i - 1]!.trim() === '' && i < lines.length - 1 ? [i + 1] : []))
+      expect(doubled, file).toEqual([])
+    }
+  })
+})
