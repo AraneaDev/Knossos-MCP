@@ -13,7 +13,7 @@ import { disable, say, wrapper } from './port'
 import type { Port } from './port'
 import { currentInput, currentList } from './render'
 import type { Handlers } from './render'
-import { mod, PANE } from './state'
+import { fieldKey, mod, PANE } from './state'
 import { requestRescan, scanSafely } from './watcher'
 import type { ProcessRunResult, RenderSurface } from 'claude-code'
 
@@ -123,13 +123,18 @@ async function openRelated(io: Port, index: number): Promise<void> {
 }
 
 /**
- * Opens the hubs filter's field and moves the focus into it once it is
- * drawn: the focus call waits for the next drawing, so it runs on a timer,
- * never inside the press or a render.
+ * Moves the focus into the field `id` once it is drawn, under its own key
+ * ({@link fieldKey}): the call waits for the drawing that brings the field,
+ * so it runs on a timer, never inside the press or a render.
  */
+function focusField(io: Port, id: string): void {
+  io.clock.after(0, () => void io.ui.focus({ requestId: PANE, key: fieldKey(id) }).catch(() => undefined))
+}
+
+/** Opens the hubs filter's field and moves the focus into it once it is drawn. */
 async function openFilter(io: Port): Promise<void> {
   await io.state.view.update((v): KnossosView => ({ ...v, tab: 'hubs', filtering: true }))
-  io.clock.after(0, () => void io.ui.focus({ requestId: PANE, key: 'filter' }).catch(() => undefined))
+  focusField(io, 'filter')
 }
 
 /** The filter as typed, applied at once; the marker goes back to the top of the shorter list. */
@@ -144,14 +149,14 @@ async function submitFilter(io: Port, text: string): Promise<void> {
 
 /**
  * Opens the finder over the pane and moves the focus into its field once it
- * is drawn (on a timer, never inside the press or a render). What was
- * typed last is kept, so a second look picks up where the first left off.
+ * is drawn. What was typed last is kept, so a second look picks up where the
+ * first left off.
  */
 async function openFinder(io: Port): Promise<void> {
   const v = await io.state.view.read()
   if (v.finding !== true) mod.findFrom = v.selected
   await io.state.view.update((w): KnossosView => ({ ...w, finding: true, filtering: false, selected: 0 }))
-  io.clock.after(0, () => void io.ui.focus({ requestId: PANE, key: 'find' }).catch(() => undefined))
+  focusField(io, 'find')
 }
 
 /** Closes the finder: the tab (or the detail) under it comes back with its marker where it stood. */
@@ -360,7 +365,7 @@ async function startNote(io: Port): Promise<void> {
   const component = stored?.detail?.component?.name ?? v.inspect.name
   const existing = stored?.detail?.component?.annotations?.find(a => a.kind === 'note')?.value ?? ''
   await io.state.note.update((): NoteState => ({ component, phase: 'editing', value: existing, previous: null, reason: null }))
-  io.clock.after(0, () => void io.ui.focus({ requestId: PANE, key: 'note' }).catch(() => undefined))
+  focusField(io, 'note')
 }
 
 /** What was typed into the note's field, kept as it is typed. */

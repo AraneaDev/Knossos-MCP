@@ -811,7 +811,7 @@ describe('knossos mod', () => {
         // Every tab, the key list, a detail with its rings and a note being typed, a route picked and drawn, the finder.
         for (const step of ['tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'tab:issues', 'tab:changes', 'tab:branch', 'tab:churn', 'keys', 'tab:hubs', 'row:0', 'note', 'route', 'typed', 'row:0', 'back', 'back', 'row:50', 'find', 'typed', 'find-close']) {
           if (step === 'typed') {
-            await ui.input({ key: 'find', text: 'x', kind: 'change' })
+            await ui.input({ key: 'field:find', text: 'x', kind: 'change' })
             await w.clock.advance(200)
           } else {
             // A press only where its Button is drawn: a note still being typed from the last size draws its field instead.
@@ -1357,7 +1357,7 @@ describe('knossos mod', () => {
     const ui = await mountPane($, 'terminal', 120)
     await ui.press({ key: 'find' })
     await w.clock.settle()
-    await ui.input({ key: 'find', text: 'dsvc', kind: 'change' })
+    await ui.input({ key: 'field:find', text: 'dsvc', kind: 'change' })
     // Before the pause ends, a turn's brief finds no binary: the mod turns off.
     await edit($, `${ROOT}/src/Router.php`)
     await $.turn.complete(TURN)
@@ -2905,6 +2905,44 @@ describe('knossos mod', () => {
     await ui.unmount()
   })
 
+  // Claude Code resolves `$.ui.focus` by key against the drawing it holds when the call arrives, the first element
+  // under that key in document order. That drawing can still be the one with the Button the person just pressed, and
+  // the hubs filter's Button stays drawn above its field. A ring moved onto a Button leaves the field without the
+  // keys, and the next drawing dropping that Button hands them back to the prompt: what the person types lands there.
+  // So the key a field is drawn (and focused) under must be its own, in the drawing before the press and after it.
+  test('n, f and m open a field under a key no Button in the pane carries, before the press or after it', async ($, on) => {
+    type Mounted = Awaited<ReturnType<typeof mountPane>>
+    // What a focus ring can land on: the Buttons, Inputs and Selects drawn.
+    const focusable = async (ui: Mounted) => (await Promise.all(['Button', 'Input', 'Select'].map(type => ui.findAll({ type })))).flat()
+    const opens = async (ui: Mounted, w: ReturnType<typeof world>, press: string) => {
+      const before = await focusable(ui)
+      await ui.press({ key: press })
+      await w.clock.settle()
+      const after = await focusable(ui)
+      const fields = after.filter(el => el.type === 'Input')
+      expect(fields, press).toHaveLength(1)
+      const key = fields[0]?.key
+      const under = (drawn: typeof after) => drawn.filter(el => el.key === key).map(el => el.type)
+      return { press, before: under(before), after: under(after) }
+    }
+    const hubs = [{ name: 'Router', canonical_name: 'App\\Http\\Router', kind: 'class', boundary: 'Http', in_degree: 41, out_degree: 3, cross_boundary_degree: 2 }]
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard({ hubs, hotspots: [] }) }], detail: [{ stdout: fullDetailOf('Greeter') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($, 'terminal', 120)
+    await ui.press({ key: 'tab:hubs' })
+    expect(await opens(ui, w, 'filter')).toEqual({ press: 'filter', before: [], after: ['Input'] })
+    await ui.press({ key: 'tab:issues' })
+    expect(await opens(ui, w, 'find')).toEqual({ press: 'find', before: [], after: ['Input'] })
+    await ui.press({ key: 'find-close' })
+    await ui.unmount()
+    await slash($, 'inspect Greeter')
+    await w.clock.settle()
+    const detail = await mountPane($, 'terminal', 100)
+    expect(await opens(detail, w, 'note')).toEqual({ press: 'note', before: [], after: ['Input'] })
+    await detail.unmount()
+  })
+
   test('n opens the hubs filter, typing narrows the list, Enter keeps it and x clears it', async ($, on) => {
     const hubs = [
       { name: 'Router', canonical_name: 'App\\Http\\Router', kind: 'class', boundary: 'Http', in_degree: 41, out_degree: 3, cross_boundary_degree: 2 },
@@ -2923,15 +2961,15 @@ describe('knossos mod', () => {
       await ui.press({ key: 'filter' })
       await w.clock.settle()
       // The field opens, asking for the focus.
-      expect((await ui.find({ type: 'Input', key: 'filter' }))?.props.autoFocus).toBe(true)
-      await ui.input({ key: 'filter', text: 'req', kind: 'change' })
+      expect((await ui.find({ type: 'Input', key: 'field:filter' }))?.props.autoFocus).toBe(true)
+      await ui.input({ key: 'field:filter', text: 'req', kind: 'change' })
       expect((await ui.find({ key: 'hub-0' }))?.text).toContain('Request')
       expect(await ui.find({ key: 'hub-1' })).toBeUndefined()
-      await ui.input({ key: 'filter', text: 'R ' })
-      expect(await ui.find({ type: 'Input', key: 'filter' })).toBeUndefined()
+      await ui.input({ key: 'field:filter', text: 'R ' })
+      expect(await ui.find({ type: 'Input', key: 'field:filter' })).toBeUndefined()
       expect((await ui.find({ key: 'filter-row' }))?.text).toBe('   filter "R" · 3 of 3')
       await ui.press({ key: 'filter' })
-      await ui.input({ key: 'filter', text: 'kern' })
+      await ui.input({ key: 'field:filter', text: 'kern' })
       expect((await ui.find({ key: 'filter-row' }))?.text).toBe('   filter "kern" · 1 of 3')
       expect((await ui.find({ key: 'clear' }))?.props.hotkey).toBe('x')
       await ui.press({ key: 'clear' })
@@ -2940,9 +2978,9 @@ describe('knossos mod', () => {
       expect((await ui.find({ key: 'hub-2' }))?.text).toContain('Kernel')
       // An empty Enter clears too.
       await ui.press({ key: 'filter' })
-      await ui.input({ key: 'filter', text: 'zzz', kind: 'change' })
+      await ui.input({ key: 'field:filter', text: 'zzz', kind: 'change' })
       expect((await ui.find({ key: 'hubs-none' }))?.text).toBe('   no hub matches "zzz"')
-      await ui.input({ key: 'filter', text: '' })
+      await ui.input({ key: 'field:filter', text: '' })
       expect(await ui.find({ key: 'hubs-none' })).toBeUndefined()
       await ui.press({ key: 'tab:overview' })
       await ui.unmount()
@@ -2970,14 +3008,14 @@ describe('knossos mod', () => {
       await ui.press({ key: 'find' })
       await w.clock.settle()
       // The field opens over the tab and asks for the focus; the footer offers closing it.
-      expect((await ui.find({ type: 'Input', key: 'find' }))?.props.autoFocus).toBe(true)
+      expect((await ui.find({ type: 'Input', key: 'field:find' }))?.props.autoFocus).toBe(true)
       expect((await ui.find({ key: 'find-close' }))?.props.hotkey).toBe('x')
       expect(await ui.find({ key: 'pol-0' })).toBeUndefined()
       // Typed fast, one search after the pause: never in a render.
       const before = w.searchRuns().length
-      await ui.input({ key: 'find', text: 'd', kind: 'change' })
-      await ui.input({ key: 'find', text: 'ds', kind: 'change' })
-      await ui.input({ key: 'find', text: 'dsvc', kind: 'change' })
+      await ui.input({ key: 'field:find', text: 'd', kind: 'change' })
+      await ui.input({ key: 'field:find', text: 'ds', kind: 'change' })
+      await ui.input({ key: 'field:find', text: 'dsvc', kind: 'change' })
       expect(w.searchRuns()).toHaveLength(before)
       await w.clock.advance(200)
       await w.clock.settle()
@@ -2985,10 +3023,10 @@ describe('knossos mod', () => {
       expect((await ui.find({ key: 'found-0' }))?.text).toContain('DashboardService')
       expect((await ui.find({ key: 'found-1' }))?.text).toMatch(/src\/Query\/\s*DashboardService\.php/)
       // Enter opens the first match as its detail, and the finder closes.
-      await ui.input({ key: 'find', text: 'dsvc' })
+      await ui.input({ key: 'field:find', text: 'dsvc' })
       await w.clock.settle()
       expect(w.detailRuns().at(-1)?.at(-1)).toBe('App\\Query\\DashboardService')
-      expect(await ui.find({ type: 'Input', key: 'find' })).toBeUndefined()
+      expect(await ui.find({ type: 'Input', key: 'field:find' })).toBeUndefined()
       // Back from the detail is the tab as it was.
       await ui.press({ key: 'back' })
       expect(await ui.find({ key: 'pol-0' })).toBeDefined()
@@ -3002,10 +3040,10 @@ describe('knossos mod', () => {
       // x closes it; an empty Enter closes it too.
       await ui.press({ key: 'find' })
       await ui.press({ key: 'find-close' })
-      expect(await ui.find({ type: 'Input', key: 'find' })).toBeUndefined()
+      expect(await ui.find({ type: 'Input', key: 'field:find' })).toBeUndefined()
       await ui.press({ key: 'find' })
-      await ui.input({ key: 'find', text: '' })
-      expect(await ui.find({ type: 'Input', key: 'find' })).toBeUndefined()
+      await ui.input({ key: 'field:find', text: '' })
+      expect(await ui.find({ type: 'Input', key: 'field:find' })).toBeUndefined()
       await ui.press({ key: 'tab:overview' })
       await ui.unmount()
     }
@@ -4723,15 +4761,15 @@ describe('round 13: churn, blast radius, routes, notifications and notes', () =>
     expect((await ui.find({ key: 'route' }))?.props.hotkey).toBe('p')
     await ui.press({ key: 'route' })
     await w.clock.settle()
-    expect((await ui.find({ type: 'Input', key: 'find' }))?.props.autoFocus).toBe(true)
+    expect((await ui.find({ type: 'Input', key: 'field:find' }))?.props.autoFocus).toBe(true)
     expect(drawn((await ui.find({ key: 'pane' }))?.text ?? (await ui.find({ key: 'detail' }))?.text ?? '')).toContain('Route from Greeter to…')
-    await ui.input({ key: 'find', text: 'kern', kind: 'change' })
+    await ui.input({ key: 'field:find', text: 'kern', kind: 'change' })
     await w.clock.advance(200)
     await w.clock.settle()
     // Only the component is offered: a route runs between components.
     expect((await ui.find({ key: 'found-0' }))?.text).toContain('Kernel')
     expect(await ui.find({ key: 'found-1' })).toBeUndefined()
-    await ui.input({ key: 'find', text: 'kern' })
+    await ui.input({ key: 'field:find', text: 'kern' })
     await w.clock.settle()
     expect(w.routeRuns().map(r => r.slice(4))).toEqual([['--from=Greeter', '--to=App\\Core\\Kernel']])
     const text = drawn((await ui.find({ key: 'detail' }))?.text ?? (await ui.find({ key: 'pane' }))?.text ?? '')
@@ -4784,11 +4822,11 @@ describe('round 13: churn, blast radius, routes, notifications and notes', () =>
     await ui.press({ key: 'note' })
     await w.clock.settle()
     // The field opens holding the note there is, and takes the focus.
-    expect((await ui.find({ type: 'Input', key: 'note' }))?.props).toMatchObject({ autoFocus: true, value: 'The one way in.' })
-    await ui.input({ key: 'note', text: 'keep it pure', kind: 'change' })
+    expect((await ui.find({ type: 'Input', key: 'field:note' }))?.props).toMatchObject({ autoFocus: true, value: 'The one way in.' })
+    await ui.input({ key: 'field:note', text: 'keep it pure', kind: 'change' })
     // Typing writes nothing, nor asks anything.
     expect(w.noteRuns()).toHaveLength(0)
-    await ui.input({ key: 'note', text: 'keep it pure' })
+    await ui.input({ key: 'field:note', text: 'keep it pure' })
     await w.clock.settle()
     expect(w.noteRuns().map(r => r.slice(4))).toEqual([['--component=App\\Greeter', '--value=keep it pure']])
     expect(drawn((await ui.find({ key: 'detail' }))?.text ?? '')).toContain('Record this note on Greeter? "keep it pure"')
@@ -4801,7 +4839,7 @@ describe('round 13: churn, blast radius, routes, notifications and notes', () =>
     expect(w.detailRuns().length).toBe(before + 1)
     // Asked again and dropped: nothing more is written.
     await ui.press({ key: 'note' })
-    await ui.input({ key: 'note', text: 'second thought' })
+    await ui.input({ key: 'field:note', text: 'second thought' })
     await w.clock.settle()
     await ui.press({ key: 'note-no' })
     await w.clock.settle()

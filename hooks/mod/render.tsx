@@ -15,7 +15,7 @@ import { rasterOf, rasterTheme } from '../lib/raster'
 import { cells, dimRow, pressLabel, textStyle } from '../lib/rows'
 import { shownChanges } from './port'
 import type { Port } from './port'
-import { mod } from './state'
+import { fieldKey, mod } from './state'
 
 /**
  * What the pane's elements do: a press (a Button, by its id, from the surface
@@ -107,7 +107,7 @@ function drawSegment(act: Handlers, ui: Elements[RenderSurface], row: Row, s: Se
   if (s.field && Input !== undefined) {
     return framed(
       <Input
-        key={s.field.id}
+        key={fieldKey(s.field.id)}
         value={s.field.value}
         placeholder={s.field.placeholder}
         submitLabel="keep"

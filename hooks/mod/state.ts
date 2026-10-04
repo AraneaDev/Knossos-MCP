@@ -16,6 +16,17 @@ import { SingleFlight } from '../lib/scheduler'
 /** The pane's id, as the engine opens and draws it. */
 export const PANE = 'knossos'
 
+/**
+ * The key a field (the finder's, a note's, the hubs filter's) is drawn under,
+ * and the one `$.ui.focus` names to move into it. Never the field's own id:
+ * the Button that opens a field shares that id, and Claude Code resolves a
+ * focus call by key against the drawing it holds when the call arrives, the
+ * first element under the key in document order. That can be the Button,
+ * still drawn: the ring lands on it, the field never gets the keys, and once
+ * the next drawing drops the Button the keyboard goes back to the prompt.
+ */
+export const fieldKey = (id: string): string => `field:${id}`
+
 /** The fan-in threshold when the options give none the dashboard command accepts. */
 const DEFAULT_THRESHOLD = 20
 /** The largest threshold the dashboard command accepts. */
