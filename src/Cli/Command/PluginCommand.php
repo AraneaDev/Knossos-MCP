@@ -360,8 +360,9 @@ final class PluginCommand implements CliCommand
      * inside it, is left exactly as it was found.
      *
      * @param array<string, string> $scripts installed relative path => content
-     * @param bool $prune whether to delete what an earlier install left that this one does not ship: only in the
-     *   plugin directory this command manages, never in a directory `--out` names
+     * @param bool $prune whether to delete what an earlier install left that this one does not ship, files and the
+     *   skill directories of earlier releases alike: only in the plugin directory this command manages, never in a
+     *   directory `--out` names
      * @return bool whether $out already existed before this call
      */
     private function materialise(string $root, string $out, array $scripts, bool $prune): bool
@@ -399,7 +400,11 @@ final class PluginCommand implements CliCommand
                 }
                 $createdDirectories[] = $path;
             }
-            $retired = $this->retireStaleSkills($out);
+            // Retiring renames and later deletes whole directories, so like the prune it is the managed
+            // plugin directory's alone: a `--out` target's `skills/knossos` may be the person's own.
+            if ($prune) {
+                $retired = $this->retireStaleSkills($out);
+            }
             foreach (self::COPIES as $relative) {
                 $target = $out . $relative;
                 $isNew = !file_exists($target);
@@ -562,6 +567,8 @@ final class PluginCommand implements CliCommand
      * added the renamed one would offer the same instructions twice. Each old
      * directory is renamed rather than deleted so that a later failure can
      * restore it, and is only removed once the whole install has succeeded.
+     * Called only for the plugin directory the host install manages: a
+     * directory `--out` names may hold a `skills/knossos` of the person's own.
      *
      * @return array<string, string> original path => where it was parked
      */

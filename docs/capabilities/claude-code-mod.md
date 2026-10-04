@@ -1140,9 +1140,12 @@ knossos install-agent-plugin --data-dir="$HOME/.knossos" --execute
 An install over an earlier one deletes the files the earlier one left in the
 plugin's own directories that this one no longer ships (a module since
 renamed, say), and only those: never a subdirectory, never the plugin
-directory's own root, never through a linked directory. A failed install puts
-them back. A container install with `--out` deletes nothing: that directory is
-whatever you named, and a file of yours in it stays.
+directory's own root, never through a linked directory. It also removes the
+skill directories earlier releases installed under their old names
+(`skills/knossos`, `skills/ask-the-graph`). A failed install puts all of them
+back. A container install with `--out` deletes nothing, those skill
+directories included: that directory is whatever you named, and anything of
+yours in it stays.
 
 ## When it stays silent
 

@@ -1143,19 +1143,42 @@ final class PluginCommandTest extends KnossosTestCase
     #[Group('cli')]
     public function testAnInstallRemovesTheSkillDirectoryAnEarlierReleaseLeft(): void
     {
-        $out = $this->temporaryPath('knossos-plugin-stale');
+        $root = $this->sourceRoot();
+        $out = $root . '/.plugin';
         mkdir($out . '/skills/knossos', 0o755, true);
         file_put_contents($out . '/skills/knossos/SKILL.md', "---\nname: knossos\n---\n");
         file_put_contents($out . '/skills/knossos/extra.md', 'old');
         mkdir($out . '/skills/ask-the-graph', 0o755, true);
         file_put_contents($out . '/skills/ask-the-graph/SKILL.md', "---\nname: ask-the-graph\n---\n");
 
-        $this->emitProse($out, []);
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
 
         assertSame(false, file_exists($out . '/skills/knossos'));
         assertSame(false, file_exists($out . '/skills/ask-the-graph'));
         assertSame(['graph'], array_values(array_diff(scandir($out . '/skills') ?: [], ['.', '..'])));
         assertSame(true, is_file($out . '/skills/graph/SKILL.md'));
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    /** An emit names any directory, such as ~/.claude: skill directories of the person's own under the old names survive it. */
+    #[Group('cli')]
+    public function testAnEmitKeepsSkillDirectoriesUnderTheNamesEarlierReleasesUsed(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-claude-home');
+        mkdir($out . '/skills/knossos', 0o755, true);
+        file_put_contents($out . '/skills/knossos/SKILL.md', 'a skill of the person\'s own');
+        mkdir($out . '/skills/ask-the-graph', 0o755, true);
+        file_put_contents($out . '/skills/ask-the-graph/notes.md', 'theirs');
+
+        $this->emitProse($out, []);
+
+        assertSame('a skill of the person\'s own', (string) file_get_contents($out . '/skills/knossos/SKILL.md'));
+        assertSame('theirs', (string) file_get_contents($out . '/skills/ask-the-graph/notes.md'));
+        assertSame(
+            ['ask-the-graph', 'graph', 'knossos'],
+            array_values(array_diff(scandir($out . '/skills') ?: [], ['.', '..'])),
+        );
 
         exec('rm -rf ' . escapeshellarg($out));
     }
@@ -1164,23 +1187,20 @@ final class PluginCommandTest extends KnossosTestCase
     #[Group('cli')]
     public function testAFailedInstallRestoresTheStaleSkillDirectory(): void
     {
-        $out = $this->temporaryPath('knossos-plugin-stale-fail');
+        $root = $this->sourceRoot();
+        $out = $root . '/.plugin';
         mkdir($out . '/skills/knossos', 0o755, true);
         file_put_contents($out . '/skills/knossos/SKILL.md', 'old skill');
         mkdir($out . '/skills/ask-the-graph', 0o755, true);
+        // plugin.json is a directory, so the manifest cannot be written after the skills are retired.
         mkdir($out . '/.claude-plugin/plugin.json', 0o755, true);
 
-        try {
-            (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['/srv/data']], $this->context());
-            self::fail('Expected an InvalidArgumentException.');
-        } catch (InvalidArgumentException) {
-            // Expected: plugin.json is a directory, so the manifest cannot be written.
-        }
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
 
         assertSame('old skill', (string) file_get_contents($out . '/skills/knossos/SKILL.md'));
         assertSame(['ask-the-graph', 'knossos'], array_values(array_diff(scandir($out . '/skills') ?: [], ['.', '..'])));
 
-        exec('rm -rf ' . escapeshellarg($out));
+        exec('rm -rf ' . escapeshellarg($root));
     }
 
     /** An emit names any directory: a file of someone else's in it survives, whatever its name. */
