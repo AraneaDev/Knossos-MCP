@@ -51,6 +51,8 @@ import { tilesBlock } from './tiles'
 import type { Stat } from './tiles'
 import { compositionBlock, concentrationBlock, flowsBlock, healthBlock, overviewData, overviewList as overviewWalk, sessionBlock } from './overview'
 import type { OverviewData } from './overview'
+import { litAt } from './flash'
+import type { Flash } from './flash'
 import { cycleSteps, cyclesArrangement, cyclesInput, cyclesList, unfoldPress } from './cycles'
 import type { CyclesInput } from './cycles'
 import { detailArrangement, detailList, issueCount, issuesArrangement, issuesInput, issuesList, locIn, superscript } from './views'
@@ -151,6 +153,8 @@ export type PaneInput = {
   target: string | null
   /** That cell spelled out, as last read. */
   couplings: CouplingView | null
+  /** The rows the latest scan changed, lit for a moment after it landed (see `flash.ts`). */
+  lit: ReadonlySet<string>
 }
 
 /** A refused root the pane offers to allow: the root, the roots file it would join, and where the action stands. */
@@ -227,7 +231,7 @@ export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'd
 const fileRow = (path: string, loc: Loc | null): Openable => ({ name: path, canonical: path, loc, file: true })
 
 /** The pane's state the layout does not read from the dashboard: where the checkout stands, the footer's word, and the Boundaries tab's cell. */
-export type PaneExtras = { git?: GitHead | undefined; feedback?: Feedback | null; couplings?: CouplingState | null }
+export type PaneExtras = { git?: GitHead | undefined; feedback?: Feedback | null; couplings?: CouplingState | null; flash?: Flash | null }
 
 /**
  * The Overview's walkable rows, in the order a narrow pane draws them: the
@@ -401,6 +405,7 @@ export function paneInput(
   const turn = brief?.status === 'ok' && brief.policy.status === 'evaluated' ? String(brief.policy.total) : null
   const policy = issues.policy?.evaluated ? issues.policy.total : turn
   const diagnostics = issues.diagnostics === null ? null : issues.diagnostics.errors + issues.diagnostics.warnings
+  const lit = litAt(extras.flash ?? null, now)
   return {
     project: baseName(d.project_root ?? d.path) || (d.project_root ?? d.path),
     status: paneStatus(d, refresh, rescan, now, live),
@@ -414,7 +419,7 @@ export function paneInput(
     terminal,
     items,
     partial: d.hubs_truncated,
-    stats: statsOf(d, summary, policy, diagnostics, drift !== null),
+    stats: statsOf(d, summary, policy, diagnostics, drift !== null).map(stat => (lit.has(`tile:${stat.key}`) ? { ...stat, lit: true as const } : stat)),
     overview: overviewData(d, hues),
     fileHubs: [...d.fan_in]
       .sort((a, b) => b.dependent_files - a.dependent_files || a.path.localeCompare(b.path))
@@ -437,6 +442,7 @@ export function paneInput(
     feedback: extras.feedback !== undefined && extras.feedback !== null && now < extras.feedback.until ? extras.feedback : null,
     target: view.target ?? null,
     couplings: shownCouplings(boundaries, view, d.snapshot_id ?? null, extras.couplings ?? null),
+    lit,
   }
 }
 
@@ -702,7 +708,7 @@ function sharedNote(items: Item[], note: string, hues: Hues): string {
  * the selection marker on `selected` (an index into the walkable list, the
  * first item being `offset`); the bar draws `sort`.
  */
-function componentRows(prefix: string, items: Item[], selected: number, spec: TableSpec, withDegrees: boolean, hues: Hues, sort: HubSort, offset: number, window: { start: number; end: number }, room = CARD_MAX): Row[] {
+function componentRows(prefix: string, items: Item[], selected: number, spec: TableSpec, withDegrees: boolean, hues: Hues, sort: HubSort, offset: number, window: { start: number; end: number }, room = CARD_MAX, lit: ReadonlySet<string> = new Set()): Row[] {
   // The spec has a number column per title: a fourth is the dependent files.
   const withFiles = withDegrees && spec.numbers.length > 3
   const titles = degreeTitles(withDegrees, withFiles)
@@ -726,6 +732,7 @@ function componentRows(prefix: string, items: Item[], selected: number, spec: Ta
           place: placeIn(item),
           placeLoc: item.loc,
           preview: previewCard(`card-${prefix}-${i}`, { name: item.name, boundary: item.boundary, figures: componentFigures(item.files, item.in, item.out), top: item.top }, room, hues),
+          lit: lit.has(`hub:${item.canonical}`),
           ...(withDegrees ? { sorted: SORTS.indexOf(sort) } : {}),
         },
         spec,
@@ -865,7 +872,7 @@ function hubsBlock(input: PaneInput, list: Item[], selected: number, tier: Tier)
       const spec = componentSpec(list, columns, true, input.hues, tier)
       const local = selected < list.length ? selected : -1
       const window = windowOf(list.length, limit, local)
-      return section([...rows, ...componentRows('hub', list, selected, spec, true, input.hues, input.sort, 0, window, columns), ...moreRows('hub-window', window, list.length, columns)])
+      return section([...rows, ...componentRows('hub', list, selected, spec, true, input.hues, input.sort, 0, window, columns, input.lit), ...moreRows('hub-window', window, list.length, columns)])
     },
   }
 }
@@ -874,7 +881,7 @@ function hubsBlock(input: PaneInput, list: Item[], selected: number, tier: Tier)
 function hubsArrangement(input: PaneInput, selected: number, tier: Tier): Arrangement {
   const list = hubsShown(input)
   const hubs = hubsBlock(input, list, selected, tier)
-  const files = fileHubsBlock(filesShown(input), selected, list.length, tier, input.hues, input.filter === '' ? '' : `filter "${input.filter}"`)
+  const files = fileHubsBlock(filesShown(input), selected, list.length, tier, input.hues, input.filter === '' ? '' : `filter "${input.filter}"`, input.lit)
   // The components' table has more columns than the files': it takes the larger share, in a grid row of fixed columns.
   return files === null ? { left: [hubs] } : { left: [hubs], right: [files], rows: [[hubs, files]], split: 0.6 }
 }
@@ -928,7 +935,7 @@ export function emptyRows(state: NoGraph, allow: AllowInput | null, columns: num
  * on it; `limit` of them around the marker, each a row it walks from
  * `offset`. Null when the dashboard lists none.
  */
-function fileHubsBlock(files: FileHub[], selected: number, offset: number, tier: Tier, hues: Hues, note = ''): Block | null {
+function fileHubsBlock(files: FileHub[], selected: number, offset: number, tier: Tier, hues: Hues, note = '', lit: ReadonlySet<string> = new Set()): Block | null {
   if (files.length === 0) return null
   return {
     key: 'files',
@@ -943,7 +950,7 @@ function fileHubsBlock(files: FileHub[], selected: number, offset: number, tier:
       const body = files.slice(window.start, window.end).map((f, n) => {
         const i = window.start + n
         const preview = previewCard(`card-files-${i}`, { name: baseName(f.path), boundary: f.boundary, figures: fileFigures(f.dependents), top: f.top }, columns, hues)
-        return tableRow(`files-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, path: true, selected: offset + i === selected, press: `row:${offset + i}`, preview }, spec, hues)
+        return tableRow(`files-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, path: true, selected: offset + i === selected, press: `row:${offset + i}`, preview, lit: lit.has(`file:${f.path}`) }, spec, hues)
       })
       const said = [shared === null ? '' : `all in ${boundaryLabel(shared, hues)}`, note, 'dependent files'].filter(t => t !== '').join(' · ')
       return { key: 'files', title: 'Files most depended on', note: noteOf(said), body: [...body, ...moreRows('files-window', window, files.length, columns)] }
@@ -1045,9 +1052,9 @@ export const SHORT_PANE = 24
 /** The open tab's cards. */
 function tabArrangement(input: PaneInput, selected: number, tier: Tier): Arrangement {
   if (input.tab === 'overview') return overviewArrangement(input, selected, tier)
-  if (input.tab === 'changes') return changesArrangement(input.changes, selected, tier, input.hues)
+  if (input.tab === 'changes') return changesArrangement(input.changes, selected, tier, input.hues, input.lit)
   if (input.tab === 'hubs') return hubsArrangement(input, selected, tier)
   if (input.tab === 'issues') return issuesArrangement(input.issues, selected, tier, input.hues)
   if (input.tab === 'cycles') return cyclesArrangement(input.cycles, tier, input.hues, selected)
-  return boundariesArrangement(input.boundaries, tier, input.hues, selected, input.target, input.couplings)
+  return boundariesArrangement(input.boundaries, tier, input.hues, selected, input.target, input.couplings, input.lit)
 }

@@ -235,7 +235,7 @@ const PER_TITLES = ['comps', 'in', 'out']
 const perValues = (b: BoundaryLine) => [b.members, b.in, b.out]
 
 /** Each boundary on its own row, pressable: its letter and name, a bar of its components, then components, in and out; `limit` of them around the marked one. */
-function perBoundaryRows(input: BoundariesInput, selected: number, columns: number, limit: number, tier: Tier, hues: Hues): Row[] {
+function perBoundaryRows(input: BoundariesInput, selected: number, columns: number, limit: number, tier: Tier, hues: Hues, lit: ReadonlySet<string> = new Set()): Row[] {
   const { spec, names } = perBoundarySpec(input, columns, tier)
   const max = Math.max(0, ...input.boundaries.map(b => b.members))
   const window = windowOf(input.boundaries.length, limit, selected)
@@ -244,7 +244,7 @@ function perBoundaryRows(input: BoundariesInput, selected: number, columns: numb
     ...input.boundaries
       .slice(window.start, window.end)
       .map((b, n) =>
-        tableRow(`bounds-${window.start + n}`, { name: names[window.start + n]!, boundary: b.name, values: perValues(b), max, selected: window.start + n === selected, press: `row:${window.start + n}` }, spec, hues),
+        tableRow(`bounds-${window.start + n}`, { name: names[window.start + n]!, boundary: b.name, values: perValues(b), max, selected: window.start + n === selected, press: `row:${window.start + n}`, lit: lit.has(`boundary:${b.name}`) }, spec, hues),
       ),
     ...moreRows('bounds-window', window, input.boundaries.length, columns),
   ]
@@ -422,7 +422,7 @@ export function heatBlock(input: BoundariesInput | null, hues: Hues, legend: boo
  * spelled out as the component pairs behind it. Wide, two rows of two equal
  * columns: the map beside the table, the marked boundary beside its cell.
  */
-export function boundariesArrangement(input: BoundariesInput | null, tier: Tier, hues: Hues = NO_HUES, selected = 0, target: string | null = null, couplings: CouplingView | null = null): Arrangement {
+export function boundariesArrangement(input: BoundariesInput | null, tier: Tier, hues: Hues = NO_HUES, selected = 0, target: string | null = null, couplings: CouplingView | null = null, lit: ReadonlySet<string> = new Set()): Arrangement {
   const said = (text: string): Block => ({ key: 'bounds', make: columns => ({ key: 'bounds', title: 'Boundaries', body: [dimRow('bounds-none', `   ${text}`, columns)] }) })
   if (input === null) return { left: [said('This knossos sends no boundary map; update it.')] }
   if (input.boundaries.length === 0) return { left: [said('no boundary labels a component')] }
@@ -432,7 +432,7 @@ export function boundariesArrangement(input: BoundariesInput | null, tier: Tier,
   const per: Block = {
     key: 'bounds-list',
     grow: { length: input.boundaries.length, min: PER_MIN },
-    make: (columns, limit) => ({ key: 'bounds-list', title: 'Per boundary', note: noteOf('deps across'), body: perBoundaryRows(input, marked, columns, limit, tier, hues) }),
+    make: (columns, limit) => ({ key: 'bounds-list', title: 'Per boundary', note: noteOf('deps across'), body: perBoundaryRows(input, marked, columns, limit, tier, hues, lit) }),
   }
   const focus: Block = { key: 'focus', make: columns => focusSection(input, marked, columns, hues, cell) }
   const coupling: Block[] = cell === null ? [] : [{ key: 'coupling', make: columns => couplingSection(input, cell, couplings, columns, hues) }]

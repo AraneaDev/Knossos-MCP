@@ -457,8 +457,8 @@ const TESTS_MIN = 3
  * first, and the command that runs them. Wide, the tests stand beside the
  * files.
  */
-export function changesArrangement(input: ChangesInput, selected: number, tier: Tier, hues: Hues = NO_HUES): Arrangement {
-  const files: Block = { key: 'changes', grow: { length: input.files.length, min: FILES_MIN }, make: (columns, limit) => filesSection(input, selected, columns, limit, tier, hues) }
+export function changesArrangement(input: ChangesInput, selected: number, tier: Tier, hues: Hues = NO_HUES, lit: ReadonlySet<string> = new Set()): Arrangement {
+  const files: Block = { key: 'changes', grow: { length: input.files.length, min: FILES_MIN }, make: (columns, limit) => filesSection(input, selected, columns, limit, tier, hues, lit) }
   if (input.files.length === 0) return { left: [files] }
   const tests: Block = { key: 'tests', grow: { length: input.tests.length, min: TESTS_MIN }, make: (columns, limit) => testsSection(input, columns, limit, hues) }
   // Wide, the two side by side on the grid, equally tall.
@@ -466,7 +466,7 @@ export function changesArrangement(input: ChangesInput, selected: number, tier: 
 }
 
 /** The changed files' card, its list `limit` rows long around the marker. */
-function filesSection(input: ChangesInput, selected: number, columns: number, limit: number, tier: Tier, hues: Hues): Section {
+function filesSection(input: ChangesInput, selected: number, columns: number, limit: number, tier: Tier, hues: Hues, lit: ReadonlySet<string>): Section {
   const rows: Row[] = []
   const said = (key: string, text: string) => wrapWords(text, Math.max(1, columns - 3)).forEach((line, i) => rows.push(dimRow(`${key}-${i}`, `   ${line}`, columns)))
   const title = 'Changes this session'
@@ -505,7 +505,7 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
   const window = windowOf(input.files.length, limit, selected)
   input.files.slice(window.start, window.end).forEach((f, n) => {
     const i = window.start + n
-    const line = tableRow(`change-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, selected: i === selected, mark: statusMark(f.status), path: true, press: `row:${i}` }, spec, hues)
+    const line = tableRow(`change-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, selected: i === selected, mark: statusMark(f.status), path: true, press: `row:${i}`, lit: lit.has(`change:${f.path}`) }, spec, hues)
     const added: Segment[] = [...(tested === 0 ? [] : [{ text: ' ' }, testsCell(f.tests)]), ...(origin === 0 || f.origin === undefined ? [] : [{ text: ' ' }, originCell(f.origin)])]
     return rows.push(added.length === 0 ? line : { ...line, segments: [...line.segments, ...(line.tint === undefined ? added : tinted(added, line.tint))] })
   })

@@ -42,14 +42,16 @@ import {
   TABS,
 } from './lib/layout'
 import type { Loc, Openable, PaneInput, Preview, Row, Segment } from './lib/layout'
+import { FLASH_MS, flashKeys, ledgerFlashKeys } from './lib/flash'
+import type { Flash } from './lib/flash'
 import { editNote, fanInIndex, freshViolations, readNote, testsNote, violationKey, violationNote } from './lib/notes'
 import { isWatching, LIVE_OFF, liveAfter, snapshotOf, watchLines, watchPollMsOf } from './lib/live'
-import { CARD_BG, declaredOf, huesOf } from './lib/palette'
+import { CARD_BG, declaredOf, huesOf, SELECTED_BG } from './lib/palette'
 import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { cells, pressLabel, textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
-import type { AllowState, ComponentDetail, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
+import type { AllowState, ComponentDetail, Dashboard, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -155,6 +157,8 @@ const gitHead = atom({ plugin: 'knossos', key: 'gitHead' } as const, null as Git
 const couplings = atom({ plugin: 'knossos', key: 'couplings' } as const, null as CouplingState | null)
 /** What the footer says for a moment after an action in the pane. */
 const feedback = atom({ plugin: 'knossos', key: 'feedback' } as const, null as Feedback | null)
+/** The rows the latest scan changed, lit for a moment after it landed. */
+const flash = atom({ plugin: 'knossos', key: 'flash' } as const, null as Flash | null)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -368,6 +372,9 @@ async function tickAge($: EngineInterface): Promise<void> {
   // The footer's word after an action fades once its time is up: a change of state, so the pane redraws without it.
   const said = await read($, feedback)
   if (said !== null && (await $.clock.now()) >= said.until) await update($, feedback, () => null)
+  // The rows a scan lit go back once their moment is over.
+  const lit = await read($, flash)
+  if (lit !== null && (await $.clock.now()) >= lit.until) await update($, flash, () => null)
   // A pane closed by any means (the command, its own close key) stops drawing; stop ticking for it.
   if (mod.paneText !== null && !(await $.ui.panes()).some(pane => pane.id === PANE)) mod.paneText = null
   if (mod.bandText === null && mod.paneText === null) return
@@ -467,6 +474,8 @@ async function loadDashboard($: EngineInterface): Promise<void> {
     return
   }
   const now = await $.clock.now()
+  // The rows the new snapshot changed light up for a moment once it lands.
+  await light($, flashKeys(await read($, dashboard), parsed as Dashboard), now)
   await update($, dashboard, () => parsed)
   await update($, refresh, (): RefreshState => ({ fetchedAt: now, failed: false }))
   mod.dashboardStored = true
@@ -502,7 +511,15 @@ async function loadLedger($: EngineInterface): Promise<void> {
   if (parsed?.status === 'no-binary') return disable($)
   if (parsed?.status !== 'ok') return
   // A session that began again (a /clear) while this read ran reads since its own start.
-  if ((await read($, sessionStart)) === since) await update($, sessionLedger, () => parsed)
+  if ((await read($, sessionStart)) !== since) return
+  await light($, ledgerFlashKeys(await read($, sessionLedger), parsed), await $.clock.now())
+  await update($, sessionLedger, () => parsed)
+}
+
+/** Lights `keys` for {@link FLASH_MS} from `now`, beside whatever is still lit; nothing to light changes nothing. */
+async function light($: EngineInterface, keys: string[], now: number): Promise<void> {
+  if (keys.length === 0) return
+  await update($, flash, (f): Flash => ({ keys: [...new Set([...(f !== null && now < f.until ? f.keys : []), ...keys])], until: now + FLASH_MS }))
 }
 
 /**
@@ -1241,7 +1258,7 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const stored = await read($, detail)
   const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
   if (shown !== null && v.inspect !== null) shown.diff = diffView(v.inspect, await read($, fileDiff), await read($, sessionRev))
-  const extras = { git: await read($, gitHead), feedback: await read($, feedback), couplings: await read($, couplings) }
+  const extras = { git: await read($, gitHead), feedback: await read($, feedback), couplings: await read($, couplings), flash: await read($, flash) }
   return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await shownChanges($, d.project_root), await read($, sessionRoot), await read($, live), extras)
 }
 
@@ -1725,7 +1742,7 @@ function drawCards(ui: Elements[RenderSurface], rows: Row[], columns: number) {
   const { Box, Text } = ui
   const cards = []
   // At most CARDS_MAX cards, on the rows nearest the marked one: a tall list cannot grow the tree past its bounds.
-  const marked = Math.max(0, rows.findIndex(r => r.tint !== undefined))
+  const marked = Math.max(0, rows.findIndex(r => r.tint === SELECTED_BG))
   const hung = rows.map((r, y) => ({ y, has: r.segments.some(s => s.preview !== undefined) })).filter(r => r.has).sort((a, b) => Math.abs(a.y - marked) - Math.abs(b.y - marked) || a.y - b.y).slice(0, CARDS_MAX).map(r => r.y)
   for (const y of hung.sort((a, b) => a - b)) {
     const row = rows[y]!
@@ -1763,7 +1780,7 @@ function drawRows($: EngineInterface, ui: Elements[RenderSurface], surface: Rend
   for (let i = 0; i < rows.length; i++) {
     const block = rows[i]!.raster
     if (!terminal || block === undefined) {
-      drawn.push(drawRow($, ui, rows[i]!, press, columns, terminal, links && (!lean || rows[i]!.tint !== undefined), hovers))
+      drawn.push(drawRow($, ui, rows[i]!, press, columns, terminal, links && (!lean || rows[i]!.tint === SELECTED_BG), hovers))
       continue
     }
     let end = i

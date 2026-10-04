@@ -21,7 +21,7 @@
  * shorten to their minimum, then names are cut with an ellipsis, then the
  * boundary column goes, then the bars go. The numbers always stay.
  */
-import { ACCENT, boundaryColour, boundaryLabel, FAINT, HEADING, NO_HUES, SECONDARY, SELECTED_BG } from './palette'
+import { ACCENT, boundaryColour, boundaryLabel, FAINT, FLASH_BG, HEADING, NO_HUES, SECONDARY, SELECTED_BG } from './palette'
 import type { Hues } from './palette'
 
 /** A pressable segment: drawn as a plain Button, `hotkey: label` when it has a hotkey. */
@@ -537,6 +537,8 @@ export type TableLine = {
   placeLoc?: Loc | null
   /** The card shown while the pointer rests on the row. */
   preview?: Preview
+  /** Changed in the latest scan: lit on the flash ground for a moment (the marked row keeps its own). */
+  lit?: boolean
 }
 
 /**
@@ -576,7 +578,8 @@ export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hu
   // Files are left-aligned and cut from the front: a column of them reads down the file names.
   if ((spec.place ?? 0) > 0 && (line.place ?? '') !== '') segments.push({ text: ' ' }, linked(fitStart(line.place ?? '', spec.place ?? 0), line.placeLoc ?? null, { dim: true }))
   const kept = segments.filter(s => s.text !== '')
-  return line.selected ? { key, segments: tinted(kept, SELECTED_BG), tint: SELECTED_BG } : { key, segments: kept }
+  if (line.selected) return { key, segments: tinted(kept, SELECTED_BG), tint: SELECTED_BG }
+  return line.lit === true ? { key, segments: tinted(kept, FLASH_BG), tint: FLASH_BG } : { key, segments: kept }
 }
 
 /** A number column's width: its title, or its widest figure as the table prints it (`compact` on a narrow pane). */

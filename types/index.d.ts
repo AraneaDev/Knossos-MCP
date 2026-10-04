@@ -531,6 +531,8 @@ declare module 'claude-code' {
       couplings: CouplingState | null
       /** The footer's word after an action, until it fades. */
       feedback: Feedback | null
+      /** The rows the latest scan changed (`hub:`, `file:`, `tile:`, `boundary:`, `change:` keys), lit until `until` (mod clock, ms). */
+      flash: { keys: string[]; until: number } | null
     }
   }
 }

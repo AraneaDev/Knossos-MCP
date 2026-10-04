@@ -2914,6 +2914,35 @@ describe('knossos mod', () => {
     expect(w.prompts).toEqual([])
   })
 
+  test('the rows a new snapshot changed are lit for about three seconds after it lands, then go back', async ($, on) => {
+    const hubs = (cache: number) => [
+      { name: 'Router', canonical_name: 'App\\Router', kind: 'class', in_degree: 41, out_degree: 3, cross_boundary_degree: 2 },
+      { name: 'Cache', canonical_name: 'App\\Cache', kind: 'class', in_degree: cache, out_degree: 1, cross_boundary_degree: 0 },
+    ]
+    const w = world(on, { dashboard: [{ stdout: paneDashboard({ hubs: hubs(30) }) }, { stdout: paneDashboard({ snapshot_id: 's2', hubs: hubs(36) }) }], brief: [{ stdout: brief() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:hubs' })
+    await ui.press({ key: 'tab:overview' })
+    await ui.press({ key: 'tab:hubs' })
+    const lit = async () => (await ui.findAll({ type: 'Text' })).filter(t => t.props.backgroundColor === 'memoryBackgroundColor').map(t => t.text)
+    expect(await lit()).toEqual([])
+    // A turn's scan lands a new snapshot in which Cache is depended on more: its row lights (Router, marked, keeps its own ground).
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect((await lit()).join('')).toContain(' 36 ')
+    expect((await lit()).join('')).not.toContain(' 41 ')
+    // The name, a Button, stands on the same ground.
+    expect((await ui.find({ key: 'row:1-bg' }))?.props.backgroundColor).toBe('memoryBackgroundColor')
+    await w.clock.advance(4_000)
+    await w.clock.settle()
+    expect(await lit()).toEqual([])
+    expect(await ui.find({ key: 'row:1-bg' })).toBeUndefined()
+    await ui.unmount()
+  })
+
   test('a changed file no test reaches is marked on Changes and counted on the session card', async ($, on) => {
     const turn = brief({
       changed_files: ['src/Router.php', 'src/Kernel.php'],

@@ -28,6 +28,8 @@ export const ACCENT = 'suggestion'
  * text set on a solid fill (the active tab, the status pill): `inverseText`.
  */
 export const SELECTED_BG = 'userMessageBackground'
+/** The ground a row changed by the latest scan is lit on for a moment: a cool tint, apart from the marked row's and the footer bar's. */
+export const FLASH_BG = 'memoryBackgroundColor'
 export const CHIP_BG = 'userMessageBackground'
 export const CARD_BG = 'userMessageBackground'
 export const ON_FILL = 'inverseText'

@@ -14,7 +14,7 @@
  */
 import { FRAME } from './cards'
 import type { Block, Section } from './cards'
-import { ACCENT, HEADING, STATUS_COLOURS } from './palette'
+import { ACCENT, FLASH_BG, HEADING, STATUS_COLOURS } from './palette'
 import { cells, grouped, padEnd, spaces, wrapGroups } from './rows'
 import type { Row, Segment, Tier } from './rows'
 import { sparkline } from './sparkline'
@@ -30,7 +30,8 @@ export type StatTone = 'warn' | 'alert' | 'accent'
  * in its warning colour and a fall in its success colour; a figure that is
  * not a status keeps its delta dim.
  */
-export type Stat = { key: string; label: string; value: string; tone?: StatTone; trend?: number[]; press?: string; delta?: number; worse?: 'up' }
+/** `lit` while the latest scan has just moved the figure: drawn on the flash ground for a moment. */
+export type Stat = { key: string; label: string; value: string; tone?: StatTone; trend?: number[]; press?: string; delta?: number; worse?: 'up'; lit?: true }
 
 /** A trend is drawn only with this many points, and only when it moves. */
 export const TREND_MIN_POINTS = 5
@@ -46,7 +47,7 @@ export const moves = (values: number[] | undefined): values is number[] =>
 /** A tile's figure as a segment: bold, in its tone's colour, else the text colour. */
 function figure(stat: Stat): Segment {
   const color = stat.tone === undefined ? HEADING : stat.tone === 'accent' ? ACCENT : STATUS_COLOURS[stat.tone]
-  return { text: stat.value, bold: true, color }
+  return { text: stat.value, bold: true, color, ...(stat.lit === true ? { bg: FLASH_BG } : {}) }
 }
 
 /** A tile's label: dim, or a pressable when it lists something. */
