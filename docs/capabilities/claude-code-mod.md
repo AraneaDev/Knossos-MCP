@@ -108,6 +108,33 @@ that cap is said at the next Read or edit of the file. A note that fails
 leaves the tool result as it was and one line in the debug log. A turn ends with at most one
 note. `agentNotes` turns them all off; the toast stays.
 
+**After a commit.** When a Bash call in any loop runs `git commit` (with
+options before it, as in `git -C dir commit`, or anywhere in a chain), the
+call's result carries one note of what the commit takes along, as far as the
+graph knows: the boundary-policy violations the session's turns introduced,
+the changed files no test reaches, and the cycles new since the session
+began (against the cycles the graph held when the session began):
+
+```text
+knossos: this commit carries 1 changed file no test reaches (src/Kernel.php); 1 dependency cycle new since the session began (Router → Kernel). Check them before you push.
+```
+
+Nothing new, no note. The same note is said once per loop, counts against
+the three notes a turn, and `agentNotes` turns it off.
+
+**On request.** The mod registers a tool the model calls itself,
+`knossos_context` (listed as `mcp__knossos__knossos_context`), with one
+argument, `path` (relative to the project or absolute). One call answers in
+a few lines, at most 2,000 characters: the file's boundary, language, lines
+and components; how many files depend on it, in which boundaries, and the
+closest five; the declared rules that bind it (or that a cap leaves that
+open); the tests that reach it, nearest first; its three latest commits;
+and whether this session changed it. It reads `knossos file-context <file>`
+through the wrapper when it is called (never in a drawing), and answers a
+path outside the project, or a project never scanned, with a sentence that
+says so. It is registered at the session's start, with the same retries as
+`/knossos`, whatever `agentNotes` says: the model asks for it.
+
 Approximate cost on this repository: 20 to 60 tokens for a Read note (60
 only for the first file read in a policed boundary), about 35 for an edit
 note, about 50 for a tests note naming three PHPUnit classes (up to about
@@ -186,7 +213,65 @@ Changes the files beside the tests; Issues the cards with nothing to list side
 by side as one-line rules first, then the lists in pairs. Cycles and a
 detail stand in one column at every width, since a diagram wants the room.
 
-Nothing the pane draws can wrap or push its card wider, on a terminal that
+Past 130 columns, Hubs, Changes, Issues, Cycles and Branch are master and
+detail: the tab on the left (55 percent, as a medium pane lays it out) and,
+beside it, the detail of the marked row, a component's neighbourhood or a
+file's dependents (with its change since the session began, drawn as text
+lines in the added and removed colours, since the engine's diff element
+spans the pane). Moving the marker looks the new row up after a short pause,
+so a run of `j` presses is one lookup; a press in the panel opens its row as
+the detail itself. A row with nothing to show (a boundary, a chart's bar)
+shows the tab alone. Boundaries keeps its own grid, whose lower row already
+spells out the marked boundary and its cell. Narrower panes open a row with
+`o`, as before.
+
+The cards stretch to the pane's foot: the last card of a column, or the rows
+of cards side by side in a grid, take the rows left over, so nothing ends
+above blank space. On a tall Overview the rows left after the charts go to
+two secondary lists, the complexity hotspots and the files most depended
+on, each a link to its file; on a shorter pane they are left out, and the
+marker never walks them, so what it walks does not depend on the height.
+
+Paths are drawn in two tones, the directory dim and the file name in the
+text colour. A path too long for its column loses the middle of its
+directory first, by whole folders (`src/…/Query/`, then `…/Query/`), then
+characters; the file name is cut only when it alone is wider than the
+column.
+
+When a new snapshot lands, the rows whose figures it changed (a hub's
+degrees, a file's dependents, a boundary's members, a stat tile's figure, a
+changed file a newer scan took in again) are drawn on a cool ground for
+about three seconds, then go back. The marked row keeps its own ground.
+
+`f` opens the finder over any tab: a field and the components and files
+whose name holds the typed letters in order (`dsvc` finds
+`DashboardService`), a type before its members, the closest first, at most
+twenty. The search (`knossos graph-search`) runs after a short pause in the
+typing, never in a drawing; until its answer for what is typed lands the
+card says `searching…` and keeps the last matches. Enter opens the first
+match (or the marked one), a click any; a component opens as its detail, a
+file as the file's. `x` or an empty Enter closes it, and the tab under it
+comes back as it was.
+
+The Branch tab (`7`) compares the checked-out branch with the snapshot taken
+where it left its default branch. `knossos branch-diff` finds the merge base
+through git, locally (the default branch is the one `origin/HEAD` names, else
+`main` or `master`), and matches it to a retained snapshot by the commit each
+scan was taken at: one at the merge base, else the nearest one before it
+(the tab says how many commits earlier). Then it lists what is new since:
+dependencies crossing from one boundary into another, cycles whose members
+did not already form one, hubs at least ten components depend on that more
+depend on now, newly unreferenced components, and policy violations whose
+dependency is new. Each list counts all and names the first eight, and each
+row opens its component. When no snapshot near the merge base is retained,
+the tab says so in the warning colour: with a snapshot taken after it, it
+compares against that one and says how many of the branch's commits it
+already holds, so what they changed is not shown; with none, it compares
+nothing. On the default branch itself, or without git, it says that too.
+The comparison is read when the tab opens and again for each new snapshot,
+never while another tab is open. The tab label counts what it found.
+
+Nothing the pane draws can wrap or push its card wider,Nothing the pane draws can wrap or push its card wider, on a terminal that
 counts cells as the layout does or not: every row is a box as wide as the
 pane that clips what passes its edge, every text in it cuts at that edge
 with an ellipsis, and a pressable name draws the name as the layout cut it,
@@ -207,8 +292,8 @@ between the lists in turn, up to ten each; then the charts take what they
 can use (the heat map's cells grow from one row to two or three); then the
 lists take the rest, up to 28 rows each. A chart in one column of
 the wide grid stops growing once it would leave the other column more than
-three rows shorter. The dashboard sends up to fifty hubs, hotspots, dead-code
-candidates and largest files, enough for a tall pane. A list cut short says `n more ↓` (and `n above ↑`
+three rows shorter. The dashboard sends up to fifty hubs, hotspots and dead-code
+candidates and thirty complexity hotspots and files over budget, enough for a tall pane. A list cut short says `n more ↓` (and `n above ↑`
 once the marker has moved down it), and moving the marker scrolls it. A pane
 too short for even those few rows scrolls as a whole.
 
@@ -401,9 +486,9 @@ change` for a flat one, drawn faint). Only with five snapshots or more.
   on, the bucket may count more) and the files step aside; `x` clears it, as
   does another tab.
   `◆` marks a hotspot
-  that is not also a hub. Methods read `Class::method`. `f` opens a filter
+  that is not also a hub. Methods read `Class::method`. `n` opens a filter
   field: the list narrows as you type to the components whose name holds the
-  text, Enter keeps the filter and `x` clears it. `s` sorts by in, out or
+  text, Enter keeps the filter and `x` clears it (`f` is the finder, on every tab). `s` sorts by in, out or
   cross-boundary degree in turn; the bar follows the sort, and the title says
   it (`Hubs and hotspots · sorted by in`). Resting the pointer on a name
   (where the surface has a pointer: not on mobile) shows a card over the
@@ -414,9 +499,9 @@ change` for a flat one, drawn faint). Only with five snapshots or more.
   nothing reaches the mod. The sorted column's numbers are in
   the text colour and the other two are dimmed. When every listed row sits in
   one boundary, the boundary column goes and the header says it once
-  (`all in core`); otherwise a row in the same boundary as the row above
-  draws its label fainter (its swatch keeps the colour), so the column reads
-  by where the boundary changes. `e` opens a hub's file at its declaration.
+  (`all in core`); otherwise every row draws its chip the same way, the
+  swatch in the boundary's colour and the name dim, whatever the row above
+  holds. `e` opens a hub's file at its declaration.
 - **Cycles:** the marked cycle drawn, and under it every cycle (the ten
   largest), each as a line naming its size, the boundary most of its members
   are in and how many others it reaches. The drawing is a serpentine of boxes,
@@ -456,8 +541,15 @@ change` for a flat one, drawn faint). Only with five snapshots or more.
 
 - **Issues:** the declared policy violations (each with the offending file
   and line), the scan's errors and warnings, the first fifty dead-code
-  candidates (`◇` marks one only tests reach) and the fifty largest files,
-  each list as long as the height allows. A card with nothing to list is one
+  candidates (`◇` marks one only tests reach), the complexity hotspots (the
+  files with the most lines times dependent files, a bar of that product
+  beside the two figures) and the files over the project's maintainability
+  budget (a PHP function longer than `max_php_function_lines` in its
+  `maintainability-budgets.json`: how many functions are over and the
+  longest; `✓ 0` when none is, and `no maintainability-budgets.json` without
+  one), each list as long as the height allows. The hotspots and the files
+  over budget are rows the marker walks: `o` opens the file's detail, `e`
+  the file (at its longest function). A card with nothing to list is one
   line (`── ! Policy violations ──── ✓ 0 ──`).
   The tab label carries the count of violations, errors and warnings, as in
   `Issues³`.
@@ -475,7 +567,12 @@ snapshot>`, read again after each scan the watcher sees, one read at a
   own changes, dim for one that took in changes made outside it, then how
   many of each (`session-changes` lists the scans since the session began,
   the newest 60). A row too short for all of them keeps the newest behind a
-  `…`. With
+  `…`. A
+  tests column says how many test files reach each changed file (counted one
+  file at a time, the 60 most depended on, within three seconds; `20+` at its
+  cap, blank where it is not known): `▲ none` in the warning colour for a
+  file no test reaches, and the count of those files stands above the table
+  (`▲ 2 files no test reaches`) and on the Overview's session card. With
   no watcher (switched off, or a container install) the tab falls back to
   what the session's turn briefs reported, added up, and says so. When the
   ledger cannot reach back to the session's start (a ledger an older knossos
@@ -618,7 +715,7 @@ what can be done to the marked row on the right, only the keys that do
 something in the view on show. For a moment after an action the footer says
 what it did, between the two (`✓ copied StableId`, `✓ opened in editor`,
 `✗ no editor · path copied`, in the success or error colour); the mod's age
-tick lets it fade after about two seconds. `1` to `6` switch tabs, `j` and `k` move the `›` marker (as does moving the focus with
+tick lets it fade after about two seconds. `1` to `7` switch tabs, `f` opens the finder, `j` and `k` move the `›` marker (as does moving the focus with
 Tab or the arrows onto a row), `o` or Enter opens the marked row, `e` opens
 the marked row's file in your editor, `c` copies and `q` asks about it, `t`
 copies the test command, `d` lists the drifted files, `l` moves the
@@ -735,7 +832,7 @@ pane (it hands the keyboard back), so `b` is the way back, and the filter
 clears with `x` or an empty Enter.
 
 Every `file:line` the pane shows is a link: the detail's place, the places on
-the Issues tab, the largest files, a file detail's path and the Changes
+the Issues tab, the Overview's secondary file lists, a file detail's path and the Changes
 tab's tests. It is a Markdown `file:` link (`#L<line>` names the
 line), so a ctrl- or cmd-click opens it as a link in one of Claude's replies
 would. A plain click, and `e` on the marked row (or on what the detail shows), runs `code -g <path>:<line>`, which VS Code
@@ -983,8 +1080,15 @@ one log line and turns the band and pane off for the session.
 
 The wrapper bounds each call: 60 seconds for `turn-brief` and the pane's
 rescan, 30 for `dashboard` (a first dashboard of a large project walks the
-whole graph), 15 for `component-detail`, `file-detail`, `session-changes`,
-`session-head`, `session-diff`, `boundary-couplings` and `allow-root`.
+whole graph) and for `branch-diff` (two whole graphs compared), 15 for
+`component-detail`, `file-detail`, `file-context`, `graph-search`,
+`session-changes`, `session-head`, `session-diff`, `boundary-couplings` and
+`allow-root`. `file-context` takes one file inside the project directory, as
+`file-detail` does; `graph-search` exactly `--query=` with one printable line
+of at most 200 characters; `branch-diff` nothing but the project. The
+container wrapper runs `file-context` and `branch-diff` as the image's user,
+so git may refuse the mounted repository there: the context then has no
+commits, and the Branch tab says there is no git.
 `boundary-couplings` takes exactly `--from=` and `--to=`, in that order, each
 a printable, non-empty boundary name. `session-diff` takes only a
 hex commit id and a file inside the project directory. The container

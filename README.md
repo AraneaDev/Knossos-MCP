@@ -419,10 +419,38 @@ whoever changed it, each file marked `this session` (Claude's own edits, subagen
 or `outside` (your editor, a checkout): with its dependents and its boundary, the tests that
 reach them, nearest first, and the command that runs them. A thin row of dots above the files
 shows the session's scans, Claude's and everyone else's apart. Without a watcher it adds up what
-the session's turns reported instead, and says so. Every file there opens to the files that
-depend on it.
+the session's turns reported instead, and says so. A changed file no test reaches is marked
+`▲ none` in its tests column and counted above the table, and on the Overview's session
+card. Every file there opens to the files that depend on it.
 
-![The Changes tab](docs/images/claude-code-mod/changes-dark.png)
+![The Changes tab, two files marked as reached by no test](docs/images/claude-code-mod/changes-dark.png)
+
+On a wide pane (past 130 columns) Hubs, Changes, Issues, Cycles and Branch stand beside the
+marked row's detail: move the marker and the neighbourhood, or a changed file's diff, follows
+it, without leaving the list. Paths are drawn in two tones, the directory dim and the file
+name bright, and a long one loses the middle of its directory, never its file name. Rows a
+new snapshot changed light up for about three seconds after it lands.
+
+![Hubs on a wide pane: the list on the left, the marked component's dependencies beside it](docs/images/claude-code-mod/hubs-peek-dark.png)
+
+The Branch tab compares the branch with the retained snapshot at its merge base with the
+default branch (found through git, locally): dependencies newly crossing from one boundary
+into another, new cycles, hubs that grew, new dead code and new policy violations, each
+opening its component. When no snapshot near the merge base is kept, it says so, and how
+partial the comparison against the nearest later one is.
+
+![The Branch tab, saying that no snapshot near the merge base is retained](docs/images/claude-code-mod/branch-dark.png)
+
+`f` opens a finder over every component and file: type letters of a name in order and Enter
+opens the first match. Hubs' own filter is now on `n`.
+
+![The finder, after typing dash](docs/images/claude-code-mod/finder-dark.png)
+
+Claude gets a `knossos_context` tool (listed as `mcp__knossos__knossos_context`): one call
+for a file's boundary and the rules that bind it, its dependents, the tests that reach it,
+its latest commits and whether this session changed it. After a `git commit`, in the main
+loop or a subagent, Claude reads one short note on what the commit carries: violations the
+session introduced, changed files no test reaches, and cycles new since the session began.
 
 The Boundaries tab maps how much each boundary depends on each other one, with the pairs a
 policy forbids in red. Marking a boundary spells out what it depends on, what depends on it,
