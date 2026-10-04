@@ -300,8 +300,11 @@ if [ "$profile" = "full" ] && in_lane gate; then
     gate_repo="${KNOSSOS_GATE_REPO:-$root}"
     # A mounted checkout belongs to the runner's user rather than this
     # container's, and git refuses to read a repository it believes is someone
-    # else's. Scoped to this one path, not a blanket `*`.
-    git config --global --add safe.directory "$gate_repo" >/dev/null 2>&1 || true
+    # else's. Scoped to this one path, not a blanket `*`, and added only once so
+    # repeated runs do not pile up copies in the global config.
+    if ! git config --global --get-all safe.directory 2>/dev/null | grep -qxF -- "$gate_repo"; then
+        git config --global --add safe.directory "$gate_repo" >/dev/null 2>&1 || true
+    fi
 
     # The commit to measure against: what CI worked out from the event, else
     # where this branch left the default branch, else the previous commit so a
