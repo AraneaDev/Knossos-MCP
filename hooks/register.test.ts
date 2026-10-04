@@ -155,6 +155,12 @@ function world(
     registered.push(e.name)
     return { value: { command: e.name } }
   })
+  /** The tools the mod registered for the model. */
+  const tools: string[] = []
+  on('tool.register', (_$, e) => {
+    tools.push(e.name)
+    return { value: { tool: `mcp__knossos__${e.name}` } }
+  })
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -297,7 +303,7 @@ function world(
   const searchRuns = () => calls.filter(c => c[2] === 'graph-search')
   const branchRuns = () => calls.filter(c => c[2] === 'branch-diff')
   const contextRuns = () => calls.filter(c => c[2] === 'file-context')
-  return { searchRuns, branchRuns, contextRuns, couplingRuns, store, switchSession, headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  return { tools, searchRuns, branchRuns, contextRuns, couplingRuns, store, switchSession, headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -1747,6 +1753,89 @@ describe('knossos mod', () => {
     await w.clock.settle()
     expect(w.briefRuns()).toHaveLength(1)
     expect(turnNotes(w)).toHaveLength(0)
+  })
+
+  test('the knossos_context tool answers one file in one compact call: boundary, rules, dependents, tests, commits and this session', async ($, on) => {
+    const context = JSON.stringify({
+      status: 'ok',
+      path: `${ROOT}/src/Router.php`,
+      project_id: 'p1',
+      snapshot_id: 's1',
+      file: {
+        path: 'src/Router.php',
+        language: 'php',
+        lines: 120,
+        boundary: 'core',
+        components: 4,
+        dependents: { count: 41, boundaries: ['Http'], top: ['src/Kernel.php'] },
+        tests: { items: [{ path: 'tests/RouterTest.php', distance: 1 }], more: false },
+        commits: [{ rev: 'abc1234', at: 1_791_115_340, subject: 'feat: route' }],
+      },
+    })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], context: [{ stdout: context }], brief: [{ stdout: brief() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    for (const asked of ['src/Router.php', `${ROOT}/src/Router.php`]) {
+      const answer = await $.tool.call({ tool: 'mcp__knossos__knossos_context', path: asked })
+      const text = String((answer as { result?: unknown }).result)
+      expect(text).toContain('src/Router.php: boundary core, PHP, 120 lines, 4 components.')
+      expect(text).toContain('Rules: core may not depend on workers, tests.')
+      expect(text).toContain('Dependents: 41 files in Http; closest: src/Kernel.php, and 40 more.')
+      expect(text).toContain('Tests that reach it: tests/RouterTest.php (1 hop).')
+      expect(text).toContain('This session changed it.')
+      expect(text.length).toBeLessThanOrEqual(2_000)
+    }
+    // Read through the wrapper by the path under the project, and only that.
+    expect(w.contextRuns().map(r => r.slice(4))).toEqual([['src/Router.php'], ['src/Router.php']])
+    // Registered for the model when the session started, once.
+    expect(w.tools).toEqual(['knossos_context'])
+    const outside = await $.tool.call({ tool: 'mcp__knossos__knossos_context', path: '/etc/passwd' })
+    expect(String((outside as { result?: unknown }).result)).toContain('is outside the project')
+    expect(w.contextRuns()).toHaveLength(2)
+  })
+
+  test('a git commit in any loop gets one note of what it carries: violations, untested files, new cycles; said once, and never with notes off', async ($, on) => {
+    const violation = { policy_id: 'core-alone', source: 'App\\Router', target: 'App\\Worker', source_boundaries: [], target_boundaries: [] }
+    const turn = brief({
+      changed_files: ['src/Router.php', 'src/Kernel.php'],
+      impact: {
+        'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 2 },
+        'src/Kernel.php': { path: 'src/Kernel.php', dependent_files: 3, boundaries: ['Core'], boundary: 'core', tests: 0 },
+      },
+      policy: { status: 'evaluated', total: 1, violations: [violation], truncated: false },
+    })
+    const later = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), snapshot_id: 's2', cycles: { count: 1, truncated: false, truncation_reasons: [], largest: [{ size: 2, members: ['Router', 'Kernel'] }] } })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: later }], brief: [{ stdout: turn }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    // Nothing yet: a commit carries nothing the graph knows of.
+    expect((await bash($, 'git status')).context ?? []).toEqual([])
+    expect((await bash($, 'git commit -m first')).context ?? []).toEqual([])
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const said = (await bash($, 'git add -A && git commit -m "route"')).context ?? []
+    expect(said).toEqual([
+      'knossos: this commit carries 1 boundary-policy violation this session introduced (App\\Router → App\\Worker); 1 changed file no test reaches (src/Kernel.php); 1 dependency cycle new since the session began (Router → Kernel). Check them before you push.',
+    ])
+    // The same note is not said twice in one loop; a subagent's loop is told on its own.
+    expect((await bash($, 'git commit --amend --no-edit')).context ?? []).toEqual([])
+    const sub = await $.tool.call({ tool: 'Bash', command: 'git commit -m sub', agentId: 'agent-1' } as never)
+    expect((sub as { context?: string[] }).context ?? []).toHaveLength(1)
+  })
+
+  test('a commit gets no note with notes off', { options: { agentNotes: false } }, async ($, on) => {
+    const turn = brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 0 } } })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], brief: [{ stdout: turn }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect((await bash($, 'git commit -m x')).context ?? []).toEqual([])
   })
 
   test('a session below the project root is told, and copies, test commands that change to the project root', async ($, on) => {

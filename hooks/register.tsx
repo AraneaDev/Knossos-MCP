@@ -8,7 +8,7 @@ import { BASELINES_KEY, baselinesOf, remember } from './lib/baseline'
 import type { Baseline } from './lib/baseline'
 import type { JobState } from './lib/band'
 import { diffView } from './lib/diff'
-import { parseAllowRoot, parseBranchDiff, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseGraphSearch, parseRescan, parseSessionDiff, parseSessionHead, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
+import { parseAllowRoot, parseBranchDiff, parseComponentDetail, parseCouplings, parseDashboard, parseFileContext, parseFileDetail, parseGraphSearch, parseRescan, parseSessionDiff, parseSessionHead, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { SessionLedger, TurnBrief } from './lib/envelopes'
 import { ledgerChanges, ownTimeline } from './lib/changes'
 import {
@@ -45,9 +45,10 @@ import {
   tierOf,
 } from './lib/layout'
 import type { Loc, Openable, PaneInput, Preview, Row, Segment } from './lib/layout'
+import { commitNote, CONTEXT_DESCRIPTION, CONTEXT_SCHEMA, CONTEXT_TOOL, contextAnswer, isGitCommit } from './lib/agent'
 import { FLASH_MS, flashKeys, ledgerFlashKeys } from './lib/flash'
 import type { Flash } from './lib/flash'
-import { editNote, fanInIndex, freshViolations, readNote, testsNote, violationKey, violationNote } from './lib/notes'
+import { boundOf, editNote, fanInIndex, freshViolations, readNote, ruleText, testsNote, violationKey, violationNote } from './lib/notes'
 import { isWatching, LIVE_OFF, liveAfter, snapshotOf, watchLines, watchPollMsOf } from './lib/live'
 import { CARD_BG, declaredOf, huesOf, SELECTED_BG } from './lib/palette'
 import { relativise } from './lib/paths'
@@ -123,6 +124,10 @@ const SEARCH_TIMEOUT_MS = 20_000
 const BRANCH_TIMEOUT_MS = 35_000
 /** How long the detail beside the tab waits after the marker moves before it looks the marked row up: a run of j presses is one lookup. */
 const PEEK_DEBOUNCE_MS = 120
+/** The wrapper bounds file-context at 15 s. */
+const CONTEXT_TIMEOUT_MS = 20_000
+/** The model's tool, as the engine lists it (`mcp__<plugin>__<name>`): the plugin is `knossos`, so its hook matches this name. */
+const CONTEXT_TOOL_NAME = `mcp__knossos__${CONTEXT_TOOL}`
 
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
@@ -335,25 +340,103 @@ const mod = {
   /** Whether the pane was last drawn wide (master-detail), as the render saw it; and the pending lookup of the marked row. */
   paneWide: false,
   peekTimer: null as Timer | null,
+  /** Whether the model's `knossos_context` tool is registered, and a refused registration was logged. */
+  toolRegistered: false,
+  toolFailureLogged: false,
+  /** The cycles the graph held when the session began (how many, and each listed one by its members): what a commit note counts as new. */
+  startCycles: null as { count: number; keys: string[] } | null,
+  /** Commit notes already given, by loop and text: the same note is never said twice. */
+  commitNoted: new Set<string>(),
+}
+
+/**
+ * Registers the model's `knossos_context` tool (one file's context in one
+ * call); false when the engine refuses, as it does until a session is bound.
+ * The first refusal leaves one debug line.
+ */
+async function registerTool($: EngineInterface): Promise<boolean> {
+  if (mod.toolRegistered) return true
+  try {
+    await $.tool.register({ name: CONTEXT_TOOL, description: CONTEXT_DESCRIPTION, inputSchema: CONTEXT_SCHEMA as unknown as Record<string, unknown> })
+    mod.toolRegistered = true
+    return true
+  } catch (err) {
+    if (!mod.toolFailureLogged) {
+      mod.toolFailureLogged = true
+      $.ui.log(`knossos: could not register the knossos_context tool yet, retrying (${err instanceof Error ? err.message : String(err)})`, { to: 'debug' })
+    }
+    return false
+  }
+}
+
+/**
+ * The `knossos_context` tool's answer for `asked` (a path, relative to the
+ * project or absolute): `file-context` for it, the rules the dashboard says
+ * bind it, and how this session changed it. Bounded and compact; never
+ * throws, whatever the wrapper does.
+ */
+async function answerContext($: EngineInterface, asked: unknown): Promise<string> {
+  if (typeof asked !== 'string' || asked.trim() === '') return 'knossos_context: give the file as `path`, relative to the project root or absolute.'
+  const d = await read($, dashboard)
+  if (mod.disabled || d?.status !== 'ok' || d.project_root === null) return 'knossos_context: knossos has no graph of this project yet; scan it with the knossos MCP tools first.'
+  const root = d.project_root
+  const placedPath = asked.startsWith('/') ? await placed($, asked) : asked.replace(/^\.\//, '')
+  const relative = placedPath.startsWith('/') ? relativise(root, placedPath) : placedPath
+  if (relative === null || relative === '' || relative.split('/').includes('..')) return `knossos_context: ${asked} is outside the project knossos scanned (${root}).`
+  const context = parseFileContext(await wrapper($, 'file-context', [relative], CONTEXT_TIMEOUT_MS, root))
+  if (context?.status === 'no-binary') return 'knossos_context: no knossos binary is installed.'
+  const { bound, unsure } = boundOf(relative, d.policy)
+  const rules = (d.policy?.rules ?? []).filter(r => bound.includes(r.from)).map(ruleText)
+  const session = (await shownChanges($, root)).files[relative]?.status ?? null
+  return contextAnswer(asked, context, rules, unsure, session)
+}
+
+/** The cycles a dashboard holds, by members: what tells a cycle new since the session began. */
+const cycleKeys = (d: Dashboard): string[] => d.cycles.largest.map(c => [...c.members].sort().join('\u0000'))
+
+/**
+ * The note after a `git commit` in `loop`, or null when there is nothing new
+ * to say: the violations the session's turns introduced, the changed files
+ * no test reaches, and the cycles new since the session began.
+ */
+async function commitNoteFor($: EngineInterface, loop: string): Promise<string | null> {
+  const d = await read($, dashboard)
+  if (!mod.notesOn || d?.status !== 'ok') return null
+  const session = await shownChanges($, d.project_root)
+  const untested = Object.entries(session.files).filter(([, f]) => f.status !== 'deleted' && f.tests === 0).map(([path]) => path).sort()
+  const start = mod.startCycles
+  const keys = new Set(start?.keys ?? cycleKeys(d))
+  const fresh = d.cycles.largest.filter(c => !keys.has([...c.members].sort().join('\u0000')))
+  const count = Math.max(start === null ? 0 : d.cycles.count - start.count, fresh.length)
+  const chains = fresh.map(c => `${c.members.slice(0, 4).join(' → ')}${c.members.length > 4 ? ' → …' : ''}`)
+  const note = commitNote(mod.enforce ? session.violations : [], untested, { count: start === null ? 0 : count, chains: start === null ? [] : chains })
+  if (note === null) return null
+  const key = `${loop}\u0000${note}`
+  if (mod.commitNoted.has(key) || !takeNoteSlot(loop)) return null
+  mod.commitNoted.add(key)
+  return note
 }
 
 /** How long to wait before each retry of a refused registration, in milliseconds; after the last, turn ends retry. */
 const REGISTER_RETRY_MS = [500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const
 
 /**
- * Registers `/knossos`; false when the engine refuses, as it does when no
- * session is bound in the process yet (the moment after a hot reload). The
- * first refusal leaves one debug line.
+ * Registers `/knossos` and the model's `knossos_context` tool; false when
+ * the engine refuses either, as it does when no session is bound in the
+ * process yet (the moment after a hot reload). The first refusal leaves one
+ * debug line.
  */
 async function registerCommand($: EngineInterface): Promise<boolean> {
-  if (mod.commandRegistered) return true
+  // The model's tool rides on the same registration, and its retries: both need a session bound.
+  const tool = await registerTool($)
+  if (mod.commandRegistered) return tool
   try {
     await $.command.register({
       name: 'knossos',
       description: 'Toggle the Knossos architecture pane; /knossos inspect <component> to drill in',
     })
     mod.commandRegistered = true
-    return true
+    return tool
   } catch (err) {
     if (!mod.registerFailureLogged) {
       mod.registerFailureLogged = true
@@ -366,7 +449,7 @@ async function registerCommand($: EngineInterface): Promise<boolean> {
 /** Retries a refused registration after the `attempt`-th delay, then the next; past the last, the end of a turn tries again. */
 function retryRegister($: EngineInterface, attempt: number, gen = mod.registerGen): void {
   const delay = REGISTER_RETRY_MS[attempt]
-  if (delay === undefined || mod.commandRegistered || mod.disabled || gen !== mod.registerGen) return
+  if (delay === undefined || (mod.commandRegistered && mod.toolRegistered) || mod.disabled || gen !== mod.registerGen) return
   try {
     mod.registerTimer = $.clock.after(delay, () => {
       mod.registerTimer = null
@@ -515,6 +598,8 @@ async function loadDashboard($: EngineInterface): Promise<void> {
     await update($, sessionStart, () => parsed.snapshot_id)
     await saveBaseline($)
   }
+  // The cycles as the session found them: what the note after a commit counts as new.
+  if (parsed.status === 'ok' && mod.startCycles === null) mod.startCycles = { count: parsed.cycles.count, keys: cycleKeys(parsed) }
   // The pane open on a component follows the graph: a new snapshot looks it up again.
   const shown = (await read($, view)).inspect
   if (shown !== null) await requestDetail($, shown)
@@ -2055,6 +2140,10 @@ export const register: Register = (on, options) => {
   mod.paneWide = false
   mod.peekTimer?.cancel()
   mod.peekTimer = null
+  mod.toolRegistered = false
+  mod.toolFailureLogged = false
+  mod.startCycles = null
+  mod.commitNoted = new Set()
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
@@ -2078,8 +2167,11 @@ export const register: Register = (on, options) => {
     } else {
       mod.watchFailures = 0
       mod.watchRetryAt = 0
-      // A new session in the same process: its changes start now, at the graph as it stands.
+      // A new session in the same process: its changes start now, at the graph as it stands, and its cycles too.
       await update($, sessionStart, () => mod.snapshot)
+      const now = await read($, dashboard)
+      mod.startCycles = now?.status === 'ok' ? { count: now.cycles.count, keys: cycleKeys(now) } : null
+      mod.commitNoted = new Set()
       await update($, sessionBegan, () => null)
       await update($, sessionEdits, () => [])
       await update($, sessionScans, () => [])
@@ -2151,8 +2243,16 @@ export const register: Register = (on, options) => {
     const command = (e as { command?: unknown }).command
     if (ran.deny === undefined && typeof command === 'string' && mod.ranCommands.length < COMMANDS_KEPT) mod.ranCommands.push(command)
     if (BASH_MARKS_DIRTY) mod.dirty = true
-    return ran
+    // A commit, in any loop: what it carries that the graph knows of, said once.
+    if (mod.disabled || ran.deny !== undefined || ran.isError === true || typeof command !== 'string' || !isGitCommit(command)) return ran
+    return noteSafely($, ran, async () => {
+      const note = await commitNoteFor($, e.agentId ?? '')
+      return note === null ? ran : { ...ran, context: [...(ran.context ?? []), note] }
+    })
   })
+
+  // The model's own tool: one file's context in one call, answered here (no other hook answers it).
+  on('tool.call', { tool: CONTEXT_TOOL_NAME }, async ($, e) => ({ result: await answerContext($, (e as { path?: unknown }).path).catch(() => 'knossos_context: the answer failed; try again.') }))
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
@@ -2162,7 +2262,7 @@ export const register: Register = (on, options) => {
     mod.turnRan = mod.ranCommands
     mod.ranCommands = []
     // Still refused once the timed retries ran out: each turn's end asks again, a session being bound by now.
-    if (!mod.disabled && !mod.commandRegistered && mod.registerTimer === null) await registerCommand($)
+    if (!mod.disabled && !(mod.commandRegistered && mod.toolRegistered) && mod.registerTimer === null) await registerCommand($)
     // The turn may have committed or switched branches: the header reads where the checkout stands again.
     if (!mod.disabled) $.clock.after(0, () => void readGitHead($).catch(() => undefined))
     // No graph to draw yet (the person may just have asked Claude to scan): look again, once the turn is over.
