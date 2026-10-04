@@ -66,4 +66,23 @@ final class GraphSearchServiceTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    #[Group('query')]
+    public function testNonAsciiLettersMatchInAnyCase(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            file_put_contents($root . '/src/Core/Écran.php', "<?php\nnamespace App;\nfinal class Écran {}\n");
+            (new \Knossos\Scan\ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+            $service = new GraphSearchService($pdo);
+            // SQLite folds only ASCII: the name is found typed either way, and a letter that only looks alike is not one.
+            foreach (['écran', 'ÉCRAN', 'Écran', 'éc'] as $typed) {
+                $first = $service->search($root, $typed)['results'][0] ?? null;
+                assertSame('App\\Écran', $first['canonical_name'] ?? null, $typed);
+            }
+            assertNotContains('App\\Écran', array_column($service->search($root, 'ëcran')['results'], 'canonical_name'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }

@@ -72,13 +72,24 @@ if [ "$SUBCOMMAND" = file-detail ] || [ "$SUBCOMMAND" = file-context ]; then
     [ "$#" -eq 1 ] || exit 0
     case "$1" in -* | /* | '') exit 0 ;; esac
 fi
-# graph-search takes exactly what was typed into the finder, one printable
-# line of at most 200 characters: any other option (`--db=...`) would read
+# Whether "$1" is one line of text of at most $2 characters: no control
+# character, counted by its characters. Read byte by byte (LC_ALL=C), so a
+# non-ASCII name is text whatever locale the hook runs in, and a UTF-8
+# continuation byte is not counted as a character of its own.
+is_text_line() (
+    LC_ALL=C
+    export LC_ALL
+    case "$1" in *[[:cntrl:]]*) exit 1 ;; esac
+    chars=$(printf '%s' "$1" | tr -d '\200-\277')
+    [ "${#chars}" -le "$2" ]
+)
+# graph-search takes exactly what was typed into the finder, one line of
+# text of at most 200 characters: any other option (`--db=...`) would read
 # another graph.
 if [ "$SUBCOMMAND" = graph-search ]; then
     [ "$#" -eq 1 ] || exit 0
-    case "$1" in --query= | --query=*[![:print:]]*) exit 0 ;; --query=*) ;; *) exit 0 ;; esac
-    [ "${#1}" -le 208 ] || exit 0
+    case "$1" in --query=) exit 0 ;; --query=*) ;; *) exit 0 ;; esac
+    is_text_line "$1" 208 || exit 0
 fi
 # branch-diff takes nothing but the project.
 if [ "$SUBCOMMAND" = branch-diff ]; then
@@ -88,30 +99,30 @@ fi
 if [ "$SUBCOMMAND" = churn ]; then
     [ "$#" -eq 0 ] || exit 0
 fi
-# blast-radius takes exactly one component, by its printable name: any other
+# blast-radius takes exactly one component, by its name, one line of text: any other
 # option (`--db=...`) would read another graph.
 if [ "$SUBCOMMAND" = blast-radius ]; then
     [ "$#" -eq 1 ] || exit 0
-    case "$1" in --component= | --component=*[![:print:]]*) exit 0 ;; --component=*) ;; *) exit 0 ;; esac
-    [ "${#1}" -le 520 ] || exit 0
+    case "$1" in --component=) exit 0 ;; --component=*) ;; *) exit 0 ;; esac
+    is_text_line "$1" 520 || exit 0
 fi
 # path-between takes exactly the two components, the one the route starts at
-# and the one it ends at, in that order, each a printable name.
+# and the one it ends at, in that order, each one line of text.
 if [ "$SUBCOMMAND" = path-between ]; then
     [ "$#" -eq 2 ] || exit 0
-    case "$1" in --from= | --from=*[![:print:]]*) exit 0 ;; --from=*) ;; *) exit 0 ;; esac
-    case "$2" in --to= | --to=*[![:print:]]*) exit 0 ;; --to=*) ;; *) exit 0 ;; esac
-    [ "${#1}" -le 520 ] && [ "${#2}" -le 520 ] || exit 0
+    case "$1" in --from=) exit 0 ;; --from=*) ;; *) exit 0 ;; esac
+    case "$2" in --to=) exit 0 ;; --to=*) ;; *) exit 0 ;; esac
+    is_text_line "$1" 520 && is_text_line "$2" 520 || exit 0
 fi
-# annotate takes the component, a note of one printable line (at most 2,000
+# annotate takes the component, a note of one line of text (at most 2,000
 # characters) and, last, `--execute` when the person confirmed the preview in
 # the pane: without it nothing is written. Nothing else: an option such as
 # `--db=...` would write into another graph.
 if [ "$SUBCOMMAND" = annotate ]; then
     [ "$#" -eq 2 ] || [ "$#" -eq 3 ] || exit 0
-    case "$1" in --component= | --component=*[![:print:]]*) exit 0 ;; --component=*) ;; *) exit 0 ;; esac
-    case "$2" in --value=*[![:print:]]*) exit 0 ;; --value=*) ;; *) exit 0 ;; esac
-    [ "${#1}" -le 520 ] && [ "${#2}" -le 2008 ] || exit 0
+    case "$1" in --component=) exit 0 ;; --component=*) ;; *) exit 0 ;; esac
+    case "$2" in --value=*) ;; *) exit 0 ;; esac
+    is_text_line "$1" 520 && is_text_line "$2" 2008 || exit 0
     if [ "$#" -eq 3 ]; then
         [ "$3" = --execute ] || exit 0
     fi
@@ -149,12 +160,13 @@ if [ "$SUBCOMMAND" = session-diff ]; then
     case "$2" in --file=-* | --file=/* | --file= | --file=.. | --file=../* | --file=*/../* | --file=*/..) exit 0 ;; --file=*) ;; *) exit 0 ;; esac
 fi
 # boundary-couplings takes exactly the two boundaries of one heat map cell, the
-# one it runs from and the one it runs to, in that order, each a printable name:
+# one it runs from and the one it runs to, in that order, each one line of text:
 # any other option (`--db=...`) would read another graph.
 if [ "$SUBCOMMAND" = boundary-couplings ]; then
     [ "$#" -eq 2 ] || exit 0
-    case "$1" in --from= | --from=*[![:print:]]*) exit 0 ;; --from=*) ;; *) exit 0 ;; esac
-    case "$2" in --to= | --to=*[![:print:]]*) exit 0 ;; --to=*) ;; *) exit 0 ;; esac
+    case "$1" in --from=) exit 0 ;; --from=*) ;; *) exit 0 ;; esac
+    case "$2" in --to=) exit 0 ;; --to=*) ;; *) exit 0 ;; esac
+    is_text_line "$1" 520 && is_text_line "$2" 520 || exit 0
 fi
 # allow-root takes nothing but the root, and always writes: the pane runs it
 # only after the person confirmed, so a preview would answer a question nobody

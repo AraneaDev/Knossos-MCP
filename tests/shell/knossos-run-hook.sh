@@ -163,6 +163,20 @@ expect_silent_success 'graph-search refuses a query past 200 characters' env KNO
 expect_output 'branch-diff asks for the project alone' "branch-diff|$ABS_PROJ|--json|" \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" branch-diff "$STUBS/proj"
 expect_silent_success 'branch-diff refuses an option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" branch-diff "$STUBS/proj" --db=/tmp/other.sqlite
+# Non-ASCII text is text in any locale, and counted by its characters, not its bytes.
+E200=$(i=0; while [ "$i" -lt 200 ]; do printf '\303\251'; i=$((i + 1)); done)
+expect_output 'graph-search passes a non-ASCII query under the C locale' "graph-search|$ABS_PROJ|--query=écran|--json|" \
+    env LC_ALL=C KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" graph-search "$STUBS/proj" '--query=écran'
+expect_output 'graph-search passes 200 non-ASCII characters' "graph-search|$ABS_PROJ|--query=$E200|--json|" \
+    env LC_ALL=C KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" graph-search "$STUBS/proj" "--query=$E200"
+expect_silent_success 'graph-search refuses 201 non-ASCII characters' env LC_ALL=C KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" graph-search "$STUBS/proj" "--query=${E200}é"
+expect_silent_success 'graph-search refuses a tab' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" graph-search "$STUBS/proj" "--query=a$(printf '\t')b"
+expect_output 'blast-radius passes a non-ASCII component' "blast-radius|$ABS_PROJ|--component=App\\Écran|--json|" \
+    env LC_ALL=C KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" blast-radius "$STUBS/proj" '--component=App\Écran'
+expect_output 'path-between passes non-ASCII ends' "path-between|$ABS_PROJ|--from=Ä|--to=Ö|--json|" \
+    env LC_ALL=C KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" path-between "$STUBS/proj" --from=Ä --to=Ö
+expect_output 'annotate previews a non-ASCII note' "annotate|$ABS_PROJ|--component=A|--value=geprüft|--json|" \
+    env LC_ALL=C KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" annotate "$STUBS/proj" --component=A --value=geprüft
 # churn, blast-radius, path-between: the project and the components asked for, and nothing else.
 expect_output 'churn asks for the project alone' "churn|$ABS_PROJ|--json|" \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" churn "$STUBS/proj"
@@ -279,6 +293,10 @@ STUB
 chmod +x "$STUBS/dockerbin/docker"
 expect_output 'container component-detail passes the name intact' "img:1|component-detail|$ABS_PROJ|My Router|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail "$STUBS/proj" 'My Router'
+expect_output 'container graph-search passes a non-ASCII query under the C locale' "img:1|graph-search|$ABS_PROJ|--query=écran|--json|" \
+    env LC_ALL=C PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" graph-search "$STUBS/proj" '--query=écran'
+expect_silent_success 'container graph-search refuses 201 non-ASCII characters' \
+    env LC_ALL=C PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" graph-search "$STUBS/proj" "--query=${E200}é"
 expect_output 'container dashboard keeps its arguments' "img:1|dashboard|$ABS_PROJ|--fan-in-threshold=20|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj" --fan-in-threshold=20
 expect_output 'container with a relative project directory mounts and passes the absolute path' "img:1|dashboard|$ABS_PROJ|--json|" \

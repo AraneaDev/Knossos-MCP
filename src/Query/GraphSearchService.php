@@ -63,7 +63,8 @@ final readonly class GraphSearchService
         }
         [$components, $cutComponents] = $this->components($id, $needle);
         [$files, $cutFiles] = $this->files($id, $needle);
-        $ranked = [...$components, ...$files];
+        // A candidate the pattern let through only for a non-ASCII letter it stood in for scores 0.
+        $ranked = array_values(array_filter([...$components, ...$files], static fn(array $r): bool => $r['score'] > 0));
         usort($ranked, static fn(array $a, array $b): int => [$b['score'], $a['order'], mb_strlen($a['name']), $a['name']] <=> [$a['score'], $b['order'], mb_strlen($b['name']), $b['name']]);
         $results = array_slice($ranked, 0, self::LIMIT);
         $labels = BoundaryLabels::load($this->pdo, $id);
@@ -135,12 +136,18 @@ final readonly class GraphSearchService
         return [$found, count($rows) > self::CANDIDATES];
     }
 
-    /** A `LIKE` pattern matching the letters in order with anything between them; `%`, `_` and `\` are matched as themselves. */
+    /**
+     * A `LIKE` pattern matching the letters in order with anything between
+     * them; `%`, `_` and `\` are matched as themselves. SQLite's `LOWER()`
+     * and `LIKE` fold only ASCII, so a letter outside it stands for any one
+     * character here, and {@see self::score()}, which folds every letter,
+     * decides whether it was the one typed.
+     */
     private static function pattern(string $needle): string
     {
         $letters = preg_split('//u', $needle, -1, PREG_SPLIT_NO_EMPTY) ?: [];
 
-        return '%' . implode('%', array_map(static fn(string $c): string => addcslashes($c, '%_\\'), $letters)) . '%';
+        return '%' . implode('%', array_map(static fn(string $c): string => strlen($c) > 1 ? '_' : addcslashes($c, '%_\\'), $letters)) . '%';
     }
 
     /**
