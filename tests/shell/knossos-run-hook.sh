@@ -163,6 +163,31 @@ expect_silent_success 'graph-search refuses a query past 200 characters' env KNO
 expect_output 'branch-diff asks for the project alone' "branch-diff|$ABS_PROJ|--json|" \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" branch-diff "$STUBS/proj"
 expect_silent_success 'branch-diff refuses an option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" branch-diff "$STUBS/proj" --db=/tmp/other.sqlite
+# churn, blast-radius, path-between: the project and the components asked for, and nothing else.
+expect_output 'churn asks for the project alone' "churn|$ABS_PROJ|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" churn "$STUBS/proj"
+expect_silent_success 'churn refuses an option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" churn "$STUBS/proj" --db=/tmp/other.sqlite
+expect_output 'blast-radius passes the component' "blast-radius|$ABS_PROJ|--component=App\\Greeter::greet|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" blast-radius "$STUBS/proj" '--component=App\Greeter::greet'
+expect_silent_success 'blast-radius refuses an empty component' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" blast-radius "$STUBS/proj" --component=
+expect_silent_success 'blast-radius refuses another option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" blast-radius "$STUBS/proj" --db=/tmp/other.sqlite
+expect_silent_success 'blast-radius refuses a second argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" blast-radius "$STUBS/proj" --component=A --db=/tmp/x
+expect_output 'path-between passes both ends in order' "path-between|$ABS_PROJ|--from=A|--to=B|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" path-between "$STUBS/proj" --from=A --to=B
+expect_silent_success 'path-between refuses the ends swapped' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" path-between "$STUBS/proj" --to=B --from=A
+expect_silent_success 'path-between refuses one end' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" path-between "$STUBS/proj" --from=A
+expect_silent_success 'path-between refuses an end with a line break' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" path-between "$STUBS/proj" --from=A "--to=B
+C"
+# annotate: a preview unless --execute comes last; the note one printable line of at most 2,000 characters.
+expect_output 'annotate previews a note' "annotate|$ABS_PROJ|--component=A|--value=a note|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" annotate "$STUBS/proj" --component=A '--value=a note'
+expect_output 'annotate records a confirmed note' "annotate|$ABS_PROJ|--component=A|--value=a note|--execute|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" annotate "$STUBS/proj" --component=A '--value=a note' --execute
+expect_silent_success 'annotate refuses another third argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" annotate "$STUBS/proj" --component=A --value=x --db=/tmp/x
+expect_silent_success 'annotate refuses the value first' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" annotate "$STUBS/proj" --value=x --component=A
+expect_silent_success 'annotate refuses a note with a line break' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" annotate "$STUBS/proj" --component=A "--value=a
+b"
+expect_silent_success 'annotate refuses a note past 2,000 characters' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" annotate "$STUBS/proj" --component=A "--value=$(printf '%02001d' 0)"
 
 # watch: the live watcher, `knossos watch --shared`, with at most its poll interval.
 expect_output 'watch runs the shared watcher on the project' "watch|$ABS_PROJ|--shared|--poll-ms=1500|" \
@@ -284,6 +309,16 @@ expect_silent_success 'container graph-search refuses another option' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" graph-search "$STUBS/proj" --db=/tmp/other.sqlite
 expect_output 'container branch-diff asks for the project alone' "img:1|branch-diff|$ABS_PROJ|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" branch-diff "$STUBS/proj"
+expect_output 'container churn asks for the project alone' "img:1|churn|$ABS_PROJ|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" churn "$STUBS/proj"
+expect_output 'container annotate records a confirmed note' "img:1|annotate|$ABS_PROJ|--component=A|--value=n|--execute|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" annotate "$STUBS/proj" --component=A --value=n --execute
+expect_silent_success 'container annotate refuses another option' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" annotate "$STUBS/proj" --component=A --value=n --db=/tmp/x
+expect_output 'container path-between passes both ends' "img:1|path-between|$ABS_PROJ|--from=A|--to=B|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" path-between "$STUBS/proj" --from=A --to=B
+expect_output 'container blast-radius passes the component' "img:1|blast-radius|$ABS_PROJ|--component=A|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" blast-radius "$STUBS/proj" --component=A
 # The session commands, as the local wrapper takes them; the two that read git run as the caller, whom git trusts with the mounted project.
 ME="$(id -u):$(id -g)"
 expect_output 'container session-changes reads since the snapshot it names' "img:1|session-changes|$ABS_PROJ|--since=scan_ab12|--json|" \

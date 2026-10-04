@@ -14,6 +14,10 @@
 #        knossos-run.sh graph-search <project-dir> --query=<text>
 #        knossos-run.sh file-context <project-dir> <file>
 #        knossos-run.sh branch-diff <project-dir>
+#        knossos-run.sh churn <project-dir>
+#        knossos-run.sh blast-radius <project-dir> --component=<name>
+#        knossos-run.sh path-between <project-dir> --from=<name> --to=<name>
+#        knossos-run.sh annotate <project-dir> --component=<name> --value=<note> [--execute]
 #
 # Every failure exits 0. All but one print nothing: the mod reads silence as
 # "no data", keeps its last figures with their age and asks again later, so a
@@ -47,6 +51,8 @@ case "$SUBCOMMAND" in
     component-detail|file-detail|file-context|graph-search) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     # Two whole graphs read and compared.
     branch-diff) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
+    # A git log of the last 30 days, a search out from one component, two route searches, a note.
+    churn|blast-radius|path-between|annotate) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     session-changes|session-head|session-diff|boundary-couplings) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     watch) LIMIT=0 ;;
@@ -77,6 +83,38 @@ fi
 # branch-diff takes nothing but the project.
 if [ "$SUBCOMMAND" = branch-diff ]; then
     [ "$#" -eq 0 ] || exit 0
+fi
+# churn takes nothing but the project.
+if [ "$SUBCOMMAND" = churn ]; then
+    [ "$#" -eq 0 ] || exit 0
+fi
+# blast-radius takes exactly one component, by its printable name: any other
+# option (`--db=...`) would read another graph.
+if [ "$SUBCOMMAND" = blast-radius ]; then
+    [ "$#" -eq 1 ] || exit 0
+    case "$1" in --component= | --component=*[![:print:]]*) exit 0 ;; --component=*) ;; *) exit 0 ;; esac
+    [ "${#1}" -le 520 ] || exit 0
+fi
+# path-between takes exactly the two components, the one the route starts at
+# and the one it ends at, in that order, each a printable name.
+if [ "$SUBCOMMAND" = path-between ]; then
+    [ "$#" -eq 2 ] || exit 0
+    case "$1" in --from= | --from=*[![:print:]]*) exit 0 ;; --from=*) ;; *) exit 0 ;; esac
+    case "$2" in --to= | --to=*[![:print:]]*) exit 0 ;; --to=*) ;; *) exit 0 ;; esac
+    [ "${#1}" -le 520 ] && [ "${#2}" -le 520 ] || exit 0
+fi
+# annotate takes the component, a note of one printable line (at most 2,000
+# characters) and, last, `--execute` when the person confirmed the preview in
+# the pane: without it nothing is written. Nothing else: an option such as
+# `--db=...` would write into another graph.
+if [ "$SUBCOMMAND" = annotate ]; then
+    [ "$#" -eq 2 ] || [ "$#" -eq 3 ] || exit 0
+    case "$1" in --component= | --component=*[![:print:]]*) exit 0 ;; --component=*) ;; *) exit 0 ;; esac
+    case "$2" in --value=*[![:print:]]*) exit 0 ;; --value=*) ;; *) exit 0 ;; esac
+    [ "${#1}" -le 520 ] && [ "${#2}" -le 2008 ] || exit 0
+    if [ "$#" -eq 3 ]; then
+        [ "$3" = --execute ] || exit 0
+    fi
 fi
 # scan takes nothing but the project: an option such as `--db=...` would point the write at another graph.
 if [ "$SUBCOMMAND" = scan ]; then
