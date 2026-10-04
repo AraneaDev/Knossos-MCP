@@ -102,7 +102,8 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame(0, $d['summary']['components']);
             assertSame(['items' => [], 'truncated' => false, 'declared' => [], 'declared_truncated' => false], $d['boundaries']);
             assertSame(0, $d['diagnostics']['total']);
-            assertSame([], $d['largest_files']);
+            assertSame([], $d['complexity_hotspots']);
+            assertSame(null, $d['over_budget']);
             assertSame('not_evaluated', $d['policy']['status']);
         } finally {
             $this->removeTempTree($empty);
@@ -709,22 +710,59 @@ final class DashboardServiceTest extends KnossosTestCase
         }
     }
 
+    /** A file ranks by its lines times its dependent files: a large file many use first, a large file nothing uses not at all. */
     #[Group('query')]
-    public function testTheLargestFilesComeFirst(): void
+    public function testComplexityHotspotsRankSizeTimesDependents(): void
     {
-        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
         try {
+            // A long file nothing references, and a third caller of the greeter.
             file_put_contents($root . '/src/Edge/Long.php', "<?php\n" . str_repeat("// line\n", 300));
+            file_put_contents($root . '/src/Edge/Other.php', "<?php\nnamespace App;\nfinal class Other { public function go(): string { return (new \\App\\Greeter())->greet('x'); } }\n");
             $this->rescan($pdo, $root);
-            $files = (new DashboardService($pdo))->dashboard($root)['largest_files'];
-            assertLessThanOrEqual(50, count($files));
-            assertSame(['path' => 'src/Edge/Long.php', 'language' => 'php', 'lines' => 301], $files[0]);
-            $lines = array_column($files, 'lines');
-            $sorted = $lines;
+            $spots = (new DashboardService($pdo))->dashboard($root)['complexity_hotspots'];
+            $paths = array_column($spots, 'path');
+            assertSame('src/Core/Greeter.php', $paths[0]);
+            assertNotContains('src/Edge/Long.php', $paths);
+            $greeter = $spots[0];
+            assertSame(['path', 'language', 'lines', 'dependent_files', 'score'], array_keys($greeter));
+            assertGreaterThanOrEqual(2, $greeter['dependent_files']);
+            assertSame($greeter['lines'] * $greeter['dependent_files'], $greeter['score']);
+            $scores = array_column($spots, 'score');
+            $sorted = $scores;
             rsort($sorted);
-            assertSame($sorted, $lines);
-            $total = (int) $pdo->query("SELECT COUNT(*) FROM files WHERE project_id = '{$projectId}'")->fetchColumn();
-            assertCount(min(50, $total), $files);
+            assertSame($sorted, $scores);
+            assertLessThanOrEqual(30, count($spots));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The files holding a PHP function longer than the project's line budget, the longest first, counted in full. */
+    #[Group('query')]
+    public function testFilesOverTheMaintainabilityBudgetAreListed(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            // Without a budgets file there is no budget to be over.
+            assertSame(null, (new DashboardService($pdo))->dashboard($root)['over_budget']);
+            file_put_contents($root . '/maintainability-budgets.json', json_encode(['max_php_function_lines' => 6]));
+            $body = static fn(int $lines): string => str_repeat("        \$x = 1;\n", $lines);
+            file_put_contents($root . '/src/Edge/Long.php', "<?php\nnamespace App;\nfinal class Long\n{\n    public function short(): void\n    {\n    }\n\n    public function long(): void\n    {\n" . $body(20) . "    }\n\n    public function longer(): void\n    {\n" . $body(9) . "    }\n}\n");
+            file_put_contents($root . '/src/Edge/Mid.php', "<?php\nnamespace App;\nfunction mid(): void\n{\n" . $body(8) . "}\n");
+            $this->rescan($pdo, $root);
+            $over = (new DashboardService($pdo))->dashboard($root)['over_budget'];
+            assertSame('maintainability-budgets.json', $over['source']);
+            assertSame(6, $over['max_function_lines']);
+            assertSame(2, $over['total']);
+            assertSame(['src/Edge/Long.php', 'src/Edge/Mid.php'], array_column($over['files'], 'path'));
+            assertSame(2, $over['files'][0]['functions']);
+            assertSame(23, $over['files'][0]['longest']);
+            assertSame(9, $over['files'][0]['line']);
+            assertSame(1, $over['files'][1]['functions']);
+            // A budget the file does not declare is no budget: nothing is said to be over it.
+            file_put_contents($root . '/maintainability-budgets.json', json_encode(['max_dependency_fanout' => 10]));
+            assertSame(null, (new DashboardService($pdo))->dashboard($root)['over_budget']);
         } finally {
             $this->removeTempTree($root);
         }

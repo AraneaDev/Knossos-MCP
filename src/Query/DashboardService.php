@@ -147,7 +147,8 @@ final readonly class DashboardService
             'boundaries' => $labels->listed(self::BOUNDARIES),
             'boundary_matrix' => (new BoundaryMatrix($this->pdo, $this->clock))->build($id, $labels, FileViolationQuery::policies($root, null)),
             'diagnostics' => $findings->diagnostics($id),
-            'largest_files' => $findings->largestFiles($id),
+            'complexity_hotspots' => $findings->complexityHotspots($id),
+            'over_budget' => $findings->overBudget($id, $root),
             'policy' => $findings->policy($id, $root, $labels),
         ];
     }

@@ -10,8 +10,9 @@ use PDO;
 
 /**
  * The counts and the short lists the architecture pane's header and Issues
- * tab draw: what the project holds, its scan diagnostics, its largest files
- * and its boundary-policy violations.
+ * tab draw: what the project holds, its scan diagnostics, its complexity
+ * hotspots (size times dependents), the files over its maintainability
+ * budget, and its boundary-policy violations.
  *
  * Read-only and bounded. Each list is a page of the most telling few, and a
  * page is the design rather than a cut, as with the dashboard's hubs: the
@@ -29,8 +30,14 @@ final readonly class ProjectFindings
     /** Errors and warnings listed. */
     private const DIAGNOSTICS = 20;
 
-    /** Files listed by size: as many as a tall pane shows. */
-    private const LARGEST_FILES = 50;
+    /** Complexity hotspots listed: as many as a tall pane shows. */
+    private const HOTSPOTS = 30;
+
+    /** Files over the maintainability budget listed; `total` counts them all. */
+    private const OVER_BUDGET = 30;
+
+    /** Where a project declares its maintainability budgets, at its root. */
+    public const BUDGETS_FILE = 'maintainability-budgets.json';
 
     /** Policy violations listed; the total counts them all. */
     private const VIOLATIONS = 20;
@@ -119,24 +126,106 @@ final readonly class ProjectFindings
     }
 
     /**
-     * The project's largest files by line count, the largest first.
+     * The files a change is riskiest in: each file's size (lines) times how
+     * many other files depend on it, the highest first, ties by path. A
+     * large file nothing uses and a small one everything uses both rank
+     * low; a large file many depend on ranks high. Dependents are counted
+     * as {@see FileFanInQuery} counts them (distinct files over the impact
+     * edges, external symbols left out), in one grouped pass over the edges.
      *
-     * @return list<array{path: string, language: string, lines: int}>
+     * @return list<array{path: string, language: string, lines: int, dependent_files: int, score: int}>
      */
-    public function largestFiles(string $projectId): array
+    public function complexityHotspots(string $projectId): array
     {
+        $kinds = implode(',', array_fill(0, count(AbstractArchitectureQueryService::IMPACT_EDGE_KINDS), '?'));
         $statement = $this->pdo->prepare(
-            'SELECT relative_path, language, line_count FROM files WHERE project_id = :project ORDER BY line_count DESC, relative_path LIMIT :limit',
+            'SELECT tf.relative_path, tf.language, tf.line_count, COUNT(DISTINCT sn.file_id) AS dependents FROM edges e '
+            . 'JOIN nodes tn ON tn.id = e.target_id JOIN files tf ON tf.id = tn.file_id JOIN nodes sn ON sn.id = e.source_id '
+            . "WHERE e.project_id = ? AND e.kind IN ({$kinds}) AND sn.file_id IS NOT NULL AND sn.file_id <> tn.file_id "
+            . "AND tn.kind NOT LIKE 'external\\_%' ESCAPE '\\' AND tf.line_count > 0 "
+            . 'GROUP BY tf.id ORDER BY tf.line_count * COUNT(DISTINCT sn.file_id) DESC, tf.relative_path LIMIT ?',
         );
-        $statement->bindValue(':project', $projectId);
-        $statement->bindValue(':limit', self::LARGEST_FILES, PDO::PARAM_INT);
+        $position = 1;
+        $statement->bindValue($position++, $projectId);
+        foreach (AbstractArchitectureQueryService::IMPACT_EDGE_KINDS as $kind) {
+            $statement->bindValue($position++, $kind);
+        }
+        $statement->bindValue($position, self::HOTSPOTS, PDO::PARAM_INT);
         $statement->execute();
 
         return array_map(static fn(array $row): array => [
             'path' => (string) $row['relative_path'],
             'language' => (string) $row['language'],
             'lines' => (int) $row['line_count'],
+            'dependent_files' => (int) $row['dependents'],
+            'score' => (int) $row['line_count'] * (int) $row['dependents'],
         ], $statement->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * The files over the project's own maintainability budget, as
+     * `maintainability-budgets.json` at its root declares it: those holding a
+     * PHP function or method longer than `max_php_function_lines`, the file
+     * with the longest first. Each says how many of its functions are over
+     * and where the longest starts. Only that budget is read: the graph
+     * holds every function's span, but not the complexity or the import
+     * count the other budgets measure, and a figure it cannot measure the
+     * way the budget does would flag files the budget passes.
+     *
+     * Null when the project declares no such budget (no file, an unreadable
+     * one, or no line budget in it).
+     *
+     * @param string $root the project root, where the budgets file is read
+     * @return array{source: string, max_function_lines: int, total: int, files: list<array{path: string, functions: int, longest: int, line: int|null}>}|null
+     */
+    public function overBudget(string $projectId, string $root): ?array
+    {
+        $max = self::functionLineBudget($root);
+        if ($max === null) {
+            return null;
+        }
+        $over = "FROM nodes n JOIN files f ON f.id = n.file_id WHERE n.project_id = :project AND n.language = 'php' "
+            . "AND n.kind IN ('function', 'method') AND n.start_line IS NOT NULL AND n.end_line IS NOT NULL AND n.end_line - n.start_line + 1 > :max";
+        $count = $this->pdo->prepare("SELECT COUNT(DISTINCT f.id) {$over}");
+        $count->bindValue(':project', $projectId);
+        // Bound as an integer: SQLite ranks any number below a text value, so a string budget would match nothing.
+        $count->bindValue(':max', $max, PDO::PARAM_INT);
+        $count->execute();
+        $statement = $this->pdo->prepare(
+            'SELECT f.relative_path, COUNT(*) AS functions, MAX(n.end_line - n.start_line + 1) AS longest, '
+            . "(SELECT m.start_line FROM nodes m WHERE m.file_id = f.id AND m.language = 'php' AND m.kind IN ('function', 'method') "
+            . 'AND m.start_line IS NOT NULL AND m.end_line IS NOT NULL ORDER BY m.end_line - m.start_line DESC, m.start_line LIMIT 1) AS line '
+            . "{$over} GROUP BY f.id ORDER BY longest DESC, f.relative_path LIMIT :limit",
+        );
+        $statement->bindValue(':project', $projectId);
+        $statement->bindValue(':max', $max, PDO::PARAM_INT);
+        $statement->bindValue(':limit', self::OVER_BUDGET, PDO::PARAM_INT);
+        $statement->execute();
+
+        return [
+            'source' => self::BUDGETS_FILE,
+            'max_function_lines' => $max,
+            'total' => (int) $count->fetchColumn(),
+            'files' => array_map(static fn(array $row): array => [
+                'path' => (string) $row['relative_path'],
+                'functions' => (int) $row['functions'],
+                'longest' => (int) $row['longest'],
+                'line' => $row['line'] === null ? null : (int) $row['line'],
+            ], $statement->fetchAll(PDO::FETCH_ASSOC)),
+        ];
+    }
+
+    /** The project's `max_php_function_lines` budget, or null when its budgets file declares none (or cannot be read). */
+    private static function functionLineBudget(string $root): ?int
+    {
+        $file = rtrim($root, '/') . '/' . self::BUDGETS_FILE;
+        if (!is_file($file)) {
+            return null;
+        }
+        $budgets = json_decode((string) file_get_contents($file), true);
+        $max = is_array($budgets) ? ($budgets['max_php_function_lines'] ?? null) : null;
+
+        return is_int($max) && $max >= 1 ? $max : null;
     }
 
     /**
@@ -206,7 +295,8 @@ final readonly class ProjectFindings
             'summary' => ['components' => 0, 'kinds' => [], 'kinds_truncated' => false, 'files' => 0, 'languages' => [], 'languages_truncated' => false],
             'boundaries' => ['items' => [], 'truncated' => false, 'declared' => [], 'declared_truncated' => false],
             'diagnostics' => ['total' => 0, 'errors' => 0, 'warnings' => 0, 'infos' => 0, 'items' => []],
-            'largest_files' => [],
+            'complexity_hotspots' => [],
+            'over_budget' => null,
             'policy' => ['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => [], 'rules' => [], 'boundaries' => [], 'files' => [], 'files_truncated' => false],
         ];
     }
