@@ -346,7 +346,7 @@ const RINGS =
 const ROUTE_ENDS = (() => {
   const far = RINGS?.answer?.rings?.find(r => r.hop >= 3)?.items?.[0] ?? RINGS?.answer?.rings?.find(r => r.hop === 2)?.items?.[0]
   if (far === undefined || detail?.component == null) return null
-  return { from: { name: far.canonical_name, label: far.name }, to: { name: detail.component.canonical, label: detail.component.name }, index: 0, back: null }
+  return { from: { name: far.canonical_name, label: rows.displayName(far) }, to: { name: detail.component.canonical, label: detail.component.name }, index: 0, back: null }
 })()
 const ROUTE = ROUTE_ENDS === null ? null : { from: ROUTE_ENDS.from.name, to: ROUTE_ENDS.to.name, snapshot: dashboard.snapshot_id ?? null, phase: 'done', answer: envelopes.parsePathBetween(wrapper('path-between', `--from=${ROUTE_ENDS.from.name}`, `--to=${ROUTE_ENDS.to.name}`)) }
 

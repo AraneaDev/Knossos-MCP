@@ -44,7 +44,9 @@ describe('the path explorer', () => {
   it('draws the route as boxes down the pane, each hop labelled with its kind and place, and lists every route', () => {
     const t = text(state(answer()), 120)
     expect(t).toMatch(/Every route found/)
-    expect(t).toMatch(/›1 BriefCommand::answer → TurnBriefService::brief → .* · 3 hops/)
+    // Told from the last component every route shares: the list reads by where they part.
+    expect(t).toMatch(/›1 … → TurnBriefService::brief → ProjectScanService.* · 3 hops/)
+    expect(t).toMatch(/ 2 … → TurnBriefService::brief · 1 hop/)
     expect(t).toMatch(/calls · File0\.php:10/)
     expect(t).toMatch(/│ StableId::scan +│ +■ core/)
     // The second route drawn instead, by its press.

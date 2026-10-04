@@ -16,7 +16,7 @@ import { box, boxWidth, canvas, DIAGRAM_MIN, LABEL_MAX, line, toRows, write } fr
 import type { Canvas } from './diagram'
 import { ACCENT, boundaryColour, boundaryLabel, FAINT, NO_HUES, SECONDARY, SELECTED_BG, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
-import { button, cells, chip, dimRow, displayName, fit, placeOf, plural, segmentsWidth, spaces, tinted, wrapWords } from './rows'
+import { button, cells, chip, displayName, fit, placeOf, plural, segmentsWidth, spaces, tinted, wrapWords } from './rows'
 import type { Loc, Row, Segment } from './rows'
 import { locIn } from './views'
 import type { Openable } from './views'
@@ -147,7 +147,9 @@ export function routeArrangement(input: RouteInput, selected: number, hues: Hues
             title: 'Every route found',
             body: input.routes.map((r, i): Row => {
               const on = i === input.index
-              const chain = r.nodes.map(n => n.name).join(' → ')
+              // The routes all start alike: each is told from the last component they share, so the list reads by where they part.
+              const from = Math.max(0, shared(input.routes) - 1)
+              const chain = `${from > 0 ? '… → ' : ''}${r.nodes.slice(from).map(n => n.name).join(' → ')}`
               const lead: Segment[] = [{ text: on ? '›' : ' ', color: ACCENT, bold: true }, { text: `${i + 1} `, dim: true }]
               const hops = ` · ${plural(r.hops.length, 'hop', 'hops')}`
               const text = fit(chain, Math.max(4, columns - segmentsWidth(lead) - cells(hops)))
@@ -160,5 +162,10 @@ export function routeArrangement(input: RouteInput, selected: number, hues: Hues
   return { top: [head], left: [others, drawn] }
 }
 
-/** The line the finder shows while it picks where a route ends. */
-export const pickingLine = (from: string, columns: number): Row => dimRow('find-route', `   a route from ${from} to the component you open here`, columns)
+/** How many components, from the first, every route shares. */
+function shared(routes: { nodes: RouteNode[] }[]): number {
+  const first = routes[0]?.nodes ?? []
+  let n = 0
+  while (n < first.length && routes.every(r => r.nodes[n]?.canonical === first[n]!.canonical)) n++
+  return routes.length > 1 ? n : 0
+}
