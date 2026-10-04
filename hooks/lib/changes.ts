@@ -131,9 +131,12 @@ export function fromLedger(ledger: SessionLedger, turns: SessionChanges, edited:
     tests[t.path] = t.distance
     if (t.js_runner !== undefined) runners[t.path] = t.js_runner
   }
+  // Scans the ledger merged are named by their key: the session's own are matched by theirs.
+  const own = new Set([...scans].map(scanKey))
+  const ours = (id: string): boolean => scans.has(id) || own.has(scanKey(id))
   const origins: Record<string, 'session' | 'outside'> = {}
-  for (const [path, file] of Object.entries(ledger.files)) origins[path] = edited.has(path) || (file.scans ?? []).some(s => scans.has(s)) ? 'session' : 'outside'
-  const timeline = (ledger.scans ?? []).map(scan => ({ snapshot: scan.snapshot_id, origin: scans.has(scan.snapshot_id) ? ('session' as const) : ('outside' as const) }))
+  for (const [path, file] of Object.entries(ledger.files)) origins[path] = edited.has(path) || (file.scans ?? []).some(ours) ? 'session' : 'outside'
+  const timeline = (ledger.scans ?? []).map(scan => ({ snapshot: scan.snapshot_id, origin: ours(scan.snapshot_id) ? ('session' as const) : ('outside' as const) }))
   return {
     turns: turns.turns,
     files: ledger.files,
@@ -149,6 +152,49 @@ export function fromLedger(ledger: SessionLedger, turns: SessionChanges, edited:
 
 /** The session's own scans as a timeline, every one the session's: what the Changes tab draws without the scan ledger. */
 export const ownTimeline = (scans: readonly string[]): { snapshot: string; origin: 'session' }[] => scans.map(snapshot => ({ snapshot, origin: 'session' }))
+
+/** How much of a snapshot id the scan ledger keeps for the scans it merged: `scan_` and 48 bits of hash (as `ScanLedgerSpan::key`). */
+const SCAN_KEY = 17
+/** A snapshot id as the scan ledger names a merged scan. */
+export const scanKey = (id: string): string => (id.length > SCAN_KEY ? id.slice(0, SCAN_KEY) : id)
+
+const pad2 = (n: number): string => String(n).padStart(2, '0')
+/** A moment (milliseconds) as a local date and time to the minute: `2026-10-04 09:14`. */
+export function stamp(ms: number): string {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
+/** Said when the session began among scans the ledger keeps merged. */
+export const APPROXIMATE_START = 'This session began among older scans the record keeps merged, so its start is approximate: a file changed shortly before it may be listed.'
+
+/**
+ * The session's changes from a `session-changes` answer for its start, as
+ * the Changes tab shows them. When the ledger cannot reach back to that
+ * start, it says so with when the session began (`began`, milliseconds;
+ * null when not known), and lists every change since the oldest point the
+ * ledger still holds, said with its date; with no such point (an older
+ * knossos, or nothing recorded since) it falls back to the turns'
+ * own (`scans` drawn as the timeline). A start among merged scans is said to
+ * be approximate.
+ */
+export function ledgerChanges(ledger: SessionLedger, turns: SessionChanges, edited: ReadonlySet<string>, scans: readonly string[], began: number | null): SessionChanges {
+  const when = began === null ? '' : ` (${stamp(began)})`
+  if (!ledger.complete) {
+    const reached = ledger.reached
+    if (reached === undefined || reached === null || typeof reached.at !== 'number' || !Number.isFinite(reached.at)) {
+      return { ...turns, fallback: `The scan record does not reach back to when this session began${when}, so only what its turns reported is listed.`, timeline: ownTimeline(scans) }
+    }
+    const from = stamp(reached.at * 1000)
+    return {
+      ...fromLedger(ledger, turns, edited, new Set(scans)),
+      fallback: `The scan record does not reach back to when this session began${when}. It lists every change since ${from}, the oldest point it still holds.`,
+      since: `since ${from}`,
+    }
+  }
+  const shown = fromLedger(ledger, turns, edited, new Set(scans))
+  return ledger.start_approximate === true ? { ...shown, fallback: APPROXIMATE_START } : shown
+}
 
 /** Single-quoted for a POSIX shell when it holds anything a shell would read. */
 const quote = (word: string): string => (/^[\w./@%+=:,-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`)
@@ -271,8 +317,10 @@ export type ChangesInput = {
   truncated: boolean
   /** Whether the files are every change since the session began (from the scan ledger), each with its origin. */
   sinceStart: boolean
-  /** Why only the turn briefs' files are listed, when that is so. */
+  /** What to say about where the files start (only the turn briefs', an older start, an approximate one), when there is something to say. */
   fallback: string | null
+  /** Where the files start when it is not where the session began (`since 2026-10-04 09:14`). */
+  since: string | null
   /** The session's scans, oldest first, by whose changes each took in; `earlier` counts the older ones left out. */
   timeline: { origin: 'session' | 'outside' }[]
   earlier: boolean
@@ -309,6 +357,7 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
     truncated: changes.truncated,
     sinceStart: changes.origins !== undefined,
     fallback: changes.fallback ?? null,
+    since: changes.since ?? null,
     timeline: (changes.timeline ?? []).map(t => ({ origin: t.origin })),
     earlier: changes.timeline_truncated === true,
   }
@@ -418,7 +467,7 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
     said(
       'changes-none',
       input.sinceStart
-        ? 'Nothing changed in this project since this session began.'
+        ? `Nothing changed in this project ${input.since ?? 'since this session began'}.`
         : "Nothing yet. The files Claude edits show here after each turn's scan, with what depends on them and the tests that reach them.",
     )
     return { key: 'changes', title, body: rows }
@@ -428,7 +477,7 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
   const origin = input.sinceStart && columns > ORIGIN_WIDTH + 20 ? ORIGIN_WIDTH + 1 : 0
   const spec = tableSpec(columns - origin, input.files.map(f => f.path), input.files.map(f => boundaryLabel(f.boundary)), [numberWidth('deps', input.files.map(f => f.dependents), tier)], PATH_MAX, { tier })
   const max = Math.max(0, ...input.files.map(f => f.dependents))
-  const note = `${input.sinceStart ? 'since it began' : plural(input.turns, 'turn', 'turns')}${input.truncated ? ' · partial' : ''}`
+  const note = `${input.sinceStart ? (input.since ?? 'since it began') : plural(input.turns, 'turn', 'turns')}${input.truncated ? ' · partial' : ''}`
   if (input.fallback !== null) said('changes-fallback', input.fallback)
   // What the changes reach: the dependents, and every boundary they are in, each in its colour.
   rows.push(...reachRows('changes-reach', `${plural(input.files.length, 'file', 'files')} → ${grouped(deps)} dependents`, input.boundaries, columns, hues))

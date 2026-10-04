@@ -368,8 +368,10 @@ export type SessionChanges = {
    * session's own edit tools (main loop or subagent), `outside` otherwise.
    */
   origins?: Record<string, 'session' | 'outside'>
-  /** Why the view is the turn briefs' only (no live watcher, or a ledger that does not reach back far enough); absent when it is not. */
+  /** What the view says about where its files start (no live watcher, a ledger that does not reach back far enough, an approximate start); absent when there is nothing to say. */
   fallback?: string
+  /** Where the ledger's files start when it is not where the session began, as the header says it (`since 2026-10-04 09:14`). */
+  since?: string
   /** The session's scans, oldest first, each by whose changes it took in; `timeline_truncated` when older ones were left out. */
   timeline?: { snapshot: string; origin: 'session' | 'outside' }[]
   timeline_truncated?: boolean
@@ -391,9 +393,13 @@ export type SessionLedger = {
   files_truncated: boolean
   tests: { path: string; distance: number; js_runner?: JsRunner | null }[]
   tests_truncated: boolean
-  /** The recorded scans since the session began, oldest first: each one's snapshot, when (Unix seconds) and how many files it changed (absent from an older knossos). */
-  scans?: { snapshot_id: string; at: number; files: number }[]
+  /** The recorded scans since the session began, oldest first: each one's snapshot, when (Unix seconds) and how many files it changed; `merged` for scans the ledger keeps as one (absent from an older knossos). */
+  scans?: { snapshot_id: string; at: number; files: number; merged?: number }[]
   scans_truncated?: boolean
+  /** With `complete` false: the oldest snapshot the ledger still answers for and when (Unix seconds); the files are the changes since it. Null or absent when there is none (or from an older knossos). */
+  reached?: { snapshot_id: string; at: number } | null
+  /** Whether the session began among scans the ledger keeps merged, so a file changed just before it may be listed. */
+  start_approximate?: boolean
 }
 
 /** The degree the hubs tab sorts by, most first. */
@@ -496,6 +502,8 @@ declare module 'claude-code' {
       sessionLedger: SessionLedger | null
       /** The snapshot the graph was at when the session began: what `session-changes` reads since. */
       sessionStart: string | null
+      /** When the session began (milliseconds), as its stored baseline says; null until read. */
+      sessionBegan: number | null
       /** The paths the session's own edit tools wrote (project-relative, or absolute before the root was known). */
       sessionEdits: string[]
       /** The snapshots of the scans that took in changes made while the session's tools ran: whose a ledgered change was. */

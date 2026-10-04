@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, KnossosView, SessionChanges, SessionLedger, TurnBrief } from '../../types'
-import { accumulate, cdFor, changesInput, changesList, FILE_CAP, fromLedger, lookAtOf, NO_CHANGES, ownTimeline, testCommand, testsRan, timelineRow } from './changes'
+import { accumulate, APPROXIMATE_START, cdFor, changesInput, changesList, FILE_CAP, fromLedger, ledgerChanges, lookAtOf, NO_CHANGES, ownTimeline, scanKey, stamp, testCommand, testsRan, timelineRow } from './changes'
 import { changesRows } from './__tests__/tabs'
 import { editTarget, paneInput, paneRows } from './layout'
 import { findRow, plainText } from './__tests__/plain-text'
@@ -393,6 +393,63 @@ describe('the changes since the session began, from the scan ledger', () => {
     expect(textOf(fallback)).toContain('2 turns')
     const empty = changesRows(changesInput(fromLedger({ ...ledger, files: {}, tests: [] }, NO_CHANGES, new Set()), ROOT), 0, 60)
     expect(textOf(empty)).toContain('Nothing changed in this project since this session began.')
+  })
+
+  it("matches a merged scan, which the ledger names by its key, to the session's own", () => {
+    const own = `scan_${'ab12'.repeat(16)}`
+    const merged: SessionLedger = { ...ledger, files: { 'src/Router.php': { ...ledger.files['src/Router.php']!, scans: [scanKey(own)] } }, scans: [{ snapshot_id: scanKey(own), at: 1, files: 1, merged: 40 }] }
+    expect(scanKey(own)).toBe('scan_ab12ab12ab12')
+    const changes = fromLedger(merged, NO_CHANGES, new Set(), new Set([own]))
+    expect(changes.origins).toEqual({ 'src/Router.php': 'session' })
+    expect(changes.timeline).toEqual([{ snapshot: scanKey(own), origin: 'session' }])
+    expect(fromLedger(merged, NO_CHANGES, new Set(), new Set([`scan_${'cd34'.repeat(16)}`])).origins).toEqual({ 'src/Router.php': 'outside' })
+  })
+})
+
+describe('a ledger that does not reach back to the session start', () => {
+  const ledger: SessionLedger = {
+    status: 'ok',
+    since: 's0',
+    snapshot_id: 's9',
+    complete: false,
+    files: { 'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'Http' } },
+    files_truncated: false,
+    tests: [],
+    tests_truncated: false,
+    reached: { snapshot_id: 's5', at: 1_791_100_000 },
+  }
+  const began = 1_791_000_000_000
+
+  it('says so with when the session began, and lists every change since the oldest point it still holds, with its date', () => {
+    const shown = ledgerChanges(ledger, session(), new Set(), [], began)
+    expect(Object.keys(shown.files)).toEqual(['src/Router.php'])
+    expect(shown.fallback).toBe(`The scan record does not reach back to when this session began (${stamp(began)}). It lists every change since ${stamp(1_791_100_000_000)}, the oldest point it still holds.`)
+    expect(shown.since).toBe(`since ${stamp(1_791_100_000_000)}`)
+    expect(stamp(began)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+    for (const columns of WIDTHS) {
+      const rows = changesRows(changesInput(shown, ROOT), 0, columns)
+      for (const r of rows) expect(rowWidth(r), `${columns}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
+      expect(textOf(rows).replace(/\s+/g, ' ')).toContain('does not reach back')
+      if (columns >= 60) expect(textOf(rows)).not.toContain('since it began')
+    }
+    const empty = changesRows(changesInput(ledgerChanges({ ...ledger, files: {} }, NO_CHANGES, new Set(), [], began), ROOT), 0, 100)
+    expect(textOf(empty)).toContain(`Nothing changed in this project since ${stamp(1_791_100_000_000)}.`)
+  })
+
+  it("with no point to reach (an older knossos), falls back to the turns' own and says so, with the date when known", () => {
+    const older = ledgerChanges({ ...ledger, reached: undefined, files: {} }, session(), new Set(), ['s3'], began)
+    expect(older.fallback).toBe(`The scan record does not reach back to when this session began (${stamp(began)}), so only what its turns reported is listed.`)
+    expect(older.files).toEqual(session().files)
+    expect(older.timeline).toEqual(ownTimeline(['s3']))
+    expect(ledgerChanges({ ...ledger, reached: null }, session(), new Set(), [], null).fallback).toBe("The scan record does not reach back to when this session began, so only what its turns reported is listed.")
+  })
+
+  it('says a start among merged scans is approximate, and nothing for a whole one', () => {
+    const whole = { ...ledger, complete: true, reached: null }
+    expect(ledgerChanges({ ...whole, start_approximate: true }, NO_CHANGES, new Set(), [], began).fallback).toBe(APPROXIMATE_START)
+    const exact = ledgerChanges(whole, NO_CHANGES, new Set(), [], began)
+    expect(exact.fallback).toBeUndefined()
+    expect(exact.since).toBeUndefined()
   })
 })
 

@@ -10,7 +10,7 @@ import type { JobState } from './lib/band'
 import { diffView } from './lib/diff'
 import { parseAllowRoot, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseRescan, parseSessionDiff, parseSessionHead, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { SessionLedger, TurnBrief } from './lib/envelopes'
-import { fromLedger, ownTimeline } from './lib/changes'
+import { ledgerChanges, ownTimeline } from './lib/changes'
 import {
   accumulate,
   allowInput,
@@ -109,7 +109,6 @@ const EDITS_KEPT = 1_000
 const SCANS_KEPT = 1_000
 /** Why the Changes tab lists only the turn briefs' files. */
 const NO_WATCHER = "No live watcher, so only what this session's turns reported is listed."
-const LEDGER_SHORT = "The scan record does not reach back to this session's start, so only what its turns reported is listed."
 
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
@@ -140,6 +139,8 @@ const live = atom({ plugin: 'knossos', key: 'live' } as const, LIVE_OFF as LiveS
 const sessionLedger = atom({ plugin: 'knossos', key: 'sessionLedger' } as const, null as SessionLedger | null)
 /** The snapshot the graph was at when the session began. */
 const sessionStart = atom({ plugin: 'knossos', key: 'sessionStart' } as const, null as string | null)
+/** When the session began (milliseconds), as its stored baseline says: what Changes names when the scan record does not reach back to it. */
+const sessionBegan = atom({ plugin: 'knossos', key: 'sessionBegan' } as const, null as number | null)
 /** The paths the session's own edit tools wrote, main loop and subagents alike: the Changes tab's "this session". */
 const sessionEdits = atom({ plugin: 'knossos', key: 'sessionEdits' } as const, [] as string[])
 /** The snapshots of the scans that took in changes made while the session's tools ran (see `lib/activity.ts`). */
@@ -517,9 +518,8 @@ async function shownChanges($: EngineInterface, root: string | null): Promise<Se
   if (mod.watcher === null || !isWatching(await read($, live))) return { ...turns, fallback: NO_WATCHER, timeline: ownTimeline(await read($, sessionScans)) }
   const ledger = await read($, sessionLedger)
   if (ledger === null || ledger.since !== (await read($, sessionStart))) return turns
-  if (!ledger.complete) return { ...turns, fallback: LEDGER_SHORT, timeline: ownTimeline(await read($, sessionScans)) }
   const edits = (await read($, sessionEdits)).map(p => (p.startsWith('/') && root !== null ? (relativise(root, p) ?? p) : p))
-  return fromLedger(ledger, turns, new Set(edits), new Set(await read($, sessionScans)))
+  return ledgerChanges(ledger, turns, new Set(edits), await read($, sessionScans), await read($, sessionBegan))
 }
 
 /**
@@ -615,6 +615,7 @@ async function settleBaseline($: EngineInterface): Promise<void> {
   if (id !== null && kept !== undefined) {
     if (kept.rev !== null) await update($, sessionRev, () => kept.rev)
     if (kept.snapshot !== null) await update($, sessionStart, () => kept.snapshot)
+    await update($, sessionBegan, () => kept.startedAt)
     mod.baselineOf = id
     return
   }
@@ -633,6 +634,8 @@ async function saveBaseline($: EngineInterface): Promise<void> {
   const all = await storedBaselines($)
   const baseline: Baseline = { rev: await read($, sessionRev), snapshot: await read($, sessionStart), startedAt: await $.clock.now() }
   await $.store.set(BASELINES_KEY, remember(all, id, baseline)).catch(() => undefined)
+  // A session saved before keeps the moment it began.
+  await update($, sessionBegan, () => all[id]?.startedAt ?? baseline.startedAt)
   mod.baselineOf = id
 }
 
@@ -1856,6 +1859,7 @@ export const register: Register = (on, options) => {
       mod.watchRetryAt = 0
       // A new session in the same process: its changes start now, at the graph as it stands.
       await update($, sessionStart, () => mod.snapshot)
+      await update($, sessionBegan, () => null)
       await update($, sessionEdits, () => [])
       await update($, sessionScans, () => [])
       // Its diffs are taken against the commit it begins at.

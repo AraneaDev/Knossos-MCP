@@ -3417,6 +3417,55 @@ describe('the live watcher', () => {
     await ui.unmount()
   })
 
+  test("a scan record that does not reach back to the session's start says so with the date, and lists every change since the oldest point it holds", async ($, on) => {
+    const reached = JSON.stringify({ ...(JSON.parse(LEDGER) as object), complete: false, reached: { snapshot_id: 's1b', at: 1_791_100_000 } })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: reached }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 2 })
+    await w.clock.advance(100)
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:changes' })
+    const rows = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('').replace(/\s+/g, ' ')
+    const date = String.raw`\d{4}-\d{2}-\d{2} \d{2}:\d{2}`
+    expect(rows).toMatch(new RegExp(`The scan record does not reach back to when this session began \\(${date}\\)\\. It lists every change since ${date}, the oldest point it still holds\\.`))
+    expect(rows).toMatch(new RegExp(`since ${date}`))
+    // The files since that point are listed, each with its origin, instead of nothing.
+    expect((await ui.find({ key: 'change-0' }))?.text).toMatch(/Router\.php/)
+    expect((await ui.find({ key: 'change-1' }))?.text).toMatch(/app\.php.*outside/)
+    await ui.unmount()
+  })
+
+  test("a scan record from an older knossos that names no point it reaches falls back to the turns, with the session's start date", async ($, on) => {
+    const older = JSON.stringify({ ...(JSON.parse(LEDGER) as object), complete: false, files: {}, tests: [] })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: older }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 2 })
+    await w.clock.advance(100)
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:changes' })
+    const rows = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('').replace(/\s+/g, ' ')
+    expect(rows).toMatch(/The scan record does not reach back to when this session began \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\), so only what its turns reported is listed\./)
+    await ui.unmount()
+  })
+
+  test('a session that began among merged scans lists what changed after it and says its start is approximate', async ($, on) => {
+    const merged = JSON.stringify({ ...(JSON.parse(LEDGER) as object), start_approximate: true })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: merged }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 2 })
+    await w.clock.advance(100)
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:changes' })
+    const rows = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('').replace(/\s+/g, ' ')
+    expect(rows).toContain('its start is approximate')
+    expect(rows).toContain('since it began')
+    expect((await ui.find({ key: 'change-0' }))?.text).toMatch(/Router\.php/)
+    await ui.unmount()
+  })
+
   /** The ledger since s1: Router changed by the scan that made s2, app.php by the one that made s3. */
   const SCANNED = (over: Record<string, unknown> = {}) =>
     JSON.stringify({
