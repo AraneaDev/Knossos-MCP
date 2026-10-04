@@ -5,7 +5,10 @@ declare(strict_types=1);
 // A `knossos scan` that never finishes: it ignores the request to stop, starts a
 // process of its own in its group, writes that process's id where its database
 // would be, and sleeps.
-pcntl_signal(SIGINT, SIG_IGN);
+// The tests that run this skip where ext-pcntl is missing; the guard keeps the fixture from dying on the call.
+if (function_exists('pcntl_signal')) {
+    pcntl_signal(SIGINT, SIG_IGN);
+}
 $database = '';
 foreach ($argv as $argument) {
     if (str_starts_with($argument, '--db=')) {

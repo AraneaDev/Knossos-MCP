@@ -29,6 +29,9 @@ final class ProcessScannerTest extends KnossosTestCase
     protected function setUp(): void
     {
         parent::setUp();
+        if (!function_exists('pcntl_signal')) {
+            self::markTestSkipped('ext-pcntl is not loaded; the hung scan cannot ignore the request to stop.');
+        }
         $this->pidFile = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6)) . '.pid';
     }
 

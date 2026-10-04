@@ -69,8 +69,6 @@ final class BoundaryCouplingsServiceTest extends KnossosTestCase
     public function testACellOfMoreComponentsThanOneStatementBindsIsListed(): void
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
-        // A quarter of a million copies do not fit PHP's default 128 MB once the coverage collector is loaded, and the run still holds them afterwards, so the limit stays raised.
-        ini_set('memory_limit', '1G');
         try {
             // Copies of an Edge component, each depending on a Core one: more ids than SQLite binds in one statement
             // (32,766 by default, 250,000 as some distributions build it).
@@ -92,6 +90,87 @@ final class BoundaryCouplingsServiceTest extends KnossosTestCase
             $out = (new BoundaryMatrix($pdo, maxEdges: 300_000, timeoutMs: 60_000))->couplings($projectId, BoundaryLabels::load($pdo, $projectId), 'Edge', 'Core', 3);
             assertGreaterThan($copies, $out['edges']);
             assertCount(3, $out['couplings']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Fills the Edge to Core cell of a scanned fixture with `$pairs` extra component pairs, each its own two
+     * components (so the cell holds that many distinct pairs) and one edge each, named `edge-<i>` and `core-<i>`
+     * so the canonical names sort as text, not as numbers.
+     */
+    private function densify(PDO $pdo, string $projectId, int $pairs): void
+    {
+        $edge = $pdo->query("SELECT e.* FROM edges e JOIN boundary_memberships s ON s.node_id = e.source_id JOIN boundaries bs ON bs.id = s.boundary_id AND bs.name = 'Edge' JOIN boundary_memberships t ON t.node_id = e.target_id JOIN boundaries bt ON bt.id = t.boundary_id AND bt.name = 'Core' LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        $pdo->beginTransaction();
+        $pdo->exec('CREATE TEMP TABLE n(i INTEGER PRIMARY KEY)');
+        $pdo->exec("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < {$pairs}) INSERT INTO n SELECT i FROM c");
+        $copy = static function (string $table, array $set, string $where) use ($pdo): void {
+            $columns = array_column($pdo->query("PRAGMA table_info({$table})")->fetchAll(PDO::FETCH_ASSOC), 'name');
+            $values = array_map(static fn(string $column): string => $set[$column] ?? $table . '.' . $column, $columns);
+            $pdo->exec(sprintf('INSERT INTO %s(%s) SELECT %s FROM %s, n WHERE %s', $table, implode(', ', $columns), implode(', ', $values), $table, $where));
+        };
+        foreach (['source' => 'edge', 'target' => 'core'] as $end => $prefix) {
+            $id = $pdo->quote((string) $edge[$end . '_id']);
+            $copy('nodes', ['id' => "'{$prefix}-' || n.i", 'canonical_name' => "'{$prefix}-' || n.i", 'display_name' => "'{$prefix}-' || n.i", 'parent_id' => 'NULL'], "nodes.id = {$id}");
+            $copy('boundary_memberships', ['node_id' => "'{$prefix}-' || n.i"], "boundary_memberships.node_id = {$id}");
+        }
+        $copy('edges', ['id' => "'dense-' || n.i", 'source_id' => "'edge-' || n.i", 'target_id' => "'core-' || n.i"], 'edges.id = ' . $pdo->quote((string) $edge['id']));
+        $pdo->commit();
+    }
+
+    /** A cell of many distinct pairs, as the default edge cap allows, lists its strongest without holding every pair's components. */
+    #[Group('query')]
+    public function testADenseCellIsListedWithinTheMemoryOfItsResult(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $this->densify($pdo, $projectId, 49_000);
+            $labels = BoundaryLabels::load($pdo, $projectId);
+            $matrix = new BoundaryMatrix($pdo);
+            gc_collect_cycles();
+            $before = memory_get_usage();
+            memory_reset_peak_usage();
+            $out = $matrix->couplings($projectId, $labels, 'Edge', 'Core');
+            $peak = memory_get_peak_usage() - $before;
+            assertGreaterThan(49_000, $out['edges']);
+            assertCount(5, $out['couplings']);
+            // Hydrating every component of every pair takes well over 40 MB here; the five listed take next to nothing.
+            assertLessThanOrEqual(40 * 1024 * 1024, $peak);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The strongest pairs come out in the order the plain sort gives: most edges, then the two canonical names as text. */
+    #[Group('query')]
+    public function testTheStrongestPairsKeepTheirOrderAndTieBreak(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $this->densify($pdo, $projectId, 300);
+            $labels = BoundaryLabels::load($pdo, $projectId);
+            $labelled = $labels->forProject($projectId);
+            $kinds = implode(',', array_fill(0, count(AbstractArchitectureQueryService::IMPACT_EDGE_KINDS), '?'));
+            $statement = $pdo->prepare("SELECT source_id, target_id, COUNT(*) FROM edges WHERE project_id = ? AND kind IN ({$kinds}) GROUP BY source_id, target_id");
+            $statement->execute([$projectId, ...AbstractArchitectureQueryService::IMPACT_EDGE_KINDS]);
+            $names = $pdo->query('SELECT id, display_name, canonical_name, kind FROM nodes')->fetchAll(PDO::FETCH_ASSOC | PDO::FETCH_UNIQUE);
+            $expected = [];
+            foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$source, $target, $count]) {
+                if (($labelled[$source] ?? null) === 'Edge' && ($labelled[$target] ?? null) === 'Core') {
+                    $node = static fn(string $id): array => ['name' => (string) ($names[$id]['display_name'] ?? $names[$id]['canonical_name']), 'canonical_name' => (string) $names[$id]['canonical_name'], 'kind' => (string) $names[$id]['kind']];
+                    $expected[] = ['source' => $node($source), 'target' => $node($target), 'edges' => (int) $count];
+                }
+            }
+            usort($expected, static fn(array $a, array $b): int => $b['edges'] <=> $a['edges']
+                ?: [$a['source']['canonical_name'], $a['target']['canonical_name']] <=> [$b['source']['canonical_name'], $b['target']['canonical_name']]);
+            assertGreaterThan(300, count($expected));
+            $matrix = new BoundaryMatrix($pdo, maxEdges: 100_000);
+            foreach ([1, 3, 7, 50, 301, 1000] as $limit) {
+                $out = $matrix->couplings($projectId, $labels, 'Edge', 'Core', $limit);
+                assertSame(array_slice($expected, 0, $limit), $out['couplings'], "limit {$limit}");
+            }
         } finally {
             $this->removeTempTree($root);
         }
