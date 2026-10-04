@@ -69,6 +69,10 @@ final class BoundaryCouplingsServiceTest extends KnossosTestCase
     public function testACellOfMoreComponentsThanOneStatementBindsIsListed(): void
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        // The cell holds two and a half times the default edge cap in pairs (the cap is raised below), and a
+        // quarter of a million pairs is more than PHP's default 128 MB leaves room for. The old limit comes back after.
+        $memoryLimit = (string) ini_get('memory_limit');
+        ini_set('memory_limit', $memoryLimit === '-1' ? '-1' : '512M');
         try {
             // Copies of an Edge component, each depending on a Core one: more ids than SQLite binds in one statement
             // (32,766 by default, 250,000 as some distributions build it).
@@ -91,6 +95,7 @@ final class BoundaryCouplingsServiceTest extends KnossosTestCase
             assertGreaterThan($copies, $out['edges']);
             assertCount(3, $out['couplings']);
         } finally {
+            ini_set('memory_limit', $memoryLimit);
             $this->removeTempTree($root);
         }
     }
