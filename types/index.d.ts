@@ -3,6 +3,8 @@
  * dependents sit in (`boundaries`, where a change reaches), and the file's
  * own boundary label (`boundary`, where it sits; null when none of its
  * components is in a boundary, absent from a knossos older than the mod).
+ * In a turn brief, `tests` says how many test files reach the file, where
+ * that is known.
  */
 export type FanIn = { path: string; dependent_files: number; boundaries: string[]; boundary?: string | null; top_dependents?: string[]; tests?: number }
 export type BoundaryRef = { id: string; name: string; source: string }
@@ -365,8 +367,8 @@ export type TouchStatus = 'changed' | 'added' | 'deleted'
  */
 export type SessionChanges = {
   turns: number
-  /** `boundaries` are the dependents' (where a change reaches), `boundary` the file's own label. */
-  files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[]; boundary: string | null }>
+  /** `boundaries` are the dependents' (where a change reaches), `boundary` the file's own label; `tests` how many test files reach it, absent when not known. */
+  files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[]; boundary: string | null; tests?: number }>
   tests: Record<string, number>
   /** The runner of each JavaScript test as its brief said; absent or null when unknown. */
   js_runners?: Record<string, JsRunner | null>
@@ -399,8 +401,8 @@ export type SessionLedger = {
   since?: string
   snapshot_id?: string | null
   complete: boolean
-  /** `scans`: the snapshots the recorded scans that changed the file produced, the newest last (absent from an older knossos). */
-  files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[]; boundary: string | null; scans?: string[] }>
+  /** `scans`: the snapshots the recorded scans that changed the file produced, the newest last; `tests`: how many test files reach it, where known (both absent from an older knossos). */
+  files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[]; boundary: string | null; scans?: string[]; tests?: number }>
   files_truncated: boolean
   tests: { path: string; distance: number; js_runner?: JsRunner | null }[]
   tests_truncated: boolean

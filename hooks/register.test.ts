@@ -564,8 +564,8 @@ async function tilesLine(ui: Awaited<ReturnType<typeof mountPane>>): Promise<str
   return rows.map(b => b.text.trim()).join('   ')
 }
 
-async function mountPane($: Engine, surface: 'terminal' | 'desktop' = 'terminal') {
-  return $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: PANE_PROPS })
+async function mountPane($: Engine, surface: 'terminal' | 'desktop' = 'terminal', bodyColumns?: number) {
+  return $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: bodyColumns === undefined ? PANE_PROPS : { ...PANE_PROPS, bodyColumns } })
 }
 
 /** The person typing `/knossos <args>`. */
@@ -2912,6 +2912,33 @@ describe('knossos mod', () => {
     }
     expect(w.detailRuns()).toEqual([])
     expect(w.prompts).toEqual([])
+  })
+
+  test('a changed file no test reaches is marked on Changes and counted on the session card', async ($, on) => {
+    const turn = brief({
+      changed_files: ['src/Router.php', 'src/Kernel.php'],
+      impact: {
+        'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'Http', tests: 2 },
+        'src/Kernel.php': { path: 'src/Kernel.php', dependent_files: 3, boundaries: ['Core'], boundary: 'Core', tests: 0 },
+      },
+      tests: [{ path: 'tests/Http/RouterTest.php', distance: 1 }],
+    })
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], brief: [{ stdout: turn }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface, 120)
+      expect(drawn((await ui.find({ key: 'pane' }))?.text ?? '')).toContain('▲ 1 file no test reaches')
+      await ui.press({ key: 'tab:changes' })
+      expect(drawn((await ui.find({ key: 'pane' }))?.text ?? '')).toContain('▲ 1 file no test reaches')
+      expect(drawn((await ui.find({ key: 'change-1' }))?.text ?? '')).toMatch(/Kernel\.php .* 3 ▲ none/)
+      expect(drawn((await ui.find({ key: 'change-0' }))?.text ?? '')).toMatch(/Router\.php .* 41 +2 /)
+      await ui.press({ key: 'tab:overview' })
+      await ui.unmount()
+    }
   })
 
   test('a changed file opens a detail that names who depends on it, from Changes', async ($, on) => {

@@ -30,7 +30,7 @@
 import type { Dashboard } from '../../types'
 import type { Block, Section } from './cards'
 import { noteOf } from './cards'
-import { timelineRow } from './changes'
+import { timelineRow, untestedText } from './changes'
 import type { ChangesInput, LookAt } from './changes'
 import { ACCENT, boundaryColour, boundaryLabel, FAINT, HEADING, SECONDARY, SELECTED_BG, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
@@ -489,6 +489,8 @@ export function sessionBlock(changes: ChangesInput, look: LookAt | null, selecte
         [{ text: `${grouped(changes.files.length)}${plus}`, color: HEADING }, { text: ` ${changes.files.length === 1 ? 'file' : 'files'} ·`, dim: true }],
         [{ text: grouped(dependents), color: HEADING }, { text: ` ${dependents === 1 ? 'dependent' : 'dependents'} ·`, dim: true }],
         tests === 0 ? [{ text: '▲ no test reaches them', color: STATUS_COLOURS.warn }] : [{ text: grouped(tests), color: HEADING }, { text: ` ${tests === 1 ? 'test reaches' : 'tests reach'} them`, dim: true }],
+        // Of them, the files no test reaches at all: what a change leaves unchecked.
+        ...(tests > 0 && changes.untested > 0 ? [[{ text: '· ', dim: true }, { text: `▲ ${untestedText(changes.untested)}`, color: STATUS_COLOURS.warn }]] : []),
       ]
       body.push(...wrapGroups('session-said', said, columns, 1, 3))
       const open: Segment[] = [{ text: '  ' }, button('row:0', 'Changes'), { text: '  every file, its dependents and its tests', dim: true }]

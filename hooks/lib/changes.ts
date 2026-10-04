@@ -22,7 +22,9 @@ import {
   grouped,
   numberWidth,
   padEnd,
+  padStart,
   plural,
+  spaces,
   segmentsWidth,
   tableHead,
   tableRow,
@@ -85,11 +87,14 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
       continue
     }
     const impact = brief.impact[path]
+    // How many tests reach it, as the latest brief that knew says.
+    const reached = impact?.tests ?? before?.tests
     files[path] = {
       status: settle(before?.status, status),
       dependents: impact?.dependent_files ?? before?.dependents ?? 0,
       boundaries: impact?.boundaries ?? before?.boundaries ?? [],
       boundary: impact === undefined ? (before?.boundary ?? null) : (impact.boundary ?? null),
+      ...(reached === undefined || status === 'deleted' ? {} : { tests: reached }),
     }
   }
   const runners = { ...(changes.js_runners ?? {}) }
@@ -303,7 +308,8 @@ export function rankIn(hues: Hues): (boundary: string) => number {
   return b => (order.includes(b) ? order.indexOf(b) : order.length)
 }
 
-export type TouchedFile = { path: string; status: TouchStatus; boundary: string | null; dependents: number; loc: Loc | null; origin?: 'session' | 'outside' }
+/** A changed file as the Changes tab lists it; `tests` how many test files reach it, null when that is not known. */
+export type TouchedFile = { path: string; status: TouchStatus; boundary: string | null; dependents: number; loc: Loc | null; origin?: 'session' | 'outside'; tests: number | null }
 export type ChangesInput = {
   turns: number
   /** Most dependents first. */
@@ -314,6 +320,8 @@ export type ChangesInput = {
   /** Every boundary the changes' dependents are in, best ranked first. */
   boundaries: string[]
   violations: number
+  /** The files still there that no test reaches, as far as that is known. */
+  untested: number
   truncated: boolean
   /** Whether the files are every change since the session began (from the scan ledger), each with its origin. */
   sinceStart: boolean
@@ -340,6 +348,7 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
       dependents: f.dependents,
       loc: f.status === 'deleted' ? null : locIn(root, path),
       ...(changes.origins === undefined ? {} : { origin: changes.origins[path] ?? 'outside' }),
+      tests: f.status === 'deleted' || typeof f.tests !== 'number' ? null : f.tests,
     }))
     .sort((a, b) => b.dependents - a.dependents || a.path.localeCompare(b.path))
   const tests = Object.entries(changes.tests)
@@ -354,6 +363,7 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
     command: testCommand(tests.map(t => t.path), changes.js_runners, cdFor(root, sessionRoot)),
     boundaries: reached.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)),
     violations: changes.violations.length,
+    untested: files.filter(f => f.tests === 0).length,
     truncated: changes.truncated,
     sinceStart: changes.origins !== undefined,
     fallback: changes.fallback ?? null,
@@ -475,7 +485,9 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
   const deps = input.files.reduce((n, f) => n + f.dependents, 0)
   // Every change since the session began says where it came from, in a column of its own at the end.
   const origin = input.sinceStart && columns > ORIGIN_WIDTH + 20 ? ORIGIN_WIDTH + 1 : 0
-  const spec = tableSpec(columns - origin, input.files.map(f => f.path), input.files.map(f => boundaryLabel(f.boundary)), [numberWidth('deps', input.files.map(f => f.dependents), tier)], PATH_MAX, { tier })
+  // How many tests reach each file, when that is known: a file none reaches is marked in the warning tone.
+  const tested = input.files.some(f => f.tests !== null) && columns - origin > TESTS_WIDTH + 24 ? TESTS_WIDTH + 1 : 0
+  const spec = tableSpec(columns - origin - tested, input.files.map(f => f.path), input.files.map(f => boundaryLabel(f.boundary)), [numberWidth('deps', input.files.map(f => f.dependents), tier)], PATH_MAX, { tier })
   const max = Math.max(0, ...input.files.map(f => f.dependents))
   const note = `${input.sinceStart ? (input.since ?? 'since it began') : plural(input.turns, 'turn', 'turns')}${input.truncated ? ' · partial' : ''}`
   if (input.fallback !== null) said('changes-fallback', input.fallback)
@@ -484,20 +496,41 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
   if (input.violations > 0) {
     rows.push({ key: 'changes-policy', segments: [{ text: '   ' }, { text: `▲ ${plural(input.violations, 'policy violation', 'policy violations')} introduced`, color: STATUS_COLOURS.alert }] })
   }
+  if (input.untested > 0) rows.push({ key: 'changes-untested', segments: [{ text: '   ' }, { text: `▲ ${untestedText(input.untested)}`, color: STATUS_COLOURS.warn }] })
   const head = tableHead('changes-cols', spec, { name: 'file', boundary: 'boundary', numbers: ['deps'] })
-  rows.push(origin === 0 ? head : { ...head, segments: [...head.segments, { text: ` ${padEnd('from', ORIGIN_WIDTH)}`, dim: true }] })
+  rows.push({
+    ...head,
+    segments: [...head.segments, ...(tested === 0 ? [] : [{ text: ` ${padStart('tests', TESTS_WIDTH)}`, dim: true }]), ...(origin === 0 ? [] : [{ text: ` ${padEnd('from', ORIGIN_WIDTH)}`, dim: true }])],
+  })
   const window = windowOf(input.files.length, limit, selected)
   input.files.slice(window.start, window.end).forEach((f, n) => {
     const i = window.start + n
     const line = tableRow(`change-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, selected: i === selected, mark: statusMark(f.status), path: true, press: `row:${i}` }, spec, hues)
-    if (origin === 0 || f.origin === undefined) return rows.push(line)
-    const label: Segment = f.origin === 'session' ? { text: padEnd(ORIGIN_LABELS.session, ORIGIN_WIDTH), color: ACCENT } : { text: padEnd(ORIGIN_LABELS.outside, ORIGIN_WIDTH), dim: true }
-    const added: Segment[] = [{ text: ' ' }, label]
-    return rows.push({ ...line, segments: [...line.segments, ...(line.tint === undefined ? added : tinted(added, line.tint))] })
+    const added: Segment[] = [...(tested === 0 ? [] : [{ text: ' ' }, testsCell(f.tests)]), ...(origin === 0 || f.origin === undefined ? [] : [{ text: ' ' }, originCell(f.origin)])]
+    return rows.push(added.length === 0 ? line : { ...line, segments: [...line.segments, ...(line.tint === undefined ? added : tinted(added, line.tint))] })
   })
   rows.push(...moreRows('changes-more', window, input.files.length, columns))
   return { key: 'changes', title, note: noteOf(note), body: rows }
 }
+
+/** The cells the Changes tab's tests column takes: its title, `▲ none` and a count. */
+const TESTS_WIDTH = 6
+/** How many tests the per-file count names before it is a floor (as `FileTestReach::COUNTED`). */
+const TESTS_COUNTED = 20
+
+/** How many changed files no test reaches, said as a warning. */
+export const untestedText = (n: number): string => `${plural(n, 'file', 'files')} no test reaches`
+
+/** A changed file's tests cell: `▲ none` in the warning tone, the count dim (`20+` at the cap), blank when not known. */
+function testsCell(tests: number | null): Segment {
+  if (tests === null) return { text: spaces(TESTS_WIDTH) }
+  if (tests === 0) return { text: padStart('▲ none', TESTS_WIDTH), color: STATUS_COLOURS.warn }
+  return { text: padStart(tests >= TESTS_COUNTED ? `${TESTS_COUNTED}+` : String(tests), TESTS_WIDTH), dim: true }
+}
+
+/** A changed file's origin cell: this session's in the accent, outside dim. */
+const originCell = (origin: 'session' | 'outside'): Segment =>
+  origin === 'session' ? { text: padEnd(ORIGIN_LABELS.session, ORIGIN_WIDTH), color: ACCENT } : { text: padEnd(ORIGIN_LABELS.outside, ORIGIN_WIDTH), dim: true }
 
 /** The tests that reach the changes, nearest first, `limit` of them, and the command that runs them all. */
 function testsSection(input: ChangesInput, columns: number, limit: number, hues: Hues): Section {
