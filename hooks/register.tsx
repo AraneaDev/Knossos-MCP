@@ -45,7 +45,7 @@ import {
   tierOf,
 } from './lib/layout'
 import type { Loc, Openable, PaneInput, Preview, Row, Segment } from './lib/layout'
-import { commitNote, CONTEXT_DESCRIPTION, CONTEXT_SCHEMA, CONTEXT_TOOL, contextAnswer, isGitCommit } from './lib/agent'
+import { commitNote, CONTEXT_DESCRIPTION, CONTEXT_SCHEMA, CONTEXT_TOOL, contextAnswer, madeCommit, stillReported } from './lib/agent'
 import { alertKeys, freshAlerts } from './lib/alerts'
 import { FLASH_MS, flashKeys, ledgerFlashKeys } from './lib/flash'
 import type { Flash } from './lib/flash'
@@ -54,7 +54,7 @@ import { isWatching, LIVE_OFF, liveAfter, snapshotOf, watchLines, watchPollMsOf 
 import { CARD_BG, declaredOf, huesOf, SELECTED_BG } from './lib/palette'
 import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
-import { cells, pressLabel, textStyle } from './lib/rows'
+import { cells, dimRow, pressLabel, textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
 import type { AllowState, BranchState, ChurnState, ComponentDetail, Dashboard, NoteState, RingsState, RouteState, SearchState, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
 
@@ -132,7 +132,11 @@ const CHURN_TIMEOUT_MS = 20_000
 const RINGS_TIMEOUT_MS = 20_000
 const ROUTE_TIMEOUT_MS = 20_000
 const NOTE_TIMEOUT_MS = 20_000
-/** The model's tool, as the engine lists it (`mcp__<plugin>__<name>`): the plugin is `knossos`, so its hook matches this name. */
+/**
+ * The model's tool as the engine lists it (`mcp__<plugin>__<name>`), until a
+ * registration names it: the name `$.tool.register` returns is the one its
+ * calls carry ({@link mod}`.contextTool`).
+ */
 const CONTEXT_TOOL_NAME = `mcp__knossos__${CONTEXT_TOOL}`
 
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
@@ -196,6 +200,11 @@ const rings = atom({ plugin: 'knossos', key: 'rings' } as const, null as RingsSt
 const route = atom({ plugin: 'knossos', key: 'route' } as const, null as RouteState | null)
 /** A note being added on the detail, until it is recorded or dropped. */
 const note = atom({ plugin: 'knossos', key: 'note' } as const, null as NoteState | null)
+/**
+ * The cycles the graph held when the session began: how many, each listed one by its members, and
+ * whether the list held them all. What a commit note counts as new; state, so a reload keeps it.
+ */
+const startCycles = atom({ plugin: 'knossos', key: 'startCycles' } as const, null as StartCycles | null)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -354,11 +363,13 @@ const mod = {
   /** Whether the pane was last drawn wide (master-detail), as the render saw it; and the pending lookup of the marked row. */
   paneWide: false,
   peekTimer: null as Timer | null,
-  /** Whether the model's `knossos_context` tool is registered, and a refused registration was logged. */
-  toolRegistered: false,
+  /** The row (by {@link peekKey}) last found to have nothing to show beside the tab, so the tick does not look again. */
+  peekNone: null as string | null,
+  /** Whether a pane too large to draw however few rows it gave was logged: once a load. */
+  tooLargeLogged: false,
+  /** The model's `knossos_context` tool by the full name its registration returned (null: not registered), and whether a refused registration was logged. */
+  contextTool: null as string | null,
   toolFailureLogged: false,
-  /** The cycles the graph held when the session began (how many, and each listed one by its members): what a commit note counts as new. */
-  startCycles: null as { count: number; keys: string[] } | null,
   /** Commit notes already given, by loop and text: the same note is never said twice. */
   commitNoted: new Set<string>(),
   /** Whether a scan's new cycles and violations are toasted (userConfig `notifications`), and the ones already said. */
@@ -372,10 +383,10 @@ const mod = {
  * The first refusal leaves one debug line.
  */
 async function registerTool($: EngineInterface): Promise<boolean> {
-  if (mod.toolRegistered) return true
+  if (mod.contextTool !== null) return true
   try {
-    await $.tool.register({ name: CONTEXT_TOOL, description: CONTEXT_DESCRIPTION, inputSchema: CONTEXT_SCHEMA as unknown as Record<string, unknown> })
-    mod.toolRegistered = true
+    const { tool } = await $.tool.register({ name: CONTEXT_TOOL, description: CONTEXT_DESCRIPTION, inputSchema: CONTEXT_SCHEMA as unknown as Record<string, unknown> })
+    mod.contextTool = typeof tool === 'string' && tool !== '' ? tool : CONTEXT_TOOL_NAME
     return true
   } catch (err) {
     if (!mod.toolFailureLogged) {
@@ -394,8 +405,14 @@ async function registerTool($: EngineInterface): Promise<boolean> {
  */
 async function answerContext($: EngineInterface, asked: unknown): Promise<string> {
   if (typeof asked !== 'string' || asked.trim() === '') return 'knossos_context: give the file as `path`, relative to the project root or absolute.'
+  // Advice the model can act on: a missing binary and a refused root are not cured by a scan.
+  if (mod.disabled) return 'knossos_context: no knossos binary was found in this session, so there is no graph to answer from; read the file and grep for its callers instead.'
   const d = await read($, dashboard)
-  if (mod.disabled || d?.status !== 'ok' || d.project_root === null) return 'knossos_context: knossos has no graph of this project yet; scan it with the knossos MCP tools first.'
+  if (d?.status !== 'ok' || d.project_root === null) {
+    const refused = refusedRoot(await read($, brief), await read($, rescan))
+    if (refused !== null) return `knossos_context: knossos may not scan ${refused.root}: it is not an allowed root. Ask the person to allow it (the knossos band offers the command), then call this again.`
+    return 'knossos_context: knossos has no graph of this project yet; scan it with the knossos MCP tools first.'
+  }
   const root = d.project_root
   const placedPath = asked.startsWith('/') ? await placed($, asked) : asked.replace(/^\.\//, '')
   const relative = placedPath.startsWith('/') ? relativise(root, placedPath) : placedPath
@@ -404,35 +421,51 @@ async function answerContext($: EngineInterface, asked: unknown): Promise<string
   if (context?.status === 'no-binary') return 'knossos_context: no knossos binary is installed.'
   const { bound, unsure } = boundOf(relative, d.policy)
   const rules = (d.policy?.rules ?? []).filter(r => bound.includes(r.from)).map(ruleText)
-  const session = (await shownChanges($, root)).files[relative]?.status ?? null
+  // Only a change of this session's own: one made outside it since it began is not the session's doing.
+  const shown = await shownChanges($, root)
+  const session = ownChange(shown, relative) ? (shown.files[relative]?.status ?? null) : null
   return contextAnswer(asked, context, rules, unsure, session)
 }
 
 /** The cycles a dashboard holds, by members: what tells a cycle new since the session began. */
 const cycleKeys = (d: Dashboard): string[] => d.cycles.largest.map(c => [...c.members].sort().join('\u0000'))
 
+/** The cycles the graph holds as a session begins: the count, the listed ones, and whether the list is all of them. */
+type StartCycles = { count: number; keys: string[]; complete: boolean }
+const cyclesOf = (d: Dashboard): StartCycles => ({ count: d.cycles.count, keys: cycleKeys(d), complete: !d.cycles.truncated && d.cycles.largest.length >= d.cycles.count })
+
 /**
- * The note after a `git commit` in `loop`, or null when there is nothing new
- * to say: the violations the session's turns introduced, the changed files
- * no test reaches, and the cycles new since the session began.
+ * The note after a commit in `loop`, or null when there is nothing new to
+ * say: of this session's own changes (its files, not ones changed outside
+ * it since it began), the violations its turns introduced that the policy
+ * check still reports, the files no test reaches, and the cycles new since
+ * the session began. A cycle is named new only when the graph listed every
+ * cycle it held as the session began; otherwise only the count that grew
+ * is said.
  */
 async function commitNoteFor($: EngineInterface, loop: string): Promise<string | null> {
   const d = await read($, dashboard)
   if (!mod.notesOn || d?.status !== 'ok') return null
   const session = await shownChanges($, d.project_root)
-  const untested = Object.entries(session.files).filter(([, f]) => f.status !== 'deleted' && f.tests === 0).map(([path]) => path).sort()
-  const start = mod.startCycles
-  const keys = new Set(start?.keys ?? cycleKeys(d))
-  const fresh = d.cycles.largest.filter(c => !keys.has([...c.members].sort().join('\u0000')))
-  const count = Math.max(start === null ? 0 : d.cycles.count - start.count, fresh.length)
+  const untested = Object.entries(session.files)
+    .filter(([path, f]) => f.status !== 'deleted' && f.tests === 0 && ownChange(session, path))
+    .map(([path]) => path)
+    .sort()
+  const start = await read($, startCycles)
+  const keys = new Set(start?.keys ?? [])
+  const fresh = start?.complete === true ? d.cycles.largest.filter(c => !keys.has([...c.members].sort().join('\u0000'))) : []
+  const count = start === null ? 0 : Math.max(d.cycles.count - start.count, fresh.length)
   const chains = fresh.map(c => `${c.members.slice(0, 4).join(' → ')}${c.members.length > 4 ? ' → …' : ''}`)
-  const note = commitNote(mod.enforce ? session.violations : [], untested, { count: start === null ? 0 : count, chains: start === null ? [] : chains })
+  const note = commitNote(mod.enforce ? stillReported(session.violations, d.policy) : [], untested, { count, chains })
   if (note === null) return null
   const key = `${loop}\u0000${note}`
   if (mod.commitNoted.has(key) || !takeNoteSlot(loop)) return null
   mod.commitNoted.add(key)
   return note
 }
+
+/** Whether `path`'s change is this session's own: always, without the scan ledger's origins (the turns reported it). */
+const ownChange = (session: SessionChanges, path: string): boolean => session.origins === undefined || session.origins[path] === 'session'
 
 /** How long to wait before each retry of a refused registration, in milliseconds; after the last, turn ends retry. */
 const REGISTER_RETRY_MS = [500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const
@@ -466,7 +499,7 @@ async function registerCommand($: EngineInterface): Promise<boolean> {
 /** Retries a refused registration after the `attempt`-th delay, then the next; past the last, the end of a turn tries again. */
 function retryRegister($: EngineInterface, attempt: number, gen = mod.registerGen): void {
   const delay = REGISTER_RETRY_MS[attempt]
-  if (delay === undefined || (mod.commandRegistered && mod.toolRegistered) || mod.disabled || gen !== mod.registerGen) return
+  if (delay === undefined || (mod.commandRegistered && mod.contextTool !== null) || mod.disabled || gen !== mod.registerGen) return
   try {
     mod.registerTimer = $.clock.after(delay, () => {
       mod.registerTimer = null
@@ -504,9 +537,13 @@ async function tickAge($: EngineInterface): Promise<void> {
   const lit = await read($, flash)
   if (lit !== null && (await $.clock.now()) >= lit.until) await update($, flash, () => null)
   // A pane drawn wide shows the marked row's detail beside the tab: looked up from here the first time it is drawn so.
-  if (mod.paneWide && (await read($, peek)) === null) await requestPeek($)
-  // A pane closed by any means (the command, its own close key) stops drawing; stop ticking for it.
-  if (mod.paneText !== null && !(await $.ui.panes()).some(pane => pane.id === PANE)) mod.paneText = null
+  // A row already found to have nothing to show is not looked at again each tick: that would lay the pane out every second.
+  if (mod.paneWide && (await read($, peek)) === null && mod.peekNone !== peekKey(await read($, view), (await read($, dashboard))?.snapshot_id ?? null)) await requestPeek($)
+  // A pane closed by any means (the command, its own close key) stops drawing; stop ticking for it, and it is no longer wide.
+  if (mod.paneText !== null && !(await $.ui.panes()).some(pane => pane.id === PANE)) {
+    mod.paneText = null
+    mod.paneWide = false
+  }
   if (mod.bandText === null && mod.paneText === null) return
   const now = await $.clock.now()
   const d = await read($, dashboard)
@@ -555,6 +592,11 @@ async function disable($: EngineInterface): Promise<void> {
   mod.disabled = true
   mod.ticker?.cancel()
   mod.ticker = null
+  // Nor a debounced search or lookup: a loader that would run after this finds the mod off and reads nothing.
+  mod.searchTimer?.cancel()
+  mod.searchTimer = null
+  mod.peekTimer?.cancel()
+  mod.peekTimer = null
   // Nothing to register a command for: no timed retry runs on, and no turn end asks again.
   mod.registerGen++
   mod.registerTimer?.cancel()
@@ -624,7 +666,7 @@ async function loadDashboard($: EngineInterface): Promise<void> {
     await saveBaseline($)
   }
   // The cycles as the session found them: what the note after a commit counts as new.
-  if (parsed.status === 'ok' && mod.startCycles === null) mod.startCycles = { count: parsed.cycles.count, keys: cycleKeys(parsed) }
+  if (parsed.status === 'ok' && (await read($, startCycles)) === null) await update($, startCycles, () => cyclesOf(parsed))
   // The pane open on a component follows the graph: a new snapshot looks it up again.
   const shown = (await read($, view)).inspect
   if (shown !== null) await requestDetail($, shown)
@@ -670,7 +712,9 @@ async function light($: EngineInterface, keys: string[], now: number): Promise<v
  * while a watcher keeps the scan ledger, everything that changed since the
  * session began, whoever changed it, each file labelled by whether the
  * session's own edits made it; otherwise what the turn briefs reported, with
- * why. The notes to the model never read this: they stay the turns' own.
+ * why. The notes after a turn never read this: they stay the turns' own. The
+ * note after a commit and the `knossos_context` answer do, and keep only the
+ * files whose origin is this session ({@link ownChange}).
  */
 async function shownChanges($: EngineInterface, root: string | null): Promise<SessionChanges> {
   const turns = await read($, changes)
@@ -728,6 +772,7 @@ const sameDetail = (state: DetailState | null, shown: Inspected, snapshot: strin
 
 /** Starts a lookup of what `shown` names unless one is running or done for this snapshot; silence is asked again. */
 async function requestDetail($: EngineInterface, shown: Inspected): Promise<void> {
+  if (mod.disabled) return
   await requestDiff($, shown)
   await requestRings($, shown)
   const snapshot = (await read($, dashboard))?.snapshot_id ?? null
@@ -858,6 +903,7 @@ async function requestCouplings($: EngineInterface): Promise<void> {
 
 /** One read of a cell's couplings; stored only while the pane still marks that cell of that graph. */
 async function loadCouplings($: EngineInterface, from: string, to: string, snapshot: string | null, root: string | undefined): Promise<void> {
+  if (mod.disabled) return
   const parsed = parseCouplings(await wrapper($, 'boundary-couplings', [`--from=${from}`, `--to=${to}`], COUPLINGS_TIMEOUT_MS, root))
   if (parsed?.status === 'no-binary') return disable($)
   await update($, couplings, (c): CouplingState | null => (c !== null && c.from === from && c.to === to && c.snapshot === snapshot ? { ...c, phase: 'done', answer: parsed } : c))
@@ -891,6 +937,7 @@ async function requestDiff($: EngineInterface, shown: Inspected): Promise<void> 
 
 /** One read of a file's change; stored only while the detail still asks for that file, commit and graph. */
 async function loadDiff($: EngineInterface, name: string, rev: string, snapshot: string | null, root: string | undefined): Promise<void> {
+  if (mod.disabled) return
   const stdout = await wrapper($, 'session-diff', [`--rev=${rev}`, `--file=${name}`], DIFF_TIMEOUT_MS, root)
   const parsed = parseSessionDiff(stdout)
   if (parsed?.status === 'no-binary') return disable($)
@@ -904,6 +951,7 @@ async function loadDiff($: EngineInterface, name: string, rev: string, snapshot:
  * project root, where the dashboard placed it.
  */
 async function loadDetail($: EngineInterface, snapshot: string | null, shown: Inspected, key: string): Promise<void> {
+  if (mod.disabled) return
   try {
     const file = shown.file === true
     const root = file ? ((await read($, dashboard))?.project_root ?? undefined) : undefined
@@ -948,6 +996,7 @@ async function runCommand($: EngineInterface, args: string): Promise<string> {
   if ((await $.ui.panes()).some(pane => pane.id === PANE)) {
     await $.ui.close({ id: PANE }).catch(() => undefined)
     mod.paneText = null
+    mod.paneWide = false
     return 'Knossos pane closed.'
   }
   await update($, view, v => ({ ...v, inspect: null }))
@@ -1581,6 +1630,7 @@ function requestSearch($: EngineInterface): void {
 
 /** One search for what is typed now; stored with the query it answers, so a stale answer is never shown as current. */
 async function loadSearch($: EngineInterface): Promise<void> {
+  if (mod.disabled) return
   const query = (await read($, search)).query.trim()
   if (query === '') {
     await update($, search, (f): SearchState => ({ ...f, for: '', phase: 'idle', answer: null }))
@@ -1610,8 +1660,9 @@ async function copySubject($: EngineInterface, surface?: RenderSurface): Promise
 
 /**
  * "Ask Claude" about the marked component (a cycle: how to break it; a
- * boundary: what its dependencies are for). The one prompt the mod ever
- * submits, and only from this press: the person asked for it, so it does not
+ * boundary: what its dependencies are for). One of the two prompts the mod
+ * submits, both only from the person's press (the other is the no-data
+ * pane's scan, {@link askScan}): the person asked for it, so it does not
  * start a turn on the mod's own account. One press, one prompt.
  */
 async function askClaude($: EngineInterface): Promise<void> {
@@ -1722,9 +1773,11 @@ async function requestPeek($: EngineInterface): Promise<void> {
   const list = await currentList($)
   const item = list[Math.min(Math.max(0, v.selected), Math.max(0, list.length - 1))]
   if (item === undefined || item.inert === true || item.jump !== undefined) {
+    mod.peekNone = peekKey(v, (await read($, dashboard))?.snapshot_id ?? null)
     if ((await read($, peek)) !== null) await update($, peek, () => null)
     return
   }
+  mod.peekNone = null
   const shown: Inspected = { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}), ...(item.changed === true ? { changed: true } : {}) }
   const snapshot = (await read($, dashboard))?.snapshot_id ?? null
   const current = await read($, peek)
@@ -1737,8 +1790,12 @@ async function requestPeek($: EngineInterface): Promise<void> {
   })
 }
 
+/** Which row of which tab and graph the detail beside the tab stands for: what tells a row already looked at. */
+const peekKey = (v: KnossosView, snapshot: string | null): string => `${v.tab}\u0000${v.selected}\u0000${v.filter}\u0000${snapshot ?? ''}`
+
 /** One lookup for the detail beside the tab; stored only while that row is still the one shown. */
 async function loadPeek($: EngineInterface, shown: Inspected, snapshot: string | null): Promise<void> {
+  if (mod.disabled) return
   await requestDiff($, shown)
   const file = shown.file === true
   const root = file ? ((await read($, dashboard))?.project_root ?? undefined) : undefined
@@ -1778,6 +1835,7 @@ async function requestBranch($: EngineInterface): Promise<void> {
 
 /** One comparison; stored only while it is still for the graph on show. */
 async function loadBranch($: EngineInterface, snapshot: string | null, root: string | undefined): Promise<void> {
+  if (mod.disabled) return
   const parsed = parseBranchDiff(await wrapper($, 'branch-diff', [], BRANCH_TIMEOUT_MS, root))
   if (parsed?.status === 'no-binary') return disable($)
   await update($, branch, (b): BranchState | null => (b !== null && b.snapshot === snapshot ? { snapshot, phase: 'done', answer: parsed } : b))
@@ -1807,6 +1865,7 @@ async function requestChurn($: EngineInterface): Promise<void> {
 
 /** One read of the churn hotspots; stored only while it is still for the commit on show. */
 async function loadChurn($: EngineInterface, head: string | null, root: string | undefined): Promise<void> {
+  if (mod.disabled) return
   const parsed = parseChurn(await wrapper($, 'churn', [], CHURN_TIMEOUT_MS, root))
   if (parsed?.status === 'no-binary') return disable($)
   await update($, churn, (c): ChurnState | null => (c !== null && c.head === head ? { head, phase: 'done', answer: parsed } : c))
@@ -1831,6 +1890,7 @@ async function requestRings($: EngineInterface, shown: Inspected): Promise<void>
 
 /** One read of a blast radius; stored only while the detail still asks for that component and graph. */
 async function loadRings($: EngineInterface, name: string, snapshot: string | null, root: string | undefined): Promise<void> {
+  if (mod.disabled) return
   const parsed = parseBlastRadius(await wrapper($, 'blast-radius', [`--component=${name}`], RINGS_TIMEOUT_MS, root))
   if (parsed?.status === 'no-binary') return disable($)
   await update($, rings, (r): RingsState | null => (r !== null && r.name === name && r.snapshot === snapshot ? { ...r, phase: 'done', answer: parsed } : r))
@@ -1857,6 +1917,7 @@ async function requestRoute($: EngineInterface): Promise<void> {
 
 /** One route search; stored only while the explorer still shows these two ends in this graph. */
 async function loadRoute($: EngineInterface, from: string, to: string, snapshot: string | null, root: string | undefined): Promise<void> {
+  if (mod.disabled) return
   const parsed = parsePathBetween(await wrapper($, 'path-between', [`--from=${from}`, `--to=${to}`], ROUTE_TIMEOUT_MS, root))
   if (parsed?.status === 'no-binary') return disable($)
   await update($, route, (r): RouteState | null => (r !== null && r.from === from && r.to === to && r.snapshot === snapshot ? { ...r, phase: 'done', answer: parsed } : r))
@@ -1913,7 +1974,10 @@ async function submitNote($: EngineInterface, text: string): Promise<void> {
   const asked = await read($, note)
   if (asked === null || asked.phase !== 'editing') return
   const value = text.trim()
-  if (value === '') return update($, note, () => null)
+  if (value === '') {
+    await update($, note, () => null)
+    return
+  }
   await update($, note, (): NoteState => ({ ...asked, phase: 'previewing', value }))
   $.clock.after(0, () => void previewNote($, asked.component, value).catch(() => undefined))
 }
@@ -2364,11 +2428,12 @@ export const register: Register = (on, options) => {
   mod.openWhenFound = false
   mod.findFrom = 0
   mod.paneWide = false
+  mod.peekNone = null
+  mod.tooLargeLogged = false
   mod.peekTimer?.cancel()
   mod.peekTimer = null
-  mod.toolRegistered = false
+  mod.contextTool = null
   mod.toolFailureLogged = false
-  mod.startCycles = null
   mod.commitNoted = new Set()
   mod.alertsOn = options.notifications !== false
   mod.toasted = new Set()
@@ -2398,9 +2463,15 @@ export const register: Register = (on, options) => {
       // A new session in the same process: its changes start now, at the graph as it stands, and its cycles too.
       await update($, sessionStart, () => mod.snapshot)
       const now = await read($, dashboard)
-      mod.startCycles = now?.status === 'ok' ? { count: now.cycles.count, keys: cycleKeys(now) } : null
+      await update($, startCycles, () => (now?.status === 'ok' ? cyclesOf(now) : null))
       mod.commitNoted = new Set()
       mod.toasted = new Set()
+      // What the notes told the session that ended: the next one's model never read it, so it is news again.
+      mod.noted = new Set()
+      mod.ruled = new Set()
+      mod.testsNamed = new Set()
+      mod.violationsSeen = new Set()
+      mod.truncationSaid = false
       await update($, sessionBegan, () => null)
       await update($, sessionEdits, () => [])
       await update($, sessionScans, () => [])
@@ -2418,9 +2489,12 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Every call of the session's, in every loop, by any tool that does work rather than wait: while one runs
+  // Every call of the session's, in every loop, by any tool that can write rather than wait or read: while one runs
   // (and a moment after), what the watcher scans is the session's own, whatever route the change took.
   on('tool.call', async ($, e, next) => {
+    // The model's own tool, one file's context in one call, by the name its registration returned: answered
+    // here, and no other hook answers it. The engine allows one hook on every call, so it shares this one.
+    if (e.tool === (mod.contextTool ?? CONTEXT_TOOL_NAME)) return { result: await answerContext($, (e as { path?: unknown }).path).catch(() => 'knossos_context: the answer failed; try again.') }
     if (mod.disabled || !counts(e.tool)) return next(e)
     const id = `${++mod.callSeq}`
     begin(mod.activity, id, await $.clock.now())
@@ -2473,15 +2547,14 @@ export const register: Register = (on, options) => {
     if (ran.deny === undefined && typeof command === 'string' && mod.ranCommands.length < COMMANDS_KEPT) mod.ranCommands.push(command)
     if (BASH_MARKS_DIRTY) mod.dirty = true
     // A commit, in any loop: what it carries that the graph knows of, said once.
-    if (mod.disabled || ran.deny !== undefined || ran.isError === true || typeof command !== 'string' || !isGitCommit(command)) return ran
+    // Told by git's own line in what ran: a `git commit` in a string, a dry run or a failed commit made none.
+    if (mod.disabled || ran.deny !== undefined || ran.isError === true || !madeCommit(ran.text ?? '')) return ran
     return noteSafely($, ran, async () => {
       const note = await commitNoteFor($, e.agentId ?? '')
       return note === null ? ran : { ...ran, context: [...(ran.context ?? []), note] }
     })
   })
 
-  // The model's own tool: one file's context in one call, answered here (no other hook answers it).
-  on('tool.call', { tool: CONTEXT_TOOL_NAME }, async ($, e) => ({ result: await answerContext($, (e as { path?: unknown }).path).catch(() => 'knossos_context: the answer failed; try again.') }))
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
@@ -2491,7 +2564,7 @@ export const register: Register = (on, options) => {
     mod.turnRan = mod.ranCommands
     mod.ranCommands = []
     // Still refused once the timed retries ran out: each turn's end asks again, a session being bound by now.
-    if (!mod.disabled && !(mod.commandRegistered && mod.toolRegistered) && mod.registerTimer === null) await registerCommand($)
+    if (!mod.disabled && !(mod.commandRegistered && mod.contextTool !== null) && mod.registerTimer === null) await registerCommand($)
     // The turn may have committed or switched branches: the header reads where the checkout stands again.
     if (!mod.disabled) $.clock.after(0, () => void readGitHead($).catch(() => undefined))
     // No graph to draw yet (the person may just have asked Claude to scan): look again, once the turn is over.
@@ -2638,6 +2711,16 @@ export const register: Register = (on, options) => {
       tree = draw(rows, true)
       weight = treeWeight(tree)
     }
-    return tree
+    if (weight <= TREE_BUDGET) return tree
+    // Still past the budget at the fewest rows: one line says so, rather than a tree the engine would refuse.
+    if (!mod.tooLargeLogged) {
+      mod.tooLargeLogged = true
+      $.ui.log(`knossos: the pane was too large to draw (${weight} characters at ${rows} rows), so it drew one line instead`, { to: 'debug' })
+    }
+    return (
+      <Box key={key} flexDirection="column">
+        {drawRows($, ui, e.surface, themeName, [dimRow('too-large', ' Too large to draw here: close the detail, or make the pane narrower.', columns)], columns, press, true)}
+      </Box>
+    )
   })
 }

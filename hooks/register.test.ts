@@ -91,6 +91,10 @@ function world(
     watch?: object[][]
     /** How long each Bash call runs on the mocked clock (a command that takes a while). */
     bashMs?: number
+    /** The prefix the engine gives a registered tool's full name (`mcp__knossos__` otherwise). */
+    toolPrefix?: string
+    /** What a Bash call prints, by its command (`ran Bash` otherwise). */
+    bashOutput?: (command: string) => string
     /** The session's id, and what the plugin's store holds at the start (an earlier process's baselines). */
     sessionId?: string
     store?: Record<string, unknown>
@@ -168,7 +172,7 @@ function world(
   const tools: string[] = []
   on('tool.register', (_$, e) => {
     tools.push(e.name)
-    return { value: { tool: `mcp__knossos__${e.name}` } }
+    return { value: { tool: `${answers.toolPrefix ?? 'mcp__knossos__'}${e.name}` } }
   })
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
@@ -303,7 +307,8 @@ function world(
   on('ui.render', () => ({ type: 'Box', props: { key: 'engine' }, children: [] }))
   on('tool.call', async (_$, e) => {
     if (e.tool === 'Bash' && answers.bashMs !== undefined) await clock.sleep(answers.bashMs)
-    return { result: {} as never, text: `ran ${e.tool}` }
+    const command = (e as { command?: unknown }).command
+    return { result: {} as never, text: e.tool === 'Bash' && answers.bashOutput !== undefined && typeof command === 'string' ? answers.bashOutput(command) : `ran ${e.tool}` }
   })
   const briefRuns = () => calls.filter(c => c[2] === 'turn-brief')
   const detailRuns = () => calls.filter(c => c[2] === 'component-detail')
@@ -337,6 +342,9 @@ async function edit($: Engine, path: string) {
 async function readFile($: Engine, path: string) {
   return $.tool.call({ tool: 'Read', file_path: path })
 }
+
+/** What a shell prints for a command that commits (git's `[branch sha] subject` line), and for any other. */
+const committing = (command: string): string => (/\bgit\b.*\bcommit\b/.test(command) && !command.includes('--dry-run') && !command.startsWith('echo') && !command.startsWith('grep') ? '[main abc1234] x\n 1 file changed, 1 insertion(+)' : 'done')
 
 async function bash($: Engine, command: string) {
   return $.tool.call({ tool: 'Bash', command })
@@ -1288,6 +1296,53 @@ describe('knossos mod', () => {
     await ui.unmount()
   })
 
+  test('knossos_context says what to do instead when there is no binary, and which root to allow when it is refused', async ($, on) => {
+    const ask = async () => String(((await $.tool.call({ tool: 'mcp__knossos__knossos_context', path: 'src/Router.php' })) as { result?: unknown }).result)
+    const w = world(on, { dashboard: [{ stdout: '{"status":"unscanned"}' }], brief: [{ stdout: brief({ status: 'not-allowed', refused_root: ROOT, roots_file: '/data/roots.json', changed_files: [], impact: {} }) }, { stdout: '{"status":"no-binary"}' }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(await ask()).toBe(`knossos_context: knossos may not scan ${ROOT}: it is not an allowed root. Ask the person to allow it (the knossos band offers the command), then call this again.`)
+    // The binary gone: no scan would help.
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(await ask()).toContain('no knossos binary was found')
+  })
+
+  test('knossos_context answers under the name its registration returned', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: '{"status":"unscanned"}' }], toolPrefix: 'mcp__plugin_knossos_knossos__' })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.tools).toEqual(['knossos_context'])
+    const answered = await $.tool.call({ tool: 'mcp__plugin_knossos_knossos__knossos_context', path: 'src/Router.php' } as never)
+    expect(String((answered as { result?: unknown }).result)).toContain('knossos_context: knossos has no graph of this project yet')
+    // The name the mod would have guessed is not the tool's: the call goes on to whatever answers it.
+    const guessed = await $.tool.call({ tool: 'mcp__knossos__knossos_context', path: 'src/Router.php' } as never)
+    expect((guessed as { text?: string }).text).toBe('ran mcp__knossos__knossos_context')
+  })
+
+  test('a search typed just before the binary goes missing never runs', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], brief: [{ stdout: '{"status":"no-binary"}' }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($, 'terminal', 120)
+    await ui.press({ key: 'find' })
+    await w.clock.settle()
+    await ui.input({ key: 'find', text: 'dsvc', kind: 'change' })
+    // Before the pause ends, a turn's brief finds no binary: the mod turns off.
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.advance(10)
+    expect(w.logs.some(l => l.text.includes('no knossos binary found'))).toBe(true)
+    await w.clock.advance(1_000)
+    await w.clock.settle()
+    expect(w.searchRuns()).toEqual([])
+    await ui.unmount()
+  })
+
   test('a missing binary disables the mod quietly', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: '{"status":"no-binary"}' }] })
     await $.session.start(START)
@@ -1839,8 +1894,10 @@ describe('knossos mod', () => {
       },
       policy: { status: 'evaluated', total: 1, violations: [violation], truncated: false },
     })
-    const later = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), snapshot_id: 's2', cycles: { count: 1, truncated: false, truncation_reasons: [], largest: [{ size: 2, members: ['Router', 'Kernel'] }] } })
-    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: later }], brief: [{ stdout: turn }] })
+    // The later graph still reports the violation the turn introduced.
+    const policed = JSON.parse(policedDashboard()) as { policy: object }
+    const later = JSON.stringify({ ...policed, snapshot_id: 's2', cycles: { count: 1, truncated: false, truncation_reasons: [], largest: [{ size: 2, members: ['Router', 'Kernel'] }] }, policy: { ...policed.policy, total: 1, items: [{ ...violation, source_kind: 'class', target_kind: 'class', source_boundary: 'core', target_boundary: 'workers', path: 'src/Router.php', line: 3 }] } })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: later }], brief: [{ stdout: turn }], bashOutput: committing })
     await $.session.start(START)
     await w.clock.settle()
     // Nothing yet: a commit carries nothing the graph knows of.
@@ -1851,7 +1908,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const said = (await bash($, 'git add -A && git commit -m "route"')).context ?? []
     expect(said).toEqual([
-      'knossos: this commit carries 1 boundary-policy violation this session introduced (App\\Router → App\\Worker); 1 changed file no test reaches (src/Kernel.php); 1 dependency cycle new since the session began (Router → Kernel). Check them before you push.',
+      "knossos: this session's changes carry 1 boundary-policy violation this session introduced (App\\Router → App\\Worker); 1 changed file no test reaches (src/Kernel.php); 1 dependency cycle new since the session began (Router → Kernel). Check them before you push.",
     ])
     // The same note is not said twice in one loop; a subagent's loop is told on its own.
     expect((await bash($, 'git commit --amend --no-edit')).context ?? []).toEqual([])
@@ -1861,13 +1918,82 @@ describe('knossos mod', () => {
 
   test('a commit gets no note with notes off', { options: { agentNotes: false } }, async ($, on) => {
     const turn = brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 0 } } })
-    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], brief: [{ stdout: turn }] })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], brief: [{ stdout: turn }], bashOutput: committing })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/src/Router.php`)
     await $.turn.complete(TURN)
     await w.clock.settle()
     expect((await bash($, 'git commit -m x')).context ?? []).toEqual([])
+  })
+
+  test('a commit is told by what git printed: a git commit in a string, a gh call or a dry run gets no note', async ($, on) => {
+    const turn = brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 0 } } })
+    const outputs: Record<string, string> = {
+      'grep -rn "git commit" scripts': 'scripts/release.sh:4: git commit -m release',
+      "echo 'git commit -m x'": 'git commit -m x',
+      'gh pr create --body "after git commit"': 'https://github.com/o/r/pull/7',
+      'git commit --dry-run -m x': 'On branch main\nChanges to be committed:\n\tmodified:   src/Router.php',
+      'gc -m "via an alias"': '[main 1a2b3c4] via an alias\n 1 file changed',
+    }
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], brief: [{ stdout: turn }], bashOutput: command => outputs[command] ?? 'done' })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    for (const command of Object.keys(outputs).slice(0, 4)) expect((await bash($, command)).context ?? [], command).toEqual([])
+    // A commit made under another name is still one.
+    expect((await bash($, 'gc -m "via an alias"')).context ?? []).toHaveLength(1)
+  })
+
+  test("a commit note and knossos_context speak only of this session's changes, and a commit note names new cycles only against a whole list", async ($, on) => {
+    const violation = { policy_id: 'core-alone', source: 'App\\Router', target: 'App\\Worker', source_boundaries: [], target_boundaries: [] }
+    const turn = brief({
+      changed_files: ['src/Router.php'],
+      impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 0 } },
+      policy: { status: 'evaluated', total: 1, violations: [violation], truncated: false },
+    })
+    // The graph as the session began lists 10 of its 12 cycles; the later one holds 13, one listed it did not list before.
+    const cycles = (count: number, extra: string[][]) => ({ count, truncated: true, truncation_reasons: [], largest: [...Array.from({ length: 10 }, (_, i) => ({ size: 2, members: [`A${i}`, `B${i}`] })), ...extra.map(members => ({ size: members.length, members }))].slice(0, 10) })
+    const first = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), cycles: cycles(12, []) })
+    const kernelContext = JSON.stringify({ status: 'ok', path: `${ROOT}/src/Kernel.php`, project_id: 'p1', snapshot_id: 's1', file: { path: 'src/Kernel.php', language: 'php', lines: 40, boundary: 'core', components: 1, dependents: { count: 3, boundaries: [], top: [] }, tests: { items: [], more: false }, commits: [] } })
+    const later = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), snapshot_id: 's2', cycles: { ...cycles(13, []), largest: [{ size: 2, members: ['New', 'Cycle'] }, ...cycles(13, []).largest.slice(0, 9)] } })
+    // Since the session began: the Router changed by this session, the Kernel by someone else.
+    const ledger = JSON.stringify({ status: 'ok', since: 's1', complete: true, files: { 'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'core', tests: 0 }, 'src/Kernel.php': { status: 'changed', dependents: 3, boundaries: [], boundary: 'core', tests: 0 } }, files_truncated: false, tests: [], tests_truncated: false })
+    const w = world(on, { dashboard: [{ stdout: first }, { stdout: later }], brief: [{ stdout: turn }], ledger: [{ stdout: ledger }], bashOutput: committing, watch: [[{ event: 'ready', project_id: 'p1', snapshot_id: 's1', files: 3, scanned: false }]], context: [{ stdout: kernelContext }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 2 })
+    await w.clock.advance(100)
+    await w.clock.settle()
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const said = (await bash($, 'git commit -m route')).context ?? []
+    expect(said).toEqual(["knossos: this session's changes carry 1 changed file no test reaches (src/Router.php); 1 dependency cycle new since the session began. Check them before you push."])
+    // The Kernel changed since the session began, but not by it.
+    const answer = String((await $.tool.call({ tool: 'mcp__knossos__knossos_context', path: 'src/Kernel.php' }) as { result?: unknown }).result)
+    expect(answer).toContain('This session has not changed it.')
+  })
+
+  test('a violation the policy check no longer reports is not carried by the commit note', async ($, on) => {
+    const violation = { policy_id: 'core-alone', source: 'App\\Router', target: 'App\\Worker', source_boundaries: [], target_boundaries: [] }
+    const turn = brief({
+      changed_files: ['src/Router.php'],
+      impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 2 } },
+      policy: { status: 'evaluated', total: 1, violations: [violation], truncated: false },
+    })
+    // Fixed since: the later graph's complete check reports nothing.
+    const later = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), snapshot_id: 's2' })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: later }], brief: [{ stdout: turn }], bashOutput: committing })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.briefRuns()).toHaveLength(1)
+    expect((await bash($, 'git commit -m route')).context ?? []).toEqual([])
   })
 
   test('a session below the project root is told, and copies, test commands that change to the project root', async ($, on) => {
@@ -1939,6 +2065,27 @@ describe('knossos mod', () => {
     await $.turn.complete(TURN)
     await w.clock.settle()
     expect(turnNotes(w)).toHaveLength(1)
+  })
+
+  test('after a /clear the new session is told again what the one before it was told', async ($, on) => {
+    const violation = { policy_id: 'p', source: 'App\\A', target: 'App\\B', source_boundaries: [], target_boundaries: [] }
+    const turn = brief({ tests: [{ path: 'tests/RouterTest.php', distance: 1 }], policy: { status: 'evaluated', total: 1, violations: [violation], truncated: false } })
+    const w = world(on, { brief: [{ stdout: turn }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(turnNotes(w)).toHaveLength(1)
+    await $.session.end({ reason: 'clear', sessionId: 'x', resume: { id: 'x' } } as never)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    // The model of the new session never read the first note: the violation and the tests are its news too.
+    expect(turnNotes(w)).toHaveLength(2)
+    expect(turnNotes(w)[1]?.text).toContain('- p: App\\A → App\\B')
+    expect(turnNotes(w)[1]?.text).toContain('knossos: 1 test reaches')
   })
 
   test('the key help line shows and hides', async ($, on) => {
@@ -3434,6 +3581,30 @@ describe('knossos mod', () => {
     }
   })
 
+  test('a closed pane is no longer wide: a new graph looks nothing up beside a tab no one sees', async ($, on) => {
+    const hubs = Array.from({ length: 6 }, (_, i) => ({ name: `Hub${i}`, canonical_name: `App\\Hub${i}`, kind: 'class', in_degree: 300 - i, out_degree: i, cross_boundary_degree: 0, path: `src/Hub${i}.php`, line: 3 }))
+    const w = world(on, { dashboard: [{ stdout: paneDashboard({ hubs, hotspots: [] }) }, { stdout: paneDashboard({ hubs, hotspots: [], snapshot_id: 's2' }) }], detail: [{ stdout: fullDetailOf('Hub0') }], brief: [{ stdout: brief() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 200, scroll: { offset: 0, bodyRows: 40 } } })
+    await ui.press({ key: 'tab:hubs' })
+    await w.clock.advance(300)
+    await w.clock.settle()
+    const looked = w.detailRuns().length
+    expect(looked).toBeGreaterThan(0)
+    await ui.unmount()
+    // A tick sees it closed.
+    await w.clock.advance(2_000)
+    await w.clock.settle()
+    // A turn brings a new graph: the pane is closed, so nothing is looked up for it.
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.advance(2_000)
+    await w.clock.settle()
+    expect(w.dashboardRuns().length).toBeGreaterThan(1)
+    expect(w.detailRuns()).toHaveLength(looked)
+  })
+
   test('health over time is one row per figure on one axis, as text on every surface; the tiles carry a sparkline', async ($, on) => {
     const trend = [1, 3, 2, 2, 4, 3].map((cycles, i) => ({ snapshot_id: `s${i}`, cycles, max_degree: 10, dead_code: 9 - i, diagnostics: 0 }))
     const w = world(on, { dashboard: [{ stdout: paneDashboard({ trend }) }] })
@@ -4015,6 +4186,54 @@ describe('the live watcher', () => {
       await ui.unmount()
     })
   }
+
+  /** As much as session-diff sends: 200,000 bytes in 14 hunks of 70 lines, each line as long as a hunk keeps. */
+  const FULL_DIFF = JSON.stringify({
+    ...(JSON.parse(ROUTER_DIFF) as object),
+    diff: `${Array.from({ length: 14 }, (_, h) => `@@ -${h * 100 + 1},0 +${h * 100 + 1},70 @@\n${Array.from({ length: 70 }, (_, i) => `+${`h${h} line ${i} `.padEnd(199, 'x')}`).join('\n')}`).join('\n')}\n`,
+    lines: 994,
+    truncated: true,
+  })
+
+  test('the detail of a file changed as much as session-diff can say stays within the bounds the engine sets every tree, at every size', { timeoutMs: 120_000 }, async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: LEDGER }], head: [{ stdout: HEAD }], diff: [{ stdout: FULL_DIFF }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+    await w.clock.advance(100)
+    for (const surface of ['terminal', 'desktop'] as const) {
+      for (const [bodyColumns, bodyRows] of [[200, 60], [140, 120], [100, 60], [60, 60]] as const) {
+        const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows } } })
+        await ui.press({ key: 'tab:changes' })
+        await ui.press({ key: 'open' })
+        await w.clock.settle()
+        const size = treeSize(await ui.drawn())
+        const at = `${surface} ${bodyColumns}x${bodyRows}: ${JSON.stringify(size)}`
+        expect(await ui.find({ type: 'Code' }), at).toBeDefined()
+        expect(size.nodes, at).toBeLessThan(10_000)
+        expect(size.depth, at).toBeLessThan(16)
+        expect(size.chars, at).toBeLessThan(72_000)
+        await ui.press({ key: 'back' })
+        await ui.unmount()
+      }
+    }
+    // Never so large that it fell back to one line.
+    expect(w.logs.filter(l => l.text.includes('too large to draw'))).toEqual([])
+  })
+
+  test('a pane too large to draw at its fewest rows draws one line saying so, and logs it once', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    // So wide that the rows the pane cannot give back outweigh the budget on their own.
+    for (let i = 0; i < 2; i++) {
+      const ui = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 9_000, scroll: { offset: 0, bodyRows: 60 } } })
+      expect(treeSize(await ui.drawn()).chars).toBeLessThan(100_000)
+      expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')).toContain('Too large to draw here')
+      await ui.unmount()
+    }
+    expect(w.logs.filter(l => l.text.includes('too large to draw'))).toHaveLength(1)
+  })
 
   test('a session continued in a new process keeps the commit and the snapshot it began at; a new one starts fresh', async ($, on) => {
     const OLD = 'fedcba9876543210fedcba9876543210fedcba98'

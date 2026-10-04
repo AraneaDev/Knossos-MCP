@@ -60,18 +60,37 @@ export function contextAnswer(asked: string, context: FileContext | null, rules:
 }
 
 /**
- * Whether a shell command makes a commit: `git commit`, with options before
- * the subcommand (`git -C dir commit`), anywhere in a chain of commands.
+ * Whether a shell command's output says it made a commit: git's own
+ * `[branch abc1234] subject` line (`[main (root-commit) abc1234]`,
+ * `[detached HEAD abc1234]`). Read from what ran rather than from the
+ * command, so a `git commit` inside a string (`echo`, `grep`, a `gh` body),
+ * a `--dry-run` or a commit that failed says nothing, and one made through
+ * an alias or a script is still seen. A `--quiet` commit prints no such
+ * line and goes unnoticed.
  */
-export function isGitCommit(command: string): boolean {
-  return /(^|[;&|(]\s*|\s)git(\s+-[a-zA-Z]+(\s+(?!-)\S+)?|\s+--[\w-]+(=\S+)?)*\s+commit(?![\w-])/.test(command)
+export function madeCommit(output: string): boolean {
+  return /^\[[^[\]\n]+ [0-9a-f]{7,64}\] \S/m.test(output)
 }
 
 /**
- * The note after a commit: what the session leaves behind that the commit
- * carries, as far as the graph says: boundary-policy violations its turns
- * introduced, changed files no test reaches, and cycles that are new since
- * the session began. Null when there is nothing to say.
+ * The violations of `violations` (`source → target`) the current policy
+ * check still reports: one fixed since a turn introduced it is not the
+ * session's to carry any more. All of them when the check cannot say (not
+ * evaluated, or its list cut short).
+ */
+export function stillReported(violations: string[], policy: { status: string; truncated: boolean; total: number; items: { source: string; target: string }[] } | undefined): string[] {
+  if (policy === undefined || policy.status !== 'evaluated' || policy.truncated || policy.items.length < policy.total) return violations
+  const reported = new Set(policy.items.map(v => `${v.source} → ${v.target}`))
+  return violations.filter(v => reported.has(v))
+}
+
+/**
+ * The note after a commit: what this session's changes leave behind, as far
+ * as the graph says: boundary-policy violations its turns introduced that
+ * the policy check still reports, the files it changed that no test reaches,
+ * and cycles that are new since the session began. A commit need not hold
+ * all of them, so the note speaks of the session's changes, not of the
+ * commit. Null when there is nothing to say.
  */
 export function commitNote(violations: string[], untested: string[], cycles: { count: number; chains: string[] }): string | null {
   const parts: string[] = []
@@ -79,5 +98,5 @@ export function commitNote(violations: string[], untested: string[], cycles: { c
   if (untested.length > 0) parts.push(`${untested.length} changed ${untested.length === 1 ? 'file' : 'files'} no test reaches (${named(untested)})`)
   if (cycles.count > 0) parts.push(`${cycles.count} dependency ${cycles.count === 1 ? 'cycle' : 'cycles'} new since the session began${cycles.chains.length > 0 ? ` (${named(cycles.chains, cycles.count)})` : ''}`)
   if (parts.length === 0) return null
-  return bounded(`knossos: this commit carries ${parts.join('; ')}. Check them before you push.`)
+  return bounded(`knossos: this session's changes carry ${parts.join('; ')}. Check them before you push.`)
 }

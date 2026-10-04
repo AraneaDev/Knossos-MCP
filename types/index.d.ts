@@ -692,6 +692,8 @@ declare module 'claude-code' {
       route: RouteState | null
       /** A note being added on the detail, until it is recorded or dropped. */
       note: NoteState | null
+      /** The cycles the graph held when the session began: how many, each listed one by its members, and whether the list held them all. */
+      startCycles: { count: number; keys: string[]; complete: boolean } | null
     }
   }
 }

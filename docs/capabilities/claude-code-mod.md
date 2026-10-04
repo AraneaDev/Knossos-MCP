@@ -108,31 +108,41 @@ that cap is said at the next Read or edit of the file. A note that fails
 leaves the tool result as it was and one line in the debug log. A turn ends with at most one
 note. `agentNotes` turns them all off; the toast stays.
 
-**After a commit.** When a Bash call in any loop runs `git commit` (with
-options before it, as in `git -C dir commit`, or anywhere in a chain), the
-call's result carries one note of what the commit takes along, as far as the
-graph knows: the boundary-policy violations the session's turns introduced,
-the changed files no test reaches, and the cycles new since the session
-began (against the cycles the graph held when the session began):
+**After a commit.** When a Bash call in any loop made a commit, told by the
+line git prints for one (`[main abc1234] subject`) rather than by the command,
+so a `git commit` inside a string, a dry run or a commit that failed says
+nothing, and one made through an alias or a script is still seen (a `--quiet`
+commit prints no such line and goes unnoticed), the call's result carries one
+note of what this session's changes leave behind, as far as the graph knows:
+the boundary-policy violations the session's turns introduced that the policy
+check still reports, the files the session changed (not ones changed outside
+it since it began) that no test reaches, and the cycles new since the session
+began. A cycle is named new only when the graph listed every cycle it held as
+the session began; past that list's cap only the count that grew is said. The
+note speaks of the session's changes, not of the commit, since a commit need
+not hold them all:
 
 ```text
-knossos: this commit carries 1 changed file no test reaches (src/Kernel.php); 1 dependency cycle new since the session began (Router → Kernel). Check them before you push.
+knossos: this session's changes carry 1 changed file no test reaches (src/Kernel.php); 1 dependency cycle new since the session began (Router → Kernel). Check them before you push.
 ```
 
 Nothing new, no note. The same note is said once per loop, counts against
 the three notes a turn, and `agentNotes` turns it off.
 
 **On request.** The mod registers a tool the model calls itself,
-`knossos_context` (listed as `mcp__knossos__knossos_context`), with one
+`knossos_context` (listed as `mcp__knossos__knossos_context`; the mod answers
+it by the name its registration returns), with one
 argument, `path` (relative to the project or absolute). One call answers in
 a few lines, at most 2,000 characters: the file's boundary, language, lines
 and components; how many files depend on it, in which boundaries, and the
 closest five; the declared rules that bind it (or that a cap leaves that
 open); the tests that reach it, nearest first; its three latest commits;
-and whether this session changed it. It reads `knossos file-context <file>`
-through the wrapper when it is called (never in a drawing), and answers a
-path outside the project, or a project never scanned, with a sentence that
-says so. It is registered at the session's start, with the same retries as
+and whether this session changed it (a change made outside the session
+since it began is not). It reads `knossos file-context <file>` through the
+wrapper when it is called (never in a drawing), and answers a path outside
+the project, a project never scanned, a root that is not allowed (naming the
+root to allow) or a session without a knossos binary with a sentence that
+says so and what to do instead. It is registered at the session's start, with the same retries as
 `/knossos`, whatever `agentNotes` says: the model asks for it.
 
 Approximate cost on this repository: 20 to 60 tokens for a Read note (60
@@ -327,7 +337,10 @@ not hold before, the mod says so in a toast, once per cycle or violation a
 session: `knossos: a new dependency cycle of 3: Router → Handler → Store →
 Router`. Only between two snapshots of the same project, never for the
 first graph a session sees; a scan that brings more than three says the
-rest as one count. The `notifications` setting turns these off.
+rest as one count. One is named new only when the graph before the scan
+listed every cycle (or violation) it counted; past that list's cap a listed
+one may only be newly listed, so only the count that grew is said. The
+`notifications` setting turns these off.
 
 Nothing the pane draws can wrap or push its card wider, on a terminal that
 counts cells as the layout does or not: every row is a box as wide as the
@@ -342,7 +355,9 @@ its styled pieces nested in it, a list grows to at most 28 rows however tall
 the pane (then `n more ↓`, scrolling to the marker), and at most eight hover
 cards hang off the rows nearest the marker. Should a drawing still pass
 70,000 characters, the pane drops its hover cards and every link but the
-marked row's, then gives its lists fewer rows until it fits.
+marked row's, then gives its lists fewer rows until it fits. Should it pass
+even at the fewest rows (a pane thousands of columns wide), the pane draws one
+line saying it is too large to draw there, and the debug log says so once.
 
 Lists size themselves to the rows the pane's body has: every list starts at
 a few rows, then the rows left after the rest of the tab are shared out
@@ -619,7 +634,9 @@ snapshot>`, read again after each scan the watcher sees, one read at a
   time), and each file says where its change came from: `this session` when
   the session's own Edit, Write or NotebookEdit calls (main loop or subagent)
   wrote it, or when a scan that changed it took in changes made while one of
-  the session's tool calls ran; `outside` otherwise. The header then reads
+  the session's tool calls that can write ran (a Read, Grep, Glob or
+  `knossos_context` call does not count, nor one that only waits, such as a
+  subagent's run); `outside` otherwise. The header then reads
   `since it began`. Above the files a thin row draws the session's scans, a
   dot each, oldest first: in the accent for one that took in the session's
   own changes, dim for one that took in changes made outside it, then how
@@ -843,7 +860,8 @@ with the other path named. The hunks are drawn with Claude Code's own diff
 element, line numbers, markers and colours as its own diffs have them,
 under `Changed since the session began` and the lines added and removed.
 A hunk longer than 40 lines is folded with how many lines are left out;
-past twelve hunks the rest are counted; `session-diff` returns at most
+past twelve hunks, or once the hunks drawn hold 24,000 characters together,
+the rest are counted; `session-diff` returns at most
 2,000 lines and 200 KB, and a cut diff says so. Lines longer than 200
 characters are cut, and control characters other than a tab show as `�`.
 The diff is read by `knossos session-diff --rev=<commit> --file=<path>` on
@@ -903,10 +921,11 @@ Two more keys act on the marked row, or on what the detail shows:
 
 - `c` copies its canonical name (a file's path) to the clipboard of the surface you pressed
   it on, and the footer says so.
-- `q` asks Claude about it. Your press submits the one prompt below (on
+- `q` asks Claude about it. Your press submits the prompt below (on
   Cycles, how to break the marked cycle; on Boundaries, what the marked
-  boundary's dependencies are for). It is the only prompt the mod ever
-  submits, and only on that press; the mod never starts a turn on its own.
+  boundary's dependencies are for). The mod submits a prompt in two places
+  only, each on your press: this one, and the request to scan a project that
+  has no graph yet (below). It never starts a turn on its own.
 
 ```text
 Using the Knossos graph, what depends on <canonical name> and what would break if I changed it?

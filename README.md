@@ -468,15 +468,16 @@ written; every route found is listed above it.
 ![The path explorer: every route found, and the first drawn as boxes](docs/images/claude-code-mod/route-dark.png)
 
 `f` opens a finder over every component and file: type letters of a name in order and Enter
-opens the first match. Hubs' own filter is now on `n`.
+opens the first match. `n` filters the Hubs list itself.
 
 ![The finder, after typing dash](docs/images/claude-code-mod/finder-dark.png)
 
 Claude gets a `knossos_context` tool (listed as `mcp__knossos__knossos_context`): one call
 for a file's boundary and the rules that bind it, its dependents, the tests that reach it,
-its latest commits and whether this session changed it. After a `git commit`, in the main
-loop or a subagent, Claude reads one short note on what the commit carries: violations the
-session introduced, changed files no test reaches, and cycles new since the session began.
+its latest commits and whether this session changed it. After a commit, in the main loop or
+a subagent, Claude reads one short note on what the session's own changes carry: violations
+its turns introduced that the policy check still reports, changed files no test reaches, and
+cycles new since the session began.
 
 The Boundaries tab maps how much each boundary depends on each other one, with the pairs a
 policy forbids in red. Marking a boundary spells out what it depends on, what depends on it,
