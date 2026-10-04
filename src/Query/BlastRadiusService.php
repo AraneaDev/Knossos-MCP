@@ -73,8 +73,10 @@ final readonly class BlastRadiusService
         foreach ([1, 2, 3] as $ring) {
             $in = static fn(string $node): bool => $ring < 3 ? $hop[$node] === $ring : $hop[$node] >= 3;
             $members = array_values(array_filter($ids, static fn(string $node): bool => $in($node) && !isset($tests[$node])));
-            $covering = array_values(array_filter(array_keys($tests), static fn(string $test): bool => array_intersect_key($reached[$test], array_flip($members)) !== []));
-            $testedSet = array_intersect_key($covered, array_flip($members));
+            // Built once per ring, not once per test it is checked against.
+            $memberSet = array_flip($members);
+            $covering = array_values(array_filter(array_keys($tests), static fn(string $test): bool => array_intersect_key($reached[$test], $memberSet) !== []));
+            $testedSet = array_intersect_key($covered, $memberSet);
             // The untested first: they are what a change there would break unseen.
             usort($members, static fn(string $a, string $b): int => [isset($testedSet[$a]) ? 1 : 0, $places[$a]['canonical_name']] <=> [isset($testedSet[$b]) ? 1 : 0, $places[$b]['canonical_name']]);
             // A test is its file: the nearest of its components says how far out it stands.
