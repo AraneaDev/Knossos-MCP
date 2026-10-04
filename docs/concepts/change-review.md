@@ -15,7 +15,7 @@ Every Git-reading tool here runs `git` read-only in the scanned root: optional
 locks disabled, argument-array process execution, hooks never invoked, a hard
 timeout, and stdout/stderr byte caps. None modifies the worktree, index, refs,
 or repository configuration. See the
-[HTTP threat model](../operations/http-threat-model.md#git-subprocesses) for
+[HTTP threat model](../operate/http-threat-model.md#git-subprocesses) for
 the exact hardening.
 
 ## Review diff

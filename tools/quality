@@ -258,7 +258,7 @@ if [ "$profile" = "full" ] && in_lane coverage; then
     # Mutation testing is deliberately NOT part of any profile: a full-src
     # Infection run takes over an hour, which is far too slow to gate a push.
     # Run it on demand instead -- `.github/workflows/mutation.yml`
-    # (workflow_dispatch), or locally per docs/development/adversarial-testing.md.
+    # (workflow_dispatch), or locally per docs/contribute/adversarial-testing.md.
     tools/coverage
 fi
 

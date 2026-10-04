@@ -82,7 +82,7 @@ and reject unsupported versions before mutating active data.
 - Regenerate and review [CLI](../reference/cli.md) and [MCP](../reference/mcp-tools.md)
   references whenever command options or tool schemas change.
 - Keep `knossos.json` on its declared schema version. Unknown keys and future
-  versions fail closed; see [project configuration](../guides/project-configuration.md).
+  versions fail closed; see [project configuration](../get-started/project-configuration.md).
 - Third-party workers must pass the [scanner SDK](../reference/scanner-sdk.md) conformance
   runner before their protocol or output schema version is adopted.
 - Exported graph bundles are immutable transfer artifacts, not database

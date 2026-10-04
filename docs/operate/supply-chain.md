@@ -48,7 +48,7 @@ Set `KNOSSOS_LIFECYCLE_FIXTURE` to exercise a different project tree.
 These tests demonstrate the supported data lifecycle; they do not replace
 retaining external backups before production upgrades. See
 [maintenance](maintenance.md) for backup and integrity operations and
-[installation](../guides/installation.md) for runtime deployment.
+[installation](../get-started/installation.md) for runtime deployment.
 
 ## Reviewed release checklist
 

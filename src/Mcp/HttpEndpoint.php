@@ -19,7 +19,7 @@ use Throwable;
  * and internal failures are reduced to a generic error so a SQLSTATE never
  * reaches a client. Which protocol revision applies is decided per request, so
  * the handshake-era session machinery here serves only clients that still need
- * it. stdio remains the recommended transport; docs/operations/http-threat-model.md
+ * it. stdio remains the recommended transport; docs/operate/http-threat-model.md
  * records what this profile does and does not defend against.
  */
 final readonly class HttpEndpoint

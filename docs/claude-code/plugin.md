@@ -1,7 +1,7 @@
 # The agent orientation plugin
 
 Every scanned project can inject a short
-[session brief](../capabilities/session-brief.md) at the start of each Claude
+[session brief](session-brief.md) at the start of each Claude
 Code session: whether the graph is fresh, the project's boundary rules and
 recorded notes, and (once the graph is fresh enough to trust) its entry points
 and hubs.
@@ -20,7 +20,7 @@ then `claude plugin install knossos@knossos`) and applies neither. Add
 install somewhere other than the default `user` scope.
 
 Installing from a container rather than a native checkout uses `--out`; see
-[the container guide](../operations/container.md#agent-orientation-plugin-for-a-containerised-install).
+[the container guide](../operate/container.md#agent-orientation-plugin-for-a-containerised-install).
 
 ## The hook needs to find a `knossos` binary, or it does nothing
 
@@ -42,7 +42,7 @@ ln -s /absolute/knossos/bin/knossos ~/.local/bin/knossos
 The supported install points at a directory on disk, so `--execute` first
 writes one: `.plugin/` beside this checkout, holding the marketplace
 descriptor, the plugin manifest, the `SessionStart` hook and the
-[routing skill](../capabilities/agent-skill.md). Those
+[routing skill](skill.md). Those
 five files are the whole plugin, and that directory is what
 `claude plugin marketplace add` is handed.
 
@@ -98,7 +98,7 @@ server, the one source that can supply the working binary the hook needs.
 ## The plugin and the MCP server are separate installs
 
 Registering the server with an MCP client (see
-[installation](installation.md)) does not need the plugin, and installing the
+[installation](../get-started/installation.md)) does not need the plugin, and installing the
 plugin does not register a server.
 
 A containerised installation, in particular, does not run a local `knossos`

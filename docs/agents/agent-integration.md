@@ -4,9 +4,9 @@ Three surfaces exist for coding agents rather than for people: a paste-ready
 orientation brief, a bounded task-shaped evidence bundle, and durable
 annotations an agent can write back to the graph. Two more have their own
 pages: the brief injected at the start of a Claude Code session
-([session brief](session-brief.md)), and the skill that decides which
+([session brief](../claude-code/session-brief.md)), and the skill that decides which
 questions reach any of these tools at all
-([the routing skill](agent-skill.md)).
+([the routing skill](../claude-code/skill.md)).
 
 | Tool                   | CLI                    | Answers                                           |
 | ---------------------- | ---------------------- | ------------------------------------------------- |
@@ -72,7 +72,7 @@ Sections are appended in a fixed priority order:
    components: where execution starts. Test-role components are excluded; a
    command stub declared in a test file carries the command role without
    being a way into the system. The predicate is shared with the
-   [session brief](session-brief.md), which asks the same question of the
+   [session brief](../claude-code/session-brief.md), which asks the same question of the
    same graph.
 4. **Key hubs (most depended-on)**: the highest-degree components from
    `architecture_health`'s _filtered_ hub ranking (test-role and, unless

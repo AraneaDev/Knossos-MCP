@@ -1,6 +1,6 @@
 # The routing skill
 
-The [agent orientation plugin](../guides/agent-plugin.md) installs two things
+The [agent orientation plugin](plugin.md) installs two things
 that do different jobs. The [session brief](session-brief.md) tells a session
 what this repository looks like at the moment it starts. The skill,
 `skills/graph/SKILL.md`, tells it which questions to bring back to the graph
@@ -71,7 +71,7 @@ records why a boundary is process-enforced rather than conventional.
 The tool previews by default and needs `execute: true` to write. `kind` is
 `note` for a free-form fact; `intended_boundary`, `false_positive` and
 `confirmed_dead` each change how other read surfaces behave, so they mean only
-what they say. [Agent integration](agent-integration.md#component-annotations)
+what they say. [Agent integration](../agents/agent-integration.md#component-annotations)
 covers the mechanics.
 
 ## Where it lives, and when a change to it takes effect
@@ -81,4 +81,4 @@ copies it into the git-ignored `.plugin/` directory that Claude Code is pointed
 at, so the installed copy is a snapshot taken at install time and cached by the
 version in the manifest. Editing `SKILL.md` without cutting a release therefore
 needs an uninstall to force a fresh copy; see
-[the agent plugin guide](../guides/agent-plugin.md#plugin-is-git-ignored-deliberately).
+[the agent plugin guide](plugin.md#plugin-is-git-ignored-deliberately).

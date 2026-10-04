@@ -40,7 +40,7 @@ tools/quality-container full    # what CI runs
 | `fast`  | Dependency validation, PHP/JS/Markdown/Python linting, PHP-CS-Fixer, PHPStan, formatting, repository hygiene, generated-reference and documentation checks, maintainability budgets, and the full PHPUnit test suite                                          |
 | `full`  | Everything in `fast`, plus security audits, external documentation-link checks, MCP Inspector tool listing, runtime image build and `doctor`, release lifecycle, supply-chain assurance (SBOM, CVE gates, signed provenance), benchmarks, and coverage floors |
 
-`full` is the gate. See [quality gates](docs/development/quality.md) for what
+`full` is the gate. See [quality gates](docs/contribute/quality.md) for what
 each stage asserts and how to read its report.
 
 ### Install the Git hooks
@@ -51,7 +51,7 @@ tools/install-hooks
 
 ### Previewing the Claude Code pane
 
-`tools/pane-preview.mjs` draws the [Claude Code mod](docs/capabilities/claude-code-mod.md)'s
+`tools/pane-preview.mjs` draws the [Claude Code mod](docs/claude-code/pane.md)'s
 pane as PNGs, the way a terminal shows it, so a layout change can be judged without a live
 session. It lays the pane out with the mod's own functions over this repository's graph. It
 needs Node.js with TypeScript type stripping (22.18 or newer), `rsvg-convert`, and the

@@ -8,7 +8,7 @@
 [![Tool page](https://img.shields.io/badge/tool%20page-aranea--development.nl-0b7285)](https://aranea-development.nl/en/tools/knossos-mcp)
 [![CI](https://img.shields.io/github/actions/workflow/status/AraneaDev/knossos/quality.yml?label=CI)](https://github.com/AraneaDev/knossos/actions/workflows/quality.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FAraneaDev%2Fknossos%2Fgh-pages%2Fcoverage.json)](https://github.com/AraneaDev/knossos/actions/workflows/quality.yml)
-[![License](https://img.shields.io/github/license/AraneaDev/knossos?label=license&color=yellow)](./LICENSE)
+[![License](https://img.shields.io/github/license/AraneaDev/knossos?label=license&color=yellow)](LICENSE)
 [![Language](https://img.shields.io/github/languages/top/AraneaDev/knossos)](https://github.com/AraneaDev/knossos)
 [![Last commit](https://img.shields.io/github/last-commit/AraneaDev/knossos?label=last%20commit)](https://github.com/AraneaDev/knossos/commits/main)
 [![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/)
@@ -134,7 +134,7 @@ schemas are in the [MCP tool reference](docs/reference/mcp-tools.md) and
 | `server_info`      | –        | Which roots this server may read, the roots file to extend, and whether it is containerised. |
 | `diagnose_runtime` | `doctor` | Whether the runtimes, scanner workers, database, and migrations are healthy.                 |
 
-**[Finding and reading components](docs/capabilities/finding-components.md)**
+**[Finding and reading components](docs/concepts/finding-components.md)**
 
 | MCP tool               | CLI                    | Answers                                                   |
 | ---------------------- | ---------------------- | --------------------------------------------------------- |
@@ -148,7 +148,7 @@ schemas are in the [MCP tool reference](docs/reference/mcp-tools.md) and
 | `list_boundaries`      | `list-boundaries`      | How the codebase is partitioned, explicitly or inferred.  |
 | `export_diagram`       | `export-diagram`       | Mermaid or PlantUML source for the current graph.         |
 
-**[Structure analysis](docs/capabilities/structure-analysis.md)**
+**[Structure analysis](docs/concepts/structure-analysis.md)**
 
 | MCP tool              | CLI                   | Answers                                                                                     |
 | --------------------- | --------------------- | ------------------------------------------------------------------------------------------- |
@@ -158,7 +158,7 @@ schemas are in the [MCP tool reference](docs/reference/mcp-tools.md) and
 | `architecture_health` | `architecture-health` | Hubs, hotspots, and dead code split into what nothing references and what only tests reach. |
 | `suggest_location`    | `suggest-location`    | Where new code for a feature belongs, with visible factors.                                 |
 
-**[Reviewing a change](docs/capabilities/change-review.md)**
+**[Reviewing a change](docs/concepts/change-review.md)**
 
 | MCP tool               | CLI                    | Answers                                                            |
 | ---------------------- | ---------------------- | ------------------------------------------------------------------ |
@@ -167,7 +167,7 @@ schemas are in the [MCP tool reference](docs/reference/mcp-tools.md) and
 | `test_impact`          | `test-impact`          | Which test files statically exercise a change, ranked by distance. |
 | `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.                  |
 
-**[Rules, budgets, and history](docs/capabilities/architecture-rules.md)**
+**[Rules, budgets, and history](docs/concepts/architecture-rules.md)**
 
 | MCP tool              | CLI                   | Answers                                                     |
 | --------------------- | --------------------- | ----------------------------------------------------------- |
@@ -177,7 +177,7 @@ schemas are in the [MCP tool reference](docs/reference/mcp-tools.md) and
 | `snapshot_diff`       | `snapshot-diff`       | What changed architecturally between two scans.             |
 | `architecture_trends` | `architecture-trends` | How metrics moved over recent scans, plus release notes.    |
 
-**[Agent integration](docs/capabilities/agent-integration.md)**
+**[Agent integration](docs/agents/agent-integration.md)**
 
 | MCP tool               | CLI                    | Answers                                                             |
 | ---------------------- | ---------------------- | ------------------------------------------------------------------- |
@@ -269,7 +269,7 @@ can each end up addressing a different database of the same project without
 anything warning you.
 
 Docker, native, and client-specific variants are in
-[installation](docs/guides/installation.md).
+[installation](docs/get-started/installation.md).
 
 #### Codex
 
@@ -359,10 +359,10 @@ its optional session-brief hook.
 ### Session orientation for Claude Code
 
 A separate, optional plugin injects a short
-[session brief](docs/capabilities/session-brief.md) at the start of each Claude Code session:
+[session brief](docs/claude-code/session-brief.md) at the start of each Claude Code session:
 whether the graph is fresh, the project's boundary rules and recorded notes, and its entry
 points and hubs. The same plugin ships a
-[routing skill](docs/capabilities/agent-skill.md) that the brief arms at the end
+[routing skill](docs/claude-code/skill.md) that the brief arms at the end
 of every session it renders: it decides which questions a session brings back to
 the graph, and which it keeps answering by grepping and reading files.
 
@@ -379,11 +379,11 @@ ln -s /absolute/knossos/bin/knossos ~/.local/bin/knossos
 
 Registering the MCP server and installing the plugin are separate steps and stay that way.
 The full picture, including containerised installs and why there is no public marketplace
-route, is in [the agent plugin guide](docs/guides/agent-plugin.md).
+route, is in [the agent plugin guide](docs/claude-code/plugin.md).
 
 ### The architecture pane in Claude Code
 
-The same plugin carries a [Claude Code mod](docs/capabilities/claude-code-mod.md) that puts
+The same plugin carries a [Claude Code mod](docs/claude-code/pane.md) that puts
 the graph on screen while a session works. The images below are rendered by
 `tools/pane-preview.mjs` from this repository's own graph. The band's figures come from a
 sample turn over real files, not from a recorded session. The Changes tab and the session
@@ -531,19 +531,19 @@ isolated worker processes through the [scanner SDK](docs/reference/scanner-sdk.m
   environment.
 - MCP stdio is the default and recommended transport. The constrained
   loopback-only Streamable HTTP profile and its deployment limits are documented
-  in the [HTTP threat model](docs/operations/http-threat-model.md).
+  in the [HTTP threat model](docs/operate/http-threat-model.md).
 - Failed work is never activated: the last complete scan remains the queryable
-  graph. See the [fault recovery matrix](docs/operations/recovery-matrix.md).
+  graph. See the [fault recovery matrix](docs/operate/recovery-matrix.md).
 
 ## Documentation
 
 [docs/README.md](docs/README.md) is the index. The most-used entries:
 
-- [Installation and MCP configuration](docs/guides/installation.md)
+- [Installation and MCP configuration](docs/get-started/installation.md)
 - [MCP tool reference](docs/reference/mcp-tools.md) and [CLI reference](docs/reference/cli.md)
-- [Checked-in project configuration](docs/guides/project-configuration.md)
-- [Running in Docker](docs/operations/container.md)
-- [Troubleshooting and migrations](docs/operations/troubleshooting-and-migrations.md)
+- [Checked-in project configuration](docs/get-started/project-configuration.md)
+- [Running in Docker](docs/operate/container.md)
+- [Troubleshooting and migrations](docs/operate/troubleshooting-and-migrations.md)
 
 ## Development
 
@@ -557,7 +557,7 @@ tools/quality-container full
 `fast` covers linting, static analysis, formatting, hygiene, and the whole test
 suite; `full` adds security audits, coverage floors, performance budgets,
 mutation score, and supply-chain assurance. Details are in
-[quality gates](docs/development/quality.md).
+[quality gates](docs/contribute/quality.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow, the
 Conventional Commit prefixes that drive releases, and how to add a language

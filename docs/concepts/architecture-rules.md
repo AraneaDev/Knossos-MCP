@@ -9,7 +9,7 @@ one change set.
 
 Both read their declarations from files you check in, so the rules live beside
 the code they govern. `knossos.json` can hold them directly; see
-[project configuration](../guides/project-configuration.md).
+[project configuration](../get-started/project-configuration.md).
 
 ## Boundary policies
 
@@ -94,4 +94,4 @@ Knossos analyses. Unreferenced and public-surface results are conservative
 static signals and may not capture dynamic framework behavior.
 
 Wiring both into CI, with exit codes and SARIF upload, is covered in
-[CI and editor integration](../guides/ci-editor-integration.md).
+[CI and editor integration](../operate/ci-editor-integration.md).
