@@ -558,7 +558,7 @@ async function said(ui: Awaited<ReturnType<typeof mountPane>>): Promise<string |
 
 /** The narrow pane's stat tiles as one line of text: every row of the wrapped line, joined. */
 async function tilesLine(ui: Awaited<ReturnType<typeof mountPane>>): Promise<string> {
-  const rows = (await ui.findAll({ type: 'Box' })).filter(b => typeof b.key === 'string' && b.key.startsWith('tiles-line'))
+  const rows = (await ui.findAll({ type: 'Box' })).filter(b => typeof b.key === 'string' && /^tiles-line(-\d+)?$/.test(b.key))
   return rows.map(b => b.text.trim()).join('   ')
 }
 
@@ -583,7 +583,111 @@ async function bandText($: Engine, surface: 'terminal' | 'desktop' = 'terminal')
   return found?.text
 }
 
+type DrawnNode = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+
+/** A drawn node's text: its string children, and its descendants', in order. */
+function nodeText(node: DrawnNode): string {
+  return (node.children ?? []).map(c => (typeof c === 'string' || typeof c === 'number' ? String(c) : typeof c === 'object' && c !== null ? nodeText(c as DrawnNode) : '')).join('')
+}
+
+/**
+ * Everything in a drawn tree that could wrap or push its container wider
+ * than `columns`, as lines naming where: a Text that does not cut at its
+ * edge, or that stands in no Box of a set width, or holds more cells than
+ * that Box; on the terminal a Button whose label (with its `k: `) is wider
+ * than its Box; a Box wider than the one it stands in, or placed past its
+ * right edge; a row whose fixed-width children add up past its own width,
+ * or that does not clip; a Raster wider than its Box. Measured from the
+ * tree the surface is handed, so it holds whatever a preview draws.
+ */
+function overflowsOf(tree: unknown, columns: number, terminal: boolean): string[] {
+  const out: string[] = []
+  const walk = (node: unknown, box: number | undefined, path: string) => {
+    if (typeof node !== 'object' || node === null) return
+    const n = node as DrawnNode
+    const props = n.props ?? {}
+    const at = `${path}/${String(props.key ?? n.type)}`
+    if (props.display === 'none') return
+    if (n.type === 'Text') {
+      const width = [...nodeText(n)].length
+      if (props.wrap !== 'truncate-end') out.push(`${at}: a Text that wraps`)
+      if (box === undefined) out.push(`${at}: a Text in no Box of a set width`)
+      else if (width > box) out.push(`${at}: "${nodeText(n)}" is ${width} cells in a Box of ${box}`)
+      return
+    }
+    if (n.type === 'Button') {
+      const width = [...String(props.label ?? '')].length + (props.hotkey === undefined ? 0 : 3)
+      if (terminal && (box === undefined || width > box)) out.push(`${at}: a Button ${width} cells in a Box of ${String(box)}`)
+      return
+    }
+    if (n.type === 'Raster' && typeof props.columns === 'number' && box !== undefined && props.columns > box) out.push(`${at}: a Raster ${props.columns} wide in ${box}`)
+    let inner = box
+    if (n.type === 'Box' && typeof props.width === 'number') {
+      const width = props.width
+      const left = typeof props.left === 'number' ? props.left : 0
+      if (box !== undefined && (props.position === 'absolute' ? left + width : width) > box) out.push(`${at}: a Box ${width} wide (at ${left}) in ${box}`)
+      if (props.flexDirection === 'row') {
+        if (props.overflow !== 'hidden') out.push(`${at}: a row that does not clip`)
+        const fixed = (n.children ?? []).reduce((sum: number, c) => sum + (typeof c === 'object' && c !== null && typeof (c as DrawnNode).props?.width === 'number' && (c as DrawnNode).props?.display !== 'none' ? ((c as DrawnNode).props!.width as number) : 0), 0)
+        if (fixed > width) out.push(`${at}: its segments take ${fixed} cells of ${width}`)
+      }
+      inner = width
+    }
+    for (const child of n.children ?? []) walk(child, inner, at)
+  }
+  walk(tree, columns, '')
+  return out
+}
+
 describe('knossos mod', () => {
+  test('no line can wrap or widen its container: every view at every width, on terminal and desktop, measured from the drawn tree', async ($, on) => {
+    const long = 'ProjectModuleIndexWithAnUnreasonablyLongName::_is_python_script_with_a_shebang_line'
+    const nodes = Array.from({ length: 14 }, (_, i) => ({ name: `${long}${i}`, canonical_name: `App\\Core\\${long}${i}`, kind: 'method', boundary: i % 2 === 0 ? 'Core' : 'module:cli (+composer:app/cli)' }))
+    const path = 'src/a/rather/deeply/nested/directory/with/an/UnreasonablyLongControllerName.php'
+    const hubs = nodes.slice(0, 6).map((n, i) => ({ ...n, in_degree: 400 - i, out_degree: 120_000 + i, cross_boundary_degree: 9_999, dependent_files: 54_321, top_dependents: [path, path] }))
+    const d = boundariesDashboard({
+      project_root: '/work/a-project-with-a-rather-long-directory-name-that-keeps-going',
+      freshness: { state: 'stale', age_seconds: 400_000, drift_files: 41 },
+      hubs,
+      hotspots: [],
+      fan_in: [{ path, dependent_files: 123_456, boundaries: ['Core'], boundary: 'module:cli (+composer:app/cli)', top_dependents: [path] }],
+      cycles: { count: 2, truncated: true, truncation_reasons: ['result_limit'], largest: [{ size: 14, members: nodes.map(n => n.name), nodes, nodes_truncated: false }, { size: 2, members: [long, long], nodes: nodes.slice(0, 2), nodes_truncated: false }] },
+      trend: Array.from({ length: 8 }, (_, i) => ({ snapshot_id: `s${i}`, cycles: i % 3, max_degree: 100 + i })),
+    })
+    const detail = JSON.parse(fullDetailOf('Router')) as { component: Record<string, unknown> }
+    detail.component.display_name = long
+    detail.component.used_by = { count: 9, truncated: false, names: [], items: nodes.slice(0, 9).map((n, i) => ({ ...n, edges: 1000 + i })) }
+    const file = JSON.parse(fileDetailOf(path)) as { file: { dependents: { items: unknown[] } } }
+    file.file.dependents.items = [{ path, edges: 99_999, boundary: 'module:cli (+composer:app/cli)' }]
+    const touched = brief({ changed_files: [path], impact: { [path]: { path, dependent_files: 123_456, boundaries: ['Core', 'Http'], boundary: 'Core' } } })
+    const w = world(on, { dashboard: [{ stdout: d }], detail: [{ stdout: JSON.stringify(detail) }], file: [{ stdout: JSON.stringify(file) }], brief: [{ stdout: touched }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/${path}`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const terminal = surface === 'terminal'
+      for (const bodyColumns of [40, 60, 100, 140, 200]) {
+        for (const bodyRows of [24, 60]) {
+          const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows } } })
+          for (const step of ['tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'next:1', 'tab:issues', 'tab:changes', 'keys', 'tab:hubs', 'row:0', 'back', `row:${hubs.length}`]) {
+            if ((await ui.find({ key: step })) === undefined) continue
+            await ui.press({ key: step })
+            await w.clock.settle()
+            expect(overflowsOf(await ui.drawn(), bodyColumns, terminal), `${surface} ${bodyColumns}x${bodyRows} after ${step}`).toEqual([])
+          }
+          await ui.unmount()
+        }
+      }
+      for (const bodyColumns of [40, 100]) {
+        const band = await $.ui.mount({ plugin: 'knossos', surface, component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns } })
+        expect(overflowsOf(await band.drawn(), bodyColumns, false), `band ${surface} ${bodyColumns}`).toEqual([])
+        await band.unmount()
+      }
+    }
+  })
+
   test('a session.start that cannot register /knossos yet still starts up, and registers it on a retry', async ($, on) => {
     // After a hot reload no session may be bound yet: the first registrations throw.
     let refusals = 2

@@ -47,7 +47,7 @@ import { isWatching, LIVE_OFF, liveAfter, snapshotOf, watchLines, watchPollMsOf 
 import { declaredOf, huesOf } from './lib/palette'
 import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
-import { textStyle } from './lib/rows'
+import { cells, pressLabel, textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
 import type { AllowState, ComponentDetail, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
 
@@ -1511,20 +1511,34 @@ const scopeOf = (preview: Preview): string => `knossos:${preview.key}`.slice(0, 
  * a field an Input, any other a Text. A Button or a link with a background
  * (the open tab, the marked row) stands in a Box of that colour, which they
  * cannot take themselves. `scope` joins the segment to its row's hover card.
+ *
+ * Nothing a segment draws can wrap or push its row wider: each stands in a
+ * Box exactly as many cells wide as the layout gave it (`flexShrink` 0,
+ * overflow hidden), every Text cuts at that edge (`truncate-end`), and a
+ * Button draws the segment's own text as its label ({@link pressLabel}), not
+ * the whole name its press may carry. A field takes the rest of its row
+ * (`room`). Off the terminal a Button, a link and a field are the surface's
+ * own, whose width the pane cannot know in cells: their Box does not shrink,
+ * and the row's own width and overflow clip them at its edge.
  */
-function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, s: Segment, i: number, press: (id: string, surface?: RenderSurface) => void, links: boolean, scope?: string) {
+function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, s: Segment, i: number, press: (id: string, surface?: RenderSurface) => void, links: boolean, terminal: boolean, room: number, scope?: string) {
   const { Box, Button, Markdown, Text } = ui
   // Every surface but mobile has a text field; there the filter is shown as text.
   const Input = 'Input' in ui ? ui.Input : undefined
   const hover = scope === undefined ? {} : { hover: { scope } }
-  const ground = (key: string, element: RenderNode) =>
-    s.bg === undefined ? element : (
-      <Box key={`${key}-bg`} backgroundColor={s.bg}>
-        {element}
-      </Box>
-    )
+  const native = s.press !== undefined || s.field !== undefined || (s.link !== undefined && links)
+  const width = s.field !== undefined && Input !== undefined ? Math.max(1, room) : cells(s.text)
+  const sized = !native || terminal ? { width } : {}
+  // The marked row's Button or link keeps its `-bg` Box: that Box is what carries the tint.
+  const framed = (key: string, element: RenderNode, bg?: string) => (
+    <Box key={key} {...sized} flexShrink={0} overflow="hidden" {...(bg === undefined ? {} : { backgroundColor: bg })}>
+      {element}
+    </Box>
+  )
+  const ground = (key: string, element: RenderNode) => (s.bg === undefined ? framed(`${row.key}-w${i}`, element) : framed(`${key}-bg`, element, s.bg))
   if (s.field && Input !== undefined) {
-    return (
+    return framed(
+      `${row.key}-w${i}`,
       <Input
         key={s.field.id}
         value={s.field.value}
@@ -1533,7 +1547,7 @@ function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, 
         autoFocus
         onInput={(value: string) => void typeFilter($, value).catch(() => undefined)}
         onSubmit={(value: string) => void submitFilter($, value).catch(() => undefined)}
-      />
+      />,
     )
   }
   if (s.press && s.hidden) {
@@ -1550,7 +1564,7 @@ function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, 
       <Button
         key={s.press.id}
         plain
-        label={s.press.label}
+        label={pressLabel(s)}
         {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })}
         {...(s.dim ? { dimColor: true } : {})}
         {...hover}
@@ -1569,28 +1583,30 @@ function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, 
       />,
     )
   }
-  return (
+  return framed(
+    `${row.key}-w${i}`,
     <Text key={`${row.key}-${i}`} wrap="truncate-end" {...textStyle(s)} {...hover}>
       {s.text}
-    </Text>
+    </Text>,
   )
 }
 
 /**
- * One laid-out row as elements (see {@link drawSegment}). The layout already
- * fitted the row, so nothing here wraps. A row of the wide grid that hangs a
+ * One laid-out row as elements (see {@link drawSegment}): a Box exactly
+ * `columns` wide that clips what passes its edge, so a row can neither wrap
+ * nor widen the pane. A row of the wide grid that hangs a
  * hover card off one of its halves joins only that half's segments to the
  * card's group: the pointer on the other card's half shows nothing.
  *
  * A link is the surface's own: ctrl- or cmd-click opens it as a link in a
  * reply would, and a plain click (`onLinkPress`) opens it in the editor.
  */
-function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, press: (id: string, surface?: RenderSurface) => void, links = false, hovers = false) {
+function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, press: (id: string, surface?: RenderSurface) => void, columns: number, terminal: boolean, links = false, hovers = false) {
   const { Box, Code } = ui
   // A change's hunks: the engine's own diff, gutters, markers and colours as Claude Code draws them.
   if (row.code !== undefined) {
     return (
-      <Box key={row.key} flexDirection="column">
+      <Box key={row.key} flexDirection="column" width={columns} overflow="hidden">
         <Code key={`${row.key}-code`} source={row.code.source} path={row.code.path} format="diff" wrap="truncate-end" />
       </Box>
     )
@@ -1599,9 +1615,15 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
   const preview = at < 0 ? undefined : row.segments[at]!.preview!
   const half = row.split !== undefined && at >= 0 ? (at < row.split ? [0, row.split] : [row.split, row.segments.length]) : [0, row.segments.length]
   const scoped = (i: number) => (preview !== undefined && i >= half[0]! && i < half[1]! ? scopeOf(preview) : undefined)
+  let x = 0
+  const drawn = row.segments.map((s, i) => {
+    const element = drawSegment($, ui, row, s, i, press, links, terminal, columns - x, scoped(i))
+    x += s.hidden === true ? 0 : cells(s.text)
+    return element
+  })
   return (
-    <Box key={row.key} flexDirection="row">
-      {row.segments.map((s, i) => drawSegment($, ui, row, s, i, press, links, scoped(i)))}
+    <Box key={row.key} flexDirection="row" width={columns} overflow="hidden">
+      {drawn}
     </Box>
   )
 }
@@ -1617,7 +1639,8 @@ function cardPlace(row: number, rows: number, x: number, preview: Preview, colum
  * The hover cards the rows hang, drawn out of the flow over the rows below
  * their own (`position: absolute`), hidden until the pointer rests on a
  * segment of their group. Nothing crosses to the mod when one shows: the
- * surface reveals it alone. Only where the surface has a pointer.
+ * surface reveals it alone. Only where the surface has a pointer. Each of
+ * its lines is as wide as the card, every Text in a Box of its own width.
  */
 function drawCards(ui: Elements[RenderSurface], rows: Row[], columns: number) {
   const { Box, Text } = ui
@@ -1629,14 +1652,17 @@ function drawCards(ui: Elements[RenderSurface], rows: Row[], columns: number) {
       const preview = s.preview
       if (preview !== undefined) {
         const place = cardPlace(y, rows.length, x, preview, columns)
+        const width = Math.min(preview.width, columns)
         cards.push(
-          <Box key={preview.key} position="absolute" top={place.top} left={place.left} display="none" flexDirection="column" hover={{ scope: scopeOf(preview), display: 'flex' }}>
+          <Box key={preview.key} position="absolute" top={place.top} left={place.left} width={width} display="none" flexDirection="column" hover={{ scope: scopeOf(preview), display: 'flex' }}>
             {preview.rows.map(line => (
-              <Box key={line.key} flexDirection="row">
+              <Box key={line.key} flexDirection="row" width={width} overflow="hidden">
                 {line.segments.map((c, i) => (
-                  <Text key={`${line.key}-${i}`} wrap="truncate-end" {...textStyle(c)}>
-                    {c.text}
-                  </Text>
+                  <Box key={`${line.key}-w${i}`} width={cells(c.text)} flexShrink={0} overflow="hidden">
+                    <Text key={`${line.key}-${i}`} wrap="truncate-end" {...textStyle(c)}>
+                      {c.text}
+                    </Text>
+                  </Box>
                 ))}
               </Box>
             ))}
@@ -1664,7 +1690,7 @@ function drawRows($: EngineInterface, ui: Elements[RenderSurface], surface: Rend
   for (let i = 0; i < rows.length; i++) {
     const block = rows[i]!.raster
     if (!terminal || block === undefined) {
-      drawn.push(drawRow($, ui, rows[i]!, press, links, hovers))
+      drawn.push(drawRow($, ui, rows[i]!, press, columns, terminal, links, hovers))
       continue
     }
     let end = i
@@ -1872,10 +1898,12 @@ export const register: Register = (on, options) => {
     const room = Math.max(1, e.props.bodyColumns - labels.reduce((n, l) => n + l.length + 5, 0) - 1)
     const copy = model.copy
     return (
-      <Box key="band">
-        <Text color={color} wrap="truncate-end">
-          {fit(model.text, room)}{' '}
-        </Text>
+      <Box key="band" width={e.props.bodyColumns} overflow="hidden">
+        <Box key="band-text" width={cells(fit(model.text, room)) + 1} flexShrink={0} overflow="hidden">
+          <Text color={color} wrap="truncate-end">
+            {fit(model.text, room)}{' '}
+          </Text>
+        </Box>
         {model.showDetails && (
           <Button key="details" label="details" onPress={() => openPane($)} />
         )}
@@ -1931,7 +1959,7 @@ export const register: Register = (on, options) => {
       mod.emptyShown = true
       return (
         <Box key="empty" flexDirection="column">
-          {emptyRows(noGraphOf(d, await read($, refresh)), offer, columns).map(row => drawRow($, ui, row, press))}
+          {emptyRows(noGraphOf(d, await read($, refresh)), offer, columns).map(row => drawRow($, ui, row, press, columns, e.surface === 'terminal'))}
         </Box>
       )
     }
@@ -1958,8 +1986,8 @@ export const register: Register = (on, options) => {
     return (
       <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
         {drawRows($, ui, e.surface, themeName, [...laidOut.body, ...reserve], columns, press)}
-        <Box key="bar" position="absolute" top={Math.max(0, top)} left={0} flexDirection="column">
-          {laidOut.footer.map(row => drawRow($, ui, row, press))}
+        <Box key="bar" position="absolute" top={Math.max(0, top)} left={0} width={columns} flexDirection="column">
+          {laidOut.footer.map(row => drawRow($, ui, row, press, columns, e.surface === 'terminal'))}
         </Box>
       </Box>
     )

@@ -228,6 +228,19 @@ export function button(id: string, label: string, hotkey?: string, style: Omit<S
   return { ...style, text, press: hotkey === undefined ? { id, label } : { id, label, hotkey } }
 }
 
+/**
+ * The label a pressable segment's Button is drawn with: the segment's own
+ * text, less the `k: ` the engine draws before a hotkey's label itself. The
+ * layout fits a segment's text to the cells it has (a box's name is cut with
+ * an ellipsis), so the Button draws exactly what was laid out; `press.label`
+ * may still hold the whole name, which would widen the row or wrap it.
+ */
+export function pressLabel(s: Segment): string {
+  const hotkey = s.press?.hotkey
+  const prefix = hotkey === undefined ? '' : `${hotkey}: `
+  return prefix !== '' && s.text.startsWith(prefix) ? s.text.slice(prefix.length) : s.text
+}
+
 /** The colour a boundary's things are drawn in, or dim for none. */
 export const boundaryStyle = (boundary: string | null, hues: Hues = NO_HUES): Pick<Segment, 'color' | 'dim'> => {
   const colour = boundaryColour(boundary, hues)

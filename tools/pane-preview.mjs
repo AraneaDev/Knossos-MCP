@@ -502,9 +502,11 @@ function rowCells(row, theme, term) {
     // A background is a theme key, laid under the segment's cells (a Button stands in a Box of it).
     const bg = s.bg === undefined ? null : colourOf(s.bg, theme, term)
     if (s.press !== undefined) {
-      // A plain Button: the hotkey in the accent, a colon, the label; dimColor dims it all.
+      // A plain Button: the hotkey in the accent, a colon, the label; dimColor dims it all. The render draws the
+      // label it is handed in a Box as wide as the segment, cutting at its edge, so the same label is cut here.
       const hot = s.press.hotkey === undefined ? 0 : [...`${s.press.hotkey}`].length
-      ;[...s.text].forEach((ch, i) => {
+      const label = `${s.press.hotkey === undefined ? '' : `${s.press.hotkey}: `}${rows.pressLabel(s)}`
+      ;[...rows.padEnd(rows.fit(label, [...s.text].length), [...s.text].length)].forEach((ch, i) => {
         let fg = i < hot ? theme.suggestion : term.fg
         if (s.dim) fg = mix(fg, term.bg, 0.5)
         out.push({ ch, fg, bg, bold: false })
@@ -584,7 +586,8 @@ function screen(laidOut, themeName, columns) {
     }
     const block = laidOut[i].raster
     if (block === undefined) {
-      lines.push(rowCells(laidOut[i], theme, term))
+      // A row's Box is as wide as the pane and clips there, as the render draws it.
+      lines.push(rowCells(laidOut[i], theme, term).slice(0, columns))
       continue
     }
     let end = i
