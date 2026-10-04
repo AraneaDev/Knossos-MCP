@@ -1,10 +1,16 @@
 import type { PluginOptions, Timer } from 'claude-code'
 
+import type { Dashboard, SessionChanges } from '../../types'
 import { noActivity } from '../lib/activity'
 import type { Activity } from '../lib/activity'
+import { CONTEXT_TOOL } from '../lib/agent'
 import { watchPollMsOf } from '../lib/live'
 import { SingleFlight } from '../lib/scheduler'
 
+/** The pane's id, as the engine opens and draws it. */
+export const PANE = 'knossos'
+
+/** The fan-in threshold when the options give none the dashboard command accepts. */
 const DEFAULT_THRESHOLD = 20
 /** The largest threshold the dashboard command accepts. */
 const MAX_THRESHOLD = 100_000
@@ -173,7 +179,7 @@ export const mod = {
 }
 
 /** The fan-in threshold from the options: an integer the dashboard command accepts (1 to 100000), else the default. */
-export function thresholdOf(value: unknown): number {
+function thresholdOf(value: unknown): number {
   const n = Number(value)
   return Number.isInteger(n) && n >= 1 && n <= MAX_THRESHOLD ? n : DEFAULT_THRESHOLD
 }
@@ -272,4 +278,51 @@ export function reset(options: PluginOptions): void {
   mod.commitNoted = new Set()
   mod.alertsOn = options.notifications !== false
   mod.toasted = new Set()
+}
+
+/** The most notes the model reads after tool results in one turn of one loop; past it, notes wait for the next turn. */
+const NOTES_PER_TURN = 3
+
+/**
+ * The model's tool as the engine lists it (`mcp__<plugin>__<name>`), until a
+ * registration names it: the name `$.tool.register` returns is the one its
+ * calls carry ({@link mod}`.contextTool`).
+ */
+export const CONTEXT_TOOL_NAME = `mcp__knossos__${CONTEXT_TOOL}`
+
+/** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
+export function editedPath(e: object): string | null {
+  const { file_path: file, notebook_path: notebook } = e as { file_path?: unknown; notebook_path?: unknown }
+  if (typeof file === 'string') return file
+  return typeof notebook === 'string' ? notebook : null
+}
+
+/** The cycles a dashboard holds, by members: what tells a cycle new since the session began. */
+const cycleKeys = (d: Dashboard): string[] => d.cycles.largest.map(c => [...c.members].sort().join('\u0000'))
+
+/** The cycles the graph holds as a session begins: the count, the listed ones, and whether the list is all of them. */
+export type StartCycles = { count: number; keys: string[]; complete: boolean }
+
+export const cyclesOf = (d: Dashboard): StartCycles => ({ count: d.cycles.count, keys: cycleKeys(d), complete: !d.cycles.truncated && d.cycles.largest.length >= d.cycles.count })
+
+/** Whether `path`'s change is this session's own: always, without the scan ledger's origins (the turns reported it). */
+export const ownChange = (session: SessionChanges, path: string): boolean => session.origins === undefined || session.origins[path] === 'session'
+
+/** Whether `loop` may get another note this turn; counts it when it may. */
+export function takeNoteSlot(loop: string): boolean {
+  const used = mod.turnNotes.get(loop) ?? 0
+  if (used >= NOTES_PER_TURN) return false
+  mod.turnNotes.set(loop, used + 1)
+  return true
+}
+
+/**
+ * Runs `job` once every scan queued before it has settled, so a turn's scan
+ * and a rescan never write one graph at once. A failed job does not stall
+ * the queue.
+ */
+export function exclusively<T>(job: () => Promise<T>): Promise<T> {
+  const run = mod.scanning.then(job, job)
+  mod.scanning = run.catch(() => undefined)
+  return run
 }

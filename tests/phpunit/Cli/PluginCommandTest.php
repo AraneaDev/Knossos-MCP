@@ -52,7 +52,14 @@ final class PluginCommandTest extends KnossosTestCase
         'hooks/lib/sparkline.ts',
         'hooks/lib/tiles.ts',
         'hooks/lib/views.ts',
+        'hooks/mod/actions.ts',
+        'hooks/mod/agent.ts',
+        'hooks/mod/loaders.ts',
+        'hooks/mod/port.ts',
+        'hooks/mod/render.tsx',
+        'hooks/mod/session.ts',
         'hooks/mod/state.ts',
+        'hooks/mod/watcher.ts',
         'hooks/register.tsx',
         'hooks/scripts/knossos-run.sh',
         'hooks/scripts/lib.sh',
@@ -96,7 +103,14 @@ final class PluginCommandTest extends KnossosTestCase
         '/hooks/lib/sparkline.ts',
         '/hooks/lib/tiles.ts',
         '/hooks/lib/views.ts',
+        '/hooks/mod/actions.ts',
+        '/hooks/mod/agent.ts',
+        '/hooks/mod/loaders.ts',
+        '/hooks/mod/port.ts',
+        '/hooks/mod/render.tsx',
+        '/hooks/mod/session.ts',
         '/hooks/mod/state.ts',
+        '/hooks/mod/watcher.ts',
     ];
 
     private function context(): CliCommandContext
@@ -1288,7 +1302,8 @@ final class PluginCommandTest extends KnossosTestCase
     public function testNoSkillTheClaudePluginShipsSharesANameWithItsCommand(): void
     {
         $root = self::repositoryRoot();
-        $mod = (string) file_get_contents($root . '/hooks/register.tsx');
+        // The mod registers its command where it starts the session up.
+        $mod = (string) file_get_contents($root . '/hooks/mod/session.ts');
         assertSame(1, preg_match("/command\\.register\\(\\{\\s*name: '([^']+)'/", $mod, $command));
 
         $names = [];
