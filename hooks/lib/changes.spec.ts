@@ -72,6 +72,11 @@ describe('accumulate', () => {
     })
     expect(s.tests).toEqual({ 'tests/Http/RouterTest.php': 1, 'tests/Core/KernelTest.php': 3 })
     expect(s.violations).toEqual(['App\\Core\\Kernel → App\\Http\\Router'])
+    expect(s.violation_snapshots).toEqual({ 'App\\Core\\Kernel → App\\Http\\Router': 's1' })
+    // A later brief reporting it again moves it to its own snapshot; one without a snapshot leaves it.
+    const again = accumulate(s, brief({ snapshot_id: 's4', policy: { status: 'evaluated', total: 1, truncated: false, violations: [{ policy_id: 'p', source: 'App\\Core\\Kernel', target: 'App\\Http\\Router', source_boundaries: [], target_boundaries: [] }] } }))
+    expect(again.violation_snapshots).toEqual({ 'App\\Core\\Kernel → App\\Http\\Router': 's4' })
+    expect(accumulate(again, brief({ snapshot_id: null })).violation_snapshots).toEqual({ 'App\\Core\\Kernel → App\\Http\\Router': 's4' })
     expect(s.truncated).toBe(false)
   })
   it('keeps an added file added while it is edited, and a deleted one deleted until it is written again', () => {
@@ -362,6 +367,8 @@ describe('the changes since the session began, from the scan ledger', () => {
   it("labels each file by where its change came from, and keeps the turns' own violations", () => {
     expect(changes.origins).toEqual({ 'src/Router.php': 'session', 'src/Config/app.php': 'outside', 'src/Old.php': 'outside' })
     expect(changes.violations).toEqual(session().violations)
+    // And which brief's graph reported each: what tells a policy check too old to have seen it.
+    expect(changes.violation_snapshots).toEqual({ 'App\\Core\\Kernel → App\\Http\\Router': 's1' })
     expect(changes.tests).toEqual({ 'tests/Http/RouterTest.php': 1 })
     expect(fromLedger({ ...ledger, files_truncated: true }, NO_CHANGES, new Set()).truncated).toBe(true)
   })

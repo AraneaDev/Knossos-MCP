@@ -72,16 +72,34 @@ export function madeCommit(output: string): boolean {
   return /^\[[^[\]\n]+ [0-9a-f]{7,64}\] \S/m.test(output)
 }
 
+/** The dashboard figures {@link stillReported} judges by: its policy check, and the snapshots it reaches back over. */
+export type PolicyView = {
+  snapshot_id: string | null
+  trend: { snapshot_id: string }[]
+  policy?: { status: string; truncated: boolean; total: number; items: { source: string; target: string }[] }
+}
+
 /**
- * The violations of `violations` (`source → target`) the current policy
+ * The violations of `violations` (`source → target`) the dashboard's policy
  * check still reports: one fixed since a turn introduced it is not the
- * session's to carry any more. All of them when the check cannot say (not
- * evaluated, or its list cut short).
+ * session's to carry any more. A violation is dropped only when that check
+ * is at least as new as the brief that recorded it (`recordedAt`, the
+ * brief's snapshot by violation): the dashboard's snapshot is that one, or
+ * its trend (oldest first, ending at its snapshot) passes through it. A
+ * dashboard older than the brief, one whose reload failed or has not landed
+ * yet, never saw the violation, so its silence says nothing; nor does a
+ * violation recorded without a snapshot. All of them when the check cannot
+ * say (not evaluated, or its list cut short).
  */
-export function stillReported(violations: string[], policy: { status: string; truncated: boolean; total: number; items: { source: string; target: string }[] } | undefined): string[] {
+export function stillReported(violations: string[], recordedAt: Readonly<Record<string, string>> | undefined, d: PolicyView): string[] {
+  const policy = d.policy
   if (policy === undefined || policy.status !== 'evaluated' || policy.truncated || policy.items.length < policy.total) return violations
   const reported = new Set(policy.items.map(v => `${v.source} → ${v.target}`))
-  return violations.filter(v => reported.has(v))
+  const reached = new Set([...d.trend.map(t => t.snapshot_id), ...(d.snapshot_id === null ? [] : [d.snapshot_id])])
+  return violations.filter(v => {
+    const at = recordedAt?.[v]
+    return reported.has(v) || at === undefined || !reached.has(at)
+  })
 }
 
 /**

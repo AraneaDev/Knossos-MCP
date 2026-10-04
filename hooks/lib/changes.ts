@@ -108,6 +108,7 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
     tests[test.path] = Math.min(before ?? test.distance, test.distance)
     if (test.js_runner !== undefined) runners[test.path] = test.js_runner
   }
+  const recordedAt = { ...(changes.violation_snapshots ?? {}) }
   for (const v of brief.policy.violations) {
     const key = `${v.source} → ${v.target}`
     if (!violations.has(key) && violations.size >= VIOLATION_CAP) {
@@ -115,8 +116,10 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
       continue
     }
     violations.add(key)
+    // Which graph reported it: a policy check older than that one never saw it (see `stillReported`).
+    if (brief.snapshot_id !== null) recordedAt[key] = brief.snapshot_id
   }
-  return { turns: changes.turns + 1, files, tests, js_runners: runners, violations: [...violations], truncated }
+  return { turns: changes.turns + 1, files, tests, js_runners: runners, violations: [...violations], violation_snapshots: recordedAt, truncated }
 }
 
 /**
@@ -149,6 +152,7 @@ export function fromLedger(ledger: SessionLedger, turns: SessionChanges, edited:
     tests,
     js_runners: runners,
     violations: turns.violations,
+    ...(turns.violation_snapshots === undefined ? {} : { violation_snapshots: turns.violation_snapshots }),
     truncated: ledger.files_truncated || ledger.tests_truncated,
     origins,
     timeline,

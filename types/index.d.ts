@@ -513,6 +513,8 @@ export type SessionChanges = {
   /** The runner of each JavaScript test as its brief said; absent or null when unknown. */
   js_runners?: Record<string, JsRunner | null>
   violations: string[]
+  /** The snapshot of the latest turn brief that reported each violation, by `source → target`; absent for one reported without a snapshot. */
+  violation_snapshots?: Record<string, string>
   truncated: boolean
   /**
    * Set when the files and tests come from the scan ledger (every change in

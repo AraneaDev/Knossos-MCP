@@ -456,7 +456,7 @@ async function commitNoteFor($: EngineInterface, loop: string): Promise<string |
   const fresh = start?.complete === true ? d.cycles.largest.filter(c => !keys.has([...c.members].sort().join('\u0000'))) : []
   const count = start === null ? 0 : Math.max(d.cycles.count - start.count, fresh.length)
   const chains = fresh.map(c => `${c.members.slice(0, 4).join(' → ')}${c.members.length > 4 ? ' → …' : ''}`)
-  const note = commitNote(mod.enforce ? stillReported(session.violations, d.policy) : [], untested, { count, chains })
+  const note = commitNote(mod.enforce ? stillReported(session.violations, session.violation_snapshots, d) : [], untested, { count, chains })
   if (note === null) return null
   const key = `${loop}\u0000${note}`
   if (mod.commitNoted.has(key) || !takeNoteSlot(loop)) return null

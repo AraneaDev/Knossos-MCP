@@ -1984,8 +1984,8 @@ describe('knossos mod', () => {
       impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 2 } },
       policy: { status: 'evaluated', total: 1, violations: [violation], truncated: false },
     })
-    // Fixed since: the later graph's complete check reports nothing.
-    const later = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), snapshot_id: 's2' })
+    // Fixed since: the later graph, past the brief's own, reports nothing in its complete check.
+    const later = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), snapshot_id: 's2', trend: [{ snapshot_id: 's1', cycles: 0, max_degree: 0 }, { snapshot_id: 's2', cycles: 0, max_degree: 0 }] })
     const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: later }], brief: [{ stdout: turn }], bashOutput: committing })
     await $.session.start(START)
     await w.clock.settle()
@@ -1994,6 +1994,28 @@ describe('knossos mod', () => {
     await w.clock.settle()
     expect(w.briefRuns()).toHaveLength(1)
     expect((await bash($, 'git commit -m route')).context ?? []).toEqual([])
+  })
+
+  test('a violation a turn introduced is carried by the commit note while the dashboard is older than the brief that reported it', async ($, on) => {
+    const violation = { policy_id: 'core-alone', source: 'App\\Router', target: 'App\\Worker', source_boundaries: [], target_boundaries: [] }
+    // The turn's scan made s2 and found the violation there.
+    const turn = brief({
+      snapshot_id: 's2',
+      changed_files: ['src/Router.php'],
+      impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 2 } },
+      policy: { status: 'evaluated', total: 1, violations: [violation], truncated: false },
+    })
+    // The dashboard reload after the turn fails, so the pane keeps s1's figures, whose complete check predates the violation.
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: '' }], brief: [{ stdout: turn }], bashOutput: committing })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.briefRuns()).toHaveLength(1)
+    expect((await bash($, 'git commit -m route')).context ?? []).toEqual([
+      "knossos: this session's changes carry 1 boundary-policy violation this session introduced (App\\Router → App\\Worker). Check them before you push.",
+    ])
   })
 
   test('a session below the project root is told, and copies, test commands that change to the project root', async ($, on) => {

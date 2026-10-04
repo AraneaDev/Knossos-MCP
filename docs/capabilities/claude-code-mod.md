@@ -115,7 +115,10 @@ nothing, and one made through an alias or a script is still seen (a `--quiet`
 commit prints no such line and goes unnoticed), the call's result carries one
 note of what this session's changes leave behind, as far as the graph knows:
 the boundary-policy violations the session's turns introduced that the policy
-check still reports, the files the session changed (not ones changed outside
+check still reports (only a check at least as new as the turn that found a
+violation can drop it: while the pane's graph is older, after a reload that
+failed or has not landed, the violation is kept), the files the session
+changed (not ones changed outside
 it since it began) that no test reaches, and the cycles new since the session
 began. A cycle is named new only when the graph listed every cycle it held as
 the session began; past that list's cap only the count that grew is said. The

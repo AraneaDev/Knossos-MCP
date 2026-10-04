@@ -66,11 +66,24 @@ describe('a commit', () => {
 
   it('carries only the violations the policy check still reports, unless the check cannot say', () => {
     const policy = (items: { source: string; target: string }[], over: { truncated?: boolean; total?: number; status?: string } = {}) => ({ status: 'evaluated', truncated: false, total: items.length, items, ...over })
-    expect(stillReported(['A → B', 'C → D'], policy([{ source: 'A', target: 'B' }]))).toEqual(['A → B'])
-    expect(stillReported(['A → B', 'C → D'], policy([], { truncated: true }))).toEqual(['A → B', 'C → D'])
-    expect(stillReported(['A → B'], policy([], { total: 3 }))).toEqual(['A → B'])
-    expect(stillReported(['A → B'], policy([], { status: 'skipped' }))).toEqual(['A → B'])
-    expect(stillReported(['A → B'], undefined)).toEqual(['A → B'])
+    const at = { 'A → B': 's2', 'C → D': 's2' }
+    const d = (p: ReturnType<typeof policy> | undefined) => ({ snapshot_id: 's2', trend: [{ snapshot_id: 's1' }, { snapshot_id: 's2' }], ...(p === undefined ? {} : { policy: p }) })
+    expect(stillReported(['A → B', 'C → D'], at, d(policy([{ source: 'A', target: 'B' }])))).toEqual(['A → B'])
+    expect(stillReported(['A → B', 'C → D'], at, d(policy([], { truncated: true })))).toEqual(['A → B', 'C → D'])
+    expect(stillReported(['A → B'], at, d(policy([], { total: 3 })))).toEqual(['A → B'])
+    expect(stillReported(['A → B'], at, d(policy([], { status: 'skipped' })))).toEqual(['A → B'])
+    expect(stillReported(['A → B'], at, d(undefined))).toEqual(['A → B'])
+  })
+
+  it('drops a violation only by a policy check at least as new as the brief that recorded it', () => {
+    const empty = { status: 'evaluated', truncated: false, total: 0, items: [] }
+    // A dashboard newer than the brief: its trend passes through the brief's snapshot, and the violation is fixed.
+    expect(stillReported(['A → B'], { 'A → B': 's2' }, { snapshot_id: 's3', trend: [{ snapshot_id: 's2' }, { snapshot_id: 's3' }], policy: empty })).toEqual([])
+    // A dashboard still at an earlier snapshot (its reload failed, or has not landed) never saw it.
+    expect(stillReported(['A → B'], { 'A → B': 's2' }, { snapshot_id: 's1', trend: [{ snapshot_id: 's0' }, { snapshot_id: 's1' }], policy: empty })).toEqual(['A → B'])
+    // Recorded without a snapshot: nothing says the check is newer.
+    expect(stillReported(['A → B'], {}, { snapshot_id: 's3', trend: [{ snapshot_id: 's3' }], policy: empty })).toEqual(['A → B'])
+    expect(stillReported(['A → B'], undefined, { snapshot_id: 's3', trend: [], policy: empty })).toEqual(['A → B'])
   })
 
   it('gets a note of what it carries, or none when it carries nothing the graph knows of', () => {
