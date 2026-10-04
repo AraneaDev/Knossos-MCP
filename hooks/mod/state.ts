@@ -161,10 +161,11 @@ export const mod = {
   openWhenFound: false,
   /** Where the tab's marker stood when the finder opened over it: closing the finder puts it back. */
   findFrom: 0,
-  /** Whether the pane was last drawn wide (master-detail), as the render saw it; and the pending lookup of the marked row. */
+  /** Whether the pane was last drawn wide (master-detail), as the render saw it. */
   paneWide: false,
-  peekTimer: null as Timer | null,
-  /** The row (by {@link peekKey}) last found to have nothing to show beside the tab, so the tick does not look again. */
+  /** The pending reads that wait out a pause (the lookup of the marked row beside the tab), by loader. */
+  loadTimers: new Map<string, Timer>(),
+  /** The row (by `peekKey`) last found to have nothing to show beside the tab, so the tick does not look again. */
   peekNone: null as string | null,
   /** Whether a pane too large to draw however few rows it gave was logged: once a load. */
   tooLargeLogged: false,
@@ -271,8 +272,8 @@ export function reset(options: PluginOptions): void {
   mod.paneWide = false
   mod.peekNone = null
   mod.tooLargeLogged = false
-  mod.peekTimer?.cancel()
-  mod.peekTimer = null
+  mod.loadTimers.forEach(timer => timer.cancel())
+  mod.loadTimers = new Map()
   mod.contextTool = null
   mod.toolFailureLogged = false
   mod.commitNoted = new Set()

@@ -4,7 +4,8 @@
   "ignores": [
     "tests/Fixtures",
     "hooks/register.test.ts",
-    "hooks/lib/*.spec.ts"
+    "hooks/lib/*.spec.ts",
+    "hooks/mod/*.spec.ts"
   ],
   "boundaries": [
     { "name": "core", "path_prefix": "src" },

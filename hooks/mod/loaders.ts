@@ -7,7 +7,7 @@ import { flashKeys } from '../lib/flash'
 import { couplingPair, PEEK_TABS } from '../lib/layout'
 import { SingleFlight } from '../lib/scheduler'
 import { disable, light, wrapper } from './port'
-import type { Port } from './port'
+import type { Cell, Port } from './port'
 import { currentInput, currentList } from './render'
 import { cyclesOf, mod } from './state'
 
@@ -82,10 +82,10 @@ async function loadDashboard(io: Port): Promise<void> {
   const shown = (await io.state.view.read()).inspect
   if (shown !== null) await requestDetail(io, shown)
   // And the Boundaries tab's cell: its couplings are read for the graph on show; and the Branch tab's comparison.
-  await requestCouplings(io)
-  await requestBranch(io)
-  await requestPeek(io)
-  await requestRoute(io)
+  await request(io, 'couplings')
+  await request(io, 'branch')
+  await request(io, 'peek')
+  await request(io, 'route')
 }
 
 /**
@@ -103,31 +103,277 @@ export async function showComponent(io: Port, shown: Inspected): Promise<void> {
 const sameDetail = (state: DetailState | null, shown: Inspected, snapshot: string | null): boolean =>
   state !== null && state.name === shown.name && (state.file === true) === (shown.file === true) && state.snapshot_id === snapshot
 
-/** Starts a lookup of what `shown` names unless one is running or done for this snapshot; silence is asked again. */
+/** Which row of which tab and graph the detail beside the tab stands for: what tells a row already looked at. */
+export const peekKey = (v: KnossosView, snapshot: string | null): string => `${v.tab}\u0000${v.selected}\u0000${v.filter}\u0000${snapshot ?? ''}`
+
+/** Where a read of the graph on show runs: its project root, or the session's root when there is no graph. */
+const rootOf = (d: Dashboard | null): string | undefined => (d?.status === 'ok' ? (d.project_root ?? undefined) : undefined)
+
+/** What one read asks the wrapper: the subcommand, its arguments and bound, and the directory it runs in (the session's root when absent). */
+export type Ask = { sub: string; args: string[]; timeoutMs: number; root?: string }
+
+/**
+ * One kind of read the pane draws from: what it is a read of now (`want`,
+ * null when there is nothing to read, as on a tab that shows none), whether
+ * the cell already holds that or is reading it (`holds`), the cell while it
+ * reads (`loading`), what it asks the wrapper (`ask`) and how the answer is
+ * parsed, and the cell once the answer lands (`landed`), left as it is when
+ * the cell has moved on to something else meanwhile.
+ *
+ * `flight` keeps a read already on its way from starting a second (the
+ * component detail: its cell can move to another component and back within
+ * one lookup); `debounceMs` waits that long after the last request (the
+ * detail beside the tab: a run of moves is one lookup); `prepare` runs as the
+ * read starts.
+ */
+export type Loader<S, W, P extends { status: string }> = {
+  cell: (io: Port) => Cell<S | null>
+  want: (io: Port, shown?: Inspected) => Promise<W | null>
+  holds: (current: S | null, want: W) => boolean
+  loading: (current: S | null, want: W) => S
+  ask: (io: Port, want: W) => Promise<Ask>
+  parse: (stdout: string, want: W) => P | null
+  landed: (current: S | null, want: W, parsed: P | null) => S | null
+  flight?: { key: (want: W) => string; same: (current: S | null, want: W) => boolean }
+  debounceMs?: number
+  prepare?: (io: Port, want: W) => Promise<void>
+}
+
+/** A component's detail or a file's, as both the detail and the detail beside the tab look it up: a file by its path under the project root. */
+async function lookup(io: Port, shown: Inspected): Promise<Ask> {
+  const root = shown.file === true ? ((await io.state.dashboard.read())?.project_root ?? undefined) : undefined
+  return { sub: shown.file === true ? 'file-detail' : 'component-detail', args: [shown.name], timeoutMs: DETAIL_TIMEOUT_MS, root }
+}
+
+/** A lookup's answer as a detail holds it: a file's, or a component's. */
+const looked = (shown: Inspected, stdout: string): FileDetail | ComponentDetail | null => (shown.file === true ? parseFileDetail(stdout) : parseComponentDetail(stdout))
+const answerOf = (shown: Inspected, parsed: FileDetail | ComponentDetail | null) => (shown.file === true ? { fileDetail: parsed as FileDetail | null } : { detail: parsed as ComponentDetail | null })
+
+/** Every read the pane draws from that is keyed to what it shows, by name. Each runs on a timer, never in a render. */
+export const LOADERS = {
+  /** The Boundaries tab's marked heat map cell spelled out: the component pairs behind it, for this cell of this graph. */
+  couplings: {
+    cell: io => io.state.couplings,
+    want: async io => {
+      const input = await currentInput(io, true)
+      const pair = input === null ? null : couplingPair(input)
+      if (pair === null) return null
+      const d = await io.state.dashboard.read()
+      return { from: pair.from, to: pair.to, snapshot: d?.snapshot_id ?? null, root: rootOf(d) }
+    },
+    holds: (c, w) => c !== null && c.from === w.from && c.to === w.to && c.snapshot === w.snapshot,
+    loading: (_, w): CouplingState => ({ snapshot: w.snapshot, from: w.from, to: w.to, phase: 'loading', answer: null }),
+    ask: async (_, w) => ({ sub: 'boundary-couplings', args: [`--from=${w.from}`, `--to=${w.to}`], timeoutMs: COUPLINGS_TIMEOUT_MS, root: w.root }),
+    parse: parseCouplings,
+    landed: (c, w, parsed) => (c !== null && c.from === w.from && c.to === w.to && c.snapshot === w.snapshot ? { ...c, phase: 'done', answer: parsed } : c),
+  } satisfies Loader<CouplingState, { from: string; to: string; snapshot: string | null; root: string | undefined }, NonNullable<ReturnType<typeof parseCouplings>>>,
+  /**
+   * How a changed file (one opened from the session's changes) changed since
+   * the session began, for this graph: a new snapshot (the file changed
+   * again) reads it again. Without the session's commit there is nothing to
+   * read, and the detail says why.
+   */
+  diff: {
+    cell: io => io.state.fileDiff,
+    want: async (io, shown) => {
+      if (shown?.file !== true || shown.changed !== true) return null
+      const rev = await io.state.sessionRev.read()
+      if (rev?.status !== 'ok') return null
+      const d = await io.state.dashboard.read()
+      return { name: shown.name, rev: rev.rev, snapshot: d?.snapshot_id ?? null, root: rootOf(d) }
+    },
+    holds: (c, w) => c !== null && c.name === w.name && c.rev === w.rev && c.snapshot === w.snapshot,
+    loading: (_, w): DiffState => ({ name: w.name, rev: w.rev, snapshot: w.snapshot, phase: 'loading', diff: null }),
+    ask: async (_, w) => ({ sub: 'session-diff', args: [`--rev=${w.rev}`, `--file=${w.name}`], timeoutMs: DIFF_TIMEOUT_MS, root: w.root }),
+    parse: parseSessionDiff,
+    landed: (c, w, parsed) => (c !== null && c.name === w.name && c.rev === w.rev && c.snapshot === w.snapshot ? { ...c, phase: 'done', diff: parsed } : c),
+  } satisfies Loader<DiffState, { name: string; rev: string; snapshot: string | null; root: string | undefined }, NonNullable<ReturnType<typeof parseSessionDiff>>>,
+  /** What the detail shows, a component or a file, for this snapshot; silence is asked again on the next request. */
+  detail: {
+    cell: io => io.state.detail,
+    want: async (io, shown) => (shown === undefined ? null : { shown, snapshot: (await io.state.dashboard.read())?.snapshot_id ?? null }),
+    holds: (c, w) => sameDetail(c, w.shown, w.snapshot) && c?.phase === 'done' && (w.shown.file === true ? c.fileDetail : c.detail) != null,
+    loading: (_, w): DetailState => ({ snapshot_id: w.snapshot, name: w.shown.name, ...(w.shown.file === true ? { file: true } : {}), detail: null, phase: 'loading' }),
+    ask: (io, w) => lookup(io, w.shown),
+    parse: (stdout, w) => looked(w.shown, stdout),
+    landed: (c, w, parsed) => (sameDetail(c, w.shown, w.snapshot) ? { ...c!, ...answerOf(w.shown, parsed), phase: 'done' } : c),
+    // A lookup for this name already in flight: when the detail has since moved to another name (A, then B, then A
+    // again inside one lookup), its loading state is put back so the answer on its way is stored when it lands.
+    flight: { key: w => `${w.snapshot ?? ''}\u0000${w.shown.file === true ? 'file' : 'component'}\u0000${w.shown.name}`, same: (c, w) => sameDetail(c, w.shown, w.snapshot) },
+  } satisfies Loader<DetailState, { shown: Inspected; snapshot: string | null }, FileDetail | ComponentDetail>,
+  /**
+   * The marked row looked up for the detail beside the tab, while the pane is
+   * drawn wide on a tab that has one: a component as its detail, a file as the
+   * file's (with its change, when it is one of the session's). A row with
+   * nothing to show (a boundary, a chart's bar) shows none.
+   */
+  peek: {
+    cell: io => io.state.peek,
+    want: async io => {
+      if (!mod.paneWide) return null
+      const v = await io.state.view.read()
+      if (v.inspect !== null || v.finding === true || v.drift === true || !PEEK_TABS.includes(v.tab)) return null
+      const list = await currentList(io)
+      const item = list[Math.min(Math.max(0, v.selected), Math.max(0, list.length - 1))]
+      if (item === undefined || item.inert === true || item.jump !== undefined) {
+        mod.peekNone = peekKey(v, (await io.state.dashboard.read())?.snapshot_id ?? null)
+        if ((await io.state.peek.read()) !== null) await io.state.peek.update(() => null)
+        return null
+      }
+      mod.peekNone = null
+      const shown: Inspected = { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}), ...(item.changed === true ? { changed: true } : {}) }
+      return { shown, snapshot: (await io.state.dashboard.read())?.snapshot_id ?? null }
+    },
+    holds: (c, w) => c !== null && c.shown.name === w.shown.name && (c.shown.file === true) === (w.shown.file === true) && c.detail.snapshot_id === w.snapshot,
+    loading: (_, w) => ({ shown: w.shown, detail: { snapshot_id: w.snapshot, name: w.shown.name, ...(w.shown.file === true ? { file: true as const } : {}), detail: null, phase: 'loading' as const } }),
+    ask: (io, w) => lookup(io, w.shown),
+    parse: (stdout, w) => looked(w.shown, stdout),
+    landed: (c, w, parsed) => (c !== null && c.shown.name === w.shown.name && c.detail.snapshot_id === w.snapshot ? { shown: c.shown, detail: { ...c.detail, ...answerOf(w.shown, parsed), phase: 'done' as const } } : c),
+    debounceMs: PEEK_DEBOUNCE_MS,
+    // A file shows its change beside the tab too.
+    prepare: (io, w) => requestDiff(io, w.shown),
+  } satisfies Loader<{ shown: Inspected; detail: DetailState }, { shown: Inspected; snapshot: string | null }, FileDetail | ComponentDetail>,
+  /** The branch compared with its merge base while the Branch tab is open, for this graph: the last answer stays on show meanwhile. */
+  branch: {
+    cell: io => io.state.branch,
+    want: async io => {
+      const v = await io.state.view.read()
+      if (v.tab !== 'branch' || v.inspect !== null) return null
+      const d = await io.state.dashboard.read()
+      return d?.status === 'ok' ? { snapshot: d.snapshot_id ?? null, root: d.project_root ?? undefined } : null
+    },
+    holds: (c, w) => c !== null && c.snapshot === w.snapshot,
+    loading: (c, w): BranchState => ({ snapshot: w.snapshot, phase: 'loading', answer: c?.answer ?? null }),
+    ask: async (_, w) => ({ sub: 'branch-diff', args: [], timeoutMs: BRANCH_TIMEOUT_MS, root: w.root }),
+    parse: parseBranchDiff,
+    landed: (c, w, parsed) => (c !== null && c.snapshot === w.snapshot ? { snapshot: w.snapshot, phase: 'done', answer: parsed } : c),
+  } satisfies Loader<BranchState, { snapshot: string | null; root: string | undefined }, NonNullable<ReturnType<typeof parseBranchDiff>>>,
+  /**
+   * The churn hotspots while the Churn or the Branch tab is open, for the
+   * commit the checkout is at: the history is kept per commit, so a new
+   * commit, not a new scan, reads it again. The last answer stays on show
+   * meanwhile.
+   */
+  churn: {
+    cell: io => io.state.churn,
+    want: async io => {
+      const v = await io.state.view.read()
+      // The Branch tab shows the hotspots too, where it has room.
+      if ((v.tab !== 'churn' && v.tab !== 'branch') || v.inspect !== null || (v.route ?? null) !== null) return null
+      const d = await io.state.dashboard.read()
+      if (d?.status !== 'ok') return null
+      return { head: (await io.state.gitHead.read())?.rev ?? null, root: d.project_root ?? undefined }
+    },
+    holds: (c, w) => c !== null && c.head === w.head,
+    loading: (c, w): ChurnState => ({ head: w.head, phase: 'loading', answer: c?.answer ?? null }),
+    ask: async (_, w) => ({ sub: 'churn', args: [], timeoutMs: CHURN_TIMEOUT_MS, root: w.root }),
+    parse: parseChurn,
+    landed: (c, w, parsed) => (c !== null && c.head === w.head ? { head: w.head, phase: 'done', answer: parsed } : c),
+  } satisfies Loader<ChurnState, { head: string | null; root: string | undefined }, NonNullable<ReturnType<typeof parseChurn>>>,
+  /** A component's blast radius for its detail, for this graph (a file's detail has none): the last rings stay on show meanwhile. */
+  rings: {
+    cell: io => io.state.rings,
+    want: async (io, shown) => {
+      if (shown === undefined || shown.file === true) return null
+      const d = await io.state.dashboard.read()
+      return { name: shown.name, snapshot: d?.snapshot_id ?? null, root: rootOf(d) }
+    },
+    holds: (c, w) => c !== null && c.name === w.name && c.snapshot === w.snapshot,
+    loading: (c, w): RingsState => ({ name: w.name, snapshot: w.snapshot, phase: 'loading', answer: c !== null && c.name === w.name ? c.answer : null }),
+    ask: async (_, w) => ({ sub: 'blast-radius', args: [`--component=${w.name}`], timeoutMs: RINGS_TIMEOUT_MS, root: w.root }),
+    parse: parseBlastRadius,
+    landed: (c, w, parsed) => (c !== null && c.name === w.name && c.snapshot === w.snapshot ? { ...c, phase: 'done', answer: parsed } : c),
+  } satisfies Loader<RingsState, { name: string; snapshot: string | null; root: string | undefined }, NonNullable<ReturnType<typeof parseBlastRadius>>>,
+  /** The route the path explorer draws between its two ends, in this graph. */
+  route: {
+    cell: io => io.state.route,
+    want: async io => {
+      const shown = (await io.state.view.read()).route ?? null
+      if (shown === null) return null
+      const d = await io.state.dashboard.read()
+      return { from: shown.from.name, to: shown.to.name, snapshot: d?.snapshot_id ?? null, root: rootOf(d) }
+    },
+    holds: (c, w) => c !== null && c.from === w.from && c.to === w.to && c.snapshot === w.snapshot,
+    loading: (c, w): RouteState => ({ from: w.from, to: w.to, snapshot: w.snapshot, phase: 'loading', answer: c !== null && c.from === w.from && c.to === w.to ? c.answer : null }),
+    ask: async (_, w) => ({ sub: 'path-between', args: [`--from=${w.from}`, `--to=${w.to}`], timeoutMs: ROUTE_TIMEOUT_MS, root: w.root }),
+    parse: parsePathBetween,
+    landed: (c, w, parsed) => (c !== null && c.from === w.from && c.to === w.to && c.snapshot === w.snapshot ? { ...c, phase: 'done', answer: parsed } : c),
+  } satisfies Loader<RouteState, { from: string; to: string; snapshot: string | null; root: string | undefined }, NonNullable<ReturnType<typeof parsePathBetween>>>,
+}
+
+/** The name of a read in {@link LOADERS}. */
+export type LoaderKey = keyof typeof LOADERS
+
+/** Any loader, as the keyed functions below drive it. */
+type AnyLoader = Loader<unknown, unknown, { status: string }>
+
+/**
+ * Starts the read `key` names (for `shown`, where it reads for a shown
+ * component or file) unless the mod is off, there is nothing to read, or
+ * its cell already holds or is reading what is wanted. The read itself runs
+ * on a timer once this has resolved, never inside a render.
+ */
+export async function request(io: Port, key: LoaderKey, shown?: Inspected): Promise<void> {
+  if (mod.disabled) return
+  const loader = LOADERS[key] as unknown as AnyLoader
+  const want = await loader.want(io, shown)
+  if (want === null) return
+  const cell = loader.cell(io)
+  // Checked and set with no await between, so two presses in the same tick cannot both start one.
+  const flight = loader.flight?.key(want)
+  if (flight !== undefined) {
+    if (mod.fetching.has(flight)) {
+      if (!loader.flight!.same(await cell.read(), want)) await cell.update(c => loader.loading(c, want))
+      return
+    }
+    mod.fetching.add(flight)
+  }
+  if (loader.holds(await cell.read(), want)) {
+    if (flight !== undefined) mod.fetching.delete(flight)
+    return
+  }
+  await cell.update(c => loader.loading(c, want))
+  const run = () => void load(io, loader, want, flight).catch(() => undefined)
+  if (loader.debounceMs === undefined) {
+    io.clock.after(0, run)
+    return
+  }
+  mod.loadTimers.get(key)?.cancel()
+  mod.loadTimers.set(
+    key,
+    io.clock.after(loader.debounceMs, () => {
+      mod.loadTimers.delete(key)
+      run()
+    }),
+  )
+}
+
+/** One read: its answer is stored only while the cell still wants it ({@link Loader}`.landed`); `no-binary` turns the mod off. */
+async function load(io: Port, loader: AnyLoader, want: unknown, flight: string | undefined): Promise<void> {
+  if (mod.disabled) return
+  try {
+    await loader.prepare?.(io, want)
+    const ask = await loader.ask(io, want)
+    const parsed = loader.parse(await wrapper(io, ask.sub, ask.args, ask.timeoutMs, ask.root), want)
+    if (parsed?.status === 'no-binary') return await disable(io)
+    await loader.cell(io).update(c => loader.landed(c, want, parsed))
+  } finally {
+    // A lost write leaves the loading line; the next request asks again.
+    if (flight !== undefined) mod.fetching.delete(flight)
+  }
+}
+
+/** Starts reading a changed file's diff ({@link LOADERS}`.diff`). */
+function requestDiff(io: Port, shown: Inspected): Promise<void> {
+  return request(io, 'diff', shown)
+}
+
+/** Starts the reads the detail on `shown` draws from: a changed file's diff, a component's rings, and the detail itself. */
 export async function requestDetail(io: Port, shown: Inspected): Promise<void> {
   if (mod.disabled) return
   await requestDiff(io, shown)
-  await requestRings(io, shown)
-  const snapshot = (await io.state.dashboard.read())?.snapshot_id ?? null
-  const { name } = shown
-  const file = shown.file === true
-  const key = `${snapshot ?? ''}\u0000${file ? 'file' : 'component'}\u0000${name}`
-  const loading = (): DetailState => ({ snapshot_id: snapshot, name, ...(file ? { file: true } : {}), detail: null, phase: 'loading' })
-  if (mod.fetching.has(key)) {
-    // A lookup for this name is already in flight. When the detail has since
-    // moved to another name (A, then B, then A again inside one lookup), put
-    // the loading state back so the in-flight answer is stored when it lands.
-    if (!sameDetail(await io.state.detail.read(), shown, snapshot)) await io.state.detail.update(loading)
-    return
-  }
-  mod.fetching.add(key)
-  const current = await io.state.detail.read()
-  if (sameDetail(current, shown, snapshot) && current?.phase === 'done' && (file ? current.fileDetail : current.detail) != null) {
-    mod.fetching.delete(key)
-    return
-  }
-  await io.state.detail.update(loading)
-  io.clock.after(0, () => void loadDetail(io, snapshot, shown, key))
+  await request(io, 'rings', shown)
+  await request(io, 'detail', shown)
 }
 
 /** The session's id, or null when the engine does not say, or still names the session that ended. */
@@ -210,246 +456,5 @@ async function noteGitHead(io: Port, stdout: string): Promise<void> {
   const head = parseSessionHead(stdout)
   if (head !== undefined) await io.state.gitHead.update(() => head)
   // The Churn tab's history ends at the checkout's commit: a new one reads it again.
-  await requestChurn(io)
-}
-
-/**
- * Starts reading the Boundaries tab's marked heat map cell (the component
- * pairs behind it) unless that read is done or running for this cell of this
- * graph. On a timer, never in a render: the card says it is reading until
- * the answer is stored, and an answer for a cell the marker has left is
- * dropped.
- */
-export async function requestCouplings(io: Port): Promise<void> {
-  if (mod.disabled) return
-  const input = await currentInput(io, true)
-  const pair = input === null ? null : couplingPair(input)
-  if (pair === null) return
-  const d = await io.state.dashboard.read()
-  const snapshot = d?.snapshot_id ?? null
-  const current = await io.state.couplings.read()
-  if (current !== null && current.from === pair.from && current.to === pair.to && current.snapshot === snapshot) return
-  await io.state.couplings.update((): CouplingState => ({ snapshot, from: pair.from, to: pair.to, phase: 'loading', answer: null }))
-  const root = d?.status === 'ok' ? (d.project_root ?? undefined) : undefined
-  io.clock.after(0, () => void loadCouplings(io, pair.from, pair.to, snapshot, root).catch(() => undefined))
-}
-
-/** One read of a cell's couplings; stored only while the pane still marks that cell of that graph. */
-async function loadCouplings(io: Port, from: string, to: string, snapshot: string | null, root: string | undefined): Promise<void> {
-  if (mod.disabled) return
-  const parsed = parseCouplings(await wrapper(io, 'boundary-couplings', [`--from=${from}`, `--to=${to}`], COUPLINGS_TIMEOUT_MS, root))
-  if (parsed?.status === 'no-binary') return disable(io)
-  await io.state.couplings.update((c): CouplingState | null => (c !== null && c.from === from && c.to === to && c.snapshot === snapshot ? { ...c, phase: 'done', answer: parsed } : c))
-}
-
-/**
- * Starts reading how a changed file (one opened from the session's changes)
- * changed since the session began, unless that read is done or running for
- * this graph: a new snapshot (the file changed again) reads it again. Runs
- * on a timer, never in a render; without the session's commit there is
- * nothing to read, and the detail says why.
- */
-async function requestDiff(io: Port, shown: Inspected): Promise<void> {
-  if (shown.file !== true || shown.changed !== true || mod.disabled) return
-  const rev = await io.state.sessionRev.read()
-  if (rev?.status !== 'ok') return
-  const d = await io.state.dashboard.read()
-  const snapshot = d?.snapshot_id ?? null
-  const current = await io.state.fileDiff.read()
-  if (current !== null && current.name === shown.name && current.rev === rev.rev && current.snapshot === snapshot) return
-  await io.state.fileDiff.update((): DiffState => ({ name: shown.name, rev: rev.rev, snapshot, phase: 'loading', diff: null }))
-  const root = d?.status === 'ok' ? (d.project_root ?? undefined) : undefined
-  io.clock.after(0, () => void loadDiff(io, shown.name, rev.rev, snapshot, root).catch(() => undefined))
-}
-
-/** One read of a file's change; stored only while the detail still asks for that file, commit and graph. */
-async function loadDiff(io: Port, name: string, rev: string, snapshot: string | null, root: string | undefined): Promise<void> {
-  if (mod.disabled) return
-  const stdout = await wrapper(io, 'session-diff', [`--rev=${rev}`, `--file=${name}`], DIFF_TIMEOUT_MS, root)
-  const parsed = parseSessionDiff(stdout)
-  if (parsed?.status === 'no-binary') return disable(io)
-  const now = await io.state.fileDiff.read()
-  if (now !== null && now.name === name && now.rev === rev && now.snapshot === snapshot) await io.state.fileDiff.update((): DiffState => ({ ...now, phase: 'done', diff: parsed }))
-}
-
-/**
- * One lookup; its answer is stored only while the detail still asks for that
- * component (or file) and snapshot. A file is read by its path under the
- * project root, where the dashboard placed it.
- */
-async function loadDetail(io: Port, snapshot: string | null, shown: Inspected, key: string): Promise<void> {
-  if (mod.disabled) return
-  try {
-    const file = shown.file === true
-    const root = file ? ((await io.state.dashboard.read())?.project_root ?? undefined) : undefined
-    const stdout = await wrapper(io, file ? 'file-detail' : 'component-detail', [shown.name], DETAIL_TIMEOUT_MS, root)
-    const parsed = file ? parseFileDetail(stdout) : parseComponentDetail(stdout)
-    if (parsed?.status === 'no-binary') {
-      await disable(io)
-      return
-    }
-    const answer = file ? { fileDetail: parsed as FileDetail | null } : { detail: parsed as ComponentDetail | null }
-    await io.state.detail.update((current): DetailState | null => (sameDetail(current, shown, snapshot) ? { ...current!, ...answer, phase: 'done' } : current))
-  } catch {
-    // A lost write leaves the loading line; the next press asks again.
-  } finally {
-    mod.fetching.delete(key)
-  }
-}
-
-/**
- * Starts looking up the marked row for the detail beside the tab, while the
- * pane is drawn wide on a tab that has one: a component as its detail, a
- * file as the file's (with its change, when it is one of the session's).
- * After a short pause, so a run of moves is one lookup; never in a render.
- * A row with nothing to show (a boundary, a chart's bar) shows none.
- */
-export async function requestPeek(io: Port): Promise<void> {
-  if (mod.disabled || !mod.paneWide) return
-  const v = await io.state.view.read()
-  if (v.inspect !== null || v.finding === true || v.drift === true || !PEEK_TABS.includes(v.tab)) return
-  const list = await currentList(io)
-  const item = list[Math.min(Math.max(0, v.selected), Math.max(0, list.length - 1))]
-  if (item === undefined || item.inert === true || item.jump !== undefined) {
-    mod.peekNone = peekKey(v, (await io.state.dashboard.read())?.snapshot_id ?? null)
-    if ((await io.state.peek.read()) !== null) await io.state.peek.update(() => null)
-    return
-  }
-  mod.peekNone = null
-  const shown: Inspected = { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}), ...(item.changed === true ? { changed: true } : {}) }
-  const snapshot = (await io.state.dashboard.read())?.snapshot_id ?? null
-  const current = await io.state.peek.read()
-  if (current !== null && current.shown.name === shown.name && (current.shown.file === true) === (shown.file === true) && current.detail.snapshot_id === snapshot) return
-  await io.state.peek.update(() => ({ shown, detail: { snapshot_id: snapshot, name: shown.name, ...(shown.file === true ? { file: true as const } : {}), detail: null, phase: 'loading' as const } }))
-  mod.peekTimer?.cancel()
-  mod.peekTimer = io.clock.after(PEEK_DEBOUNCE_MS, () => {
-    mod.peekTimer = null
-    void loadPeek(io, shown, snapshot).catch(() => undefined)
-  })
-}
-
-/** Which row of which tab and graph the detail beside the tab stands for: what tells a row already looked at. */
-export const peekKey = (v: KnossosView, snapshot: string | null): string => `${v.tab}\u0000${v.selected}\u0000${v.filter}\u0000${snapshot ?? ''}`
-
-/** One lookup for the detail beside the tab; stored only while that row is still the one shown. */
-async function loadPeek(io: Port, shown: Inspected, snapshot: string | null): Promise<void> {
-  if (mod.disabled) return
-  await requestDiff(io, shown)
-  const file = shown.file === true
-  const root = file ? ((await io.state.dashboard.read())?.project_root ?? undefined) : undefined
-  const stdout = await wrapper(io, file ? 'file-detail' : 'component-detail', [shown.name], DETAIL_TIMEOUT_MS, root)
-  const parsed = file ? parseFileDetail(stdout) : parseComponentDetail(stdout)
-  if (parsed?.status === 'no-binary') return disable(io)
-  const answer = file ? { fileDetail: parsed as FileDetail | null } : { detail: parsed as ComponentDetail | null }
-  await io.state.peek.update(p => (p !== null && p.shown.name === shown.name && p.detail.snapshot_id === snapshot ? { shown: p.shown, detail: { ...p.detail, ...answer, phase: 'done' as const } } : p))
-}
-
-/**
- * Starts comparing the branch with its merge base while the Branch tab is
- * open, unless that comparison is done or running for this graph: a new
- * snapshot compares again, the last answer kept on show meanwhile. On a
- * timer, never in a render.
- */
-export async function requestBranch(io: Port): Promise<void> {
-  if (mod.disabled) return
-  const v = await io.state.view.read()
-  if (v.tab !== 'branch' || v.inspect !== null) return
-  const d = await io.state.dashboard.read()
-  if (d?.status !== 'ok') return
-  const snapshot = d.snapshot_id ?? null
-  const current = await io.state.branch.read()
-  if (current !== null && current.snapshot === snapshot) return
-  await io.state.branch.update((b): BranchState => ({ snapshot, phase: 'loading', answer: b?.answer ?? null }))
-  const root = d.project_root ?? undefined
-  io.clock.after(0, () => void loadBranch(io, snapshot, root).catch(() => undefined))
-}
-
-/** One comparison; stored only while it is still for the graph on show. */
-async function loadBranch(io: Port, snapshot: string | null, root: string | undefined): Promise<void> {
-  if (mod.disabled) return
-  const parsed = parseBranchDiff(await wrapper(io, 'branch-diff', [], BRANCH_TIMEOUT_MS, root))
-  if (parsed?.status === 'no-binary') return disable(io)
-  await io.state.branch.update((b): BranchState | null => (b !== null && b.snapshot === snapshot ? { snapshot, phase: 'done', answer: parsed } : b))
-}
-
-/**
- * Starts reading the churn hotspots while the Churn or the Branch tab is open, unless
- * they were read (or are being read) for the commit the checkout is at:
- * the history is kept per commit, so a new commit, not a new scan, reads
- * it again. The last answer stays on show meanwhile. On a timer, never in
- * a render.
- */
-export async function requestChurn(io: Port): Promise<void> {
-  if (mod.disabled) return
-  const v = await io.state.view.read()
-  // The Branch tab shows the hotspots too, where it has room.
-  if ((v.tab !== 'churn' && v.tab !== 'branch') || v.inspect !== null || (v.route ?? null) !== null) return
-  const d = await io.state.dashboard.read()
-  if (d?.status !== 'ok') return
-  const head = (await io.state.gitHead.read())?.rev ?? null
-  const current = await io.state.churn.read()
-  if (current !== null && current.head === head) return
-  await io.state.churn.update((c): ChurnState => ({ head, phase: 'loading', answer: c?.answer ?? null }))
-  const root = d.project_root ?? undefined
-  io.clock.after(0, () => void loadChurn(io, head, root).catch(() => undefined))
-}
-
-/** One read of the churn hotspots; stored only while it is still for the commit on show. */
-async function loadChurn(io: Port, head: string | null, root: string | undefined): Promise<void> {
-  if (mod.disabled) return
-  const parsed = parseChurn(await wrapper(io, 'churn', [], CHURN_TIMEOUT_MS, root))
-  if (parsed?.status === 'no-binary') return disable(io)
-  await io.state.churn.update((c): ChurnState | null => (c !== null && c.head === head ? { head, phase: 'done', answer: parsed } : c))
-}
-
-/**
- * Starts reading a component's blast radius for its detail, unless it was
- * read (or is being read) for this component and graph; a file's detail
- * has none. A new snapshot reads it again, the last rings on show
- * meanwhile. On a timer, never in a render.
- */
-async function requestRings(io: Port, shown: Inspected): Promise<void> {
-  if (mod.disabled || shown.file === true) return
-  const d = await io.state.dashboard.read()
-  const snapshot = d?.snapshot_id ?? null
-  const current = await io.state.rings.read()
-  if (current !== null && current.name === shown.name && current.snapshot === snapshot) return
-  await io.state.rings.update((r): RingsState => ({ name: shown.name, snapshot, phase: 'loading', answer: r !== null && r.name === shown.name ? r.answer : null }))
-  const root = d?.status === 'ok' ? (d.project_root ?? undefined) : undefined
-  io.clock.after(0, () => void loadRings(io, shown.name, snapshot, root).catch(() => undefined))
-}
-
-/** One read of a blast radius; stored only while the detail still asks for that component and graph. */
-async function loadRings(io: Port, name: string, snapshot: string | null, root: string | undefined): Promise<void> {
-  if (mod.disabled) return
-  const parsed = parseBlastRadius(await wrapper(io, 'blast-radius', [`--component=${name}`], RINGS_TIMEOUT_MS, root))
-  if (parsed?.status === 'no-binary') return disable(io)
-  await io.state.rings.update((r): RingsState | null => (r !== null && r.name === name && r.snapshot === snapshot ? { ...r, phase: 'done', answer: parsed } : r))
-}
-
-/**
- * Starts looking for the route the path explorer shows, unless it was
- * looked for (or is being) between these two components in this graph. On
- * a timer, never in a render.
- */
-export async function requestRoute(io: Port): Promise<void> {
-  if (mod.disabled) return
-  const shown = (await io.state.view.read()).route ?? null
-  if (shown === null) return
-  const d = await io.state.dashboard.read()
-  const snapshot = d?.snapshot_id ?? null
-  const [from, to] = [shown.from.name, shown.to.name]
-  const current = await io.state.route.read()
-  if (current !== null && current.from === from && current.to === to && current.snapshot === snapshot) return
-  await io.state.route.update((r): RouteState => ({ from, to, snapshot, phase: 'loading', answer: r !== null && r.from === from && r.to === to ? r.answer : null }))
-  const root = d?.status === 'ok' ? (d.project_root ?? undefined) : undefined
-  io.clock.after(0, () => void loadRoute(io, from, to, snapshot, root).catch(() => undefined))
-}
-
-/** One route search; stored only while the explorer still shows these two ends in this graph. */
-async function loadRoute(io: Port, from: string, to: string, snapshot: string | null, root: string | undefined): Promise<void> {
-  if (mod.disabled) return
-  const parsed = parsePathBetween(await wrapper(io, 'path-between', [`--from=${from}`, `--to=${to}`], ROUTE_TIMEOUT_MS, root))
-  if (parsed?.status === 'no-binary') return disable(io)
-  await io.state.route.update((r): RouteState | null => (r !== null && r.from === from && r.to === to && r.snapshot === snapshot ? { ...r, phase: 'done', answer: parsed } : r))
+  await request(io, 'churn')
 }

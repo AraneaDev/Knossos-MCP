@@ -11,7 +11,7 @@ import { NO_CHANGES } from './lib/layout'
 import { LIVE_OFF } from './lib/live'
 import { copyCommand, handlersOf, twinTarget } from './mod/actions'
 import { answerContext, commitNoteFor, headAt, noteEdit, noteRead, noteSafely, projectRoot, reflogAt } from './mod/agent'
-import { requestCouplings, requestPeek } from './mod/loaders'
+import { request } from './mod/loaders'
 import type { Port } from './mod/port'
 import { drawBand, drawPane } from './mod/render'
 import { endSession, endTurn, openPane, registerCommand, retryRegister, runCommand, startUp } from './mod/session'
@@ -298,8 +298,8 @@ export const register: Register = (on, options) => {
     if (moved.deny === undefined && Number.isInteger(index)) {
       const io = portOf($)
       await update($, view, v => (v.selected === index ? v : { ...v, selected: index, target: undefined }))
-      await requestCouplings(io)
-      await requestPeek(io)
+      await request(io, 'couplings')
+      await request(io, 'peek')
     }
     return moved
   })

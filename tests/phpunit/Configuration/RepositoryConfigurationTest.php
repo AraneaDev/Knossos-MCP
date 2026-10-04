@@ -30,9 +30,11 @@ final class RepositoryConfigurationTest extends KnossosTestCase
         assertFalse($ignores->matches('hooks/register.tsx'));
         assertFalse($ignores->matches('hooks/engine.d.ts'));
         assertFalse($ignores->matches('hooks/lib/layout.ts'));
+        assertFalse($ignores->matches('hooks/mod/loaders.ts'));
         // The tests import a dev dependency a git archive does not carry.
         assertTrue($ignores->matches('hooks/register.test.ts'));
         assertTrue($ignores->matches('hooks/lib/layout.spec.ts'));
+        assertTrue($ignores->matches('hooks/mod/loaders.spec.ts'));
         assertStringContainsString("declare module 'claude-code'", (string) file_get_contents($root . '/hooks/engine.d.ts'));
     }
 }

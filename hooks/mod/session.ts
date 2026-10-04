@@ -3,7 +3,7 @@ import { bandModel } from '../lib/band'
 import { NO_CHANGES, noGraphOf, paneStatus } from '../lib/layout'
 import { SingleFlight } from '../lib/scheduler'
 import { declaredOf, huesOf } from '../lib/palette'
-import { currentSession, peekKey, readGitHead, refreshDashboard, requestPeek, settleBaseline, showComponent } from './loaders'
+import { currentSession, peekKey, readGitHead, refreshDashboard, request, settleBaseline, showComponent } from './loaders'
 import { endWatcher, placed } from './port'
 import type { Port } from './port'
 import { CONTEXT_TOOL_NAME, cyclesOf, mod, PANE } from './state'
@@ -103,7 +103,7 @@ async function tickAge(io: Port): Promise<void> {
   if (lit !== null && (await io.clock.now()) >= lit.until) await io.state.flash.update(() => null)
   // A pane drawn wide shows the marked row's detail beside the tab: looked up from here the first time it is drawn so.
   // A row already found to have nothing to show is not looked at again each tick: that would lay the pane out every second.
-  if (mod.paneWide && (await io.state.peek.read()) === null && mod.peekNone !== peekKey(await io.state.view.read(), (await io.state.dashboard.read())?.snapshot_id ?? null)) await requestPeek(io)
+  if (mod.paneWide && (await io.state.peek.read()) === null && mod.peekNone !== peekKey(await io.state.view.read(), (await io.state.dashboard.read())?.snapshot_id ?? null)) await request(io, 'peek')
   // A pane closed by any means (the command, its own close key) stops drawing; stop ticking for it, and it is no longer wide.
   if (mod.paneText !== null && !(await io.ui.panes()).some(pane => pane.id === PANE)) {
     mod.paneText = null

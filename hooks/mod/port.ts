@@ -81,8 +81,8 @@ export async function disable(io: Port): Promise<void> {
   // Nor a debounced search or lookup: a loader that would run after this finds the mod off and reads nothing.
   mod.searchTimer?.cancel()
   mod.searchTimer = null
-  mod.peekTimer?.cancel()
-  mod.peekTimer = null
+  mod.loadTimers.forEach(timer => timer.cancel())
+  mod.loadTimers.clear()
   // Nothing to register a command for: no timed retry runs on, and no turn end asks again.
   mod.registerGen++
   mod.registerTimer?.cancel()

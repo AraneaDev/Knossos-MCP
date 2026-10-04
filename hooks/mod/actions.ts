@@ -3,7 +3,7 @@ import { parseAllowRoot, parseAnnotate, parseGraphSearch } from '../lib/envelope
 import { askPrompt, editTarget, locOf, locText, nextTarget, noGraphOf, peekList, refusedRoot, SCAN_PROMPT, SORTS, subjectOf, TABS } from '../lib/layout'
 import type { Loc } from '../lib/layout'
 import { SingleFlight } from '../lib/scheduler'
-import { requestBranch, requestChurn, requestCouplings, requestDetail, requestPeek, requestRoute, showComponent } from './loaders'
+import { request, requestDetail, showComponent } from './loaders'
 import { disable, say, wrapper } from './port'
 import type { Port } from './port'
 import { currentInput, currentList } from './render'
@@ -307,10 +307,10 @@ export function twinTarget(element: string): string | null | undefined {
 /** What a press on the pane does, then the couplings of the cell it leaves marked, when it marks one. */
 async function pressPane(io: Port, id: string, surface?: RenderSurface): Promise<void> {
   await pressAction(io, id, surface)
-  await requestCouplings(io)
-  await requestBranch(io)
-  await requestPeek(io)
-  await requestChurn(io)
+  await request(io, 'couplings')
+  await request(io, 'branch')
+  await request(io, 'peek')
+  await request(io, 'churn')
 }
 
 /** A press in the detail beside the tab (`peek:N`): opens what it lists as the detail itself. */
@@ -340,7 +340,7 @@ async function showRoute(io: Port, to: Inspected): Promise<void> {
   if (from === null) return
   mod.openWhenFound = false
   await io.state.view.update((w): KnossosView => ({ ...w, finding: false, picking: null, selected: 0, route: { from, to, index: 0, back: w.inspect } }))
-  await requestRoute(io)
+  await request(io, 'route')
 }
 
 /**
