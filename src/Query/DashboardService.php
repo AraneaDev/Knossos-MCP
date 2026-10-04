@@ -34,6 +34,12 @@ use PDO;
  * lists of {@see ProjectFindings} (summary, boundaries, diagnostics, largest
  * files and policy violations), whose own flags say when a figure is a floor,
  * and the {@see BoundaryMatrix} over the boundaries that label components.
+ *
+ * For the pane's charts: `in_degree` buckets every component the hub ranking
+ * could hold by how many depend on it (five buckets, `truncated` with the
+ * hubs), each trend point carries dead code, diagnostics and components
+ * beside cycles and the largest degree, and `deltas` says how the newest
+ * snapshot moved since the one retained before it.
  */
 final readonly class DashboardService
 {
@@ -91,6 +97,7 @@ final readonly class DashboardService
         $cycles = $cycleSearch->data['cycles'];
         $fanIn = (new FileFanInQuery($this->pdo))->aboveThreshold($id, $fanInThreshold, $this->fanInCap + 1);
         $series = $queries->architectureTrends($id, self::TREND_POINTS)->data['series'];
+        $trend = self::trend($series);
         $labels = BoundaryLabels::load($this->pdo, $id);
         $findings = new ProjectFindings($this->pdo, $this->clock);
         $ranked = [...array_column($health['hubs'], 'component'), ...array_column($health['static_hotspots'], 'component')];
@@ -131,7 +138,9 @@ final readonly class DashboardService
                 'truncation_reasons' => $cycleSearch->data['bounds']['truncation_reasons'],
                 'largest' => array_map(static fn(array $c): array => self::cycle($c, $labels), array_slice($cycles, 0, self::LARGEST_CYCLES)),
             ],
-            'trend' => self::trend($series),
+            'trend' => $trend,
+            'deltas' => self::deltas($trend),
+            'in_degree' => ['buckets' => $health['in_degree_histogram'], 'truncated' => $hubLimits !== []],
             'fan_in' => array_map(static fn(array $f): array => isset($fanInTop[$f['path']]) ? $f + ['top_dependents' => $fanInTop[$f['path']]] : $f, $fanInListed),
             'fan_in_truncated' => count($fanIn) > $this->fanInCap,
             'summary' => $findings->summary($id),
@@ -357,8 +366,13 @@ final readonly class DashboardService
      * ordered that way; snapshots whose archive is incomplete carry no metrics
      * and are left out rather than drawn as zero.
      *
+     * Each point carries the figures the pane's health rows draw: cycles, the
+     * largest degree, the dead-code candidates nothing references
+     * (`dead_code`), the error and warning diagnostics (`diagnostics`), and
+     * how many components the snapshot held.
+     *
      * @param list<array<string, mixed>> $series
-     * @return list<array{snapshot_id: string, cycles: int, max_degree: int}>
+     * @return list<array{snapshot_id: string, cycles: int, max_degree: int, dead_code: int, diagnostics: int, components: int}>
      */
     private static function trend(array $series): array
     {
@@ -367,14 +381,43 @@ final readonly class DashboardService
             if (!isset($entry['metrics'])) {
                 continue;
             }
+            $metrics = $entry['metrics'];
             $points[] = [
                 'snapshot_id' => $entry['scan_id'],
-                'cycles' => $entry['metrics']['cycles'],
-                'max_degree' => $entry['metrics']['max_degree'],
+                'cycles' => $metrics['cycles'],
+                'max_degree' => $metrics['max_degree'],
+                'dead_code' => (int) ($metrics['unreferenced_candidates'] ?? 0),
+                'diagnostics' => (int) ($metrics['error_diagnostics'] ?? 0) + (int) ($metrics['warning_diagnostics'] ?? 0),
+                'components' => (int) ($entry['counts']['components'] ?? 0),
             ];
         }
 
         return $points;
+    }
+
+    /**
+     * How the newest snapshot's figures moved since the one retained before
+     * it, each as the newer less the older, and which snapshot that is
+     * (`against`); null with fewer than two snapshots to compare. Both come
+     * from the same trend figures, so a delta never mixes two ways of
+     * counting.
+     *
+     * @param list<array{snapshot_id: string, cycles: int, max_degree: int, dead_code: int, diagnostics: int, components: int}> $trend
+     * @return array{against: string, components: int, cycles: int, max_degree: int, dead_code: int, diagnostics: int}|null
+     */
+    private static function deltas(array $trend): ?array
+    {
+        $count = count($trend);
+        if ($count < 2) {
+            return null;
+        }
+        [$before, $after] = [$trend[$count - 2], $trend[$count - 1]];
+        $moved = ['against' => $before['snapshot_id']];
+        foreach (['components', 'cycles', 'max_degree', 'dead_code', 'diagnostics'] as $figure) {
+            $moved[$figure] = $after[$figure] - $before[$figure];
+        }
+
+        return $moved;
     }
 
     /**
@@ -389,8 +432,8 @@ final readonly class DashboardService
             'snapshot_id' => null, 'freshness' => ['state' => 'unscanned', 'age_seconds' => null, 'drift_files' => 0, 'drifted' => [], 'drifted_truncated' => false],
             'hubs' => [], 'hubs_truncated' => false, 'hubs_truncation_reasons' => [], 'hotspots' => [], 'dead_code_candidates' => 0, 'dead_code_truncated' => false,
             'cycles' => ['count' => 0, 'truncated' => false, 'truncation_reasons' => [], 'largest' => []],
-            'trend' => [], 'fan_in' => [], 'fan_in_truncated' => false, 'dead_code' => [],
-            'boundary_matrix' => ['boundaries' => [], 'members' => [], 'boundaries_truncated' => false, 'cells' => [], 'forbidden' => [], 'edges' => 0, 'truncated' => false, 'truncation_reasons' => []],
+            'trend' => [], 'deltas' => null, 'in_degree' => ['buckets' => [], 'truncated' => false], 'fan_in' => [], 'fan_in_truncated' => false, 'dead_code' => [],
+            'boundary_matrix' => ['boundaries' => [], 'members' => [], 'labelled' => 0, 'boundaries_truncated' => false, 'cells' => [], 'forbidden' => [], 'flows' => [], 'edges' => 0, 'truncated' => false, 'truncation_reasons' => []],
         ] + ProjectFindings::none();
     }
 }

@@ -153,6 +153,64 @@ final class DashboardServiceTest extends KnossosTestCase
         }
     }
 
+    /** Each trend point carries what the health rows draw, and `deltas` how the newest moved since the one before it. */
+    #[Group('query')]
+    public function testTheTrendCarriesTheHealthFiguresAndTheDeltasSinceThePreviousSnapshot(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $first = (new DashboardService($pdo))->dashboard($root);
+            // One snapshot has nothing to compare against.
+            assertSame(null, $first['deltas']);
+            $this->writeCycle($root, 'Ring', 3);
+            $this->rescan($pdo, $root);
+            $d = (new DashboardService($pdo))->dashboard($root);
+            [$before, $after] = $d['trend'];
+            foreach (['cycles', 'max_degree', 'dead_code', 'diagnostics', 'components'] as $figure) {
+                assertIsInt($after[$figure], $figure);
+            }
+            assertGreaterThan($before['components'], $after['components']);
+            assertSame($before['snapshot_id'], $d['deltas']['against']);
+            assertSame($after['components'] - $before['components'], $d['deltas']['components']);
+            assertSame($after['cycles'] - $before['cycles'], $d['deltas']['cycles']);
+            assertSame(1, $d['deltas']['cycles']);
+            assertSame($after['dead_code'] - $before['dead_code'], $d['deltas']['dead_code']);
+            assertSame($after['max_degree'] - $before['max_degree'], $d['deltas']['max_degree']);
+            assertSame($after['diagnostics'] - $before['diagnostics'], $d['deltas']['diagnostics']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Every component the hub ranking could hold is counted in one of five in-degree buckets; the listed hubs fall in theirs. */
+    #[Group('query')]
+    public function testTheInDegreeHistogramBucketsEveryRankableComponent(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $d = (new DashboardService($pdo))->dashboard($root);
+            $buckets = $d['in_degree']['buckets'];
+            assertSame([[0, 0], [1, 5], [6, 20], [21, 100], [101, null]], array_map(static fn(array $b): array => [$b['from'], $b['to']], $buckets));
+            assertSame(false, $d['in_degree']['truncated']);
+            // The health check's own walk, so the buckets add up to what it ranked from: tests and external code left out.
+            $health = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 50)->data;
+            assertSame($health['in_degree_histogram'], $buckets);
+            $nothing = array_sum(array_map(static fn(array $h): int => $h['metrics']['in_degree'] > 0 ? 1 : 0, $health['hubs']));
+            assertSame($nothing, array_sum(array_column(array_slice($buckets, 1), 'components')));
+            foreach ($d['hubs'] as $hub) {
+                $in = $hub['in_degree'];
+                $bucket = array_values(array_filter($buckets, static fn(array $b): bool => $in >= $b['from'] && ($b['to'] === null || $in <= $b['to'])));
+                assertCount(1, $bucket);
+                assertGreaterThan(0, $bucket[0]['components']);
+            }
+            $unscanned = (new DashboardService($pdo))->dashboard('/nowhere/at/all');
+            assertSame(['buckets' => [], 'truncated' => false], $unscanned['in_degree']);
+            assertSame(null, $unscanned['deltas']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /**
      * Writes `$length` classes whose methods call each other in a ring, which
      * the scanner reads as one dependency cycle of that many methods.
@@ -391,7 +449,7 @@ final class DashboardServiceTest extends KnossosTestCase
             $d = (new DashboardService($pdo))->dashboard($root);
             assertCount(20, $d['trend']);
             assertSame($d['snapshot_id'], $d['trend'][19]['snapshot_id']);
-            assertSame(['snapshot_id', 'cycles', 'max_degree'], array_keys($d['trend'][0]));
+            assertSame(['snapshot_id', 'cycles', 'max_degree', 'dead_code', 'diagnostics', 'components'], array_keys($d['trend'][0]));
             assertIsInt($d['trend'][0]['cycles']);
             assertIsInt($d['trend'][0]['max_degree']);
         } finally {
@@ -870,6 +928,18 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame(array_sum(array_map('array_sum', $matrix['cells'])), $matrix['edges']);
             assertCount(count($matrix['boundaries']), $matrix['cells']);
             assertSame([], $matrix['forbidden']);
+            // Every labelled component, the axes' or not.
+            assertSame(count(BoundaryLabels::load($pdo, $projectId)->forProject($projectId)), $matrix['labelled']);
+            // The flows are the cells off the diagonal that hold an edge, strongest first.
+            assertSame(['from' => $at['Edge'], 'to' => $at['Core'], 'edges' => $matrix['cells'][$at['Edge']][$at['Core']], 'forbidden' => false], $matrix['flows'][0]);
+            foreach ($matrix['flows'] as $i => $flow) {
+                assertNotSame($flow['from'], $flow['to']);
+                assertSame($matrix['cells'][$flow['from']][$flow['to']], $flow['edges']);
+                assertGreaterThan(0, $flow['edges']);
+                if ($i > 0) {
+                    assertGreaterThanOrEqual($flow['edges'], $matrix['flows'][$i - 1]['edges']);
+                }
+            }
             assertSame(false, $matrix['truncated']);
             assertSame([], $matrix['truncation_reasons']);
         } finally {
@@ -888,6 +958,10 @@ final class DashboardServiceTest extends KnossosTestCase
             $matrix = (new DashboardService($pdo))->dashboard($root)['boundary_matrix'];
             $at = array_flip($matrix['boundaries']);
             assertSame([[$at['Edge'], $at['Core']]], $matrix['forbidden']);
+            // A flow a policy forbids is marked so.
+            $edgeToCore = array_values(array_filter($matrix['flows'], static fn(array $f): bool => $f['from'] === $at['Edge'] && $f['to'] === $at['Core']));
+            assertSame(true, $edgeToCore[0]['forbidden']);
+            assertSame([], array_filter($matrix['flows'], static fn(array $f): bool => $f['forbidden'] && !($f['from'] === $at['Edge'] && $f['to'] === $at['Core'])));
 
             $config = json_decode((string) file_get_contents($root . '/knossos.json'), true, flags: JSON_THROW_ON_ERROR);
             $config['policies'] = [['id' => 'core-keeps-to-itself', 'from_boundary' => 'Core', 'allow_targets' => ['Core']]];

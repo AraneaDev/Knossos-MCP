@@ -26,6 +26,9 @@ use PDO;
  */
 final readonly class BoundaryMatrix
 {
+    /** The boundary-to-boundary dependencies listed as flows, strongest first. */
+    private const FLOWS = 8;
+
     /**
      * @param PDO $pdo an existing, migrated graph database
      * @param Closure|null $clock nanosecond clock, so the time limit is testable
@@ -43,7 +46,11 @@ final readonly class BoundaryMatrix
      * entry carries how many components it labels.
      *
      * @param list<array<string, mixed>> $policies the project's declared policies
-     * @return array{boundaries: list<string>, members: list<int>, boundaries_truncated: bool, cells: list<list<int>>, forbidden: list<array{int, int}>, edges: int, truncated: bool, truncation_reasons: list<string>}
+     * `labelled` counts every component that carries a label, the axes' or
+     * not, so the axes' shares of it can be told; `flows` lists the strongest
+     * dependencies from one boundary to another (see {@see self::flows()}).
+     *
+     * @return array{boundaries: list<string>, members: list<int>, labelled: int, boundaries_truncated: bool, cells: list<list<int>>, forbidden: list<array{int, int}>, flows: list<array{from: int, to: int, edges: int, forbidden: bool}>, edges: int, truncated: bool, truncation_reasons: list<string>}
      */
     public function build(string $projectId, BoundaryLabels $labels, array $policies, int $limit = 12): array
     {
@@ -68,12 +75,16 @@ final readonly class BoundaryMatrix
             }
         });
 
+        $forbidden = self::forbidden($labels, $index, $policies);
+
         return [
             'boundaries' => $names,
             'members' => array_map(static fn(string $name): int => $members[$name], $names),
+            'labelled' => count($labelled),
             'boundaries_truncated' => count($ranked) > $limit,
             'cells' => $cells,
-            'forbidden' => self::forbidden($labels, $index, $policies),
+            'forbidden' => $forbidden,
+            'flows' => self::flows($cells, $forbidden),
             'edges' => $counted,
             'truncated' => $reasons !== [],
             'truncation_reasons' => $reasons,
@@ -114,6 +125,35 @@ final readonly class BoundaryMatrix
             ?: [$a['source']['canonical_name'], $a['target']['canonical_name']] <=> [$b['source']['canonical_name'], $b['target']['canonical_name']]);
 
         return ['edges' => $edges, 'couplings' => array_slice($listed, 0, $limit), 'truncated' => $reasons !== [], 'truncation_reasons' => $reasons];
+    }
+
+    /**
+     * The strongest dependencies from one boundary to another: the cells off
+     * the diagonal that hold an edge, the most edges first (ties by row, then
+     * column), the first {@see self::FLOWS}, each marked when a declared
+     * policy forbids it. By axis index, as `cells` and `forbidden` are.
+     *
+     * @param list<list<int>> $cells
+     * @param list<array{int, int}> $forbidden
+     * @return list<array{from: int, to: int, edges: int, forbidden: bool}>
+     */
+    private static function flows(array $cells, array $forbidden): array
+    {
+        $banned = [];
+        foreach ($forbidden as [$from, $to]) {
+            $banned[$from . ':' . $to] = true;
+        }
+        $flows = [];
+        foreach ($cells as $from => $row) {
+            foreach ($row as $to => $edges) {
+                if ($from !== $to && $edges > 0) {
+                    $flows[] = ['from' => $from, 'to' => $to, 'edges' => $edges, 'forbidden' => isset($banned[$from . ':' . $to])];
+                }
+            }
+        }
+        usort($flows, static fn(array $a, array $b): int => [$b['edges'], $a['from'], $a['to']] <=> [$a['edges'], $b['from'], $b['to']]);
+
+        return array_slice($flows, 0, self::FLOWS);
     }
 
     /**

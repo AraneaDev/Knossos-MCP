@@ -18,6 +18,12 @@ use PDOStatement;
  */
 final readonly class GraphTopologyQueryService extends AbstractArchitectureQueryService
 {
+    /**
+     * The first in-degree of each bucket of the health check's in-degree
+     * histogram: nothing depends on it, a few, some, many, and the hubs.
+     */
+    private const IN_DEGREE_FROM = [0, 1, 6, 21, 101];
+
     /** Node, relationship, role, and language counts: the orientation query for an unfamiliar codebase. */
     public function architectureSummary(string $projectId, int $limit = 50): ResultEnvelope
     {
@@ -408,7 +414,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $project['active_scan_id'],
             self::healthSummary(count($hubs), count($hotspots), $candidatesTotal, count($deadCandidates), $testOnlyCandidates, $truncationReasons, $candidateTruncationReasons),
             [
-                'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates,
+                'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates, 'in_degree_histogram' => $ranked['in_degree'],
                 'bounds' => [
                     'limit' => $limit, 'max_nodes' => $maxNodes, 'max_edges' => $maxEdges, 'timeout_ms' => $timeoutMs,
                     'candidate_confidence' => $candidateConfidence, 'candidate_offset' => $candidateOffset,
@@ -489,7 +495,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
 
     /**
      * One pass over the node slice, sorting each component into the two
-     * rankings architecture_health reports: hubs and static hotspots.
+     * rankings architecture_health reports: hubs and static hotspots. Every
+     * component the rankings could hold (degree zero included) is also counted
+     * into the in-degree histogram, so a bucket says how many there are and
+     * the ranking which few are listed.
      *
      * Extracted from architectureHealth for length: everything before it
      * gathers the slice and its degrees, everything after it ranks and renders.
@@ -501,14 +510,20 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * @param array<string, list<array<string, mixed>>> $roles
      * @param array<string, list<array<string, mixed>>> $boundaries
      * @param array<string, true> $cycleMembers
-     * @return array{hubs: list<array<string, mixed>>, hotspots: list<array<string, mixed>>, excluded_external: int, excluded_tests: int}
+     * @return array{hubs: list<array<string, mixed>>, hotspots: list<array<string, mixed>>, excluded_external: int, excluded_tests: int, in_degree: list<array{from: int, to: int|null, components: int}>}
      */
     private function rankNodes(array $nodes, array $metrics, array $roles, array $boundaries, array $cycleMembers, bool $includeExternal, bool $includeTests): array
     {
         $hubs = $hotspots = [];
         $excludedExternal = $excludedTests = 0;
+        $histogram = array_fill(0, count(self::IN_DEGREE_FROM), 0);
         foreach ($nodes as $id => $row) {
             $degree = $metrics[$id]['in_degree'] + $metrics[$id]['out_degree'];
+            $external = !$includeExternal && ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
+            $test = !$external && !$includeTests && ReportableComponent::isTest(array_column($roles[$id] ?? [], 'role'));
+            if (!$external && !$test) {
+                ++$histogram[self::inDegreeBucket($metrics[$id]['in_degree'])];
+            }
             if ($degree === 0) {
                 continue;
             }
@@ -517,9 +532,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 'display_name' => $row['display_name'], 'origin' => $row['origin'], 'confidence' => $row['confidence'],
                 'roles' => $roles[$id] ?? [], 'boundaries' => $boundaries[$id] ?? [],
             ];
-            if (!$includeExternal && ReportableComponent::isExternal((string) $row['kind'], $row['origin'])) {
+            if ($external) {
                 ++$excludedExternal;
-            } elseif (!$includeTests && ReportableComponent::isTest(array_column($roles[$id] ?? [], 'role'))) {
+            } elseif ($test) {
                 ++$excludedTests;
             } else {
                 $hubs[] = ['component' => $component, 'metrics' => $metrics[$id], 'score' => $degree];
@@ -531,7 +546,38 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             }
         }
 
-        return ['hubs' => $hubs, 'hotspots' => $hotspots, 'excluded_external' => $excludedExternal, 'excluded_tests' => $excludedTests];
+        return ['hubs' => $hubs, 'hotspots' => $hotspots, 'excluded_external' => $excludedExternal, 'excluded_tests' => $excludedTests, 'in_degree' => self::histogram($histogram)];
+    }
+
+    /** The bucket of the in-degree histogram `$inDegree` falls in: the last whose lower bound it reaches. */
+    private static function inDegreeBucket(int $inDegree): int
+    {
+        $bucket = 0;
+        foreach (self::IN_DEGREE_FROM as $index => $from) {
+            if ($inDegree >= $from) {
+                $bucket = $index;
+            }
+        }
+
+        return $bucket;
+    }
+
+    /**
+     * The histogram's counts as buckets: each one's first and last in-degree
+     * (null for the open top bucket) and how many components fall in it.
+     *
+     * @param list<int> $counts
+     * @return list<array{from: int, to: int|null, components: int}>
+     */
+    private static function histogram(array $counts): array
+    {
+        $buckets = [];
+        foreach (self::IN_DEGREE_FROM as $index => $from) {
+            $next = self::IN_DEGREE_FROM[$index + 1] ?? null;
+            $buckets[] = ['from' => $from, 'to' => $next === null ? null : $next - 1, 'components' => $counts[$index] ?? 0];
+        }
+
+        return $buckets;
     }
 
     /**
