@@ -40,16 +40,11 @@ final readonly class ChurnService
     /** How long git may take. */
     private const GIT_TIMEOUT_MS = 3000;
 
-    private GitProcessRunnerInterface $git;
-
     /**
      * @param PDO $pdo an existing, migrated graph database
-     * @param GitProcessRunnerInterface|null $git how git is run; the hardened runner unless a test stands in
+     * @param GitProcessRunnerInterface|null $runner how git is run when a test stands in; the hardened runner otherwise
      */
-    public function __construct(private PDO $pdo, ?GitProcessRunnerInterface $git = null)
-    {
-        $this->git = $git ?? new GitProcessRunner();
-    }
+    public function __construct(private PDO $pdo, private ?GitProcessRunnerInterface $runner = null) {}
 
     /**
      * The churn hotspots of the project owning `$path`, or an `unscanned` or
@@ -104,12 +99,13 @@ final readonly class ChurnService
     private function log(string $root): ?array
     {
         $git = ['git', '-c', 'core.quotePath=false', '--no-optional-locks', '--no-pager', '-C', $root];
+        $runner = $this->runner ?? new GitProcessRunner();
         try {
-            $head = trim($this->git->run([...$git, 'rev-parse', '--verify', '-q', 'HEAD'], self::GIT_TIMEOUT_MS, 'churn'));
+            $head = trim($runner->run([...$git, 'rev-parse', '--verify', '-q', 'HEAD'], self::GIT_TIMEOUT_MS, 'churn'));
             if ($head === '') {
                 return null;
             }
-            $out = $this->git->run([...$git, 'log', '--since=' . self::DAYS . '.days.ago', '--max-count=' . self::COMMITS, '--no-merges', '--no-renames', '--format=%x1e', '--name-only', '--relative', '--', '.'], self::GIT_TIMEOUT_MS, 'churn');
+            $out = $runner->run([...$git, 'log', '--since=' . self::DAYS . '.days.ago', '--max-count=' . self::COMMITS, '--no-merges', '--no-renames', '--format=%x1e', '--name-only', '--relative', '--', '.'], self::GIT_TIMEOUT_MS, 'churn');
         } catch (Throwable) {
             return null;
         }
