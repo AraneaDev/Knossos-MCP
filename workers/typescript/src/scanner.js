@@ -930,10 +930,17 @@ class TypeScriptLanguageFactCollector {
                 node.name,
             )?.escapedName;
             const contract = this.checker.getContextualType(node.parent);
-            return (
-                name !== undefined &&
-                contract?.getProperty(ts.unescapeLeadingUnderscores(name)) !==
-                    undefined
+            const member =
+                name === undefined
+                    ? undefined
+                    : contract?.getProperty(
+                          ts.unescapeLeadingUnderscores(name),
+                      );
+            // A contextual type inferred from the literal itself
+            // (`define<T>(options: T)`) holds this very method: that names
+            // no contract, so only a member declared elsewhere counts.
+            return (member?.declarations ?? []).some(
+                (declaration) => declaration !== node,
             );
         }
         if (

@@ -87,4 +87,22 @@ describe("a method fulfilling a supertype's member", () => {
             "src/walker.ts#Hooks::resolve": false,
         });
     });
+
+    it("is not marked when the only member of that name is the method itself", () => {
+        const overrides = scanned(
+            {
+                "tsconfig.json":
+                    '{"compilerOptions":{"strict":true,"lib":["ES2022"]},"include":["src/**/*.ts"]}',
+                "src/define.ts": [
+                    "declare function define<T>(options: T): T",
+                    "export const plugin = define({ run(): number { return 1 } })",
+                    "",
+                ].join("\n"),
+            },
+            ["src/define.ts"],
+        );
+
+        // The contextual type is inferred from the literal itself: it names no contract.
+        expect(Object.values(overrides)).toEqual([false]);
+    });
 });
