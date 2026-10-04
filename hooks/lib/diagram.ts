@@ -11,9 +11,8 @@
  * becomes rows. So two connectors that meet join (`┤`, `┼`, `╰`) without
  * either knowing of the other, and a box's border is a connector too: a line
  * leaving a box's side turns its `│` into `├`. A label written over a cell
- * something else holds, or a line through a label, counts as an overlap;
- * {@link joinErrors} lists every connector end that leads nowhere. The tests
- * hold every diagram to no overlap and no loose end at every width.
+ * something else holds, or a line through a label, counts as an overlap.
+ * The tests hold every diagram to no overlap and no loose end at every width.
  *
  * Three diagrams are laid out here: a dependency cycle as a serpentine of
  * boxes closed by a return edge ({@link cycleDiagram}), two boundaries and
@@ -248,47 +247,6 @@ export function toRows(c: Canvas, key: string): Row[] {
 }
 
 const sameStyle = (s: Style, t: Style): boolean => s.color === t.color && s.dim === t.dim && s.bold === t.bold && s.bg === t.bg
-
-/**
- * Every connector end on `c` that leads nowhere, as `x,y`: a side a
- * connector opens to whose neighbour does not open back (or is not an
- * arrowhead entered from there, or a label or mark set into the line), and
- * every arrowhead not entered by a connector or not pointing at a box.
- */
-export function joinErrors(c: Canvas): string[] {
-  const errors: string[] = []
-  const opensTo = (x: number, y: number, dir: number): boolean => {
-    const cell = at(c, x, y)
-    if (cell === undefined) return false
-    if (cell.kind === 'line' || cell.kind === 'mark' || cell.kind === 'edge') return (cell.mask & dir) !== 0 || ((cell.kind === 'edge' || cell.kind === 'mark') && (dir === LEFT || dir === RIGHT || dir === UP || dir === DOWN) && throughs(cell, dir))
-    if (cell.kind === 'arrow') return cell.mask === dir
-    return false
-  }
-  const step: Record<number, [number, number, number]> = { [UP]: [0, -1, DOWN], [DOWN]: [0, 1, UP], [LEFT]: [-1, 0, RIGHT], [RIGHT]: [1, 0, LEFT] }
-  c.grid.forEach((row, y) =>
-    row.forEach((cell, x) => {
-      if (cell.kind === 'line' || cell.kind === 'mark' || cell.kind === 'edge') {
-        for (const dir of [UP, DOWN, LEFT, RIGHT]) {
-          if ((cell.mask & dir) === 0) continue
-          const [dx, dy, back] = step[dir]!
-          if (!opensTo(x + dx, y + dy, back)) errors.push(`${x},${y}`)
-        }
-      }
-      if (cell.kind === 'arrow' && cell.way !== undefined) {
-        const [dx, dy, back] = step[cell.mask]!
-        if (!opensTo(x + dx, y + dy, back)) errors.push(`${x},${y}`)
-        // The head points at a box's border: a connector cell running across its way.
-        const [px, py] = { right: [1, 0], left: [-1, 0], up: [0, -1], down: [0, 1] }[cell.way] as [number, number]
-        const target = at(c, x + px, y + py)
-        if (target === undefined || target.kind !== 'line') errors.push(`${x},${y}`)
-      }
-    }),
-  )
-  return errors
-}
-
-/** Whether a label or mark set into a line passes the line on toward `dir`: it does where the line was drawn through it. */
-const throughs = (cell: CellAt, dir: number): boolean => (cell.mask & dir) !== 0
 
 // ---------------------------------------------------------------- the cycle
 

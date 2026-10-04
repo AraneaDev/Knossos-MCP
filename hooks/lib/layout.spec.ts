@@ -16,7 +16,6 @@ import {
   mergeRanked,
   needsRescan,
   paneInput,
-  paneRows,
   paneStatus,
   rowWidth,
   tabRows,
@@ -24,6 +23,7 @@ import {
   tableSpec,
   wrapWords,
 } from './layout'
+import { paneRows } from './__tests__/pane'
 import type { PaneInput, Row } from './layout'
 import { findRow, plainText, rawText } from './__tests__/plain-text'
 import { compact, fitStart, shortName, wrapGroups } from './rows'

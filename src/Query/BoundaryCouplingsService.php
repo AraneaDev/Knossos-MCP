@@ -23,11 +23,17 @@ final readonly class BoundaryCouplingsService
     /** Pairs listed: the pane shows the top few beside the map. */
     public const LIMIT = 5;
 
+    /** The walk the cell is counted with. */
+    private BoundaryMatrix $matrix;
+
     /**
      * @param PDO $pdo an existing, migrated graph database
      * @param BoundaryMatrix|null $matrix the walk to count with; the default bounds, unless a test narrows them
      */
-    public function __construct(private PDO $pdo, private ?BoundaryMatrix $matrix = null) {}
+    public function __construct(private PDO $pdo, ?BoundaryMatrix $matrix = null)
+    {
+        $this->matrix = $matrix ?? new BoundaryMatrix($pdo);
+    }
 
     /**
      * The couplings from `$from` to `$to` in the project that owns `$path`,
@@ -44,7 +50,7 @@ final readonly class BoundaryCouplingsService
             return ['status' => 'unscanned'] + $envelope;
         }
         $id = (string) $project['id'];
-        $found = ($this->matrix ?? new BoundaryMatrix($this->pdo))->couplings($id, BoundaryLabels::load($this->pdo, $id), $from, $to, self::LIMIT);
+        $found = $this->matrix->couplings($id, BoundaryLabels::load($this->pdo, $id), $from, $to, self::LIMIT);
 
         return ['status' => 'ok', 'project_id' => $id, 'snapshot_id' => $project['active_scan_id']] + $found + $envelope;
     }

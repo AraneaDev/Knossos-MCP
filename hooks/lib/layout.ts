@@ -1044,16 +1044,6 @@ export function paneLayout(input: PaneInput, columns: number, height: number = D
 /** A pane this many rows tall or shorter keeps its header tight: no blank rows around it. */
 export const SHORT_PANE = 24
 
-/**
- * Every row of the pane for `input`, none wider than `columns`: the header,
- * the tab (or the detail) laid out for the width's tier, its lists as long as
- * `height` rows allow, then the footer bar (see {@link paneLayout}).
- */
-export function paneRows(input: PaneInput, columns: number, height: number = DEFAULT_ROWS): Row[] {
-  const { body, footer } = paneLayout(input, columns, height)
-  return [...body, ...footer]
-}
-
 /** The open tab's cards. */
 function tabArrangement(input: PaneInput, selected: number, tier: Tier): Arrangement {
   if (input.tab === 'overview') return overviewArrangement(input, selected, tier)

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { ARROWS, boxWidth, canvas, cycleDiagram, edgeLabel, joinErrors, line, neighbourhood, pairColumns, pairDiagram, toRows, write } from './diagram'
+import { ARROWS, boxWidth, canvas, cycleDiagram, edgeLabel, line, neighbourhood, pairColumns, pairDiagram, toRows, write } from './diagram'
+import { joinErrors } from './__tests__/joins'
 import type { DiagramNode, Hop, Neighbour } from './diagram'
 import { rawText } from './__tests__/plain-text'
 import { rowWidth } from './rows'

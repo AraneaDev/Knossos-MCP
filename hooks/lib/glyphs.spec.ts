@@ -2,7 +2,8 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Dashboard } from '../../types'
-import { paneInput, paneRows, TABS } from './layout'
+import { paneInput, TABS } from './layout'
+import { paneRows } from './__tests__/pane'
 import { rawText } from './__tests__/plain-text'
 
 /**

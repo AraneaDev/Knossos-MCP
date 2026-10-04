@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, DetailState, FileDetail, KnossosView, SessionChanges, TurnBrief } from '../../types'
-import { accumulate, editTarget, fileDetailInput, listFor, NO_CHANGES, paneInput, paneRows, rowWidth, subjectOf } from './layout'
+import { accumulate, editTarget, fileDetailInput, listFor, NO_CHANGES, paneInput, rowWidth, subjectOf } from './layout'
+import { paneRows } from './__tests__/pane'
 import { findRow, plainText, rawText } from './__tests__/plain-text'
 import type { PaneInput, Row } from './layout'
 import { huesOf } from './palette'
