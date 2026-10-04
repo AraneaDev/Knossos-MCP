@@ -1,3 +1,9 @@
+/**
+ * The hooks module: the session state's atoms, the engine port the mod's
+ * modules reach the engine through (see `mod/port.ts` for why), and the
+ * hooks, each wired to what `mod/` does. The engine loads this file and
+ * every file it imports from the plugin.
+ */
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 

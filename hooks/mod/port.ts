@@ -1,3 +1,9 @@
+/**
+ * The engine as the mod's modules reach it ({@link Port}), and the calls
+ * through it that every module makes: the wrapper, a path with its links
+ * followed, the footer's word, the session's own edits and scans, and
+ * turning the mod off.
+ */
 import type { EngineInterface, PluginState } from 'claude-code'
 
 import type { Feedback, SessionChanges } from '../../types'

@@ -1,3 +1,9 @@
+/**
+ * The live watcher and the scans: the watcher child and its events, whose a
+ * scanned change was (change attribution), the changes since the session
+ * began as the scan ledger keeps them, the turn's brief, and the pane's
+ * rescan.
+ */
 import type { LiveState, RescanState, WatchEvent } from '../../types'
 import { activeBetween, FOLLOWED_SCAN_MS, lookbackMs, scanWindow } from '../lib/activity'
 import type { JobState } from '../lib/band'

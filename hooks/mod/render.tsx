@@ -1,3 +1,9 @@
+/**
+ * What the band and the pane draw: the pane's input from state, the laid-out
+ * rows as elements, the hover cards, and the tree budget that keeps the pane
+ * within the engine's bounds. Drawing reads state but acts on nothing: what
+ * a press does is handed in ({@link Handlers}).
+ */
 import type { Elements, RenderElement, RenderNode, RenderSurface } from 'claude-code'
 
 import { bandModel } from '../lib/band'

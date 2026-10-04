@@ -57,7 +57,7 @@ final class PluginCommand implements CliCommand
     /**
      * Copied verbatim from the installation root into a materialised plugin.
      *
-     * The mod's library files are named one by one, never globbed, so a spec
+     * The mod's module files are named one by one, never globbed, so a spec
      * or a tsconfig sitting beside them can never reach an installed plugin.
      */
     private const COPIES = [

@@ -1,3 +1,9 @@
+/**
+ * The mod's own state for one load, and what it is reset to: the module
+ * variables every other module reads and writes (`mod`), the constants more
+ * than one of them needs, and the few helpers that touch only that state.
+ * Nothing here reaches the engine.
+ */
 import type { PluginOptions, Timer } from 'claude-code'
 
 import type { Dashboard, SessionChanges } from '../../types'

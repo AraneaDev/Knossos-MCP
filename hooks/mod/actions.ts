@@ -1,3 +1,8 @@
+/**
+ * What the person's presses and keystrokes on the pane do: the press table,
+ * and the flows behind it (the finder, a note on a component, a route
+ * between two, allowing a refused root, the editor and the clipboard).
+ */
 import type { AllowState, Inspected, KnossosView, NoteState, PaneTab, RescanState, SearchState } from '../../types'
 import { parseAllowRoot, parseAnnotate, parseGraphSearch } from '../lib/envelopes'
 import { askPrompt, editTarget, locOf, locText, nextTarget, noGraphOf, peekList, refusedRoot, SCAN_PROMPT, SORTS, subjectOf, TABS } from '../lib/layout'

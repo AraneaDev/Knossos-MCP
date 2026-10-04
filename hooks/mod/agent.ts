@@ -1,3 +1,8 @@
+/**
+ * What the model is told: the note on a Read or an edit, the note after a
+ * turn and after a commit, how a note is delivered, and the answer of the
+ * model's own `knossos_context` tool.
+ */
 import { commitNote, contextAnswer, REFLOG_READ, stillReported } from '../lib/agent'
 import { parseFileContext } from '../lib/envelopes'
 import type { TurnBrief } from '../lib/envelopes'

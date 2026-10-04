@@ -1,3 +1,8 @@
+/**
+ * The session's life as the mod follows it: registering `/knossos` and the
+ * model's tool, start-up, the age tick, the end of a turn and of a session,
+ * and the `/knossos` command with the pane it opens.
+ */
 import { CONTEXT_DESCRIPTION, CONTEXT_SCHEMA, CONTEXT_TOOL } from '../lib/agent'
 import { bandModel } from '../lib/band'
 import { NO_CHANGES, noGraphOf, paneStatus } from '../lib/layout'

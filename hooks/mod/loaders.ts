@@ -1,3 +1,10 @@
+/**
+ * The reads the pane and the notes draw from: the dashboard, the session's
+ * baseline and where the checkout stands, and the reads keyed to what the
+ * pane shows ({@link LOADERS}), all started through one keyed loader. Each
+ * runs on a timer, never inside a render, and stores its answer only while
+ * it is still the one wanted.
+ */
 import type { BranchState, ChurnState, ComponentDetail, CouplingState, Dashboard, DetailState, DiffState, FileDetail, Inspected, KnossosView, RefreshState, RingsState, RouteState } from '../../types'
 import { alertKeys, freshAlerts } from '../lib/alerts'
 import { BASELINES_KEY, baselinesOf, remember } from '../lib/baseline'
