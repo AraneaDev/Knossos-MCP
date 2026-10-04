@@ -47,6 +47,7 @@ export function churnInput(state: ChurnState | null, root: string | null): Churn
     return state === null || state.phase === 'loading' ? { ...base, said: 'Reading the last 30 days of commits…', loading: true } : { ...base, said: 'knossos did not answer; the tab asks again when the checkout moves.', warn: true }
   }
   if (answer.status === 'no-git') return { ...base, said: 'No git repository, or git did not answer: there is no history to rank.', warn: true }
+  if (answer.status === 'unreadable') return { ...base, said: 'Could not read the git history: git printed no log, not even of the last 50 commits.', warn: true }
   if (answer.status !== 'ok') return { ...base, said: 'knossos did not read the history.', warn: true }
   return {
     ...base,

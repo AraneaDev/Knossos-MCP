@@ -411,10 +411,11 @@ export type FileContext = {
  * The `churn` subcommand's answer: the files changed most in the last `days`
  * days (by commits, at most `commits` read, ending at `head`) times the
  * files depending on each, the highest score first. `no-git` when git is not
- * there or did not answer.
+ * there or did not answer; `unreadable` when git named the commit but could
+ * not print its log, so nothing was read.
  */
 export type Churn = {
-  status: 'ok' | 'no-git' | 'unscanned' | 'error' | 'no-binary'
+  status: 'ok' | 'no-git' | 'unreadable' | 'unscanned' | 'error' | 'no-binary'
   days?: number
   head?: string | null
   commits?: number

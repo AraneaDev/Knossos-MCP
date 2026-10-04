@@ -22,7 +22,8 @@ use Throwable;
  *
  * Read-only, never scans. Without git, or when git cannot name the commit
  * checked out, the status says `no-git` and nothing is listed; a log too
- * large to read whole is read shorter and `truncated`.
+ * large to read whole is read shorter and `truncated`, and one git cannot
+ * print even shorter says `unreadable`, never an empty window.
  */
 final readonly class ChurnService
 {
@@ -51,8 +52,8 @@ final readonly class ChurnService
     public function __construct(private PDO $pdo, private ?GitProcessRunnerInterface $runner = null) {}
 
     /**
-     * The churn hotspots of the project owning `$path`, or an `unscanned` or
-     * `no-git` envelope. `head` is the commit the window ends at: what the
+     * The churn hotspots of the project owning `$path`, or an `unscanned`,
+     * `no-git` or `unreadable` envelope. `head` is the commit the window ends at: what the
      * pane keeps the answer for.
      *
      * @return array<string, mixed>
@@ -71,6 +72,10 @@ final readonly class ChurnService
         $log = $this->log($root);
         if ($log === null) {
             return ['status' => 'no-git'] + $envelope;
+        }
+        if ($log === false) {
+            // git named the commit but printed no log, not even a shorter one: nothing was read, which is no empty window.
+            return ['status' => 'unreadable'] + $envelope;
         }
         [$head, $commits, $counts, $cut] = $log;
         arsort($counts);
@@ -102,12 +107,12 @@ final readonly class ChurnService
      * A window whose log git cannot print within its bounds (a huge commit,
      * or a slow repository) is read again over the newest
      * {@see self::FEWER} commits, and said to be cut; only when that fails
-     * too is nothing read. The repository is there either way: it is never
-     * called `no-git` for being large.
+     * too is nothing read, and false says so. The repository is there either
+     * way: it is never called `no-git` for being large.
      *
-     * @return array{0: string, 1: int, 2: array<string, int>, 3: bool}|null
+     * @return array{0: string, 1: int, 2: array<string, int>, 3: bool}|false|null
      */
-    private function log(string $root): ?array
+    private function log(string $root): array|false|null
     {
         $git = ['git', '-c', 'core.quotePath=false', '--no-optional-locks', '--no-pager', '-C', $root];
         $runner = $this->runner ?? new GitProcessRunner();
@@ -128,10 +133,13 @@ final readonly class ChurnService
                 continue;
             }
         }
+        if ($out === null) {
+            return false;
+        }
         $cut = $count !== self::COMMITS;
         $counts = [];
         $commits = 0;
-        foreach (explode("\x1E", $out ?? '') as $index => $record) {
+        foreach (explode("\x1E", $out) as $index => $record) {
             if ($index === 0) {
                 continue;
             }

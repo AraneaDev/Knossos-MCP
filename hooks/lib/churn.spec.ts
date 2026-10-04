@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Churn, ChurnState, Dashboard, KnossosView } from '../../types'
 import { churnInput, churnList, scatterRows } from './churn'
+import { parseChurn } from './envelopes'
 import { listFor, paneInput, paneLayout } from './layout'
 import { plainText, rawText } from './__tests__/plain-text'
 import { rowWidth } from './rows'
@@ -20,6 +21,14 @@ describe('the Churn tab', () => {
     expect(text(state(null, 'done'))).toContain('knossos did not answer')
     expect(text(state({ status: 'no-git', files: [] }))).toContain('▲  No git repository, or git did not answer: there is no history to rank.')
     expect(text(state(answer(0)))).toContain('No file the graph holds changed in the last 30 days.')
+  })
+
+  it('says it could not read the history when git printed no log, never an empty window', () => {
+    const unread = parseChurn(JSON.stringify({ status: 'unreadable', days: 30, head: 'abc', commits: 0, truncated: false, files: [] }))
+    expect(unread?.status).toBe('unreadable')
+    const t = text(state(unread))
+    expect(t).toContain('▲  Could not read the git history')
+    expect(t).not.toContain('No file the graph holds changed')
   })
 
   it('ranks the files by commits times dependents, the nine highest by their rank, each opening its file', () => {

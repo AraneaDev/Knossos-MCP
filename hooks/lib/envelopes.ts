@@ -206,7 +206,7 @@ export function parseFileContext(stdout: string): FileContext | null {
   return ok ? parsed : null
 }
 
-const CHURN = new Set(['ok', 'no-git', 'unscanned', 'error', 'no-binary'])
+const CHURN = new Set(['ok', 'no-git', 'unreadable', 'unscanned', 'error', 'no-binary'])
 
 /** The Churn tab's hotspots from the wrapper's stdout; null for silence or anything unexpected (a file without its figures). */
 export function parseChurn(stdout: string): Churn | null {

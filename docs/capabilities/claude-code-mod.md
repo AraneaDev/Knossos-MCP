@@ -297,7 +297,10 @@ reads it again. A scatter draws every listed file, commits across and
 dependents up on a log scale from the fewest listed to the most, the nine
 highest scores as their rank digits and the marked file as the accent dot;
 under it the ranked list, each file with its commits, its dependents and a
-bar for its score, opening its detail. Without git the tab says so.
+bar for its score, opening its detail. Without git the tab says so. A log
+too large to read whole is read again over the last 50 commits and marked
+cut; when git cannot print even that, the tab says it could not read the git
+history rather than showing an empty window.
 
 A component's detail draws its blast radius: what depends on it one hop
 away, two hops away, and further (`knossos blast-radius`, at most six hops,

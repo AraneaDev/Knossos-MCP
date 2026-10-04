@@ -102,6 +102,27 @@ final class PaneQueriesTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testALogGitCannotPrintEvenShorterIsSaidToBeUnreadNeverAnEmptyWindow(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $runner = new class implements GitProcessRunnerInterface {
+                public function run(array $command, int $timeoutMs, string $operation): string
+                {
+                    if (in_array('rev-parse', $command, true)) {
+                        return str_repeat('a', 40) . "\n";
+                    }
+                    throw new RuntimeException('Git churn timed out.');
+                }
+            };
+            $churn = (new ChurnService($pdo, $runner))->churn($root);
+            assertSame(['unreadable', 0, []], [$churn['status'], $churn['commits'], $churn['files']]);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
     public function testTheBlastRadiusCountsEachRingAndTheTestsThatReachIt(): void
     {
         [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
