@@ -148,7 +148,9 @@ final readonly class BoundaryLabels
         );
         $statement->execute(['project' => $projectId]);
         $best = [];
-        foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$node, $boundary]) {
+        // One row at a time: a large project has a membership per component, and all of them at once is the bulk of the memory.
+        while (($row = $statement->fetch(PDO::FETCH_NUM)) !== false) {
+            [$node, $boundary] = $row;
             $rank = $this->ranks[(string) $boundary] ?? null;
             if ($rank !== null && (!isset($best[(string) $node]) || $rank < $best[(string) $node])) {
                 $best[(string) $node] = $rank;

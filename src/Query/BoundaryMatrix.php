@@ -116,18 +116,118 @@ final readonly class BoundaryMatrix
                 ++$edges;
             }
         });
-        $nodes = $this->nodes(array_unique(array_merge(...array_map(static fn(string $key): array => explode("\0", $key), array_keys($pairs)))));
-        $listed = [];
-        foreach ($pairs as $key => $count) {
-            [$source, $target] = explode("\0", (string) $key);
-            if (isset($nodes[$source], $nodes[$target])) {
-                $listed[] = ['source' => $nodes[$source], 'target' => $nodes[$target], 'edges' => $count];
+        unset($labelled);
+        $listed = $this->strongest($pairs, $limit);
+
+        return ['edges' => $edges, 'couplings' => $listed, 'truncated' => $reasons !== [], 'truncation_reasons' => $reasons];
+    }
+
+    /**
+     * The `$limit` strongest of `$pairs` (source and target ids joined by a
+     * NUL, each with its edge count), most edges first and ties by the two
+     * canonical names, as coupling entries. Only the pairs that can reach the
+     * top are looked up: those with at least the edge count of the
+     * `$limit`th, which is every pair of the cell only when they all tie. A
+     * pair whose component is gone is not listed, and never takes a place.
+     *
+     * @param array<int|string, int> $pairs
+     * @return list<array{source: array{name: string, canonical_name: string, kind: string}, target: array{name: string, canonical_name: string, kind: string}, edges: int}>
+     */
+    private function strongest(array $pairs, int $limit): array
+    {
+        if ($pairs === [] || $limit < 1) {
+            return [];
+        }
+        // The edge count of the `$limit`th pair, from how many pairs hold each count, not from a sorted copy of them all.
+        $held = array_count_values($pairs);
+        krsort($held);
+        $cutoff = 0;
+        $above = 0;
+        foreach ($held as $count => $pairsWithIt) {
+            $cutoff = $count;
+            $above += $pairsWithIt;
+            if ($above >= $limit) {
+                break;
             }
         }
-        usort($listed, static fn(array $a, array $b): int => $b['edges'] <=> $a['edges']
-            ?: [$a['source']['canonical_name'], $a['target']['canonical_name']] <=> [$b['source']['canonical_name'], $b['target']['canonical_name']]);
+        $top = $this->rankedTop(count($held) === 1 || $cutoff === array_key_last($held) ? $pairs : array_filter($pairs, static fn(int $count): bool => $count >= $cutoff), $limit);
+        if (count($top) < $limit && count($top) < count($pairs)) {
+            // A candidate's component was gone, so the pairs below the cutoff may be needed.
+            $top = $this->rankedTop($pairs, $limit);
+        }
+        $nodes = $this->nodes(self::idsOf(array_column($top, 'count', 'key')));
+        $listed = [];
+        foreach ($top as $entry) {
+            [$source, $target] = explode("\0", $entry['key']);
+            $listed[] = ['source' => $nodes[$source], 'target' => $nodes[$target], 'edges' => $entry['count']];
+        }
 
-        return ['edges' => $edges, 'couplings' => array_slice($listed, 0, $limit), 'truncated' => $reasons !== [], 'truncation_reasons' => $reasons];
+        return $listed;
+    }
+
+    /**
+     * The distinct component ids named by pair keys.
+     *
+     * @param array<int|string, int> $pairs
+     * @return list<string>
+     */
+    private static function idsOf(array $pairs): array
+    {
+        $ids = [];
+        foreach (array_keys($pairs) as $key) {
+            foreach (explode("\0", (string) $key) as $id) {
+                $ids[$id] = true;
+            }
+        }
+
+        return array_map('strval', array_keys($ids));
+    }
+
+    /**
+     * The `$limit` strongest of `$pairs` whose two components exist, strongest
+     * first, ties by the two canonical names. A chunk of pairs at a time, so
+     * the names held are those of the chunk and the running top, never of every pair.
+     *
+     * @param array<int|string, int> $pairs
+     * @return list<array{key: string, count: int, source: string, target: string}>
+     */
+    private function rankedTop(array $pairs, int $limit): array
+    {
+        $top = [];
+        foreach (array_chunk($pairs, self::IDS_PER_QUERY / 2, true) as $chunk) {
+            $names = $this->canonicalNames(self::idsOf($chunk));
+            foreach ($chunk as $key => $count) {
+                [$source, $target] = explode("\0", (string) $key);
+                if (isset($names[$source], $names[$target])) {
+                    $top[] = ['key' => (string) $key, 'count' => $count, 'source' => $names[$source], 'target' => $names[$target]];
+                }
+            }
+            usort($top, static fn(array $a, array $b): int => $b['count'] <=> $a['count']
+                ?: [$a['source'], $a['target']] <=> [$b['source'], $b['target']]);
+            $top = array_slice($top, 0, $limit);
+        }
+
+        return $top;
+    }
+
+    /**
+     * The canonical names of the components among `$ids`, by id.
+     *
+     * @param list<string> $ids
+     * @return array<string, string>
+     */
+    private function canonicalNames(array $ids): array
+    {
+        $names = [];
+        foreach (array_chunk($ids, self::IDS_PER_QUERY) as $chunk) {
+            $statement = $this->pdo->prepare('SELECT id, canonical_name FROM nodes WHERE id IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')');
+            $statement->execute($chunk);
+            while (($row = $statement->fetch(PDO::FETCH_NUM)) !== false) {
+                $names[(string) $row[0]] = (string) $row[1];
+            }
+        }
+
+        return $names;
     }
 
     /**
