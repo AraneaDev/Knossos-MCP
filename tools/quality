@@ -242,10 +242,10 @@ if [ "$profile" = "full" ] && in_lane release; then
     # daemon before the lane starts; rebuilding it here would throw that away
     # and pay for an uncached build inside the container. Locally the image is
     # usually absent, so the build still happens on a workstation.
-    if ! docker image inspect knossos-mcp:quality-runtime >/dev/null 2>&1; then
-        docker build --target runtime -t knossos-mcp:quality-runtime .
+    if ! docker image inspect knossos:quality-runtime >/dev/null 2>&1; then
+        docker build --target runtime -t knossos:quality-runtime .
     fi
-    docker run --rm knossos-mcp:quality-runtime doctor --json
+    docker run --rm knossos:quality-runtime doctor --json
     tools/release-lifecycle
     tools/supply-chain
     tools/benchmark

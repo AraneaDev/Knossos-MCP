@@ -1,5 +1,5 @@
 {
-  "name": "@knossos-mcp/typescript-scanner",
+  "name": "@knossos/typescript-scanner",
   "version": "0.6.0",
   "private": true,
   "type": "module",

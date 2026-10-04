@@ -1,18 +1,18 @@
 <div align="center">
 
-# Knossos-MCP
+# Knossos
 
 **The labyrinth mapped once, so nobody has to wander it again.**
 
-[![Release](https://img.shields.io/github/v/release/AraneaDev/Knossos-MCP?label=release)](https://github.com/AraneaDev/Knossos-MCP/releases)
+[![Release](https://img.shields.io/github/v/release/AraneaDev/knossos?label=release)](https://github.com/AraneaDev/knossos/releases)
 [![Tool page](https://img.shields.io/badge/tool%20page-aranea--development.nl-0b7285)](https://aranea-development.nl/en/tools/knossos-mcp)
-[![CI](https://img.shields.io/github/actions/workflow/status/AraneaDev/Knossos-MCP/quality.yml?label=CI)](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml)
-[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FAraneaDev%2FKnossos-MCP%2Fgh-pages%2Fcoverage.json)](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml)
-[![License](https://img.shields.io/github/license/AraneaDev/Knossos-MCP?label=license&color=yellow)](./LICENSE)
-[![Language](https://img.shields.io/github/languages/top/AraneaDev/Knossos-MCP)](https://github.com/AraneaDev/Knossos-MCP)
-[![Last commit](https://img.shields.io/github/last-commit/AraneaDev/Knossos-MCP?label=last%20commit)](https://github.com/AraneaDev/Knossos-MCP/commits/main)
+[![CI](https://img.shields.io/github/actions/workflow/status/AraneaDev/knossos/quality.yml?label=CI)](https://github.com/AraneaDev/knossos/actions/workflows/quality.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FAraneaDev%2Fknossos%2Fgh-pages%2Fcoverage.json)](https://github.com/AraneaDev/knossos/actions/workflows/quality.yml)
+[![License](https://img.shields.io/github/license/AraneaDev/knossos?label=license&color=yellow)](./LICENSE)
+[![Language](https://img.shields.io/github/languages/top/AraneaDev/knossos)](https://github.com/AraneaDev/knossos)
+[![Last commit](https://img.shields.io/github/last-commit/AraneaDev/knossos?label=last%20commit)](https://github.com/AraneaDev/knossos/commits/main)
 [![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/)
-[![MCP Observatory](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/security)
+[![MCP Observatory](https://mcpobservatory.com/servers/github:AraneaDev/knossos/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/knossos/security)
 [![Status](https://img.shields.io/badge/status-in%20development-orange)](#install)
 
 </div>
@@ -22,7 +22,7 @@
 > Minotaur, which no one could navigate without a thread to follow back out. Ariadne handed
 > Theseus that thread.
 
-**TL;DR:** Knossos-MCP scans a repository once and turns its source relationships into a local,
+**TL;DR:** Knossos scans a repository once and turns its source relationships into a local,
 evidence-backed graph. Its MCP tools and CLI answer dependency, call-site, architecture, and
 blast-radius questions with file and line evidence, so an agent does not need to rescan the tree.
 
@@ -30,9 +30,9 @@ Every fact points back to a file and a source location. Facts that static analys
 are labelled with their confidence and origin instead of being guessed. Nothing in the scan
 pipeline installs dependencies, imports a module, or boots an application framework.
 
-> **Status:** pre-release. Knossos-MCP is **not yet published to Packagist or any container
-> registry**. The source is public on [GitHub](https://github.com/AraneaDev/Knossos-MCP), so
-> build from source (see [Install](#install)). Image names such as `knossos-mcp:dev`
+> **Status:** pre-release. Knossos is **not yet published to Packagist or any container
+> registry**. The source is public on [GitHub](https://github.com/AraneaDev/knossos), so
+> build from source (see [Install](#install)). Image names such as `knossos:dev`
 > in this README are built locally by you; there is no `docker pull` to fetch them yet.
 
 **Contents:** [What you can ask](#what-you-can-ask-after-one-scan) ·
@@ -214,8 +214,8 @@ The recommended distribution is Docker: built from digest-pinned base images, it
 prebuilt Rust worker, so the scanned project needs none of them.
 
 ```sh
-docker build --target runtime -t knossos-mcp:dev .
-docker run --rm knossos-mcp:dev doctor --json
+docker build --target runtime -t knossos:dev .
+docker run --rm knossos:dev doctor --json
 ```
 
 Scan a project with networking disabled and the source mounted read-only:
@@ -224,7 +224,7 @@ Scan a project with networking disabled and the source mounted read-only:
 docker run --rm --network none \
   --mount type=bind,source=/absolute/project,target=/workspace,readonly \
   --mount type=volume,source=knossos-data,target=/data \
-  knossos-mcp:dev scan /workspace --json
+  knossos:dev scan /workspace --json
 ```
 
 Recover persisted project IDs later without exposing absolute roots:
@@ -232,7 +232,7 @@ Recover persisted project IDs later without exposing absolute roots:
 ```sh
 docker run --rm \
   --mount type=volume,source=knossos-data,target=/data \
-  knossos-mcp:dev list-projects --json
+  knossos:dev list-projects --json
 ```
 
 A native install needs PHP 8.3+ (with JSON, PDO, PDO SQLite), Node 22+, Python 3.11+,
@@ -248,7 +248,7 @@ the shape matters more than the mechanism:
 {
     "mcpServers": {
         "knossos": {
-            "command": "/absolute/Knossos-MCP/bin/knossos",
+            "command": "/absolute/knossos/bin/knossos",
             "args": ["serve"],
             "env": {
                 "KNOSSOS_DATA_DIR": "/absolute/knossos-data",
@@ -280,18 +280,18 @@ data and roots paths so the CLI and server use one graph:
 codex mcp add knossos \
     --env KNOSSOS_DATA_DIR="$HOME/.knossos" \
     --env KNOSSOS_ROOTS_FILE="$HOME/.knossos/roots.json" \
-    -- /absolute/path/to/Knossos-MCP/tools/mcp-serve
+    -- /absolute/path/to/knossos/tools/mcp-serve
 ```
 
 For the recommended Docker install, build the image first and keep the host
 project at the same absolute path inside the container:
 
 ```sh
-docker build --target runtime -t knossos-mcp:dev /absolute/path/to/Knossos-MCP
+docker build --target runtime -t knossos:dev /absolute/path/to/knossos
 codex mcp add knossos -- docker run --rm -i --network none \
     --mount type=bind,source=/absolute/project,target=/absolute/project,readonly \
     --mount type=volume,source=knossos-data,target=/data \
-    knossos-mcp:dev serve --allow-root=/absolute/project
+    knossos:dev serve --allow-root=/absolute/project
 ```
 
 #### Claude Code
@@ -302,7 +302,7 @@ The equivalent native registration is:
 claude mcp add knossos --scope user \
     -e KNOSSOS_DATA_DIR="$HOME/.knossos" \
     -e KNOSSOS_ROOTS_FILE="$HOME/.knossos/roots.json" \
-    -- /absolute/path/to/Knossos-MCP/tools/mcp-serve
+    -- /absolute/path/to/knossos/tools/mcp-serve
 ```
 
 The optional Claude session-orientation plugin is a separate install; after
@@ -318,7 +318,7 @@ registration above; install both when you want graph-backed tools and automatic
 question routing in Codex:
 
 ```sh
-codex plugin marketplace add /absolute/path/to/Knossos-MCP
+codex plugin marketplace add /absolute/path/to/knossos
 codex plugin add knossos@knossos-dev
 codex plugin list
 ```
@@ -337,7 +337,7 @@ its optional session-brief hook.
   `tools/mcp-serve` and expecting it to start.
 - The image is not published yet. `docker build --target runtime` from this
   checkout is required; an unqualified `docker build` selects the repository's
-  CI `quality` stage, not the server runtime, and `docker pull knossos-mcp:dev`
+  CI `quality` stage, not the server runtime, and `docker pull knossos:dev`
   cannot replace it.
 - Docker stdio needs `-i` and must not use `-t`; terminal framing can corrupt
   the NDJSON MCP stream. If Docker reports a socket permission error, enable
@@ -374,7 +374,7 @@ The hook runs whatever `knossos` binary it can find on the machine and fails sil
 finds none, so a symlink is usually the missing step:
 
 ```sh
-ln -s /absolute/Knossos-MCP/bin/knossos ~/.local/bin/knossos
+ln -s /absolute/knossos/bin/knossos ~/.local/bin/knossos
 ```
 
 Registering the MCP server and installing the plugin are separate steps and stay that way.

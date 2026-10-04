@@ -1,5 +1,5 @@
 {
-  "name": "knossos-mcp/php-scanner",
+  "name": "araneadev/php-scanner",
   "description": "Isolated PHP AST scanner worker for Knossos",
   "type": "project",
   "license": "MIT",

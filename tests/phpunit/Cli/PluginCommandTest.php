@@ -286,7 +286,7 @@ final class PluginCommandTest extends KnossosTestCase
         $status = (new PluginCommand())->run(
             'install-agent-plugin',
             [],
-            ['out' => [$out], 'data' => ['/srv/knossos-data'], 'image' => ['knossos-mcp:dev']],
+            ['out' => [$out], 'data' => ['/srv/knossos-data'], 'image' => ['knossos:dev']],
             $this->context(),
         );
         ob_get_clean();
@@ -299,7 +299,7 @@ final class PluginCommandTest extends KnossosTestCase
 
         $hook = (string) file_get_contents($out . '/hooks/scripts/session-brief.sh');
         assertSame(true, str_contains($hook, 'docker run'));
-        assertSame(true, str_contains($hook, 'knossos-mcp:dev'));
+        assertSame(true, str_contains($hook, 'knossos:dev'));
         assertSame(true, str_contains($hook, '/srv/knossos-data'));
         assertSame(false, str_contains($hook, '__KNOSSOS_'));  // every token substituted
         // A regression dropping the chmod() call would leave the hook non-executable.
@@ -1161,8 +1161,8 @@ final class PluginCommandTest extends KnossosTestCase
         assertSame('ghcr.io/me/knossos:2', $this->emitJson($named, ['image' => ['ghcr.io/me/knossos:2']])['image']);
         assertSame(true, str_contains((string) file_get_contents($named . '/hooks/scripts/session-brief.sh'), 'ghcr.io/me/knossos:2'));
 
-        assertSame('knossos-mcp:dev', $this->emitJson($default, [])['image']);
-        assertSame(true, str_contains((string) file_get_contents($default . '/hooks/scripts/session-brief.sh'), 'knossos-mcp:dev'));
+        assertSame('knossos:dev', $this->emitJson($default, [])['image']);
+        assertSame(true, str_contains((string) file_get_contents($default . '/hooks/scripts/session-brief.sh'), 'knossos:dev'));
 
         exec('rm -rf ' . escapeshellarg($named) . ' ' . escapeshellarg($default));
     }

@@ -65,8 +65,8 @@ does not require guessing.
 Docker is the reproducible distribution and removes host PHP/Node coupling.
 
 ```sh
-docker build --target runtime -t knossos-mcp:dev .
-docker run --rm knossos-mcp:dev doctor --json
+docker build --target runtime -t knossos:dev .
+docker run --rm knossos:dev doctor --json
 ```
 
 Use an absolute source path, mount it read-only, keep `/data` in a separate
@@ -87,7 +87,7 @@ volume, disable networking, and keep stdin open for MCP:
                 "type=bind,source=/absolute/project,target=/workspace,readonly",
                 "--mount",
                 "type=volume,source=knossos-data,target=/data",
-                "knossos-mcp:dev",
+                "knossos:dev",
                 "serve",
                 "--allow-root=/workspace"
             ]
@@ -162,7 +162,7 @@ Native MCP command:
 {
     "mcpServers": {
         "knossos": {
-            "command": "/absolute/Knossos-MCP/bin/knossos",
+            "command": "/absolute/knossos/bin/knossos",
             "args": ["serve", "--allow-root=/absolute/project"],
             "env": { "KNOSSOS_DATA_DIR": "/absolute/knossos-data" }
         }

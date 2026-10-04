@@ -25,7 +25,7 @@ use Throwable;
 final class PluginCommand implements CliCommand
 {
     private const SCOPES = ['user', 'project', 'local'];
-    private const DEFAULT_IMAGE = 'knossos-mcp:dev';
+    private const DEFAULT_IMAGE = 'knossos:dev';
 
     /**
      * @param string $version what this CLI is, written into the materialised
@@ -121,7 +121,7 @@ final class PluginCommand implements CliCommand
      *
      * Generated rather than committed. A copy of this file at the root of the
      * public repository is what makes `claude plugin marketplace add
-     * AraneaDev/Knossos-MCP` resolve, and the clone it resolves to has no
+     * AraneaDev/knossos` resolve, and the clone it resolves to has no
      * `vendor/`: its `bin/knossos` cannot run and the hook fails silent, so
      * that install produces nothing, forever. Absent, the same command fails
      * immediately with "Marketplace file not found", which is the whole point.

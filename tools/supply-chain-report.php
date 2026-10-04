@@ -15,8 +15,8 @@ foreach (['Dockerfile', 'composer.lock', 'package-lock.json', 'workers/php/compo
 $statement = [
     '_type' => 'https://in-toto.io/Statement/v1',
     'subject' => [
-        ['name' => 'knossos-mcp:runtime', 'digest' => ['sha256' => str_replace('sha256:', '', $argv[1])]],
-        ['name' => 'knossos-mcp:quality', 'digest' => ['sha256' => str_replace('sha256:', '', $argv[2])]],
+        ['name' => 'knossos:runtime', 'digest' => ['sha256' => str_replace('sha256:', '', $argv[1])]],
+        ['name' => 'knossos:quality', 'digest' => ['sha256' => str_replace('sha256:', '', $argv[2])]],
     ],
     'predicateType' => 'https://slsa.dev/provenance/v1',
     'predicate' => [

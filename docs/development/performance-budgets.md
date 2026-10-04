@@ -7,10 +7,10 @@ resident memory, and SQLite size.
 Run the benchmark in the pinned quality image:
 
 ```sh
-docker build --target quality -t knossos-mcp:quality .
+docker build --target quality -t knossos:quality .
 docker run --rm \
   --mount type=bind,source="$PWD/coverage",target=/opt/knossos/coverage \
-  --entrypoint tools/benchmark knossos-mcp:quality
+  --entrypoint tools/benchmark knossos:quality
 ```
 
 The full quality profile runs the same command automatically. Results are

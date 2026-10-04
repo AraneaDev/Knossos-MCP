@@ -430,7 +430,7 @@ final class QueryTest extends KnossosTestCase
     #[Group('query')]
     public function testMcpStdioLifecycleListsToolsAndContainsValidationErrors(): void
     {
-        $path = tempnam(sys_get_temp_dir(), 'knossos-mcp-');
+        $path = tempnam(sys_get_temp_dir(), 'knossos-');
         if ($path === false) {
             throw new RuntimeException('Unable to allocate MCP database.');
         }

@@ -643,13 +643,13 @@ final class BoundaryInferenceTest extends TestCase
         // pre-fix "kind:name" value, or every such repo's boundary name (a public
         // reference surface: policies resolve `from_boundary` by name) and/or its
         // persisted id would move for no reason connected to this fix's actual bug.
-        $units = [$this->makeUnit('composer', 'composer.json', ['name' => 'knossos-mcp/knossos'])];
+        $units = [$this->makeUnit('composer', 'composer.json', ['name' => 'araneadev/knossos'])];
 
         $facts = (new BoundaryInference())->infer($units, [], []);
 
         assertSame(1, count($facts));
-        assertSame('composer:knossos-mcp/knossos', $facts[0]->name);
-        assertSame('composer:knossos-mcp/knossos', $facts[0]->identityName);
+        assertSame('composer:araneadev/knossos', $facts[0]->name);
+        assertSame('composer:araneadev/knossos', $facts[0]->identityName);
     }
 
     public function testInferRejectsExplicitBoundaryDeclaringBothMatchers(): void

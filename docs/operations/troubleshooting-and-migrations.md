@@ -5,7 +5,7 @@
 Start with the packaged runtime and structured output:
 
 ```sh
-docker run --rm knossos-mcp:dev doctor --json
+docker run --rm knossos:dev doctor --json
 ```
 
 If scanning fails, keep the source mount read-only, enable JSON output, and
@@ -21,7 +21,7 @@ then request one explicit full scan:
 docker run --rm --network none \
   --mount type=bind,source=/absolute/project,target=/workspace,readonly \
   --mount type=volume,source=knossos-data,target=/data \
-  knossos-mcp:dev scan /workspace --mode=full --json
+  knossos:dev scan /workspace --mode=full --json
 ```
 
 Do not repeatedly force full mode as a substitute for investigating a stable

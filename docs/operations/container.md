@@ -11,8 +11,8 @@ keeps `/data` as the only required writable persistent location.
 Build the development image:
 
 ```sh
-docker build --target runtime -t knossos-mcp:dev .
-docker run --rm knossos-mcp:dev version --json
+docker build --target runtime -t knossos:dev .
+docker run --rm knossos:dev version --json
 ```
 
 For scans, mount source read-only and keep derived graph state in a separate
@@ -23,7 +23,7 @@ docker run --rm -i \
   --network none \
   --mount type=bind,source=/absolute/path/to/project,target=/workspace,readonly \
   --mount type=volume,source=knossos-data,target=/data \
-  knossos-mcp:dev scan /workspace --json
+  knossos:dev scan /workspace --json
 ```
 
 The eventual `scan_project` path inside the container is `/workspace`, not the
@@ -48,7 +48,7 @@ above. The `-i` flag is required for MCP standard-input/output transport. Avoid
 For MCP, replace the final command with:
 
 ```sh
-knossos-mcp:dev serve --allow-root=/workspace
+knossos:dev serve --allow-root=/workspace
 ```
 
 Native installation remains supported for lower startup overhead and easier
@@ -127,7 +127,7 @@ container:
 ```sh
 docker run --rm \
   --mount type=bind,source="$PWD/plugin",target=/out \
-  knossos-mcp:dev install-agent-plugin --out=/out --data="$HOME/.knossos"
+  knossos:dev install-agent-plugin --out=/out --data="$HOME/.knossos"
 ```
 
 - `--out=DIR` writes `.claude-plugin/`, `hooks/`, and `skills/` under `DIR`,
@@ -142,7 +142,7 @@ docker run --rm \
   disk inside the container names that path. `HOSTPATH` is what the emitted
   hook's `docker run` mounts back in at session start.
 - `--image=NAME` overrides the image the emitted hook runs (default
-  `knossos-mcp:dev`).
+  `knossos:dev`).
 
 The emitted hook script mounts the project directory at the **same path**
 inside the container as outside it, rather than at a fixed internal path such

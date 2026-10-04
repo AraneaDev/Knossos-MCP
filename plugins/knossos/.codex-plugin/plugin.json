@@ -6,8 +6,8 @@
     "name": "AraneaDev",
     "url": "https://github.com/AraneaDev"
   },
-  "homepage": "https://github.com/AraneaDev/Knossos-MCP",
-  "repository": "https://github.com/AraneaDev/Knossos-MCP",
+  "homepage": "https://github.com/AraneaDev/knossos",
+  "repository": "https://github.com/AraneaDev/knossos",
   "license": "MIT",
   "keywords": [
     "architecture",
@@ -24,7 +24,7 @@
     "developerName": "AraneaDev",
     "category": "Engineering",
     "capabilities": ["Read"],
-    "websiteURL": "https://github.com/AraneaDev/Knossos-MCP",
+    "websiteURL": "https://github.com/AraneaDev/knossos",
     "defaultPrompt": [
       "Orient me using the Knossos architecture graph.",
       "Show what this change could break with file and line evidence.",

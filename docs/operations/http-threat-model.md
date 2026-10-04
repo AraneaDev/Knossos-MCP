@@ -80,7 +80,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
   -e KNOSSOS_HTTP_BEARER_TOKEN='replace-with-a-random-secret' \
   --mount type=bind,source=/absolute/project,target=/workspace,readonly \
   --mount type=volume,source=knossos-data,target=/data \
-  knossos-mcp:dev -S 0.0.0.0:8080 /opt/knossos/bin/http-router.php
+  knossos:dev -S 0.0.0.0:8080 /opt/knossos/bin/http-router.php
 ```
 
 The loopback-only published port limits exposure; Docker's bridge is required

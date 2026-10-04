@@ -40,7 +40,7 @@ docs/audits/
 # Materialised by `knossos install-agent-plugin --execute`, never committed.
 # It holds the marketplace descriptor the install registers, and a copy of that
 # descriptor at the root of the public repository would make `claude plugin
-# marketplace add AraneaDev/Knossos-MCP` resolve and install a clone that has
+# marketplace add AraneaDev/knossos` resolve and install a clone that has
 # no vendor/.
 /.plugin/
 

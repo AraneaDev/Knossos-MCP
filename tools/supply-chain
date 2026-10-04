@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-runtime_image="${1:-knossos-mcp:quality-runtime}"
-quality_image="${2:-knossos-mcp:quality}"
+runtime_image="${1:-knossos:quality-runtime}"
+quality_image="${2:-knossos:quality}"
 report_dir="${3:-coverage/supply-chain}"
 mkdir -p "$report_dir"
 

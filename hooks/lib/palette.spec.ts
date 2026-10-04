@@ -101,7 +101,7 @@ describe('boundaryLabel', () => {
     expect(boundaryLabel('namespace:Knossos')).toBe('Knossos')
   })
   it('keeps the last part of a scoped package', () => {
-    expect(boundaryLabel('node:@knossos-mcp/typescript-scanner')).toBe('typescript-scanner')
+    expect(boundaryLabel('node:@knossos/typescript-scanner')).toBe('typescript-scanner')
     expect(boundaryLabel('composer:vendor/package (+node:other)')).toBe('package')
   })
   it('is empty for none', () => {

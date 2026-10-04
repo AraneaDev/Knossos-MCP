@@ -6,7 +6,7 @@ x-knossos-base: &knossos-base
     # The Dockerfile's final stage is `quality`. Pin `runtime` or compose builds
     # the full toolchain image instead of the distributable one.
     target: runtime
-  image: knossos-mcp:dev
+  image: knossos:dev
   volumes:
     - type: bind
       source: ${KNOSSOS_SOURCE:-${PWD}}

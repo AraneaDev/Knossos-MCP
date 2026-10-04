@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build pinned quality image
-        run: docker build --target quality -t knossos-mcp:quality .
+        run: docker build --target quality -t knossos:quality .
       - name: Run Infection over shard ${{ matrix.shard }}
         env:
           SHARD: ${{ matrix.shard }}
@@ -92,7 +92,7 @@ jobs:
           # run's memory_limit, set through initialTestsPhpOptions in
           # infection.json5 so a local run gets the same ceiling.
           status=0
-          docker run --name "infection-$SHARD" -e KNOSSOS_QUALITY_CONTAINER=1 --entrypoint sh knossos-mcp:quality \
+          docker run --name "infection-$SHARD" -e KNOSSOS_QUALITY_CONTAINER=1 --entrypoint sh knossos:quality \
             -c "php -d pcov.enabled=1 -d memory_limit=4G -d display_errors=stderr vendor/bin/infection \
                   --no-interaction --no-progress --threads=4 \
                   --min-msi=0 --min-covered-msi=0 \

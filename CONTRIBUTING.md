@@ -18,10 +18,10 @@ with `ext-json`, `ext-pdo`, and `ext-pdo_sqlite`, Node.js 22 or newer, Python
 ### Setup
 
 ```bash
-git clone https://github.com/AraneaDev/Knossos-MCP.git
-cd Knossos-MCP
-docker build -t knossos-mcp:dev .
-docker run --rm knossos-mcp:dev doctor --json
+git clone https://github.com/AraneaDev/knossos.git
+cd knossos
+docker build -t knossos:dev .
+docker run --rm knossos:dev doctor --json
 ```
 
 ## The `tools/quality-container` Pipeline
