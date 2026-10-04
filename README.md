@@ -397,9 +397,11 @@ boundaries, cycles, the largest degree, dead code, drift, policy violations and
 diagnostics), coloured only where a figure needs your attention, then leads with the file
 this session touched that most of the project depends on, marked: `o` lists the files that depend on it, `e` opens it in your
 editor, and `t` copies the command for the tests that reach the changes. It draws in your
-Claude Code theme's own colours. A live watcher, one per project shared by your sessions,
-rescans as files change, so the header reads `● live` and the figures follow your edits and
-Claude's without a rescan. A container install has no watcher: there the figures follow each
+Claude Code theme's own colours. The header names the project, its branch and commit and its
+languages, with the status as a pill. A live watcher, one per project shared by your
+sessions, rescans as files change, so the pill reads `● live · 7s` and the figures follow
+your edits and Claude's without a rescan. Resting the pointer on a component or file shows
+the three files that depend on it most, without opening it. A container install has no watcher: there the figures follow each
 turn's own scan, and the pane's `r` rescans on request.
 
 <picture>
@@ -410,7 +412,8 @@ turn's own scan, and the pane's `r` rescans on request.
 The Changes tab lists everything that changed in the project since the session began,
 whoever changed it, each file marked `this session` (Claude's own edits, subagents included)
 or `outside` (your editor, a checkout): with its dependents and its boundary, the tests that
-reach them, nearest first, and the command that runs them. Without a watcher it adds up what
+reach them, nearest first, and the command that runs them. A thin row of dots above the files
+shows the session's scans, Claude's and everyone else's apart. Without a watcher it adds up what
 the session's turns reported instead, and says so. Every file there opens to the files that
 depend on it.
 
@@ -418,11 +421,13 @@ depend on it.
 
 The Boundaries tab maps how much each boundary depends on each other one, with the pairs a
 policy forbids in red. Marking a boundary spells out what it depends on, what depends on it,
-and what it may not use.
+and what it may not use, and marks its cell on the map: the component pairs behind that
+cell are listed under it, and `l` steps to the next one.
 
-![The Boundaries tab with core marked](docs/images/claude-code-mod/boundaries-marked-dark.png)
+![The Boundaries tab with tests marked and its cell on php-worker spelled out](docs/images/claude-code-mod/boundaries-cell-dark.png)
 
-The Cycles tab lists each dependency cycle as a chain. Marking one lets you open the member
+The Cycles tab lists each dependency cycle as a chain, every hop in its boundary's colour.
+Marking one lets you open the member
 where it crosses its boundary, copy the chain, or ask Claude how to break it.
 
 ![The Cycles tab](docs/images/claude-code-mod/cycles-dark.png)

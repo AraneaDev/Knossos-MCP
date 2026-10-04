@@ -766,7 +766,7 @@ const README_COLUMNS = 100
 const README_SHOTS = [
   ['overview', 'dark'],
   ['changes', 'dark'],
-  ['boundaries-marked', 'dark'],
+  ['boundaries-cell', 'dark'],
   ['cycles', 'dark'],
   ['detail', 'dark'],
   ['band-prompt', 'dark'],

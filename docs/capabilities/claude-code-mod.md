@@ -163,7 +163,12 @@ its body:
 
 A framed card is a thin rounded border in the theme's faintest colour, its
 title (and the section's note, such as `this session` or `all in core`) set
-into the top edge, one cell of padding inside. Cards stand one blank row
+into the top edge, one cell of padding inside. A small dim glyph before the
+title says what kind of card it is, the same on every tab: `◆` Look at now,
+`▤` Last turn, `◎` the most depended-on components, `≡` the files most
+depended on, `▦` the boundary map, `▥` the per-boundary table, `◈` the marked
+boundary, `⇄` the marked heat map cell, `↻` cycles, `⚠` the Issues cards,
+`±` changes, `✓` the tests that reach them, `∿` the trend, `◇` a detail. Cards stand one blank row
 apart. Wide, each tab arranges its cards in two columns: Overview puts the
 stat tiles across the top, "Look at now" and the last turn left and the most
 depended on right (with the trend under it when the pane has rows to spare),
@@ -173,8 +178,10 @@ depended on beside the components, the components' table taking the wider
 share; the detail
 sets "used by" beside "uses" with the change below both; Boundaries puts the
 map beside the per-boundary table and the marked boundary; Cycles spells out
-the marked cycle, a member a row, beside the list; Issues puts violations and
-diagnostics beside dead code and the largest files; Changes puts the tests
+the marked cycle, a member a row, beside the list; Issues sets its cards in
+rows of equal height (the cards with nothing to list side by side first,
+then the lists in pairs, a shorter card stretched inside its frame to its
+neighbour's height, so no column ends half way down); Changes puts the tests
 beside the files.
 
 Lists size themselves to the rows the pane's body has: every list starts at
@@ -199,6 +206,8 @@ its kind; the file column (`where`) may cut the few longest names (the
 longest tenth) rather than be lost. As the pane narrows, the kind goes first,
 then the file column, bars shorten, then long names are cut with `…`, then the
 boundary column goes, then the bars. The numbers always stay, right-aligned.
+In the narrow layout a table says its figures compactly (`31.7k`, `1.2M`); the
+stat tiles, the cards' notes and a detail keep them whole (`31,740`).
 
 The pane draws in your Claude Code theme's own colours (its theme keys), so it
 follows a dark, light, daltonized or ANSI theme. Colour carries meaning only:
@@ -209,22 +218,23 @@ boundary that got no colour of its own is drawn neutral rather than in a
 colour it would share by chance. Two boundaries whose short names differ only
 in case (an inferred `namespace:Knossos` beside a `composer:…/knossos`) keep
 their source in the label, `namespace:Knossos` and `composer:knossos`, so they
-never read as one. The status dot is `success` for a fresh or live snapshot,
-`warning` for a stale one or a scan under way and `error` when a refresh or
-rescan failed, and the accent marks the selection and the active tab. Everything
-else is neutral: names, headings and figures in the theme's text colour,
+never read as one. The status is a pill on the status colour: `success` for a
+fresh or live snapshot, `warning` for a stale one or a scan under way and
+`error` when a refresh or rescan failed, its words in the theme's text for a
+fill. The open tab stands on the theme's selection colour, the marked row of
+a list on a faint tint (Claude Code's own prompt background) from one edge of
+its card to the other, its `›` kept for a terminal that draws no
+backgrounds, and the accent marks the `›` itself. Everything else is neutral: names, headings and figures in the theme's text colour,
 units and notes in its secondary grey (a note's figures stay at full
 contrast: `3 files → 594 dependents`), bar tracks and empty cells fainter
 still. Bars are thin rules on a dotted track.
 
 ```text
-Knossos-MCP                         ● stale · 11h  r: rescan
-7,878 components · 7 boundaries · 46 drifted · PHP JS RS
-1: Overview  2  3  4  5  6³
-━━━━━━━━━━━─────────────────────────────────────────────────
+Knossos-MCP                          ● stale 11h   r: rescan
+ Overview   2   3   4   5   6³
 
-2 cycles   161 max degree   55 dead code   0 policy
-0 diagnostics
+7,878 components   7 boundaries   2 cycles   161 max degree
+55 dead code   46 drifted   0 policy   0 diagnostics
 
 ── Look at now ───────────────────────────── this session ──
 ›  TurnBriefService.php core · 21 dependents
@@ -241,16 +251,18 @@ Knossos-MCP                         ● stale · 11h  r: rescan
    4 more ↓
 ```
 
-That is the narrow layout (60 columns): the stat tiles collapse to a line of
-the figures the summary line does not already say. From 80 columns the tiles
+That is the narrow layout (60 columns): the header is the project's name and
+the status pill, then the tabs, the open one by its name on the selection
+colour and the others by their digit; the stat tiles collapse to a line of
+their figures. From 80 columns the header names where the checkout stands
+and the project's languages, and the tiles
 are a framed band across the Overview, a faint rule between them, spread
 evenly; they wrap onto as few lines as hold them when they do not fit on one.
 A figure is in the text colour unless it deviates: cycles and diagnostics
 above zero in `warning`, policy violations in `error`, drifted files in the
-accent. A tile shows its trend when it has room and the series moves. The
-summary line then keeps only the languages, and the drifted tile's label is
-the button that lists the drifted files. Each card is framed, and its tables
-add columns:
+accent. A tile shows its trend when it has room and the series moves. The drifted
+tile's label is the button that lists the drifted files. Each card is framed,
+and its tables add columns:
 
 ```text
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -264,13 +276,30 @@ add columns:
 ╰────────────────────────────────────────────────────────────────────────╯
 ```
 
-The line under the project counts its components, its declared boundaries
-(every boundary when none is declared), the files drifted since the snapshot
-and its languages. A narrow pane drops the languages first. When the dashboard
-names the drifted files, their count is drawn in the accent and the word after
-it is a button, the one thing on that quiet line you can press; `d` does the
-same: it lists the drifted files right there,
-under the header, each marked as Changes marks a file (`+` added, `−`
+```text
+Knossos-MCP  feat/claude-code-mod · 610c773  PHP  JS  TS  RS     ● stale 16s   r: rescan
+ Overview   Hubs   Boundaries   Cycles   Issues¹   Changes⁸
+```
+
+The header is two rows. The first names the project in bold, where its
+checkout stands (the branch and the short commit, dim; the commit alone on a
+detached head, nothing outside git), the languages as small chips, and
+against the right edge the status pill, why it is so when the pill does not
+say (a rescan's reason, a stuck leader) and `r: rescan` when a rescan would
+change anything. Where the checkout stands is read through the wrapper's
+`knossos session-head` (which names the branch beside the commit) at
+start-up, sharing the session's own baseline read, and again after each of
+the main loop's turns, never while the pane draws. As the pane narrows the
+chips go first, then the commit, the branch and the reason. In a detail the
+first row is the way back: `Knossos-MCP › Hubs › StableId`. The second row is
+the tab bar: each tab by its name, with the Issues and Changes counts as
+superscript badges (`Issues³`), the open one on the selection colour; where
+the names do not fit, and always when narrow, the others by their digit. The
+digits that switch tabs are said in the `h` help, not on the bar.
+
+When the dashboard names the drifted files, the drifted tile's label is a
+button that lists them, and `d` does the same on every tab: it lists the
+drifted files right there, under the tabs, each marked as Changes marks a file (`+` added, `−`
 deleted) with its own boundary, the first twenty by path and how many more.
 While they are listed the marker walks them: `o` opens a file's detail as the
 snapshot holds it, `e` the file itself. `d` again, or a tab, hides them.
@@ -301,6 +330,12 @@ Drifted since the snapshot                                 3
   the pane has rows left after its lists, a chart several rows tall, a column
   per snapshot, the highest and lowest figure on its axis (on the terminal a
   `Raster` in the accent, where no pressable row shares its lines).
+  Resting the pointer on a component or file row (where the surface has a
+  pointer: not on mobile) shows a card over the rows below it, without
+  opening anything: its name and boundary, how many files depend on it (and a
+  component's in- and out-degree), and the three files that depend on it most
+  (the dashboard names them for every listed component and the first fifty
+  files). The surface reveals it alone; nothing reaches the mod.
 - **Hubs:** hubs and hotspots as one list, one row per component, with its
   boundary and its in, out and cross-boundary degree, and beside them (below
   them when narrower) the files most depended on, each with how many files
@@ -311,7 +346,7 @@ Drifted since the snapshot                                 3
   field: the list narrows as you type to the components whose name holds the
   text, Enter keeps the filter and `x` clears it. `s` sorts by in, out or
   cross-boundary degree in turn; the bar follows the sort, and the title says
-  it (`Hubs and hotspots · sorted by in`). The sorted column's numbers are in
+  it (`Hubs and hotspots · sorted by in`). A row shows its hover card here too. The sorted column's numbers are in
   the text colour and the other two are dimmed. When every listed row sits in
   one boundary, the boundary column goes and the header says it once
   (`all in core`); otherwise a row in the same boundary as the row above
@@ -319,10 +354,10 @@ Drifted since the snapshot                                 3
   The same holds for Overview's most depended on, and the last turn dims its
   repeats. `e` opens a hub's file at its declaration, as on Overview.
 - **Cycles:** each dependency cycle, the largest first, as a chain of its
-  members (`a → b → c ↺`) wrapped to the pane's width, under a line naming
-  the boundary most of them are in. A member outside that boundary is drawn
-  in its own boundary's colour, with a legend: that is where the cycle
-  crosses. The ten largest are listed. `j` and `k` mark a cycle: `o` opens
+  members (`↻ a → b → c → ↻`) wrapped to the pane's width, under a line naming
+  the boundary most of them are in. Every hop is drawn in its own boundary's
+  colour, with a legend, so the eye sees where the loop crosses from one
+  boundary into another. The ten largest are listed. `j` and `k` mark a cycle: `o` opens
   the member where it leaves its own boundary (its uses include the edge that
   closes the loop), `c` copies the whole chain, and `q` asks Claude how to
   break it.
@@ -331,7 +366,7 @@ Drifted since the snapshot                                 3
   candidates (`◇` marks one only tests reach) and the fifty largest files,
   each list as long as the height allows.
   The tab label carries the count of violations, errors and warnings, as in
-  `Issues ³`.
+  `Issues³`.
 - **Changes:** everything that changed in the project since this session
   began, whoever changed it: the session's own turns and subagents, your
   editor, a checkout. While the live watcher runs, the list comes from the
@@ -341,7 +376,12 @@ snapshot>`, read again after each scan the watcher sees, one read at a
   the session's own Edit, Write or NotebookEdit calls (main loop or subagent)
   wrote it, or when a scan that changed it took in changes made while one of
   the session's tool calls ran; `outside` otherwise. The header then reads
-  `since it began`. With
+  `since it began`. Above the files a thin row draws the session's scans, a
+  dot each, oldest first: in the accent for one that took in the session's
+  own changes, dim for one that took in changes made outside it, then how
+  many of each (`session-changes` lists the scans since the session began,
+  the newest 60). A row too short for all of them keeps the newest behind a
+  `…`. With
   no watcher (switched off, or a container install) the tab falls back to
   what the session's turn briefs reported, added up, and says so; it does the
   same when the ledger cannot account for every scan since the session began.
@@ -408,10 +448,29 @@ snapshot>`, read again after each scan the watcher sees, one read at a
   nothing to open; `c` copies the boundary's name and `q` asks Claude what
   its dependencies are for.
 
+    The marker also stands on one cell of the map: the marked boundary's row,
+    in the column of what it depends on most. The cell is a solid tile in the
+    theme's text colour, its row label and column letter on the marked row's
+    tint. `l` moves it to the next boundary the marked one depends on (most
+    first, coming round again: `h` already lists the keys, so the cell steps
+    one way), as does a press on one of those boundaries in the marked boundary's
+    card; marking another boundary starts on its own top dependency. Under the
+    marked boundary the cell is spelled out: `tests → core`, how many
+    dependencies run that way (red, `forbidden`, where a policy forbids the
+    pair) and the five component pairs that make up most of them
+    (`source → target` and their edges). They are read by
+    `knossos boundary-couplings --from=<boundary> --to=<boundary>` (the same
+    bounded walk as the map, once per cell and snapshot) on a timer, never while
+    the pane draws; the card says it is reading meanwhile.
+
 ```text
 G tooling
    depends on   core 18  hooks 4
    used by      nothing outside itself
+
+tests → php-worker                                      11 deps
+   PhpScannerReceiverFactsTest::scan → PhpScanner             1
+   PhpScannerTest::testAScannerRead… → UnreadableFileException 1
 ```
 
 ```text
@@ -440,17 +499,22 @@ Tests that reach these changes · 3              hops
      hooks/lib/changes.spec.ts
 ```
 
-Every action is a button, so a click works as well as its key: `1` to `6`
-switch tabs, `j` and `k` move the `›` marker (as does moving the focus with
+Every action is a button, so a click works as well as its key. The footer
+groups them: moving about (`j`, `k`, and `b` in a detail) dim on the left,
+what can be done to the marked row on the right, only the keys that do
+something in the view on show. For a moment after an action the footer says
+what it did, between the two (`✓ copied StableId`, `✓ opened in editor`,
+`✗ no editor · path copied`, in the success or error colour); the mod's age
+tick lets it fade after about two seconds. `1` to `6` switch tabs, `j` and `k` move the `›` marker (as does moving the focus with
 Tab or the arrows onto a row), `o` or Enter opens the marked row, `e` opens
 the marked row's file in your editor, `c` copies and `q` asks about it, `t`
-copies the test command, `d` lists the drifted files, `b` goes back, `h`
-lists the keys, one a line. The keys mean the same on every tab. A component
+copies the test command, `d` lists the drifted files, `l` moves the
+Boundaries tab's cell, `b` goes back, `h` lists the keys, one a line. The keys mean the same on every tab. A component
 opens from the Overview, Hubs, Cycles and Issues tabs and from a detail; the
 pane looks it up by its canonical name. A file opens from Overview ("Look at
 now" and the last turn), Changes, the drifted files and a file's detail. Back
 on the tab, the marker stands where the detail was opened from. Numbers of four digits or more are grouped
-(`10,867`).
+(`10,867`), or compact in a narrow table.
 `/knossos inspect <component>` opens the pane on one component directly.
 
 ```text
@@ -542,14 +606,14 @@ tab's tests. It is a Markdown `file:` link (`#L<line>` names the
 line), so a ctrl- or cmd-click opens it as a link in one of Claude's replies
 would. A plain click, and `e` on the marked row (or on what the detail shows), runs `code -g <path>:<line>`, which VS Code
 and its forks answer; where no such command answers, the pane copies
-`path:line` to your clipboard instead and says so in a toast. A terminal
+`path:line` to your clipboard instead and its footer says so. A terminal
 editor from `$EDITOR` cannot be started this way: it needs a terminal of its
 own.
 
 Two more keys act on the marked row, or on what the detail shows:
 
 - `c` copies its canonical name (a file's path) to the clipboard of the surface you pressed
-  it on, and says so in a toast.
+  it on, and the footer says so.
 - `q` asks Claude about it. Your press submits the one prompt below (on
   Cycles, how to break the marked cycle; on Boundaries, what the marked
   boundary's dependencies are for). It is the only prompt the mod ever
@@ -578,13 +642,14 @@ ranks hubs and hotspots stops at its limit (five seconds on a cold, large
 graph), the lists say `partial`.
 
 Every time the pane opens, by `/knossos`, `[ details ]` or on start, it
-reloads the dashboard. The header gives the snapshot's age, which keeps
-counting while the pane is open. While the live watcher keeps a fresh graph
-current, the header says `● live` instead (`● live · watched by another
-session` when another session's watcher leads, and `fresh · 4s · another
-session's watcher is stuck` when that watcher stopped answering), and
-`● scanning… · fresh · 4s` while the watcher scans. When a reload fails, the
-pane keeps the figures it had and the header says `refresh failed · 2m`.
+reloads the dashboard. The header's pill gives the snapshot's state and age
+(`● stale 38m`), which keeps counting while the pane is open. While the live
+watcher keeps a fresh graph current, it says `● live · 7s` instead, the age
+since the graph last moved (`● following · 7s` when another session's
+watcher leads; `● fresh 4s` with `another session's watcher is stuck` beside
+it when that watcher stopped answering), and `● scanning…` while the
+watcher scans. When a reload fails, the pane keeps the figures it had and
+the pill says `● refresh failed 2m`.
 
 With no figures to draw yet, the pane says which of three things is the
 case: `Reading the graph…` while the first load is on its way; `Could not
@@ -598,9 +663,9 @@ no prompt.
 When the snapshot is stale or files drifted since it, the header offers
 `r: rescan`. It runs an incremental scan (`knossos rescan`) under the same
 rules as the turn's scan, shows `scanning…` meanwhile with the state and age
-of the figures still on show (`scanning… · stale · 2h`), and reloads the pane
-when it is done. A rescan that does not land says why in the header and
-leaves the figures as they were.
+of the figures still on show (`scanning… · stale 2h`), and reloads the pane
+when it is done. A rescan that does not land turns the pill to
+`● scan failed`, says why beside it, and leaves the figures as they were.
 
 `openPaneOnStart` opens it when a session starts. A pane opened that way,
 without you asking, only takes its place at 144 terminal columns or more; on
@@ -777,7 +842,9 @@ one log line and turns the band and pane off for the session.
 The wrapper bounds each call: 60 seconds for `turn-brief` and the pane's
 rescan, 30 for `dashboard` (a first dashboard of a large project walks the
 whole graph), 15 for `component-detail`, `file-detail`, `session-changes`,
-`session-head`, `session-diff` and `allow-root`. `session-diff` takes only a
+`session-head`, `session-diff`, `boundary-couplings` and `allow-root`.
+`boundary-couplings` takes exactly `--from=` and `--to=`, in that order, each
+a printable, non-empty boundary name. `session-diff` takes only a
 hex commit id and a file inside the project directory. The container
 wrapper takes the same commands with the same checks, except `watch`.
 `watch` is not bounded: the wrapper replaces itself with the watcher, so
