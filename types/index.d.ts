@@ -36,6 +36,8 @@ export type TurnBrief = {
   impact: Record<string, FanIn>
   /** `js_runner` on a JavaScript test: the runner its nearest package.json names, null when that is unknown. */
   tests: { path: string; distance: number; js_runner?: JsRunner | null }[]
+  /** Whether `tests` is cut: more reach the files than it lists, or the search ran out of time (absent from an older knossos). */
+  tests_truncated?: boolean
   /** Violations this turn introduced; `truncated` when the check hit its cap or time limit, so `total` is a bound. */
   policy: { status: string; total: number; violations: Violation[]; truncated: boolean }
 }

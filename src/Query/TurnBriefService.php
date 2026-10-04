@@ -122,6 +122,7 @@ final readonly class TurnBriefService
         // can change many files at once, and their old violations are not the model's to fix.
         $edited = array_values(array_intersect($live, $reported));
         $queries = new ArchitectureQueryService($this->pdo, gitWorkingTree: new ProcessGitWorkingTreeProvider());
+        $tests = $live === [] ? ['tests' => [], 'truncated' => false] : FileTestReach::testsOf($queries, $projectId, $live, self::MAX_TESTS);
         return [
             'status' => 'ok',
             'project_root' => $root,
@@ -134,7 +135,8 @@ final readonly class TurnBriefService
             'added_files' => $added,
             'deleted_files' => $deleted,
             'impact' => self::withTests((new FileFanInQuery($this->pdo))->forPaths($projectId, $live, self::TOP_DEPENDENTS), (new FileTestReach($this->pdo))->reach($projectId, $live)),
-            'tests' => $live === [] ? [] : JsTestRunner::annotate($root, $this->tests($queries, $projectId, $live)),
+            'tests' => JsTestRunner::annotate($root, $tests['tests']),
+            'tests_truncated' => $tests['truncated'],
             'policy' => self::policy($enforcePolicies, $edited, $baseline, $baseline === null ? null : $violations->inFiles($projectId, $policies, $edited)),
         ] + $envelope;
     }
@@ -328,17 +330,6 @@ final readonly class TurnBriefService
     }
 
     /**
-     * The test files that reach the live changed files, nearest first.
-     *
-     * @param list<string> $live
-     * @return list<array{path: string, distance: int}>
-     */
-    private function tests(ArchitectureQueryService $queries, string $projectId, array $live): array
-    {
-        return FileTestReach::testsOf($queries, $projectId, $live, self::MAX_TESTS);
-    }
-
-    /**
      * The boundary-policy verdict: the violations in the edited files after the
      * scan that were not in them before it.
      *
@@ -371,7 +362,7 @@ final readonly class TurnBriefService
             'path' => $path, 'project_root' => null, 'project_id' => null, 'snapshot_id' => null,
             'scanned_at' => null, 'scan_ms' => null, 'reason' => null, 'roots_file' => null, 'refused_root' => null,
             'changed_files' => [], 'added_files' => [], 'deleted_files' => [],
-            'impact' => [], 'tests' => [],
+            'impact' => [], 'tests' => [], 'tests_truncated' => false,
             'policy' => ['status' => 'not_evaluated', 'total' => 0, 'violations' => [], 'truncated' => false],
         ];
     }

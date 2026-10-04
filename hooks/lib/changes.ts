@@ -74,7 +74,8 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
   const files = { ...changes.files }
   const tests = { ...changes.tests }
   const violations = new Set(changes.violations)
-  let truncated = changes.truncated
+  // A brief that could not search every changed file for tests lists only some of them.
+  let truncated = changes.truncated || brief.tests_truncated === true
   const reported: [string, TouchStatus][] = [
     ...brief.changed_files.map((f): [string, TouchStatus] => [f, 'changed']),
     ...brief.added_files.map((f): [string, TouchStatus] => [f, 'added']),

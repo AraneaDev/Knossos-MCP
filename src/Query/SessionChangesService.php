@@ -116,15 +116,15 @@ final readonly class SessionChangesService
         }
         uksort($files, static fn(string $a, string $b): int => $files[$b]['dependents'] <=> $files[$a]['dependents'] ?: strcmp($a, $b));
         $sources = array_slice(array_values(array_filter(array_keys($files), static fn(string $f): bool => $files[$f]['status'] !== 'deleted')), 0, self::MAX_TEST_SOURCES);
-        $tests = $sources === [] ? [] : $this->tests($projectId, $sources);
+        $tests = $sources === [] ? ['tests' => [], 'truncated' => false] : FileTestReach::testsOf(new ArchitectureQueryService($this->pdo), $projectId, $sources, self::MAX_TESTS);
         foreach ((new FileTestReach($this->pdo))->reach($projectId, $sources) as $file => $reached) {
             $files[$file]['tests'] = $reached;
         }
         return [
             'files' => (object) array_slice($files, 0, self::MAX_FILES, true),
             'files_truncated' => count($files) > self::MAX_FILES || count($live) > self::MAX_TEST_SOURCES,
-            'tests' => JsTestRunner::annotate($root, array_slice($tests, 0, self::MAX_TESTS)),
-            'tests_truncated' => count($tests) > self::MAX_TESTS,
+            'tests' => JsTestRunner::annotate($root, $tests['tests']),
+            'tests_truncated' => $tests['truncated'],
             'scans' => array_slice($absorbed['chain'], -self::MAX_TIMELINE),
             'scans_truncated' => count($absorbed['chain']) > self::MAX_TIMELINE,
         ];
@@ -150,16 +150,5 @@ final readonly class SessionChangesService
             $statuses[(string) $file] = $current === null ? 'deleted' : ($hash === null ? 'added' : 'changed');
         }
         return $statuses;
-    }
-
-    /**
-     * The tests that reach `$files`, nearest first, one more than listed so a cut is seen.
-     *
-     * @param list<string> $files
-     * @return list<array{path: string, distance: int}>
-     */
-    private function tests(string $projectId, array $files): array
-    {
-        return FileTestReach::testsOf(new ArchitectureQueryService($this->pdo), $projectId, $files, self::MAX_TESTS + 1);
     }
 }

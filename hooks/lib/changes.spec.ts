@@ -103,6 +103,10 @@ describe('accumulate', () => {
     expect(s.truncated).toBe(true)
     expect(lookAtOf(changesInput(s, ROOT))?.plus).toBe(true)
   })
+  it('says the list is cut when a brief could not search every file for tests', () => {
+    expect(accumulate(NO_CHANGES, brief({ tests_truncated: true })).truncated).toBe(true)
+    expect(accumulate(NO_CHANGES, brief({ tests_truncated: false })).truncated).toBe(false)
+  })
 })
 
 describe('testCommand', () => {

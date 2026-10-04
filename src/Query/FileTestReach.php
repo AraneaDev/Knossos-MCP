@@ -33,6 +33,12 @@ final readonly class FileTestReach
     /** The time one file's search may take. */
     private const PER_FILE_MS = 500;
 
+    /** The time all of {@see self::testsOf()}'s searches together may take. */
+    public const TESTS_DEADLINE_MS = 5000;
+
+    /** The time one of {@see self::testsOf()}'s searches may take. */
+    private const CHUNK_MS = 1000;
+
     /** Tests counted per file: a count at it is a floor, which is all a mark needs. */
     public const COUNTED = 20;
 
@@ -79,14 +85,32 @@ final readonly class FileTestReach
      * of changed files larger than one search takes was refused outright
      * before, so a big turn reported no tests at all.
      *
+     * All the searches together keep to {@see self::TESTS_DEADLINE_MS}: a
+     * checkout or a pull can change thousands of files, and a second per
+     * fifty of them outran the turn brief's own time limit, which lost the
+     * whole brief. Past the deadline the rest is not searched and the list
+     * is `truncated`, as it is when a search was cut short or more tests
+     * than `$limit` reach the files.
+     *
      * @param list<string> $files
-     * @return list<array{path: string, distance: int}>
+     * @param Closure|null $clock milliseconds since some start, so the deadline is testable
+     * @return array{tests: list<array{path: string, distance: int}>, truncated: bool}
      */
-    public static function testsOf(ArchitectureQueryService $queries, string $projectId, array $files, int $limit): array
+    public static function testsOf(ArchitectureQueryService $queries, string $projectId, array $files, int $limit, ?Closure $clock = null): array
     {
+        $now = $clock ?? static fn(): float => microtime(true) * 1000;
+        $until = $now() + self::TESTS_DEADLINE_MS;
         $nearest = [];
+        $truncated = false;
         foreach (array_chunk($files, ChangeImpactQueryService::MAX_FILES) as $chunk) {
-            foreach ($queries->testImpact($projectId, $chunk, limit: $limit)->data['test_files'] ?? [] as $test) {
+            $left = (int) ($until - $now());
+            if ($left <= 0) {
+                $truncated = true;
+                break;
+            }
+            $found = $queries->testImpact($projectId, $chunk, limit: $limit, timeoutMs: max(1, min(self::CHUNK_MS, $left)));
+            $truncated = $truncated || $found->truncated;
+            foreach ($found->data['test_files'] ?? [] as $test) {
                 $path = (string) $test['path'];
                 $nearest[$path] = min($nearest[$path] ?? PHP_INT_MAX, (int) $test['distance']);
             }
@@ -97,6 +121,6 @@ final readonly class FileTestReach
         }
         usort($tests, static fn(array $a, array $b): int => [$a['distance'], $a['path']] <=> [$b['distance'], $b['path']]);
 
-        return array_slice($tests, 0, $limit);
+        return ['tests' => array_slice($tests, 0, $limit), 'truncated' => $truncated || count($tests) > $limit];
     }
 }

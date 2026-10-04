@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query;
 
+use Knossos\Query\ArchitectureQueryService;
+use Knossos\Query\ChangeImpactQueryService;
 use Knossos\Query\FileTestReach;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
+use function PHPUnit\Framework\assertContains;
 use function PHPUnit\Framework\assertSame;
 
 /**
@@ -47,6 +50,32 @@ final class FileTestReachTest extends KnossosTestCase
                 return $ticks++ < 2 ? 0.0 : (float) FileTestReach::DEADLINE_MS;
             };
             assertSame(['src/Core/Greeter.php' => 1], (new FileTestReach($pdo, $clock))->reach($projectId, ['src/Core/Greeter.php', 'src/Edge/Caller.php']));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testTheTestsOfManyFilesKeepToOneDeadlineAndSayWhenTheyWereCut(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $queries = new ArchitectureQueryService($pdo);
+            // Two searches: fifty copies of the caller, then the greeter.
+            $files = [...array_fill(0, ChangeImpactQueryService::MAX_FILES, 'src/Edge/Caller.php'), 'src/Core/Greeter.php'];
+            $all = FileTestReach::testsOf($queries, $projectId, $files, 10);
+            assertSame(false, $all['truncated']);
+            assertContains('tests/GreeterTest.php', array_column($all['tests'], 'path'));
+            // A clock past the deadline once the first search is done: the second is never asked, and the list says it was cut.
+            $ticks = 0;
+            $clock = static function () use (&$ticks): float {
+                return $ticks++ < 2 ? 0.0 : (float) FileTestReach::TESTS_DEADLINE_MS;
+            };
+            $cut = FileTestReach::testsOf($queries, $projectId, $files, 10, $clock);
+            assertSame(true, $cut['truncated']);
+            assertSame(3, $ticks);
+            // More tests than asked for is a cut list too.
+            assertSame(true, FileTestReach::testsOf($queries, $projectId, ['src/Core/Greeter.php', 'tests/GreeterTest.php', 'src/Edge/Caller.php'], 0)['truncated']);
         } finally {
             $this->removeTempTree($root);
         }
