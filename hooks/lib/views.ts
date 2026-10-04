@@ -27,6 +27,7 @@ import {
   displayName,
   fit,
   fitStart,
+  pathSegments,
   grouped,
   linked,
   MARK,
@@ -388,7 +389,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
       const shown = issues.largest.slice(0, window.end)
       const spec = tableSpec(columns, shown.map(f => f.path), [], [numberWidth('lines', shown.map(f => f.lines), tier)], 56, { tier })
       const max = Math.max(0, ...issues.largest.map(f => f.lines))
-      const body: Row[] = shown.map((f, i) => tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, cutStart: true, link: f.loc }, spec, hues))
+      const body: Row[] = shown.map((f, i) => tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, path: true, link: f.loc }, spec, hues))
       body.push(...moreRows('large-window', window, issues.largest.length, columns))
       return { key: 'large', title: 'Largest files', note: noteOf(issues.largest.length > 0 ? 'lines' : ''), body, empty: 'none' }
     },
@@ -455,7 +456,7 @@ export function detailArrangement(detail: DetailInput, tier: Tier, hues: Hues = 
     key: 'detail',
     make: columns => {
       const body: Row[] = []
-      if (c.place !== null) body.push({ key: 'detail-place', segments: [linked(fitStart(c.place, columns), c.loc, { dim: true })] })
+      if (c.place !== null) body.push({ key: 'detail-place', segments: pathSegments(c.place, columns, c.loc) })
       if (c.canonical !== c.name) body.push(dimRow('detail-canonical', c.canonical, columns))
       if (body.length === 0) body.push(dimRow('detail-place', 'declared nowhere the graph knows', columns))
       return { key: 'detail', title: c.name, note: label, body }

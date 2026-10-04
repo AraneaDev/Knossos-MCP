@@ -12,7 +12,7 @@
 import { FRAME } from './cards'
 import { boundaryLabel, CARD_BG, HEADING, NO_HUES } from './palette'
 import type { Hues } from './palette'
-import { cells, chip, fit, fitStart, grouped, segmentsWidth, spaces } from './rows'
+import { cells, chip, fit, grouped, pathText, segmentsWidth, spaces } from './rows'
 import type { Preview, Row, Segment } from './rows'
 
 /** The widest a card is drawn, frame included, and the narrowest. */
@@ -62,7 +62,7 @@ export function previewCard(key: string, facts: CardFacts, room: number, hues: H
     line(`${key}-figures`, facts.figures, inner),
     ...(tops.length === 0
       ? [line(`${key}-none`, [{ text: 'no other file depends on it', dim: true }], inner)]
-      : tops.map((path, i) => line(`${key}-dep-${i}`, [{ text: '← ', dim: true }, { text: fitStart(path, inner - 2) }], inner))),
+      : tops.map((path, i) => line(`${key}-dep-${i}`, [{ text: '← ', dim: true }, { text: pathText(path, inner - 2) }], inner))),
     { key: `${key}-end`, segments: [{ text: `╰${'─'.repeat(Math.max(0, width - 2))}╯`, color: FRAME }].map(ground) },
   ]
   return { key, rows, width }

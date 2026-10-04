@@ -12,7 +12,7 @@
  * cut to the columns it has.
  */
 import type { DiffState, Inspected, SessionDiff, SessionRev } from '../../types'
-import { dimRow, fitStart, plural, wrapWords } from './rows'
+import { dimRow, pathText, plural, wrapWords } from './rows'
 import type { Row, Segment } from './rows'
 import type { Block, Section } from './cards'
 
@@ -139,7 +139,7 @@ export function diffSection(view: DiffView, columns: number): Section {
     ...(view.removed > 0 ? [{ text: `−${view.removed}`, color: 'diffRemovedWord' }] : []),
   ]
   const rows: Row[] = []
-  if (view.renamed !== null) rows.push(dimRow('diff-renamed', `   ${fitStart(view.renamed, Math.max(1, columns - 3))}`, columns))
+  if (view.renamed !== null) rows.push(dimRow('diff-renamed', `   ${pathText(view.renamed, Math.max(1, columns - 3))}`, columns))
   view.hunks.slice(0, HUNKS_SHOWN).forEach((hunk, i) => {
     const { shown, more } = folded(hunk)
     rows.push({ key: `diff-hunk-${i}`, segments: [], code: { source: hunkSource(hunk, shown), path: view.path } })

@@ -1107,13 +1107,14 @@ describe('a boundary column that one boundary dominates', () => {
       expect(plainText(row(rows, 'hub-1')!)).not.toContain('core')
     }
   })
-  it('draws a repeat fainter, so the column reads by where the boundary changes; the swatch keeps its colour', () => {
+  it('draws every chip alike, a repeat included: no ditto tone, the swatch in the colour and the name dim', () => {
     const rows = paneRows(input({ tab: 'hubs' }), 120)
     const label = (key: string) => row(rows, key)!.segments.find(s => s.text.trim() === 'core')
     const swatch = (key: string) => row(rows, key)!.segments.find(s => s.text === '■')
-    // StableId (core), ArchitectureQueryService (core): the second is the repeat.
+    // StableId (core), ArchitectureQueryService (core): the second repeats the first.
     expect(label('hub-0')).toMatchObject({ dim: true })
-    expect(label('hub-1')?.color).toBe('subtle')
+    expect(label('hub-1')).toMatchObject({ dim: true })
+    expect(label('hub-1')?.color).toBeUndefined()
     expect(swatch('hub-0')?.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
     expect(swatch('hub-1')?.color).toBe(swatch('hub-0')?.color)
   })

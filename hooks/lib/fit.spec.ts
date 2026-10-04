@@ -65,8 +65,10 @@ function misfits(rows: Row[], columns: number): string[] {
       const drawn = `${s.press.hotkey === undefined ? '' : `${s.press.hotkey}: `}${label}`
       if (cells(drawn) !== cells(s.text)) out.push(`${row.key}: button "${drawn}" for "${s.text}"`)
       // What it shows is the name it presses, or that name cut short with an ellipsis: never another one.
-      const cut = label.endsWith('…') && s.press.label.startsWith(label.slice(0, -1))
-      if (label.trim() !== s.press.label.trim() && !cut) out.push(`${row.key}: button shows "${label}" for "${s.press.label}"`)
+      // A path shows its file name (the directory beside it is plain text), whole or cut the same way.
+      const name = s.press.label.slice(s.press.label.lastIndexOf('/') + 1)
+      const cut = label.endsWith('…') && (s.press.label.startsWith(label.slice(0, -1)) || name.startsWith(label.slice(0, -1)))
+      if (label.trim() !== s.press.label.trim() && label.trim() !== name && !cut) out.push(`${row.key}: button shows "${label}" for "${s.press.label}"`)
     }
   }
   return out

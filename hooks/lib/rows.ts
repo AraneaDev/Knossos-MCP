@@ -133,6 +133,57 @@ export function fitStart(text: string, width: number): string {
   return chars.length <= width ? text : `…${chars.slice(chars.length - width + 1).join('')}`
 }
 
+/**
+ * A path fitted to `width` cells as its directory and its file name, for
+ * drawing in two tones. A path that does not fit is cut in the middle of
+ * its directory, never in the file name: whole folders first (the first
+ * one, `…`, then as many of the last as fit: `src/…/Query/`; then `…` and
+ * the folder the file is in; then the first folder and `…`), then the
+ * directory's own middle; a file name wider than the whole width alone is
+ * cut at its end.
+ */
+export function pathParts(path: string, width: number): { dir: string; base: string } {
+  const cut = path.lastIndexOf('/') + 1
+  const dir = path.slice(0, cut)
+  const base = path.slice(cut)
+  if (width <= 0) return { dir: '', base: '' }
+  if (cells(path) <= width) return { dir, base }
+  const room = width - cells(base)
+  if (room < 2) return { dir: '', base: fit(base, width) }
+  return { dir: middleCut(dir, room), base }
+}
+
+/** A path fitted to `width` cells as one text, cut as {@link pathParts} cuts it: where one tone is all there is. */
+export const pathText = (path: string, width: number): string => {
+  const { dir, base } = pathParts(path, width)
+  return dir + base
+}
+
+/** A path as two segments fitted to `width`: its directory dim, its file name in `style` (a link to `loc` when given). */
+export function pathSegments(path: string, width: number, loc: Loc | null = null, style: Omit<Segment, 'text' | 'link'> = {}): Segment[] {
+  const { dir, base } = pathParts(path, width)
+  return [{ text: dir, dim: true }, linked(base, loc, style)].filter(s => s.text !== '')
+}
+
+/** A directory (ending in `/`) in at most `room` cells, cut in its middle: by whole folders while they fit, else by characters. */
+function middleCut(dir: string, room: number): string {
+  const folders = dir.split('/').filter(f => f !== '')
+  // The first folder, `…`, then the last `kept` folders, as many as fit.
+  for (let kept = folders.length - 2; kept >= 1; kept--) {
+    const text = `${folders[0]}/…/${folders.slice(folders.length - kept).map(f => `${f}/`).join('')}`
+    if (cells(text) <= room) return text
+  }
+  // The folder the file is in says more than the first one.
+  const last = folders.at(-1)
+  if (last !== undefined && folders.length > 1 && cells(`…/${last}/`) <= room) return `…/${last}/`
+  if (folders.length > 1 && cells(`${folders[0]}/…/`) <= room) return `${folders[0]}/…/`
+  if (room < 4) return '…/'
+  const chars = [...dir]
+  const left = Math.ceil((room - 1) / 2)
+  const right = room - 1 - left
+  return `${chars.slice(0, left).join('')}…${right > 0 ? chars.slice(chars.length - right).join('') : ''}`
+}
+
 export const spaces = (n: number): string => ' '.repeat(Math.max(0, n))
 export const padEnd = (text: string, width: number): string => text + spaces(width - cells(text))
 export const padStart = (text: string, width: number): string => spaces(width - cells(text)) + text
@@ -254,7 +305,7 @@ export const SWATCH = '■'
  * A boundary as a chip: a swatch in its colour (the faint ink for a boundary
  * without one), then its label in a text tone, never in the colour itself.
  * `width` cuts the label so the chip takes at most that many cells; `tone`
- * is the label's (dim by default, `repeat` rows fainter still).
+ * is the label's (dim by default).
  */
 export function chip(boundary: string | null, hues: Hues = NO_HUES, width = Number.POSITIVE_INFINITY, tone: Pick<Segment, 'color' | 'dim'> = { dim: true }): Segment[] {
   if (boundary === null) return []
@@ -471,16 +522,14 @@ export type TableLine = {
   selected?: boolean
   hotspotOnly?: boolean
   press?: string
-  /** Cut the name from the front (a path), not the end. */
-  cutStart?: boolean
+  /** The name is a path: drawn in two tones and cut in its directory, never its file name (see {@link pathParts}). */
+  path?: boolean
   /** Where the name's file is: the name is drawn as a link to it. */
   link?: Loc | null
   /** The one-cell mark before the name, when not the hotspot mark. */
   mark?: Segment
   /** The number column the list is sorted by: the others are drawn dim beside it. */
   sorted?: number
-  /** The same boundary as the row above: its label is drawn dim, so the column reads by where it changes. */
-  repeat?: boolean
   /** What kind of thing the row is (class, method, ...), for a table with a kind column: drawn dim. */
   kind?: string
   /** The file (and line) the row is declared in, for a table with a file column: a link to it. */
@@ -498,19 +547,22 @@ export type TableLine = {
  */
 export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hues = NO_HUES): Row {
   const style = boundaryStyle(line.boundary, hues)
-  const name = line.cutStart ? fitStart(line.name, spec.name) : fit(line.name, spec.name)
-  const named = line.press === undefined ? linked(name, line.link ?? null) : button(line.press, name)
+  // A path in two tones, its directory dim and its file name in the text tone; only the file name is pressed or followed.
+  const parts = line.path === true ? pathParts(line.name, spec.name) : { dir: '', base: fit(line.name, spec.name) }
+  // The press keeps the whole name as its label; the Button draws only the cells laid out for it (`pressLabel`).
+  const named = line.press === undefined ? linked(parts.base, line.link ?? null) : { ...button(line.press, parts.base), press: { id: line.press, label: line.name } }
   const segments: Segment[] = [
     { text: line.selected ? '›' : ' ', color: ACCENT, bold: true },
     line.mark ?? { text: line.hotspotOnly ? '◆' : ' ', dim: true },
     { text: ' ' },
+    { text: parts.dir, dim: true },
     line.preview === undefined ? named : { ...named, preview: line.preview },
-    { text: spaces(spec.name - cells(name)) },
+    { text: spaces(spec.name - cells(parts.dir) - cells(parts.base)) },
   ]
   if ((spec.kind ?? 0) > 0) segments.push({ text: ' ' }, { text: padEnd(fit(line.kind ?? '', spec.kind ?? 0), spec.kind ?? 0), dim: true })
   if (spec.boundary > 0) {
-    // A chip: the boundary's colour on its swatch, its name in a text tone (fainter when the row above has the same).
-    const chipped = chip(line.boundary, hues, spec.boundary, line.repeat === true ? { color: FAINT } : { dim: true })
+    // A chip: the boundary's colour on its swatch, its name in a text tone, the same on every row.
+    const chipped = chip(line.boundary, hues, spec.boundary)
     segments.push({ text: ' ' }, ...chipped, { text: spaces(spec.boundary - segmentsWidth(chipped)) })
   }
   if (spec.bar > 0) {

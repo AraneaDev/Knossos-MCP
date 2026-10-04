@@ -723,7 +723,6 @@ function componentRows(prefix: string, items: Item[], selected: number, spec: Ta
           selected: offset + i === selected,
           hotspotOnly: item.hotspotOnly,
           press: `row:${offset + i}`,
-          repeat: i > window.start && item.boundary !== null && item.boundary === items[i - 1]!.boundary,
           place: placeIn(item),
           placeLoc: item.loc,
           preview: previewCard(`card-${prefix}-${i}`, { name: item.name, boundary: item.boundary, figures: componentFigures(item.files, item.in, item.out), top: item.top }, room, hues),
@@ -943,9 +942,8 @@ function fileHubsBlock(files: FileHub[], selected: number, offset: number, tier:
       const max = Math.max(0, ...files.map(f => f.dependents))
       const body = files.slice(window.start, window.end).map((f, n) => {
         const i = window.start + n
-        const repeat = i > window.start && f.boundary !== null && f.boundary === files[i - 1]!.boundary
         const preview = previewCard(`card-files-${i}`, { name: baseName(f.path), boundary: f.boundary, figures: fileFigures(f.dependents), top: f.top }, columns, hues)
-        return tableRow(`files-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, cutStart: true, selected: offset + i === selected, press: `row:${offset + i}`, repeat, preview }, spec, hues)
+        return tableRow(`files-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, path: true, selected: offset + i === selected, press: `row:${offset + i}`, preview }, spec, hues)
       })
       const said = [shared === null ? '' : `all in ${boundaryLabel(shared, hues)}`, note, 'dependent files'].filter(t => t !== '').join(' · ')
       return { key: 'files', title: 'Files most depended on', note: noteOf(said), body: [...body, ...moreRows('files-window', window, files.length, columns)] }

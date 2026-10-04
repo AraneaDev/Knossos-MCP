@@ -22,8 +22,8 @@ import {
   chip,
   dimRow,
   displayName,
-  fitStart,
-  linked,
+  pathSegments,
+  pathText,
   numberWidth,
   plural,
   tableRow,
@@ -116,7 +116,7 @@ export function fileDetailArrangement(detail: DetailInput, tier: Tier, hues: Hue
       key: 'detail',
       make: columns => ({
         key: 'detail',
-        title: fitStart(detail.label, Math.max(1, columns - 4)),
+        title: pathText(detail.label, Math.max(1, columns - 4)),
         body: lines.flatMap((line, i) => wrapWords(line, columns).map((part, j) => dimRow(`detail-line-${i}-${j}`, part, columns))),
       }),
     }
@@ -132,7 +132,7 @@ export function fileDetailArrangement(detail: DetailInput, tier: Tier, hues: Hue
       key: 'detail',
       title: baseName(f.path),
       note: own,
-      body: [{ key: 'detail-place', segments: [linked(fitStart(f.path, Math.max(1, columns - cells(tail))), f.loc, { dim: true }), { text: tail, dim: true }].filter(s => s.text !== '') }],
+      body: [{ key: 'detail-place', segments: [...pathSegments(f.path, Math.max(1, columns - cells(tail)), f.loc), { text: tail, dim: true }].filter(s => s.text !== '') }],
     }),
   }
 
@@ -147,7 +147,7 @@ export function fileDetailArrangement(detail: DetailInput, tier: Tier, hues: Hue
     return [
       ...items.slice(window.start, window.end).map((d, n) => {
         const i = offset + window.start + n
-        return tableRow(`${key}-${window.start + n}`, { name: d.path, boundary: d.boundary, values: [d.edges], max, selected: i === selected, cutStart: true, press: `row:${i}` }, spec, hues)
+        return tableRow(`${key}-${window.start + n}`, { name: d.path, boundary: d.boundary, values: [d.edges], max, selected: i === selected, path: true, press: `row:${i}` }, spec, hues)
       }),
       ...moreRows(`${key}-window`, window, items.length, columns),
     ]
@@ -222,7 +222,7 @@ export function driftSection(drift: DriftInput, columns: number, limit: number, 
   const rows: Row[] = drift.items
     .slice(window.start, window.end)
     .map((i, n) =>
-      tableRow(`drift-${window.start + n}`, { name: i.path, boundary: i.boundary, values: [], max: 0, selected: window.start + n === selected, mark: statusMark(i.change), cutStart: true, press: `row:${window.start + n}` }, spec, hues),
+      tableRow(`drift-${window.start + n}`, { name: i.path, boundary: i.boundary, values: [], max: 0, selected: window.start + n === selected, mark: statusMark(i.change), path: true, press: `row:${window.start + n}` }, spec, hues),
     )
   rows.push(...moreRows('drift-window', window, drift.items.length, columns), ...moreRow('drift-more', drift.count, drift.items.length, columns))
   return { key: 'drift', title: 'Drifted since the snapshot', note: noteOf(note), body: rows }
