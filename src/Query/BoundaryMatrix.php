@@ -29,6 +29,9 @@ final readonly class BoundaryMatrix
     /** The boundary-to-boundary dependencies listed as flows, strongest first. */
     private const FLOWS = 8;
 
+    /** Component ids looked up in one statement. */
+    private const IDS_PER_QUERY = 500;
+
     /**
      * @param PDO $pdo an existing, migrated graph database
      * @param Closure|null $clock nanosecond clock, so the time limit is testable
@@ -204,12 +207,15 @@ final readonly class BoundaryMatrix
         if ($ids === []) {
             return [];
         }
-        $statement = $this->pdo->prepare('SELECT id, display_name, canonical_name, kind FROM nodes WHERE id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')');
-        $statement->execute(array_values($ids));
         $nodes = [];
-        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $canonical = (string) $row['canonical_name'];
-            $nodes[(string) $row['id']] = ['name' => (string) ($row['display_name'] ?? $canonical), 'canonical_name' => $canonical, 'kind' => (string) $row['kind']];
+        // A chunk at a time: SQLite binds at most 32,766 values in one statement (as it is usually built).
+        foreach (array_chunk(array_values($ids), self::IDS_PER_QUERY) as $chunk) {
+            $statement = $this->pdo->prepare('SELECT id, display_name, canonical_name, kind FROM nodes WHERE id IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')');
+            $statement->execute($chunk);
+            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $canonical = (string) $row['canonical_name'];
+                $nodes[(string) $row['id']] = ['name' => (string) ($row['display_name'] ?? $canonical), 'canonical_name' => $canonical, 'kind' => (string) $row['kind']];
+            }
         }
         return $nodes;
     }
