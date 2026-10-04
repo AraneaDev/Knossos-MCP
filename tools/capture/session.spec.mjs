@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import {
+    copyFile,
     mkdir,
     mkdtemp,
     readdir,
@@ -21,6 +22,7 @@ import {
     registerCleanup,
     runCleanups,
     sessionName,
+    snapshot,
     stopWatchers,
     withSession,
 } from "./session.mjs";
@@ -471,6 +473,117 @@ describe("copyData without a live writer", () => {
                     "utf8",
                 ),
             ).toBe("inner");
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+});
+
+describe("snapshot", () => {
+    it("never opens the original: a writer that closes during the copy leaves no sidecars behind, and the copy is taken again", async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), "snap-"));
+        const source = path.join(root, "src");
+        await mkdir(source);
+        const file = path.join(source, "knossos.sqlite");
+        const live = new DatabaseSync(file);
+        live.exec(
+            "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t(x); INSERT INTO t VALUES (1), (2), (3);",
+        );
+        let open = true;
+        const copied = [];
+        // The writer closes between the check of the sidecars and any open: it checkpoints and deletes them.
+        const copy = async (from, to) => {
+            copied.push(path.basename(from));
+            if (open) {
+                live.close();
+                open = false;
+            }
+            await copyFile(from, to);
+        };
+        try {
+            expect((await readdir(source)).sort()).toEqual([
+                "knossos.sqlite",
+                "knossos.sqlite-shm",
+                "knossos.sqlite-wal",
+            ]);
+            await snapshot(file, path.join(root, "copy.sqlite"), { copy });
+            expect(copied[0]).toBe("knossos.sqlite");
+            expect(await readdir(source)).toEqual(["knossos.sqlite"]);
+            const result = new DatabaseSync(path.join(root, "copy.sqlite"), {
+                readOnly: true,
+            });
+            expect(result.prepare("SELECT count(*) AS n FROM t").get().n).toBe(
+                3,
+            );
+            result.close();
+        } finally {
+            if (open) live.close();
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+    it("gives up on a database that changes during every copy", async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), "snap-"));
+        const file = path.join(root, "busy.sqlite");
+        const db = new DatabaseSync(file);
+        db.exec("CREATE TABLE t(x)");
+        const copy = async (from, to) => {
+            await copyFile(from, to);
+            db.exec("INSERT INTO t VALUES (1)");
+        };
+        try {
+            await expect(
+                snapshot(file, path.join(root, "copy.sqlite"), {
+                    copy,
+                    attempts: 3,
+                }),
+            ).rejects.toThrow(/kept changing/);
+        } finally {
+            db.close();
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+    it("registers its scratch dir for cleanup before it copies anything into it", async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), "snap-"));
+        const file = path.join(root, "knossos.sqlite");
+        const db = new DatabaseSync(file);
+        db.exec("CREATE TABLE t(x)");
+        db.close();
+        let scratch = null;
+        // As if a signal came during the first copy: the exit runs the cleanups.
+        const copy = async (from, to) => {
+            scratch = path.dirname(to);
+            await runCleanups();
+            throw new Error("interrupted");
+        };
+        try {
+            await expect(
+                snapshot(file, path.join(root, "copy.sqlite"), { copy }),
+            ).rejects.toThrow(/interrupted/);
+            expect(path.basename(scratch)).toMatch(/^knossos-capture-db-/);
+            await expect(stat(scratch)).rejects.toThrow(/ENOENT/);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+});
+
+describe("copyData sidecars", () => {
+    it("copies -wal and -shm files as is when their base is not a SQLite database, or is not there", async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), "copy-"));
+        const source = path.join(root, "src");
+        const dest = path.join(root, "dest");
+        await mkdir(source);
+        await writeFile(path.join(source, "notes.sqlite"), "plain text");
+        await writeFile(path.join(source, "notes.sqlite-wal"), "wal text");
+        await writeFile(path.join(source, "notes.sqlite-shm"), "shm text");
+        await writeFile(path.join(source, "gone.sqlite-wal"), "orphan");
+        try {
+            await copyData(source, dest);
+            const read = (name) => readFile(path.join(dest, name), "utf8");
+            expect(await read("notes.sqlite")).toBe("plain text");
+            expect(await read("notes.sqlite-wal")).toBe("wal text");
+            expect(await read("notes.sqlite-shm")).toBe("shm text");
+            expect(await read("gone.sqlite-wal")).toBe("orphan");
         } finally {
             await rm(root, { recursive: true, force: true });
         }

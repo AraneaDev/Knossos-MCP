@@ -33,8 +33,13 @@ const run = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const cleanups = [];
 
+/** Adds a step for runCleanups; the function it returns takes the step back out, for work that cleaned up after itself. */
 export function registerCleanup(fn) {
     cleanups.push(fn);
+    return () => {
+        const at = cleanups.lastIndexOf(fn);
+        if (at !== -1) cleanups.splice(at, 1);
+    };
 }
 
 /** Runs every registered step once, last registered first; a step that throws does not stop the rest. */
@@ -170,26 +175,64 @@ const exists = (file) =>
     );
 
 /**
- * Backs one database up into `to` as one consistent snapshot. With both
- * sidecars present a writer is live, and a read-only connection to the
- * original creates nothing new. Without them, opening it would create them in
- * the user's data dir, so the files are copied to a temp dir first and the
- * backup is taken from there.
+ * Size and mtime of a database file and its rollback journal. The WAL is left
+ * out on purpose: appends to it come with every write and never make a copy
+ * wrong (SQLite reads a WAL only up to its last whole, checksummed commit).
+ * What would is the database file changing under the copy, which a
+ * checkpoint does, and that shows here.
  */
-async function snapshot(from, to) {
-    let scratch = null;
-    let origin = from;
-    if (!((await exists(`${from}-wal`)) && (await exists(`${from}-shm`)))) {
-        scratch = await mkdtemp(path.join(os.tmpdir(), "knossos-capture-db-"));
-        origin = path.join(scratch, path.basename(from));
-        await copyFile(from, origin);
-        for (const side of ["-wal", "-journal"]) {
-            if (await exists(from + side))
-                await copyFile(from + side, origin + side);
+const fingerprint = async (db) =>
+    (
+        await Promise.all(
+            ["", "-journal"].map((side) =>
+                stat(db + side).then(
+                    (i) => `${i.size}:${i.mtimeMs}`,
+                    () => "-",
+                ),
+            ),
+        )
+    ).join(" ");
+
+/**
+ * Copies a database and its -wal or -journal as plain files, the database
+ * first, again until the database file stood still through the whole copy,
+ * so the files belong together. The -shm is never copied: SQLite rebuilds it
+ * from the WAL.
+ */
+async function quietCopy(from, to, { copy, attempts }) {
+    for (let n = 0; n < attempts; n += 1) {
+        const before = await fingerprint(from);
+        for (const side of ["", "-wal", "-journal"]) {
+            await rm(to + side, { force: true });
+            if (await exists(from + side)) await copy(from + side, to + side);
         }
+        if ((await fingerprint(from)) === before) return;
     }
+    throw new Error(`${from} kept changing while it was copied`);
+}
+
+/**
+ * Backs one database up into `to` as one consistent snapshot. SQLite never
+ * opens the original, not even read only: a read-only open of a WAL database
+ * whose writer has just closed would create its -wal and -shm again in the
+ * user's data dir. The files are copied to a temp dir first, and the backup is
+ * taken from there. That dir is registered for cleanup as soon as it exists,
+ * so a signal during the copy removes it too.
+ */
+export async function snapshot(
+    from,
+    to,
+    { copy = copyFile, attempts = 5 } = {},
+) {
+    const scratch = await mkdtemp(
+        path.join(os.tmpdir(), "knossos-capture-db-"),
+    );
+    const drop = () => rm(scratch, { recursive: true, force: true });
+    const forget = registerCleanup(drop);
     try {
-        const db = new DatabaseSync(origin, { readOnly: scratch === null });
+        const origin = path.join(scratch, path.basename(from));
+        await quietCopy(from, origin, { copy, attempts });
+        const db = new DatabaseSync(origin);
         try {
             // One step: a multi-step backup restarts whenever another connection writes in between.
             await backup(db, to, { rate: -1 });
@@ -197,19 +240,19 @@ async function snapshot(from, to) {
             db.close();
         }
     } finally {
-        if (scratch !== null)
-            await rm(scratch, { recursive: true, force: true });
+        forget();
+        await drop();
     }
 }
 
 /**
  * Copies a data dir for a capture. Each SQLite database is taken as one
  * consistent snapshot (see snapshot) even while the user's watcher writes;
- * its -wal, -shm and -journal files are never copied as files. The rest is
+ * its -wal, -shm and -journal files never land in the copy. The rest is
  * copied as is, except the watch locks (they name the user's live watcher,
  * which the copy must never mistake for its own), the backups and the logs.
  */
-export async function copyData(source, dest) {
+export async function copyData(source, dest, options = {}) {
     const databases = [];
     await cp(source, dest, {
         recursive: true,
@@ -231,7 +274,7 @@ export async function copyData(source, dest) {
     });
     for (const rel of databases) {
         await mkdir(path.dirname(path.join(dest, rel)), { recursive: true });
-        await snapshot(path.join(source, rel), path.join(dest, rel));
+        await snapshot(path.join(source, rel), path.join(dest, rel), options);
     }
 }
 
@@ -300,10 +343,13 @@ export async function createSession({
     rows,
     theme,
     pluginDir,
+    home = os.homedir(),
+    claudeArgs = ["--permission-mode", "default"],
 }) {
     installExitHandlers();
     const base = await mkdtemp(path.join(os.tmpdir(), "knossos-capture-"));
-    registerCleanup(() => rm(base, { recursive: true, force: true }));
+    const removeBase = () => rm(base, { recursive: true, force: true });
+    const forgetBase = registerCleanup(removeBase);
     const configDir = path.join(base, "config");
     const dataCopy = path.join(base, "data");
     const env = {
@@ -317,6 +363,12 @@ export async function createSession({
         // The account's claude.ai connectors are not the capture's business, and an update must not run mid-capture.
         ENABLE_CLAUDEAI_MCP_SERVERS: "false",
         DISABLE_AUTOUPDATER: "1",
+        // Claude Code's demo mode: no account email or organisation on screen.
+        IS_DEMO: "1",
+        // Essential traffic only, which also keeps promotional notices out of the startup header.
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        // The header names the project from here: `~/<name>` when the project lies in it.
+        HOME: home,
     };
     guardEnv(env, {
         realDataDir: path.join(os.homedir(), ".knossos"),
@@ -353,9 +405,16 @@ export async function createSession({
             // The watcher leaves with the session as a rule; what is left is stopped by its data dir.
             await stopWatchers(dataCopy);
         },
+        /** Stops the session and removes its temp dir now, for a run that shoots several sessions in turn. */
+        async close() {
+            forgetStop();
+            forgetBase();
+            await session.stop();
+            await removeBase();
+        },
     };
     // Before the session starts, so a signal while it starts still ends it.
-    registerCleanup(() => session.stop());
+    const forgetStop = registerCleanup(() => session.stop());
     const envArgs = [
         "CLAUDE_CONFIG_DIR",
         "KNOSSOS_DATA_DIR",
@@ -364,8 +423,19 @@ export async function createSession({
         "CLAUDE_CODE_TMUX_TRUECOLOR",
         "ENABLE_CLAUDEAI_MCP_SERVERS",
         "DISABLE_AUTOUPDATER",
+        "IS_DEMO",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "HOME",
     ].flatMap((k) => ["-e", `${k}=${env[k]}`]);
     await run("tmux", [
+        // Focus events on, or Claude Code prints a tmux hint at the bottom of the first frames.
+        "start-server",
+        ";",
+        "set-option",
+        "-s",
+        "focus-events",
+        "on",
+        ";",
         "new-session",
         "-d",
         "-s",
@@ -380,8 +450,7 @@ export async function createSession({
         "claude",
         "--plugin-dir",
         pluginDir,
-        "--permission-mode",
-        "default",
+        ...claudeArgs,
     ]);
     return session;
 }
