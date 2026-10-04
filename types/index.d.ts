@@ -343,6 +343,68 @@ export type BoundaryCouplings = {
   truncated: boolean
 }
 
+/**
+ * The `graph-search` subcommand's answer: the components and files whose
+ * name holds the typed letters in order, the closest first (at most 20);
+ * `truncated` when a candidate read stopped at its bound.
+ */
+export type GraphSearch = {
+  status: 'ok' | 'unscanned' | 'error' | 'no-binary'
+  query?: string
+  results: { type: 'component' | 'file'; name: string; canonical_name: string; kind: string; path: string | null; line: number | null; boundary: string | null }[]
+  truncated: boolean
+}
+
+/** The finder's search: what was typed, and the answer for the query last read (`for`), null until one lands. */
+export type SearchState = { query: string; for: string | null; phase: 'idle' | 'searching'; answer: GraphSearch | null }
+
+/** One component (or file) as the Branch tab lists it. */
+export type BranchItem = { name: string; canonical_name: string; kind: string; path: string | null; line: number | null; boundary: string | null }
+
+/**
+ * The `branch-diff` subcommand's answer: the checked-out branch against the
+ * retained snapshot at (or nearest before) its merge base with the default
+ * branch. `base.match`: `exact`, `before` (`commits` before the merge base)
+ * or `after` (`commits` of the branch already in it: a partial comparison,
+ * status `no-snapshot`). Each list counts all and names the first few.
+ */
+export type BranchDiff = {
+  status: 'ok' | 'no-snapshot' | 'on-default' | 'no-git' | 'no-default' | 'unscanned' | 'error' | 'no-binary'
+  branch?: string | null
+  default_branch?: string | null
+  merge_base?: { rev: string; at: number } | null
+  ahead?: number | null
+  base?: { snapshot_id: string; rev: string; at: string; match: 'exact' | 'before' | 'after'; commits: number } | null
+  comparison?: {
+    crossing: { count: number; items: { source: BranchItem; target: BranchItem }[] }
+    cycles: { count: number; items: { size: number; members: BranchItem[] }[] }
+    hubs: { count: number; items: { component: BranchItem; before: number; after: number }[] }
+    dead_code: { count: number; items: BranchItem[] }
+    violations: { count: number; items: { policy_id: string; source: string; source_kind: string; target: string; target_kind: string }[]; truncated: boolean } | null
+  } | null
+}
+
+/** The Branch tab's comparison as last read, for the snapshot it was read at; loading until it lands. */
+export type BranchState = { snapshot: string | null; phase: 'loading' | 'done'; answer: BranchDiff | null }
+
+/**
+ * The `file-context` subcommand's answer: one file's boundary, dependents,
+ * the tests that reach it and its latest commits, each cut to a few.
+ */
+export type FileContext = {
+  status: 'ok' | 'unscanned' | 'not-found' | 'error' | 'no-binary'
+  file: {
+    path: string
+    language: string
+    lines: number | null
+    boundary: string | null
+    components: number
+    dependents: { count: number; boundaries: string[]; top: string[] }
+    tests: { items: { path: string; distance: number }[]; more: boolean }
+    commits: { rev: string; at: number; subject: string }[]
+  } | null
+}
+
 /** The cell the pane spelled out, loading until its answer lands (null: nothing answered). */
 export type CouplingState = { snapshot: string | null; from: string; to: string; phase: 'loading' | 'done'; answer: BoundaryCouplings | null }
 
@@ -352,8 +414,8 @@ export type Feedback = { text: string; tone: 'ok' | 'alert'; until: number }
 /** The diff the file detail shows: of `name` against `rev` at `snapshot`, loading until it lands (null: nothing answered). */
 export type DiffState = { name: string; rev: string; snapshot: string | null; phase: 'loading' | 'done'; diff: SessionDiff | null }
 
-/** The pane's tabs, in their hotkey order (1 to 6). */
-export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues' | 'changes'
+/** The pane's tabs, in their hotkey order (1 to 7). */
+export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues' | 'changes' | 'branch'
 
 /** How a file this session touched stands now: the last turn that named it decides. */
 export type TouchStatus = 'changed' | 'added' | 'deleted'
@@ -442,6 +504,8 @@ export type KnossosView = {
   unfolded?: number[]
   /** On the Hubs tab, the in-degree range the list is narrowed to (an Overview bucket's), `to` null for no upper end. */
   degree?: { from: number; to: number | null } | null
+  /** Whether the finder is open over the pane (`f`): its field and what it found. */
+  finding?: boolean
 }
 
 /** The `scan` subcommand's answer: an incremental rescan the person asked for from the pane. */
@@ -531,6 +595,10 @@ declare module 'claude-code' {
       couplings: CouplingState | null
       /** The footer's word after an action, until it fades. */
       feedback: Feedback | null
+      /** The finder's search: what was typed and what was found. */
+      search: SearchState
+      /** The Branch tab's comparison with the merge base, as last read. */
+      branch: BranchState | null
       /** The rows the latest scan changed (`hub:`, `file:`, `tile:`, `boundary:`, `change:` keys), lit until `until` (mod clock, ms). */
       flash: { keys: string[]; until: number } | null
     }

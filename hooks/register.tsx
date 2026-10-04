@@ -8,7 +8,7 @@ import { BASELINES_KEY, baselinesOf, remember } from './lib/baseline'
 import type { Baseline } from './lib/baseline'
 import type { JobState } from './lib/band'
 import { diffView } from './lib/diff'
-import { parseAllowRoot, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseRescan, parseSessionDiff, parseSessionHead, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
+import { parseAllowRoot, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseGraphSearch, parseRescan, parseSessionDiff, parseSessionHead, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { SessionLedger, TurnBrief } from './lib/envelopes'
 import { ledgerChanges, ownTimeline } from './lib/changes'
 import {
@@ -51,7 +51,7 @@ import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { cells, pressLabel, textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
-import type { AllowState, ComponentDetail, Dashboard, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
+import type { AllowState, ComponentDetail, Dashboard, SearchState, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -111,6 +111,12 @@ const EDITS_KEPT = 1_000
 const SCANS_KEPT = 1_000
 /** Why the Changes tab lists only the turn briefs' files. */
 const NO_WATCHER = "No live watcher, so only what this session's turns reported is listed."
+/** The finder before anything was typed. */
+const NO_SEARCH: SearchState = { query: '', for: null, phase: 'idle', answer: null }
+/** How long the finder waits after a keystroke before it asks: a word typed fast is one search. */
+const SEARCH_DEBOUNCE_MS = 150
+/** The wrapper bounds graph-search at 15 s. */
+const SEARCH_TIMEOUT_MS = 20_000
 
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
@@ -157,6 +163,8 @@ const gitHead = atom({ plugin: 'knossos', key: 'gitHead' } as const, null as Git
 const couplings = atom({ plugin: 'knossos', key: 'couplings' } as const, null as CouplingState | null)
 /** What the footer says for a moment after an action in the pane. */
 const feedback = atom({ plugin: 'knossos', key: 'feedback' } as const, null as Feedback | null)
+/** The finder's search: what was typed, and what `graph-search` answered for the query last read. */
+const search = atom({ plugin: 'knossos', key: 'search' } as const, NO_SEARCH as SearchState)
 /** The rows the latest scan changed, lit for a moment after it landed. */
 const flash = atom({ plugin: 'knossos', key: 'flash' } as const, null as Flash | null)
 
@@ -307,6 +315,13 @@ const mod = {
   scanStartedAt: null as number | null,
   /** When the last scan the mod heard of began and landed: a change made while it ran is noticed only after it. */
   lastScan: null as { start: number; end: number } | null,
+  /** The finder's searches, one at a time, a keystroke during one coalescing into one more; and the pending debounce. */
+  searchFlight: null as SingleFlight | null,
+  searchTimer: null as Timer | null,
+  /** Set by Enter before the answer for what is typed landed: its first match opens when it does. */
+  openWhenFound: false,
+  /** Where the tab's marker stood when the finder opened over it: closing the finder puts it back. */
+  findFrom: 0,
 }
 
 /** How long to wait before each retry of a refused registration, in milliseconds; after the last, turn ends retry. */
@@ -1258,7 +1273,7 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const stored = await read($, detail)
   const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
   if (shown !== null && v.inspect !== null) shown.diff = diffView(v.inspect, await read($, fileDiff), await read($, sessionRev))
-  const extras = { git: await read($, gitHead), feedback: await read($, feedback), couplings: await read($, couplings), flash: await read($, flash) }
+  const extras = { git: await read($, gitHead), feedback: await read($, feedback), couplings: await read($, couplings), flash: await read($, flash), search: await read($, search) }
   return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await shownChanges($, d.project_root), await read($, sessionRoot), await read($, live), extras)
 }
 
@@ -1280,6 +1295,12 @@ async function openRow($: EngineInterface, index?: number): Promise<void> {
   const at = index ?? (await read($, view)).selected
   const item = (await currentList($))[at]
   if (item === undefined) return
+  // A match opened from the finder closes it: the detail opens over the tab, whose marker stays where it stood.
+  if ((await read($, view)).finding === true) {
+    mod.openWhenFound = false
+    await update($, view, (v): KnossosView => ({ ...v, finding: false, selected: mod.findFrom }))
+    return showComponent($, { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}) })
+  }
   await update($, view, v => ({ ...v, selected: at }))
   // An Overview chart's bar opens the tab it counts: Hubs narrowed to a bucket, a flow's cell on Boundaries, Changes.
   const jump = item.jump
@@ -1363,6 +1384,69 @@ async function typeFilter($: EngineInterface, text: string): Promise<void> {
 /** Enter in the filter field: keep the text (an empty one clears the filter) and close the field. */
 async function submitFilter($: EngineInterface, text: string): Promise<void> {
   await update($, view, v => ({ ...v, filter: text.trim(), filtering: false, selected: 0 }))
+}
+
+/**
+ * Opens the finder over the pane and moves the focus into its field once it
+ * is drawn (on a timer, never inside the press or a render). What was
+ * typed last is kept, so a second look picks up where the first left off.
+ */
+async function openFinder($: EngineInterface): Promise<void> {
+  const v = await read($, view)
+  if (v.finding !== true) mod.findFrom = v.selected
+  await update($, view, (w): KnossosView => ({ ...w, finding: true, filtering: false, selected: 0 }))
+  $.clock.after(0, () => void $.ui.focus({ requestId: PANE, key: 'find' }).catch(() => undefined))
+}
+
+/** Closes the finder: the tab (or the detail) under it comes back with its marker where it stood. */
+async function closeFinder($: EngineInterface): Promise<void> {
+  mod.openWhenFound = false
+  await update($, view, (v): KnossosView => (v.finding === true ? { ...v, finding: false, selected: mod.findFrom } : v))
+}
+
+/** What was typed into the finder, kept at once; the search for it runs after a short pause in the typing. */
+async function typeQuery($: EngineInterface, text: string): Promise<void> {
+  await update($, search, (f): SearchState => ({ ...f, query: text }))
+  await update($, view, v => ({ ...v, selected: 0 }))
+  requestSearch($)
+}
+
+/** Enter in the finder: opens the marked match once the answer for what is typed is in; an empty field closes the finder. */
+async function submitQuery($: EngineInterface, text: string): Promise<void> {
+  if (text.trim() === '') return closeFinder($)
+  const found = await read($, search)
+  if (found.query !== text) await update($, search, (f): SearchState => ({ ...f, query: text }))
+  if (found.for === text.trim() && found.phase === 'idle') return openRow($)
+  mod.openWhenFound = true
+  requestSearch($)
+}
+
+/** Asks for the matches of what is typed after {@link SEARCH_DEBOUNCE_MS}, one search at a time. */
+function requestSearch($: EngineInterface): void {
+  if (mod.disabled) return
+  mod.searchTimer?.cancel()
+  mod.searchTimer = $.clock.after(SEARCH_DEBOUNCE_MS, () => {
+    mod.searchTimer = null
+    void (mod.searchFlight ??= new SingleFlight(() => loadSearch($))).request().catch(() => undefined)
+  })
+}
+
+/** One search for what is typed now; stored with the query it answers, so a stale answer is never shown as current. */
+async function loadSearch($: EngineInterface): Promise<void> {
+  const query = (await read($, search)).query.trim()
+  if (query === '') {
+    await update($, search, (f): SearchState => ({ ...f, for: '', phase: 'idle', answer: null }))
+    return
+  }
+  await update($, search, (f): SearchState => ({ ...f, phase: 'searching' }))
+  const parsed = parseGraphSearch(await wrapper($, 'graph-search', [`--query=${query}`], SEARCH_TIMEOUT_MS))
+  if (parsed?.status === 'no-binary') return disable($)
+  await update($, search, (f): SearchState => ({ ...f, for: query, phase: 'idle', answer: parsed }))
+  // Enter was pressed before this answer landed: its first match opens now, if the field still says the same.
+  if (mod.openWhenFound && (await read($, search)).query.trim() === query) {
+    mod.openWhenFound = false
+    if (parsed?.status === 'ok' && parsed.results.length > 0) await openRow($, 0)
+  }
 }
 
 /** Copies the marked row's canonical name (a file's path) onto the clipboard of the surface the press came from. */
@@ -1494,9 +1578,11 @@ async function unfoldCycle($: EngineInterface, id: string): Promise<void> {
 async function pressAction($: EngineInterface, id: string, surface?: RenderSurface): Promise<unknown> {
   if (id.startsWith('tab:') || id.startsWith('tabkey:')) {
     const tab = id.slice(id.indexOf(':') + 1) as PaneTab
-    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false, drift: false, target: undefined, degree: null }))
+    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false, finding: false, drift: false, target: undefined, degree: null }))
     return
   }
+  if (id === 'find') return openFinder($)
+  if (id === 'find-close') return closeFinder($)
   if (id === 'target') return moveCell($, null)
   if (id.startsWith('cell:')) return moveCell($, Number(id.slice(5)))
   if (id === 'drift' || id === 'drifted') return update($, view, v => ({ ...v, drift: v.drift !== true, selected: 0 }))
@@ -1576,8 +1662,8 @@ function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, 
         placeholder={s.field.placeholder}
         submitLabel="keep"
         autoFocus
-        onInput={(value: string) => void typeFilter($, value).catch(() => undefined)}
-        onSubmit={(value: string) => void submitFilter($, value).catch(() => undefined)}
+        onInput={(value: string) => void (s.field!.id === 'find' ? typeQuery($, value) : typeFilter($, value)).catch(() => undefined)}
+        onSubmit={(value: string) => void (s.field!.id === 'find' ? submitQuery($, value) : submitFilter($, value)).catch(() => undefined)}
       />,
     )
   }
@@ -1851,6 +1937,11 @@ export const register: Register = (on, options) => {
   mod.callSeq = 0
   mod.scanStartedAt = null
   mod.lastScan = null
+  mod.searchFlight = null
+  mod.searchTimer?.cancel()
+  mod.searchTimer = null
+  mod.openWhenFound = false
+  mod.findFrom = 0
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {

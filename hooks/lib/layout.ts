@@ -7,7 +7,7 @@
  * shared primitives (segments, cutting, bars, the self-fitting table) are in
  * `rows.ts`; the Issues and Cycles tabs and the component detail in `views.ts`.
  */
-import type { AllowState, CouplingState, Dashboard, Feedback, GitHead, HubSort, KnossosView, LiveState, PaneTab, Ranked, RefreshState, RescanState, SessionChanges, TurnBrief } from '../../types'
+import type { AllowState, CouplingState, Dashboard, Feedback, GitHead, HubSort, KnossosView, LiveState, PaneTab, Ranked, RefreshState, RescanState, SearchState, SessionChanges, TurnBrief } from '../../types'
 import { formatAge } from './band'
 import { boundariesArrangement, boundariesInput, boundariesList, couplingView, markedCell } from './boundaries'
 import type { BoundariesInput, CouplingView } from './boundaries'
@@ -52,6 +52,8 @@ import type { Stat } from './tiles'
 import { compositionBlock, concentrationBlock, flowsBlock, healthBlock, overviewData, overviewList as overviewWalk, sessionBlock } from './overview'
 import type { OverviewData } from './overview'
 import { litAt } from './flash'
+import { finderBlock, finderInput, finderList } from './finder'
+import type { FinderInput } from './finder'
 import type { Flash } from './flash'
 import { cycleSteps, cyclesArrangement, cyclesInput, cyclesList, unfoldPress } from './cycles'
 import type { CyclesInput } from './cycles'
@@ -155,6 +157,8 @@ export type PaneInput = {
   couplings: CouplingView | null
   /** The rows the latest scan changed, lit for a moment after it landed (see `flash.ts`). */
   lit: ReadonlySet<string>
+  /** The finder, while it is open over the pane (`f`); null otherwise. */
+  finder: FinderInput | null
 }
 
 /** A refused root the pane offers to allow: the root, the roots file it would join, and where the action stands. */
@@ -225,13 +229,13 @@ export function fileHubList(files: FileHub[], filter: string): FileHub[] {
 }
 
 /** What a list addresses: the fields the selection, `o`, `e`, `c` and `q` read. */
-export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'degree' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries' | 'lookAt' | 'overview' | 'drift' | 'driftOpen' | 'fileHubs'>
+export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'degree' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries' | 'lookAt' | 'overview' | 'drift' | 'driftOpen' | 'fileHubs'> & Partial<Pick<PaneInput, 'finder'>>
 
 /** A file row of a list: it opens as the file's detail, and `e` opens the file. */
 const fileRow = (path: string, loc: Loc | null): Openable => ({ name: path, canonical: path, loc, file: true })
 
 /** The pane's state the layout does not read from the dashboard: where the checkout stands, the footer's word, and the Boundaries tab's cell. */
-export type PaneExtras = { git?: GitHead | undefined; feedback?: Feedback | null; couplings?: CouplingState | null; flash?: Flash | null }
+export type PaneExtras = { git?: GitHead | undefined; feedback?: Feedback | null; couplings?: CouplingState | null; flash?: Flash | null; search?: SearchState | null }
 
 /**
  * The Overview's walkable rows, in the order a narrow pane draws them: the
@@ -254,6 +258,8 @@ const filesShown = (input: Pick<PaneInput, 'fileHubs' | 'filter' | 'degree'>): F
 
 /** The rows the selection walks: the detail's counterparts, else the drifted files when listed, else the tab's list. */
 export function listFor(input: ListInput): Openable[] {
+  // The finder stands over everything: its matches are what the marker walks.
+  if (input.finder !== undefined && input.finder !== null) return finderList(input.finder)
   if (input.detail !== null) return input.detail.file === undefined ? detailList(input.detail) : input.detail.file === null ? [] : fileDetailList(input.detail.file)
   if (input.driftOpen && input.drift !== null) return driftList(input.drift)
   if (input.tab === 'overview') return overviewList(input)
@@ -443,6 +449,7 @@ export function paneInput(
     target: view.target ?? null,
     couplings: shownCouplings(boundaries, view, d.snapshot_id ?? null, extras.couplings ?? null),
     lit,
+    finder: view.finding === true && extras.search !== undefined && extras.search !== null ? finderInput(extras.search, d.project_root) : null,
   }
 }
 
@@ -744,7 +751,7 @@ function componentRows(prefix: string, items: Item[], selected: number, spec: Ta
 
 /** The keys and what each does, for the key list. */
 const KEY_HELP: [string, string][] = [
-  ['1–6', 'switch tabs (or click one)'],
+  ['1–7', 'switch tabs (or click one)'],
   ['j k', 'move the marker (or Tab, or a click)'],
   ['o', 'open the marked row: a component or a file shows what depends on it, an Overview bar the tab it counts'],
   ['e', "open the marked row's file in your editor"],
@@ -754,7 +761,8 @@ const KEY_HELP: [string, string][] = [
   ['t', "on Overview and Changes: copy the command for the tests that reach this session's changes"],
   ['d', 'list the files drifted since the snapshot, or hide them'],
   ['l', "on Boundaries: move the marked cell to the next boundary the marked one depends on, and spell it out"],
-  ['f s x', 'on Hubs: filter (type, then Enter), sort by in, out or cross, clear the filter or the in-degree range'],
+  ['f', 'find any component or file by the letters of its name; Enter opens the first match, x closes the finder'],
+  ['n s x', 'on Hubs: narrow the list (type, then Enter), sort by in, out or cross, clear the narrowing or the in-degree range'],
   ['r', 'rescan a stale snapshot'],
   ['a', 'allow a refused root (asks first)'],
 ]
@@ -791,6 +799,7 @@ function padded(row: Row, pad: number, columns: number, bg?: string): Row {
 export function footerRows(input: PaneInput, columns: number, hasList: boolean, scrolled = false): { bar: Row[]; help: Row[] } {
   const moves: Segment[] = []
   const actions: Segment[] = []
+  if (input.finder !== null) return finderFooter(input, columns, hasList)
   const onTab = input.detail === null && !input.driftOpen
   if (input.detail !== null) moves.push(button('back', 'back', 'b'))
   // On Cycles the marker walks the boxes the diagram draws, which only the width decides: the keys name the row they move to.
@@ -810,10 +819,10 @@ export function footerRows(input: PaneInput, columns: number, hasList: boolean, 
   if (onTab && input.tab === 'changes' && input.changes.command !== null) actions.push(button('tests', 'copy test command', 't'))
   if (input.detail === null && input.drift !== null) actions.push(button('drift', input.driftOpen ? 'hide drifted' : 'drifted files', 'd'))
   if (onTab && input.tab === 'hubs') {
-    actions.push(button('filter', 'filter', 'f'), button('sort', `sort: ${input.sort}`, 's'))
+    actions.push(button('filter', 'narrow', 'n'), button('sort', `sort: ${input.sort}`, 's'))
     if (input.filter !== '' || input.degree !== null) actions.push(button('clear', 'clear', 'x'))
   }
-  actions.push(button('keys', input.showKeys ? 'hide keys' : 'keys', 'h'))
+  actions.push(button('find', 'find', 'f'), button('keys', input.showKeys ? 'hide keys' : 'keys', 'h'))
   const pad = padOf(tier)
   const inner = Math.max(1, columns - 2 * pad)
   const said: Segment[] = input.feedback === null ? [] : [{ text: input.feedback.text, color: input.feedback.tone === 'ok' ? STATUS_COLOURS.ok : STATUS_COLOURS.alert }]
@@ -829,17 +838,37 @@ export function footerRows(input: PaneInput, columns: number, hasList: boolean, 
     if (moves.length > 0) lines.push(...wrapGroups('keys', moves.map(k => [{ ...k, dim: true }]), inner))
     lines.push(...wrapGroups(moves.length > 0 ? 'keys-actions' : 'keys', [...actions.map(k => [{ ...k, dim: true }]), ...(state.length > 0 ? [state] : [])], inner))
   }
+  // One key a line, its action wrapped beside it: a list to look up, not a paragraph to read.
+  return { bar: lines.map(row => padded(row, pad, columns, BAR_BG)), help: input.showKeys ? keyHelp(inner, pad, columns) : [] }
+}
+
+/**
+ * The footer bar while the finder is open: moving through the matches, and
+ * opening the marked one, closing the finder and the key list. While the
+ * field holds the focus the keys type into it: Enter opens the first match,
+ * and a click opens any.
+ */
+function finderFooter(input: PaneInput, columns: number, hasList: boolean): { bar: Row[]; help: Row[] } {
+  const pad = padOf(tierOf(columns))
+  const inner = Math.max(1, columns - 2 * pad)
+  const moves = hasList ? [button('down', '↓', 'j'), button('up', '↑', 'k')] : []
+  const actions = [...(hasList ? [button('open', 'open', 'o')] : []), button('find-close', 'close', 'x'), button('keys', input.showKeys ? 'hide keys' : 'keys', 'h')]
+  const left = joinGroups(moves.map(k => [{ ...k, dim: true }]))
+  const right = joinGroups(actions.map(k => [{ ...k, dim: true }]))
+  const lines = segmentsWidth(left) + 2 + segmentsWidth(right) <= inner ? [spread('keys', left, right, inner)] : [...(moves.length > 0 ? wrapGroups('keys', moves.map(k => [{ ...k, dim: true }]), inner) : []), ...wrapGroups(moves.length > 0 ? 'keys-actions' : 'keys', actions.map(k => [{ ...k, dim: true }]), inner)]
+  return { bar: lines.map(row => padded(row, pad, columns, BAR_BG)), help: input.showKeys ? keyHelp(inner, pad, columns) : [] }
+}
+
+/** The key list `h` opens: one key a line, its action wrapped beside it. */
+function keyHelp(inner: number, pad: number, columns: number): Row[] {
   const help: Row[] = []
-  if (input.showKeys) {
-    // One key a line, its action wrapped beside it: a list to look up, not a paragraph to read.
-    let n = 0
-    for (const [key, action] of [...KEY_HELP, ['', 'A file:line opens in your editor on a click. Every key has a button.'] as [string, string]]) {
-      wrapWords(action, Math.max(1, inner - KEY_WIDTH)).forEach((line, i) =>
-        help.push(padded({ key: `help-${n++}`, segments: [{ text: padEnd(i === 0 ? key : '', KEY_WIDTH), color: ACCENT }, { text: line, dim: true }] }, pad, columns)),
-      )
-    }
+  let n = 0
+  for (const [key, action] of [...KEY_HELP, ['', 'A file:line opens in your editor on a click. Every key has a button.'] as [string, string]]) {
+    wrapWords(action, Math.max(1, inner - KEY_WIDTH)).forEach((line, i) =>
+      help.push(padded({ key: `help-${n++}`, segments: [{ text: padEnd(i === 0 ? key : '', KEY_WIDTH), color: ACCENT }, { text: line, dim: true }] }, pad, columns)),
+    )
   }
-  return { bar: lines.map(row => padded(row, pad, columns, BAR_BG)), help }
+  return help
 }
 
 /** Groups of segments on one line, two cells apart. */
@@ -1026,7 +1055,10 @@ export function paneLayout(input: PaneInput, columns: number, height: number = D
   const { bar, help } = footerRows(input, width, list.length > 0, offset >= header)
   const footer = [...(short ? [] : [blank('gap-keys')]), ...bar]
   const room = () => height - rows.length - footer.length - help.length
-  if (input.detail !== null) {
+  if (input.finder !== null) {
+    // The finder stands in for the tab or the detail while it is open; closing it puts them back as they were.
+    rows.push(...fitBlocks([finderBlock(input.finder, selected, tier, input.hues)], width, tier, room()))
+  } else if (input.detail !== null) {
     const detail = input.detail
     rows.push(...arrange(detail.file === undefined ? detailArrangement(detail, tier, input.hues, selected) : fileDetailArrangement(detail, tier, input.hues, selected), width, room()))
   } else {

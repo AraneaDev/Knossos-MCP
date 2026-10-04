@@ -76,6 +76,10 @@ function world(
     diff?: Answer[]
     /** What `boundary-couplings` answers: one heat map cell spelled out. */
     couplings?: Answer[]
+    /** What `graph-search` (the finder), `branch-diff` (the Branch tab) and `file-context` (the model's tool) answer. */
+    search?: Answer[]
+    branch?: Answer[]
+    context?: Answer[]
     editor?: 'opens' | 'missing'
     refuseRegister?: () => boolean | Promise<boolean>
     /** Per watcher start, the event lines it writes at once; none left: the start writes nothing and ends (no watcher offered). */
@@ -118,6 +122,9 @@ function world(
     head: answers.head ?? [{ stdout: '' }],
     diff: answers.diff ?? [{ stdout: '' }],
     couplings: answers.couplings ?? [{ stdout: '' }],
+    search: answers.search ?? [{ stdout: '' }],
+    branch: answers.branch ?? [{ stdout: '' }],
+    context: answers.context ?? [{ stdout: '' }],
   }
   /** Every prompt submitted, and every copy with the surface it was for. */
   const prompts: string[] = []
@@ -256,7 +263,13 @@ function world(
                       ? queues.diff
                       : sub === 'boundary-couplings'
                         ? queues.couplings
-                        : queues.brief
+                        : sub === 'graph-search'
+                          ? queues.search
+                          : sub === 'branch-diff'
+                            ? queues.branch
+                            : sub === 'file-context'
+                              ? queues.context
+                              : queues.brief
     const answer = (queue.length > 1 ? queue.shift() : queue[0]) ?? { stdout: '' }
     if (answer.hold !== undefined) await clock.sleep(answer.hold)
     return {
@@ -281,7 +294,10 @@ function world(
   const headRuns = () => calls.filter(c => c[2] === 'session-head')
   const diffRuns = () => calls.filter(c => c[2] === 'session-diff')
   const couplingRuns = () => calls.filter(c => c[2] === 'boundary-couplings')
-  return { couplingRuns, store, switchSession, headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  const searchRuns = () => calls.filter(c => c[2] === 'graph-search')
+  const branchRuns = () => calls.filter(c => c[2] === 'branch-diff')
+  const contextRuns = () => calls.filter(c => c[2] === 'file-context')
+  return { searchRuns, branchRuns, contextRuns, couplingRuns, store, switchSession, headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -1772,7 +1788,7 @@ describe('knossos mod', () => {
     const ui = await mountPane($)
     expect(await ui.find({ key: 'help-0' })).toBeUndefined()
     await ui.press({ key: 'keys' })
-    expect((await ui.find({ key: 'help-0' }))?.text).toMatch(/1–6 +switch tabs/)
+    expect((await ui.find({ key: 'help-0' }))?.text).toMatch(/1–7 +switch tabs/)
     await ui.press({ key: 'keys' })
     expect(await ui.find({ key: 'help-0' })).toBeUndefined()
     await ui.unmount()
@@ -2487,7 +2503,7 @@ describe('knossos mod', () => {
     await ui.unmount()
   })
 
-  test('f opens the hubs filter, typing narrows the list, Enter keeps it and x clears it', async ($, on) => {
+  test('n opens the hubs filter, typing narrows the list, Enter keeps it and x clears it', async ($, on) => {
     const hubs = [
       { name: 'Router', canonical_name: 'App\\Http\\Router', kind: 'class', boundary: 'Http', in_degree: 41, out_degree: 3, cross_boundary_degree: 2 },
       { name: 'Request', canonical_name: 'App\\Http\\Request', kind: 'class', boundary: 'Http', in_degree: 30, out_degree: 9, cross_boundary_degree: 0 },
@@ -2501,7 +2517,7 @@ describe('knossos mod', () => {
       // Only the hubs tab filters.
       expect(await ui.find({ key: 'filter' })).toBeUndefined()
       await ui.press({ key: 'tab:hubs' })
-      expect((await ui.find({ key: 'filter' }))?.props.hotkey).toBe('f')
+      expect((await ui.find({ key: 'filter' }))?.props.hotkey).toBe('n')
       await ui.press({ key: 'filter' })
       await w.clock.settle()
       // The field opens, asking for the focus.
@@ -2529,6 +2545,69 @@ describe('knossos mod', () => {
       await ui.press({ key: 'tab:overview' })
       await ui.unmount()
     }
+  })
+
+  test('f finds any component or file by its letters, after a pause in the typing, and Enter or a click opens a match', async ($, on) => {
+    const found = (query: string) =>
+      JSON.stringify({
+        status: 'ok',
+        query,
+        truncated: false,
+        results: [
+          { type: 'component', name: 'DashboardService', canonical_name: 'App\\Query\\DashboardService', kind: 'class', path: 'src/Query/DashboardService.php', line: 12, boundary: 'Core' },
+          { type: 'file', name: 'src/Query/DashboardService.php', canonical_name: 'src/Query/DashboardService.php', kind: 'file', path: 'src/Query/DashboardService.php', line: null, boundary: 'Core' },
+        ],
+      })
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], search: [{ stdout: found('dsvc') }], detail: [{ stdout: fullDetailOf('DashboardService') }], file: [{ stdout: fileDetailOf('src/Query/DashboardService.php') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface, 120)
+      await ui.press({ key: 'tab:issues' })
+      expect((await ui.find({ key: 'find' }))?.props.hotkey).toBe('f')
+      await ui.press({ key: 'find' })
+      await w.clock.settle()
+      // The field opens over the tab and asks for the focus; the footer offers closing it.
+      expect((await ui.find({ type: 'Input', key: 'find' }))?.props.autoFocus).toBe(true)
+      expect((await ui.find({ key: 'find-close' }))?.props.hotkey).toBe('x')
+      expect(await ui.find({ key: 'pol-0' })).toBeUndefined()
+      // Typed fast, one search after the pause: never in a render.
+      const before = w.searchRuns().length
+      await ui.input({ key: 'find', text: 'd', kind: 'change' })
+      await ui.input({ key: 'find', text: 'ds', kind: 'change' })
+      await ui.input({ key: 'find', text: 'dsvc', kind: 'change' })
+      expect(w.searchRuns()).toHaveLength(before)
+      await w.clock.advance(200)
+      await w.clock.settle()
+      expect(w.searchRuns().slice(before).map(r => r.slice(4))).toEqual([['--query=dsvc']])
+      expect((await ui.find({ key: 'found-0' }))?.text).toContain('DashboardService')
+      expect((await ui.find({ key: 'found-1' }))?.text).toMatch(/src\/Query\/\s*DashboardService\.php/)
+      // Enter opens the first match as its detail, and the finder closes.
+      await ui.input({ key: 'find', text: 'dsvc' })
+      await w.clock.settle()
+      expect(w.detailRuns().at(-1)?.at(-1)).toBe('App\\Query\\DashboardService')
+      expect(await ui.find({ type: 'Input', key: 'find' })).toBeUndefined()
+      // Back from the detail is the tab as it was.
+      await ui.press({ key: 'back' })
+      expect(await ui.find({ key: 'pol-0' })).toBeDefined()
+      // A click on a file match opens the file.
+      await ui.press({ key: 'find' })
+      await w.clock.settle()
+      await ui.press({ key: 'row:1' })
+      await w.clock.settle()
+      expect(w.fileRuns().at(-1)?.at(-1)).toBe('src/Query/DashboardService.php')
+      await ui.press({ key: 'back' })
+      // x closes it; an empty Enter closes it too.
+      await ui.press({ key: 'find' })
+      await ui.press({ key: 'find-close' })
+      expect(await ui.find({ type: 'Input', key: 'find' })).toBeUndefined()
+      await ui.press({ key: 'find' })
+      await ui.input({ key: 'find', text: '' })
+      expect(await ui.find({ type: 'Input', key: 'find' })).toBeUndefined()
+      await ui.press({ key: 'tab:overview' })
+      await ui.unmount()
+    }
+    expect(w.prompts).toEqual([])
   })
 
   test('s sorts the hubs by in, out, then cross degree', async ($, on) => {

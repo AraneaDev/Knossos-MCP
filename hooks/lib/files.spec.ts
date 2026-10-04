@@ -163,7 +163,7 @@ describe('a file detail', () => {
   it('copies, asks about and opens the file itself', () => {
     expect(subjectOf(shown)).toEqual({ name: 'src/Http/Router.php', canonical: 'src/Http/Router.php', loc: { path: `${ROOT}/src/Http/Router.php`, line: null }, file: true })
     expect(editTarget(shown)).toEqual({ path: `${ROOT}/src/Http/Router.php`, line: null })
-    expect(keysOf(paneRows(shown, 90))).toEqual(['b', 'j', 'k', 'o', 'e', 'c', 'q', 'h'])
+    expect(keysOf(paneRows(shown, 90))).toEqual(['b', 'j', 'k', 'o', 'e', 'c', 'q', 'f', 'h'])
   })
 
   it('says it is reading, what knossos said, or that it said nothing', () => {
@@ -230,7 +230,7 @@ describe('the drifted files', () => {
     // A deleted file has nothing to open in the editor, but still a detail as the snapshot holds it.
     expect(editTarget({ ...open, selected: 2 })).toBeNull()
     expect(editTarget(open)).toEqual({ path: `${ROOT}/src/Http/Router.php`, line: null })
-    expect(row(rows, 'keys')!.segments.find(s => s.press?.id === 'drift')?.press?.label).toBe('hide drifted')
+    expect(rows.flatMap(r => r.segments).find(s => s.press?.id === 'drift')?.press?.label).toBe('hide drifted')
   })
 
   it('are not offered by a knossos that only counts them', () => {
@@ -261,13 +261,13 @@ describe('the key model', () => {
     expect(listFor(overview)[0]?.jump).toEqual({ tab: 'changes' })
     expect(editTarget(overview)).toBeNull()
     // `t` stands in the session card, beside the tests it copies, not in the bar.
-    expect(keysOf(paneRows(overview, 90))).toEqual(['j', 'k', 'o', 'c', 'q', 'd', 'h'])
+    expect(keysOf(paneRows(overview, 90))).toEqual(['j', 'k', 'o', 'c', 'q', 'd', 'f', 'h'])
     expect(paneRows(overview, 90).flatMap(r => r.segments).filter(s => s.press?.hotkey === 't')).toHaveLength(1)
   })
 
   it('keeps the same keys on Changes: c copies the marked file, t the test command', () => {
     const changes = pane({ session, view: { tab: 'changes' } })
-    expect(keysOf(paneRows(changes, 90))).toEqual(['j', 'k', 'o', 'e', 'c', 'q', 't', 'd', 'h'])
+    expect(keysOf(paneRows(changes, 90))).toEqual(['j', 'k', 'o', 'e', 'c', 'q', 't', 'd', 'f', 'h'])
     expect(subjectOf(changes)?.canonical).toBe('src/Http/Router.php')
   })
 

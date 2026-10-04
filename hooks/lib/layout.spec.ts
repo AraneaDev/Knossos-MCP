@@ -340,10 +340,10 @@ describe('paneRows', () => {
 
   it('shows the key help on request', () => {
     const rows = paneRows(input({ showKeys: true }), 60)
-    expect(textOf(rows)).toMatch(/1–6 +switch tabs \(or click one\)/)
+    expect(textOf(rows)).toMatch(/1–7 +switch tabs \(or click one\)/)
     expect(textOf(rows)).toMatch(/\n q +ask Claude about the marked row/)
     // One key a line, the key in the accent; a long action wraps under its own column.
-    expect(row(rows, 'help-0')!.segments[1]).toMatchObject({ text: '1–6    ', color: 'suggestion' })
+    expect(row(rows, 'help-0')!.segments[1]).toMatchObject({ text: '1–7    ', color: 'suggestion' })
     expect(rows.filter(r => r.key.startsWith('help-')).every(r => r.segments[1]!.text.length === 7)).toBe(true)
     expect(textOf(paneRows(input(), 60))).not.toContain('switch tabs')
   })
@@ -971,18 +971,18 @@ describe('the hubs filter and sort', () => {
     expect(plainText(row(kept, 'hub-0')!)).toContain('StableId')
     expect(textOf(paneRows(input({ tab: 'hubs', filter: 'zzz' }), 60))).toContain('no hub matches "zzz"')
   })
-  it('names the sort, draws its bar, and offers f, s and x as keys', () => {
+  it('names the sort, draws its bar, and offers n, s and x as keys, and f to find', () => {
     const rows = paneRows(input({ tab: 'hubs', sort: 'out', filter: 'a' }), 90)
     expect(plainText(row(rows, 'hubs-head')!)).toMatch(/^Hubs and hotspots · sorted by out +◆ hotspot only$/)
     expect(plainText(row(rows, 'hub-0')!)).toMatch(/ProjectScanService::scan +■ core +[━╸]+·* +119 +58 +0$/)
     const keys = rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))
-    expect(keys).toEqual(['j', 'k', 'o', 'c', 'q', 'f', 's', 'x', 'h'])
+    expect(keys).toEqual(['j', 'k', 'o', 'c', 'q', 'n', 's', 'x', 'f', 'h'])
   })
   it('wraps the keys rather than dropping one that does not fit', () => {
     const rows = paneRows(input({ tab: 'hubs', filter: 'a' }), 40)
     const keyRows = rows.filter(r => r.key.startsWith('keys'))
     expect(keyRows.length).toBeGreaterThan(1)
-    expect(keyRows.flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))).toEqual(['j', 'k', 'o', 'c', 'q', 'f', 's', 'x', 'h'])
+    expect(keyRows.flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))).toEqual(['j', 'k', 'o', 'c', 'q', 'n', 's', 'x', 'f', 'h'])
     widthsFit(rows, 40)
   })
 })
@@ -1378,8 +1378,8 @@ describe('the footer: moves on the left, actions on the right, and a word after 
 
   it('offers only what does something here, and never drops a key as it wraps', () => {
     for (const columns of WIDTHS) {
-      expect(keys(paneRows(fullInput({ tab: 'hubs' }), columns)), `${columns}`).toEqual(['j', 'k', 'o', 'c', 'q', 'f', 's', 'h'])
-      expect(keys(paneRows(fullInput({ tab: 'cycles' }), columns)), `${columns}`).not.toContain('f')
+      expect(keys(paneRows(fullInput({ tab: 'hubs' }), columns)), `${columns}`).toEqual(['j', 'k', 'o', 'c', 'q', 'n', 's', 'f', 'h'])
+      expect(keys(paneRows(fullInput({ tab: 'cycles' }), columns)), `${columns}`).not.toContain('n')
       for (const r of keyRows(paneRows(fullInput({ tab: 'hubs' }), columns))) expect(rowWidth(r), `${columns}`).toBeLessThanOrEqual(columns)
     }
     expect(keys(paneRows({ ...detailPane() }, 140))[0]).toBe('b')

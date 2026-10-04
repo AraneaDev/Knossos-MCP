@@ -1,4 +1,4 @@
-import type { AllowRoot, BoundaryCouplings, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, GitHead, Listed, Related, Rescan, SessionDiff, SessionLedger, SessionRev, TurnBrief, Violation } from '../../types'
+import type { AllowRoot, BoundaryCouplings, BoundaryRef, BranchDiff, BranchItem, ComponentDetail, Dashboard, FanIn, FileContext, FileDetail, GitHead, GraphSearch, Listed, Related, Rescan, SessionDiff, SessionLedger, SessionRev, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
@@ -162,6 +162,48 @@ export function parseCouplings(stdout: string): BoundaryCouplings | null {
     return typeof c === 'object' && c !== null && end(pair.source) && end(pair.target) && typeof pair.edges === 'number'
   }
   return typeof parsed.edges === 'number' && parsed.couplings.every(listed) ? { ...parsed, truncated: parsed.truncated === true } : null
+}
+
+/** Whether `v` names a component or file the pane can open: a shown and a full name, a kind, and where it is (or null). */
+const isPlaced = (v: unknown): v is BranchItem => {
+  const r = v as Partial<BranchItem> | null
+  return typeof v === 'object' && v !== null && typeof r?.name === 'string' && typeof r.canonical_name === 'string' && typeof r.kind === 'string'
+}
+
+/** The finder's answer from the wrapper's stdout; null for silence or anything unexpected. */
+export function parseGraphSearch(stdout: string): GraphSearch | null {
+  const parsed = parse(stdout, DASH, ['results'], []) as GraphSearch | null
+  if (parsed === null || parsed.status !== 'ok') return parsed
+  const ok = parsed.results.every(r => isPlaced(r) && (r.type === 'component' || r.type === 'file'))
+  return ok ? { ...parsed, truncated: parsed.truncated === true } : null
+}
+
+const BRANCH = new Set(['ok', 'no-snapshot', 'on-default', 'no-git', 'no-default', 'unscanned', 'error', 'no-binary'])
+
+/** The Branch tab's comparison from the wrapper's stdout; null for silence or anything unexpected (a list item that names nothing). */
+export function parseBranchDiff(stdout: string): BranchDiff | null {
+  const parsed = parse(stdout, BRANCH, [], []) as BranchDiff | null
+  const c = parsed?.comparison
+  if (parsed === null || c === undefined || c === null) return parsed
+  const lists = [c.crossing, c.cycles, c.hubs, c.dead_code]
+  if (!lists.every(l => typeof l === 'object' && l !== null && typeof l.count === 'number' && Array.isArray(l.items))) return null
+  const placed =
+    c.crossing.items.every(i => isPlaced(i.source) && isPlaced(i.target)) &&
+    c.cycles.items.every(i => typeof i.size === 'number' && Array.isArray(i.members) && i.members.every(isPlaced)) &&
+    c.hubs.items.every(i => isPlaced(i.component) && typeof i.before === 'number' && typeof i.after === 'number') &&
+    c.dead_code.items.every(isPlaced) &&
+    (c.violations === null || (typeof c.violations === 'object' && Array.isArray(c.violations.items)))
+  return placed ? parsed : null
+}
+
+/** One file's context for the model's tool from the wrapper's stdout; null for silence or anything unexpected. */
+export function parseFileContext(stdout: string): FileContext | null {
+  const parsed = parse(stdout, FILE, [], []) as FileContext | null
+  if (parsed === null || parsed.status !== 'ok') return parsed
+  const f = parsed.file
+  const ok =
+    typeof f === 'object' && f !== null && typeof f.path === 'string' && typeof f.dependents?.count === 'number' && Array.isArray(f.dependents.top) && Array.isArray(f.tests?.items) && Array.isArray(f.commits)
+  return ok ? parsed : null
 }
 
 /** Why a rescan did not land, in a few words for the pane's header. */
