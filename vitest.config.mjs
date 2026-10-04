@@ -6,6 +6,7 @@ export default defineConfig({
             "hooks/lib/**/*.spec.ts",
             "hooks/mod/**/*.spec.ts",
             "tools/*.spec.mjs",
+            "tools/capture/*.spec.mjs",
         ],
         environment: "node",
     },

@@ -46,3 +46,6 @@ docs/audits/
 
 # The engine lays the Claude Code API types here whenever it loads the plugin from this checkout.
 /.claude-plugin/types/
+
+# Dev-only capture output (frames, stills, scratch scripts); never committed.
+/tools/capture/out/
