@@ -95,6 +95,14 @@ function world(
     toolPrefix?: string
     /** What a Bash call prints, by its command (`ran Bash` otherwise). */
     bashOutput?: (command: string) => string
+    /**
+     * The project's repository: the reflog entries each Bash command adds to
+     * HEAD, oldest first (`commit: x`, `checkout: moving from a to b`), each
+     * moving HEAD to a new commit. Absent: the project is in no repository.
+     * `reflogOff` keeps HEAD moving but prints no reflog.
+     */
+    git?: (command: string) => string[]
+    reflogOff?: boolean
     /** The session's id, and what the plugin's store holds at the start (an earlier process's baselines). */
     sessionId?: string
     store?: Record<string, unknown>
@@ -102,6 +110,8 @@ function world(
   disk: { root?: string; links?: Record<string, string>; gone?: string[]; garbled?: string[] } = {},
 ) {
   const clock = mock.clock(on)
+  /** The project's repository: HEAD and its reflog, newest first, one commit to begin with. */
+  const repo = { made: 1, head: '1'.padStart(40, '0'), reflog: [{ sha: '1'.padStart(40, '0'), subject: 'commit (initial): start' }] }
   // The plugin's own store, in memory, readable by the test: what an earlier process left, and what this one keeps.
   const store = new Map<string, unknown>(Object.entries(answers.store ?? {}))
   on('store.get', (_$, e) => ({ value: structuredClone(store.get(e.key)) }))
@@ -255,6 +265,14 @@ function world(
   }
   on('process.run', async (_$, e) => {
     calls.push([...e.argv])
+    // The project's repository, as `git rev-parse` and `git reflog` read it.
+    if (e.argv[0] === 'git') {
+      const done = (exitCode: number, stdout: string) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+      if (answers.git === undefined) return done(128, '')
+      if (e.argv.includes('rev-parse')) return done(0, `${repo.head}\n`)
+      if (e.argv.includes('reflog')) return done(0, answers.reflogOff === true ? '' : repo.reflog.slice(0, 20).map(r => `${r.sha}\x1f${r.subject}\n`).join(''))
+      return done(1, '')
+    }
     // A signal to a process the mod started: delivered.
     if (e.argv[0] === 'kill') return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     // The editor's command: there and opening the file, or not installed.
@@ -308,6 +326,12 @@ function world(
   on('tool.call', async (_$, e) => {
     if (e.tool === 'Bash' && answers.bashMs !== undefined) await clock.sleep(answers.bashMs)
     const command = (e as { command?: unknown }).command
+    if (e.tool === 'Bash' && typeof command === 'string') {
+      for (const subject of answers.git?.(command) ?? []) {
+        repo.head = (++repo.made).toString(16).padStart(40, '0')
+        repo.reflog.unshift({ sha: repo.head, subject })
+      }
+    }
     return { result: {} as never, text: e.tool === 'Bash' && answers.bashOutput !== undefined && typeof command === 'string' ? answers.bashOutput(command) : `ran ${e.tool}` }
   })
   const briefRuns = () => calls.filter(c => c[2] === 'turn-brief')
@@ -345,6 +369,8 @@ async function readFile($: Engine, path: string) {
 
 /** What a shell prints for a command that commits (git's `[branch sha] subject` line), and for any other. */
 const committing = (command: string): string => (/\bgit\b.*\bcommit\b/.test(command) && !command.includes('--dry-run') && !command.startsWith('echo') && !command.startsWith('grep') ? '[main abc1234] x\n 1 file changed, 1 insertion(+)' : 'done')
+/** The reflog a `git commit` adds to the project's repository: one commit, none for a dry run or a mere mention. */
+const committed = (command: string): string[] => (committing(command) === 'done' ? [] : [command.includes('--amend') ? 'commit (amend): x' : 'commit: x'])
 
 async function bash($: Engine, command: string) {
   return $.tool.call({ tool: 'Bash', command })
@@ -1897,7 +1923,7 @@ describe('knossos mod', () => {
     // The later graph still reports the violation the turn introduced.
     const policed = JSON.parse(policedDashboard()) as { policy: object }
     const later = JSON.stringify({ ...policed, snapshot_id: 's2', cycles: { count: 1, truncated: false, truncation_reasons: [], largest: [{ size: 2, members: ['Router', 'Kernel'] }] }, policy: { ...policed.policy, total: 1, items: [{ ...violation, source_kind: 'class', target_kind: 'class', source_boundary: 'core', target_boundary: 'workers', path: 'src/Router.php', line: 3 }] } })
-    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: later }], brief: [{ stdout: turn }], bashOutput: committing })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: later }], brief: [{ stdout: turn }], bashOutput: committing, git: committed })
     await $.session.start(START)
     await w.clock.settle()
     // Nothing yet: a commit carries nothing the graph knows of.
@@ -1918,7 +1944,7 @@ describe('knossos mod', () => {
 
   test('a commit gets no note with notes off', { options: { agentNotes: false } }, async ($, on) => {
     const turn = brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 0 } } })
-    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], brief: [{ stdout: turn }], bashOutput: committing })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], brief: [{ stdout: turn }], bashOutput: committing, git: committed })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/src/Router.php`)
@@ -1927,24 +1953,71 @@ describe('knossos mod', () => {
     expect((await bash($, 'git commit -m x')).context ?? []).toEqual([])
   })
 
-  test('a commit is told by what git printed: a git commit in a string, a gh call or a dry run gets no note', async ($, on) => {
+  test("a commit is told by the project's HEAD moving to a commit: a mention, a reprint, a checkout or another repository's commit gets no note", async ($, on) => {
     const turn = brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 0 } } })
-    const outputs: Record<string, string> = {
-      'grep -rn "git commit" scripts': 'scripts/release.sh:4: git commit -m release',
-      "echo 'git commit -m x'": 'git commit -m x',
-      'gh pr create --body "after git commit"': 'https://github.com/o/r/pull/7',
-      'git commit --dry-run -m x': 'On branch main\nChanges to be committed:\n\tmodified:   src/Router.php',
-      'gc -m "via an alias"': '[main 1a2b3c4] via an alias\n 1 file changed',
+    // What each command prints, and what it adds to the project's reflog.
+    const runs: Record<string, { out: string; reflog: string[] }> = {
+      'grep -rn "git commit" scripts': { out: 'scripts/release.sh:4: git commit -m release', reflog: [] },
+      "echo 'git commit -m x'": { out: 'git commit -m x', reflog: [] },
+      'gh pr create --body "after git commit"': { out: 'https://github.com/o/r/pull/7', reflog: [] },
+      'git commit --dry-run -m x': { out: 'On branch main\nChanges to be committed:\n\tmodified:   src/Router.php', reflog: [] },
+      'git commit -m x': { out: 'On branch main\nnothing to commit, working tree clean', reflog: [] },
+      // An earlier commit's line printed again, and a traced process: HEAD stays where it was.
+      'git log -1 --format=%B': { out: '[x 1234567] an old subject', reflog: [] },
+      'strace -f make': { out: '[pid 1234567] write(1, "ok", 2) = 2', reflog: [] },
+      // A commit in another repository prints git's line, but the project's HEAD does not move.
+      'cd /other && git commit -m elsewhere': { out: '[main abc1234] elsewhere\n 1 file changed', reflog: [] },
+      // HEAD moves without a commit.
+      'git checkout -b topic': { out: "Switched to a new branch 'topic'", reflog: ['checkout: moving from main to topic'] },
+      'git pull --ff-only': { out: 'Fast-forward', reflog: ['pull --ff-only: Fast-forward'] },
+      'git merge origin/main': { out: 'Updating 1a2b3c4..5d6e7f8\nFast-forward', reflog: ['merge origin/main: Fast-forward'] },
+      // Commits git prints no `[branch sha]` line for, or whose line is cut away, and one made under another name.
+      'git merge --no-ff topic': { out: "Merge made by the 'ort' strategy.\n src/Router.php | 2 +-", reflog: ["merge topic: Merge made by the 'ort' strategy."] },
+      'git commit -q -m quiet': { out: '', reflog: ['commit: quiet'] },
+      'git commit -m piped | tail -1': { out: ' 1 file changed, 1 insertion(+)', reflog: ['commit: piped'] },
+      'gc -m "via an alias"': { out: '[main 1a2b3c4] via an alias\n 1 file changed', reflog: ['commit: via an alias'] },
+      'git commit -m first && git checkout main': { out: "[topic 1a2b3c4] first\nSwitched to branch 'main'", reflog: ['commit: first', 'checkout: moving from topic to main'] },
+      'git cherry-pick topic': { out: '[main 9f8e7d6]  a subject that starts with spaces', reflog: ['cherry-pick: three'] },
     }
-    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], brief: [{ stdout: turn }], bashOutput: command => outputs[command] ?? 'done' })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], brief: [{ stdout: turn }], bashOutput: command => runs[command]?.out ?? 'done', git: command => runs[command]?.reflog ?? [] })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/src/Router.php`)
     await $.turn.complete(TURN)
     await w.clock.settle()
-    for (const command of Object.keys(outputs).slice(0, 4)) expect((await bash($, command)).context ?? [], command).toEqual([])
-    // A commit made under another name is still one.
-    expect((await bash($, 'gc -m "via an alias"')).context ?? []).toHaveLength(1)
+    const commands = Object.keys(runs)
+    const made = commands.slice(commands.indexOf('git merge --no-ff topic'))
+    for (const command of commands.filter(c => !made.includes(c))) expect((await bash($, command)).context ?? [], command).toEqual([])
+    // Each in a loop of its own: the same note is said once per loop.
+    for (const [i, command] of made.entries()) {
+      const ran = (await $.tool.call({ tool: 'Bash', command, agentId: `agent-${i}` } as never)) as { context?: string[] }
+      expect(ran.context ?? [], command).toHaveLength(1)
+    }
+  })
+
+  test('without a reflog, a HEAD that moved is a commit only when git printed its line for one', async ($, on) => {
+    const turn = brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 0 } } })
+    const outputs: Record<string, string> = { 'git checkout main': "Switched to branch 'main'", 'git commit -m x': '[main 1a2b3c4]   x\n 1 file changed' }
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], brief: [{ stdout: turn }], bashOutput: command => outputs[command] ?? 'done', git: command => (command in outputs ? ['moved'] : []), reflogOff: true })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect((await bash($, 'git checkout main')).context ?? []).toEqual([])
+    expect((await bash($, 'git commit -m x')).context ?? []).toHaveLength(1)
+  })
+
+  test('a project in no repository gets no commit note, whatever a command printed', async ($, on) => {
+    const turn = brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core', tests: 0 } } })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], brief: [{ stdout: turn }], bashOutput: committing })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect((await bash($, 'cd /elsewhere && git commit -m x')).context ?? []).toEqual([])
+    expect(w.calls.filter(c => c[0] === 'git').length).toBeGreaterThan(0)
   })
 
   test("a commit note and knossos_context speak only of this session's changes, and a commit note names new cycles only against a whole list", async ($, on) => {
@@ -1961,7 +2034,7 @@ describe('knossos mod', () => {
     const later = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), snapshot_id: 's2', cycles: { ...cycles(13, []), largest: [{ size: 2, members: ['New', 'Cycle'] }, ...cycles(13, []).largest.slice(0, 9)] } })
     // Since the session began: the Router changed by this session, the Kernel by someone else.
     const ledger = JSON.stringify({ status: 'ok', since: 's1', complete: true, files: { 'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'core', tests: 0 }, 'src/Kernel.php': { status: 'changed', dependents: 3, boundaries: [], boundary: 'core', tests: 0 } }, files_truncated: false, tests: [], tests_truncated: false })
-    const w = world(on, { dashboard: [{ stdout: first }, { stdout: later }], brief: [{ stdout: turn }], ledger: [{ stdout: ledger }], bashOutput: committing, watch: [[{ event: 'ready', project_id: 'p1', snapshot_id: 's1', files: 3, scanned: false }]], context: [{ stdout: kernelContext }] })
+    const w = world(on, { dashboard: [{ stdout: first }, { stdout: later }], brief: [{ stdout: turn }], ledger: [{ stdout: ledger }], bashOutput: committing, git: committed, watch: [[{ event: 'ready', project_id: 'p1', snapshot_id: 's1', files: 3, scanned: false }]], context: [{ stdout: kernelContext }] })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/src/Router.php`)
@@ -1986,7 +2059,7 @@ describe('knossos mod', () => {
     })
     // Fixed since: the later graph, past the brief's own, reports nothing in its complete check.
     const later = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), snapshot_id: 's2', trend: [{ snapshot_id: 's1', cycles: 0, max_degree: 0 }, { snapshot_id: 's2', cycles: 0, max_degree: 0 }] })
-    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: later }], brief: [{ stdout: turn }], bashOutput: committing })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: later }], brief: [{ stdout: turn }], bashOutput: committing, git: committed })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/src/Router.php`)
@@ -2006,7 +2079,7 @@ describe('knossos mod', () => {
       policy: { status: 'evaluated', total: 1, violations: [violation], truncated: false },
     })
     // The dashboard reload after the turn fails, so the pane keeps s1's figures, whose complete check predates the violation.
-    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: '' }], brief: [{ stdout: turn }], bashOutput: committing })
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }, { stdout: '' }], brief: [{ stdout: turn }], bashOutput: committing, git: committed })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/src/Router.php`)

@@ -60,16 +60,57 @@ export function contextAnswer(asked: string, context: FileContext | null, rules:
 }
 
 /**
- * Whether a shell command's output says it made a commit: git's own
- * `[branch abc1234] subject` line (`[main (root-commit) abc1234]`,
- * `[detached HEAD abc1234]`). Read from what ran rather than from the
- * command, so a `git commit` inside a string (`echo`, `grep`, a `gh` body),
- * a `--dry-run` or a commit that failed says nothing, and one made through
- * an alias or a script is still seen. A `--quiet` commit prints no such
- * line and goes unnoticed.
+ * Whether a shell command's output holds git's own line for a commit,
+ * `[branch abc1234] subject` (`[main (root-commit) abc1234]`,
+ * `[detached HEAD abc1234]`). Only the last resort of
+ * {@link committedSince}: a reprinted line (a `git log`, a saved CI log)
+ * or a commit in another repository prints one too, and `--quiet` prints
+ * none.
  */
 export function madeCommit(output: string): boolean {
-  return /^\[[^[\]\n]+ [0-9a-f]{7,64}\] \S/m.test(output)
+  return /^\[[^[\]\n]+ [0-9a-f]{7,64}\] [^\n]/m.test(output)
+}
+
+/** How many of HEAD's reflog entries {@link committedSince} reads back, newest first. */
+export const REFLOG_READ = 20
+
+/**
+ * A reflog entry for a commit made in the repository: `commit`, `commit
+ * (amend)`, `commit (initial)`, `commit (merge)`, `cherry-pick`, `revert`,
+ * and a merge that made a merge commit (`merge topic: Merge made by the
+ * 'ort' strategy.`), never a fast-forward. A checkout, a reset, a rebase or
+ * a pull moves HEAD without the session committing anything.
+ */
+const COMMIT_ENTRY = /^(?:(?:commit(?: \([a-z]+\))?|cherry-pick|revert): |merge [^:]*: (?!Fast-forward))/
+
+/**
+ * Whether a commit was made in the project's repository while a shell
+ * command ran, from HEAD before and after it (`git rev-parse`: the commit,
+ * '' on a branch with no commit yet, null when the project is not in a
+ * repository or git did not answer) and HEAD's reflog after it (`reflog`,
+ * `<sha>\x1f<subject>` lines, newest first; '' when there is none).
+ *
+ * HEAD that did not move made no commit, whatever the command printed: a
+ * `git commit` in a string, a dry run, nothing to commit, a reprinted
+ * commit line, a commit in another repository. HEAD that moved made one when
+ * a reflog entry newer than the HEAD before it is a commit's: a merge
+ * commit (which prints no `[branch sha]` line), a `--quiet` commit and a
+ * commit piped through `tail` are all seen, a checkout or a reset is not.
+ * Without a reflog, git's own line in `output` decides.
+ */
+export function committedSince(before: string | null, after: string | null, reflog: string, output: string): boolean {
+  if (before === null || after === null || after === '' || before === after) return false
+  const entries = reflog
+    .split('\n')
+    .filter(line => line !== '')
+    .slice(0, REFLOG_READ)
+    .map(line => {
+      const at = line.indexOf('\x1f')
+      return at < 0 ? { sha: line, subject: '' } : { sha: line.slice(0, at), subject: line.slice(at + 1) }
+    })
+  if (entries.length === 0) return madeCommit(output)
+  const back = entries.findIndex(e => e.sha === before)
+  return (back < 0 ? entries : entries.slice(0, back)).some(e => COMMIT_ENTRY.test(e.subject))
 }
 
 /** The dashboard figures {@link stillReported} judges by: its policy check, and the snapshots it reaches back over. */

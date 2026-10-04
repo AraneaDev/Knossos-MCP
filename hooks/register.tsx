@@ -45,7 +45,7 @@ import {
   tierOf,
 } from './lib/layout'
 import type { Loc, Openable, PaneInput, Preview, Row, Segment } from './lib/layout'
-import { commitNote, CONTEXT_DESCRIPTION, CONTEXT_SCHEMA, CONTEXT_TOOL, contextAnswer, madeCommit, stillReported } from './lib/agent'
+import { commitNote, committedSince, CONTEXT_DESCRIPTION, CONTEXT_SCHEMA, CONTEXT_TOOL, contextAnswer, REFLOG_READ, stillReported } from './lib/agent'
 import { alertKeys, freshAlerts } from './lib/alerts'
 import { FLASH_MS, flashKeys, ledgerFlashKeys } from './lib/flash'
 import type { Flash } from './lib/flash'
@@ -433,6 +433,41 @@ const cycleKeys = (d: Dashboard): string[] => d.cycles.largest.map(c => [...c.me
 /** The cycles the graph holds as a session begins: the count, the listed ones, and whether the list is all of them. */
 type StartCycles = { count: number; keys: string[]; complete: boolean }
 const cyclesOf = (d: Dashboard): StartCycles => ({ count: d.cycles.count, keys: cycleKeys(d), complete: !d.cycles.truncated && d.cycles.largest.length >= d.cycles.count })
+
+/** How long git may take to name HEAD or print its reflog around a shell command. */
+const GIT_PROBE_TIMEOUT_MS = 2_000
+
+/** The repository a commit note speaks for: the graph's project root, else the session's. */
+async function projectRoot($: EngineInterface): Promise<string> {
+  const d = await read($, dashboard)
+  return d?.status === 'ok' && d.project_root !== null ? d.project_root : await $.session.root()
+}
+
+/**
+ * HEAD in `repo`: the commit, '' on a branch with no commit yet, null when
+ * `repo` is no repository or git did not answer. Run around a shell command
+ * in its hook, never in a render.
+ */
+async function headAt($: EngineInterface, repo: string): Promise<string | null> {
+  try {
+    const { exitCode, stdout } = await $.process.run(['git', '--no-optional-locks', '-C', repo, 'rev-parse', '-q', '--verify', 'HEAD'], { timeoutMs: GIT_PROBE_TIMEOUT_MS })
+    if (exitCode === 1) return ''
+    const head = stdout.trim()
+    return exitCode === 0 && /^[0-9a-f]{40,64}$/.test(head) ? head : null
+  } catch {
+    return null
+  }
+}
+
+/** HEAD's newest reflog entries in `repo`, `<sha>\x1f<subject>` a line; '' when there is none or git did not answer. */
+async function reflogAt($: EngineInterface, repo: string): Promise<string> {
+  try {
+    const { exitCode, stdout } = await $.process.run(['git', '--no-optional-locks', '-C', repo, 'reflog', '-n', String(REFLOG_READ), '--format=%H%x1f%gs', 'HEAD'], { timeoutMs: GIT_PROBE_TIMEOUT_MS })
+    return exitCode === 0 ? stdout : ''
+  } catch {
+    return ''
+  }
+}
 
 /**
  * The note after a commit in `loop`, or null when there is nothing new to
@@ -2542,14 +2577,19 @@ export const register: Register = (on, options) => {
 
   // Every command is kept for the turn-end note, which leaves out the tests the turn already ran.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    // Where the project's HEAD stood before the command: only a command that moved it can have committed there.
+    const repo = mod.disabled || !mod.notesOn ? null : await projectRoot($)
+    const before = repo === null ? null : await headAt($, repo)
     const ran = await next(e)
     const command = (e as { command?: unknown }).command
     if (ran.deny === undefined && typeof command === 'string' && mod.ranCommands.length < COMMANDS_KEPT) mod.ranCommands.push(command)
     if (BASH_MARKS_DIRTY) mod.dirty = true
     // A commit, in any loop: what it carries that the graph knows of, said once.
-    // Told by git's own line in what ran: a `git commit` in a string, a dry run or a failed commit made none.
-    if (mod.disabled || ran.deny !== undefined || ran.isError === true || !madeCommit(ran.text ?? '')) return ran
+    if (mod.disabled || ran.deny !== undefined || repo === null || before === null) return ran
     return noteSafely($, ran, async () => {
+      const after = await headAt($, repo)
+      const reflog = after === null || after === before ? '' : await reflogAt($, repo)
+      if (!committedSince(before, after, reflog, ran.text ?? '')) return ran
       const note = await commitNoteFor($, e.agentId ?? '')
       return note === null ? ran : { ...ran, context: [...(ran.context ?? []), note] }
     })

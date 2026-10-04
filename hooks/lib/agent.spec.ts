@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FileContext } from '../../types'
-import { commitNote, contextAnswer, madeCommit, stillReported, TEXT_MAX } from './agent'
+import { commitNote, committedSince, contextAnswer, madeCommit, stillReported, TEXT_MAX } from './agent'
 
 const context = (over: Partial<NonNullable<FileContext['file']>> = {}): FileContext => ({
   status: 'ok',
@@ -62,6 +62,35 @@ describe('a commit', () => {
       'error: pathspec [main abc1234] x did not match',
     ])
       expect(madeCommit(no), no).toBe(false)
+    // A subject may start with spaces.
+    expect(madeCommit('[main abc1234]   indented')).toBe(true)
+  })
+
+  it("is told by the project's HEAD moving to a commit its reflog names, never by what the command printed", () => {
+    const A = 'a'.repeat(40)
+    const B = 'b'.repeat(40)
+    const C = 'c'.repeat(40)
+    const log = (...entries: [string, string][]) => entries.map(([sha, subject]) => `${sha}\x1f${subject}\n`).join('')
+    const line = '[main abc1234] x'
+    // HEAD did not move: nothing was committed here, whatever was printed; no repository, no commit.
+    expect(committedSince(A, A, '', line)).toBe(false)
+    expect(committedSince(null, null, '', line)).toBe(false)
+    expect(committedSince(A, null, '', line)).toBe(false)
+    // HEAD moved to a commit.
+    for (const subject of ['commit: x', 'commit (amend): x', 'commit (initial): x', 'commit (merge): x', "merge topic: Merge made by the 'ort' strategy.", 'cherry-pick: x', 'revert: Revert "x"'])
+      expect(committedSince(A, B, log([B, subject], [A, 'commit: before']), ''), subject).toBe(true)
+    // HEAD moved without one.
+    for (const subject of ['checkout: moving from a to b', 'reset: moving to HEAD~1', 'merge origin/main: Fast-forward', 'pull: Fast-forward', 'rebase (finish): returning to refs/heads/x'])
+      expect(committedSince(A, B, log([B, subject], [A, 'commit: before']), line), subject).toBe(false)
+    // A commit, then a checkout: an entry newer than the HEAD before it is a commit.
+    expect(committedSince(A, C, log([C, 'checkout: moving from topic to main'], [B, 'commit: x'], [A, 'checkout: moving from main to topic']), '')).toBe(true)
+    // An older commit, before the HEAD the command began at, is not this command's.
+    expect(committedSince(A, C, log([C, 'checkout: moving from main to old'], [A, 'commit: earlier']), '')).toBe(false)
+    // The first commit on a branch that had none.
+    expect(committedSince('', A, log([A, 'commit (initial): x']), '')).toBe(true)
+    // No reflog: git's own line decides.
+    expect(committedSince(A, B, '', line)).toBe(true)
+    expect(committedSince(A, B, '', "Switched to branch 'main'")).toBe(false)
   })
 
   it('carries only the violations the policy check still reports, unless the check cannot say', () => {
