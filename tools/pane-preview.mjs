@@ -241,6 +241,15 @@ function changedDetailOf(d) {
   return null
 }
 
+/** The detail of the largest cycle's first member, as the Cycles tab marks it first: what its panel shows. */
+function cycleDetailOf(d) {
+  const first = d.cycles.largest[0]?.nodes?.[0]
+  if (first === undefined) return null
+  const shown = { name: first.canonical_name, label: first.name }
+  const answer = envelopes.parseComponentDetail(wrapper('component-detail', first.canonical_name))
+  return layout.detailInput(shown, { snapshot_id: d.snapshot_id, name: first.canonical_name, detail: answer, phase: 'done' }, d.project_root)
+}
+
 /** The detail of the file most depended on, as `file-detail` reads it. */
 function fileDetailOf(d) {
   const path = (d.fan_in ?? [])[0]?.path
@@ -307,6 +316,7 @@ const LIVE = README ? { phase: 'off' } : { phase: 'live' }
 const FETCHED = { fetchedAt: NOW, failed: false }
 const detail = detailOf(dashboard)
 const fileDetail = fileDetailOf(dashboard)
+const cycleDetail = cycleDetailOf(dashboard)
 const changedDetail = changedDetailOf(dashboard)
 const brief = sampleBrief(dashboard)
 const session = README ? ledgerSession(brief) : sampleSession(dashboard, brief)
@@ -462,7 +472,7 @@ const VIEWS = [
   // Wide, the marked row's detail beside the list (master-detail): a hub, a changed file with its diff, an issue's file.
   ...(detail === null ? [] : [['hubs-peek', pane({ tab: 'hubs', selected: 0 }, { peek: detail })]]),
   ...(changedDetail === null ? [] : [['changes-peek', pane({ tab: 'changes', selected: 0 }, { turn: brief, peek: changedDetail })]]),
-  ...(detail === null ? [] : [['cycles-peek', pane({ tab: 'cycles', selected: 0 }, { peek: detail })]]),
+  ...(cycleDetail === null ? [] : [['cycles-peek', pane({ tab: 'cycles', selected: 0 }, { peek: cycleDetail })]]),
   ['hubs-flash', pane({ tab: 'hubs', selected: 0 }, { flash: FLASH })],
   ['overview-flash', pane({ tab: 'overview' }, { turn: brief, flash: FLASH })],
   ['branch', pane({ tab: 'branch' })],
