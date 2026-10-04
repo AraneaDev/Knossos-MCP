@@ -81,12 +81,18 @@ export function finderBlock(finder: FinderInput, selected: number, tier: Tier, h
       else if (!finder.searching && finder.results.length === 0) said('find-none', `Nothing matches "${finder.query.trim()}".`)
       const list = finder.results
       if (list.length > 0) {
-        const shown = list.slice(0, Math.max(1, limit))
+        // The marked match in the middle of what the card holds, wherever it is in the list.
+        const n = Math.max(1, limit)
+        const start = list.length <= n ? 0 : Math.max(0, Math.min(selected - Math.floor(n / 2), list.length - n))
+        const shown = list.slice(start, start + n)
         const spec = tableSpec(columns, shown.map(f => f.name), shown.map(f => boundaryLabel(f.boundary, hues)), [], undefined, { tier, kinds: tier === 'narrow' ? [] : shown.map(f => f.kind), places: tier === 'narrow' ? [] : shown.map(f => f.place) })
-        shown.forEach((f, i) =>
-          rows.push(tableRow(`found-${i}`, { name: f.name, boundary: f.boundary, values: [], max: 0, kind: f.kind, place: f.place, placeLoc: f.loc, path: f.file, press: `row:${i}`, selected: i === selected }, { ...spec, bar: 0 }, hues)),
-        )
-        if (list.length > shown.length) rows.push(dimRow('found-more', `   ${list.length - shown.length} more ↓ · type more to narrow`, columns))
+        shown.forEach((f, j) => {
+          const i = start + j
+          rows.push(tableRow(`found-${i}`, { name: f.name, boundary: f.boundary, values: [], max: 0, kind: f.kind, place: f.place, placeLoc: f.loc, path: f.file, press: `row:${i}`, selected: i === selected }, { ...spec, bar: 0 }, hues))
+        })
+        const below = list.length - start - shown.length
+        const parts = [...(start > 0 ? [`${start} above ↑`] : []), ...(below > 0 ? [`${below} more ↓`] : [])]
+        if (parts.length > 0) rows.push(dimRow('found-more', `   ${parts.join(' · ')} · type more to narrow`, columns))
       }
       const note = finder.searching ? 'searching…' : finder.query.trim() === '' ? 'components and files' : `${list.length}${finder.truncated ? '+' : ''} found`
       return { key: 'find', title: finder.routeFrom === undefined ? 'Find' : `Route from ${finder.routeFrom} to…`, note: noteOf(note), body: rows }

@@ -62,4 +62,20 @@ describe('the finder', () => {
     expect(text(state({ answer: null }))).toContain('knossos did not answer')
     expect(text(state({ answer: answer(30) }))).toMatch(/Find +30\+ found/)
   })
+
+  it('keeps the marked match in view, the rows around it, however far down it is', () => {
+    const s = state({ answer: answer(30) })
+    const rowsAt = (selected: number) => paneLayout(pane(s, view({ selected })), 100, 24).body
+    const found = (rows: ReturnType<typeof rowsAt>) => rows.filter(r => /^found-\d+$/.test(r.key)).map(r => Number(r.key.slice(6)))
+    const top = found(rowsAt(0))
+    expect(top[0]).toBe(0)
+    // Far down: the marker is there and stands in the middle of what is shown, which says what is above and below.
+    const rows = rowsAt(20)
+    const shown = found(rows)
+    expect(shown).toContain(20)
+    expect(Math.abs(shown.indexOf(20) - Math.floor(shown.length / 2))).toBeLessThanOrEqual(1)
+    expect(plainText(rows.find(r => r.key === 'found-more')!)).toMatch(/\d+ above ↑ · \d+ more ↓ · type more to narrow/)
+    // At the end, the last matches fill the card.
+    expect(found(rowsAt(29)).at(-1)).toBe(29)
+  })
 })
