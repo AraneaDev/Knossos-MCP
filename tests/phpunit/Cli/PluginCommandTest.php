@@ -461,6 +461,83 @@ final class PluginCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    /**
+     * The mod's sources as the repository holds them, `/`-led and sorted:
+     * register.tsx and every module under hooks/lib and hooks/mod, specs left out.
+     *
+     * @return list<string>
+     */
+    private static function modSourcesOnDisk(): array
+    {
+        $root = self::repositoryRoot();
+        $found = [
+            ...(glob($root . '/hooks/register.tsx') ?: []),
+            ...(glob($root . '/hooks/lib/*.ts') ?: []),
+            ...(glob($root . '/hooks/mod/*.ts') ?: []),
+            ...(glob($root . '/hooks/mod/*.tsx') ?: []),
+        ];
+        $sources = array_values(array_filter(
+            array_map(static fn (string $path): string => substr($path, strlen($root)), $found),
+            static fn (string $path): bool => !str_ends_with($path, '.spec.ts'),
+        ));
+        sort($sources);
+
+        return $sources;
+    }
+
+    /**
+     * Whether an installed path is one of the mod's sources, in the shape
+     * {@see modSourcesOnDisk()} globs for.
+     */
+    private static function isModSource(string $path): bool
+    {
+        return preg_match('~^/hooks/(register\.tsx|lib/[^/]+\.ts|mod/[^/]+\.tsx?)$~', $path) === 1;
+    }
+
+    /**
+     * The installer names its modules one by one, so a module added to the
+     * tree but left out of that list would ship a mod that fails to load,
+     * with every hand-written list here still agreeing with the installer.
+     * The tree is the one source that cannot drift.
+     */
+    #[Group('cli')]
+    public function testTheInstallerShipsEveryModSourceInTheTree(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin');
+        try {
+            ob_start();
+            $status = (new PluginCommand())->run(
+                'install-agent-plugin',
+                [],
+                ['out' => [$out], 'data' => ['/srv/knossos-data'], 'json' => ['true']],
+                $this->context(),
+            );
+            $output = (string) ob_get_clean();
+            assertSame(0, $status);
+            $decoded = json_decode(trim($output), true, 8, JSON_THROW_ON_ERROR);
+
+            $shipped = array_map(static fn (string $file): string => '/' . $file, $decoded['files']);
+            $shippedSources = array_values(array_filter($shipped, self::isModSource(...)));
+            sort($shippedSources);
+            $onDisk = self::modSourcesOnDisk();
+
+            assertSame(true, in_array('/hooks/mod/render.tsx', $onDisk, true));
+            assertSame($onDisk, $shippedSources);
+
+            // The hand-written lists the other tests lean on hold the same set.
+            $listed = self::MOD_SOURCES;
+            sort($listed);
+            assertSame($onDisk, $listed);
+            $installed = array_values(array_filter(
+                array_map(static fn (string $file): string => '/' . $file, self::INSTALLED),
+                self::isModSource(...),
+            ));
+            assertSame($onDisk, $installed);
+        } finally {
+            exec('rm -rf ' . escapeshellarg($out));
+        }
+    }
+
     public function testSpecFilesNeverReachAnInstalledPlugin(): void
     {
         $root = $this->sourceRoot();
