@@ -438,51 +438,85 @@ async function unfoldCycle(io: Port, id: string): Promise<void> {
   await io.state.view.update(v => ({ ...v, unfolded: [...new Set([...(v.unfolded ?? []), cycle!])], selected: row! }))
 }
 
+/** What one press does: `rest` is what follows the colon of a prefixed id (`row:3` gives `3`), `id` the whole id. */
+type Press = (io: Port, rest: string, surface: RenderSurface | undefined, id: string) => unknown
+
+/** A view change a press makes, as a press. */
+const viewing = (change: (v: KnossosView, rest: string) => KnossosView): Press => (io, rest) => io.state.view.update(v => change(v, rest))
+
+/**
+ * What a press on the pane does, by the pressed element's id: an id that
+ * names an action outright (`find`), or the part of one before its first
+ * colon, the colon kept (`row:`), for an id that carries what it acts on.
+ * No outright id holds a colon, so the two never meet.
+ */
+export const PRESSES: ReadonlyMap<string, Press> = new Map<string, Press>([
+  [
+    'tab:',
+    async (io, rest) => {
+      const tab = rest as PaneTab
+      if (TABS.some(t => t.id === tab)) await io.state.view.update(v => ({ ...v, tab, selected: 0, filtering: false, finding: false, drift: false, target: undefined, degree: null }))
+    },
+  ],
+  ['find', io => openFinder(io)],
+  ['find-close', io => closeFinder(io)],
+  ['target', io => moveCell(io, null)],
+  ['cell:', (io, rest) => moveCell(io, Number(rest))],
+  ['drift', viewing(v => ({ ...v, drift: v.drift !== true, selected: 0 }))],
+  [
+    'row:',
+    async (io, rest) => {
+      // A boundary has nothing to open: pressing one marks it, starting on what it depends on most.
+      if ((await io.state.view.read()).tab === 'boundaries') await io.state.view.update(v => ({ ...v, target: undefined }))
+      return openRow(io, Number(rest))
+    },
+  ],
+  ['rel:', (io, rest) => openRelated(io, Number(rest))],
+  ['route', io => startRoute(io)],
+  ['route-pick:', viewing((v, rest) => (v.route === null || v.route === undefined ? v : { ...v, route: { ...v.route, index: Math.max(0, Number(rest) || 0) }, selected: 0 }))],
+  ['note', io => startNote(io)],
+  ['note-yes', io => confirmNote(io)],
+  ['note-no', io => io.state.note.update(() => null)],
+  ['peek:', (io, rest) => openPeeked(io, Number(rest))],
+  // On Cycles the layout names the row `j` and `k` (and a cycle's line in the list) move to: what the diagram shows depends on its width.
+  ['next:', viewing((v, rest) => ({ ...v, selected: Math.max(0, Number(rest) || 0) }))],
+  ['unfold:', (io, _, __, id) => unfoldCycle(io, id)],
+  ['down', io => moveSelection(io, 1)],
+  ['up', io => moveSelection(io, -1)],
+  ['open', io => openRow(io)],
+  ['edit', (io, _, surface) => openEditTarget(io, surface)],
+  ['tests', (io, _, surface) => copyTestCommand(io, surface)],
+  // Back from a route goes to the detail it was picked from; from a detail, to the tab.
+  ['back', viewing(v => ((v.route ?? null) !== null ? { ...v, route: null, selected: 0 } : { ...v, inspect: null, selected: v.opened ?? 0 }))],
+  ['keys', viewing(v => ({ ...v, showKeys: !v.showKeys }))],
+  ['filter', io => openFilter(io)],
+  ['clear', viewing(v => ({ ...v, filter: '', filtering: false, degree: null, selected: 0 }))],
+  ['sort', viewing(v => ({ ...v, sort: SORTS[(SORTS.indexOf(v.sort) + 1) % SORTS.length] ?? 'in', selected: 0 }))],
+  ['rescan', io => requestRescan(io)],
+  ['copy', (io, _, surface) => copySubject(io, surface)],
+  ['ask', io => askClaude(io)],
+  // The no-data pane's one action: the person's press sends it, as "Ask Claude" does.
+  ['scan-ask', io => askScan(io)],
+  ['allow', io => offerAllow(io)],
+  ['allow-yes', io => confirmAllow(io)],
+  ['allow-no', io => io.state.allow.update((a): AllowState => (a.phase === 'confirming' ? { phase: 'idle', root: null, reason: null } : a))],
+])
+
+/** Ids that do what another does: a tab's hidden hotkey twin, the drift line's second button, and the Cycles moves and folds. */
+const SAME_AS: Readonly<Record<string, string>> = { 'tabkey:': 'tab:', drifted: 'drift', 'prev:': 'next:', 'mark:': 'next:', 'fold:': 'unfold:' }
+
+/** Which entry of {@link PRESSES} a press on `id` runs, and what follows the colon; null for an id that does nothing. */
+export function pressOf(id: string): { key: string; rest: string } | null {
+  const cut = id.indexOf(':')
+  const named = cut < 0 ? id : id.slice(0, cut + 1)
+  const key = Object.hasOwn(SAME_AS, named) ? SAME_AS[named]! : named
+  return PRESSES.has(key) ? { key, rest: cut < 0 ? '' : id.slice(cut + 1) } : null
+}
+
 /** What a press on the pane does, by the pressed element's id; `surface` is where the press came from. */
 async function pressAction(io: Port, id: string, surface?: RenderSurface): Promise<unknown> {
-  if (id.startsWith('tab:') || id.startsWith('tabkey:')) {
-    const tab = id.slice(id.indexOf(':') + 1) as PaneTab
-    if (TABS.some(t => t.id === tab)) await io.state.view.update(v => ({ ...v, tab, selected: 0, filtering: false, finding: false, drift: false, target: undefined, degree: null }))
-    return
-  }
-  if (id === 'find') return openFinder(io)
-  if (id === 'find-close') return closeFinder(io)
-  if (id === 'target') return moveCell(io, null)
-  if (id.startsWith('cell:')) return moveCell(io, Number(id.slice(5)))
-  if (id === 'drift' || id === 'drifted') return io.state.view.update(v => ({ ...v, drift: v.drift !== true, selected: 0 }))
-  if (id.startsWith('row:')) {
-    // A boundary has nothing to open: pressing one marks it, starting on what it depends on most.
-    if ((await io.state.view.read()).tab === 'boundaries') await io.state.view.update(v => ({ ...v, target: undefined }))
-    return openRow(io, Number(id.slice(4)))
-  }
-  if (id.startsWith('rel:')) return openRelated(io, Number(id.slice(4)))
-  if (id === 'route') return startRoute(io)
-  if (id.startsWith('route-pick:')) return io.state.view.update((v): KnossosView => (v.route === null || v.route === undefined ? v : { ...v, route: { ...v.route, index: Math.max(0, Number(id.slice(11)) || 0) }, selected: 0 }))
-  if (id === 'note') return startNote(io)
-  if (id === 'note-yes') return confirmNote(io)
-  if (id === 'note-no') return io.state.note.update(() => null)
-  if (id.startsWith('peek:')) return openPeeked(io, Number(id.slice(5)))
-  // On Cycles the layout names the row `j` and `k` (and a cycle's line in the list) move to: what the diagram shows depends on its width.
-  if (/^(next|prev|mark):/.test(id)) return io.state.view.update(v => ({ ...v, selected: Math.max(0, Number(id.slice(5)) || 0) }))
-  if (id.startsWith('unfold:') || id.startsWith('fold:')) return unfoldCycle(io, id)
-  if (id === 'down' || id === 'up') return moveSelection(io, id === 'down' ? 1 : -1)
-  if (id === 'open') return openRow(io)
-  if (id === 'edit') return openEditTarget(io, surface)
-  if (id === 'tests') return copyTestCommand(io, surface)
-  // Back from a route goes to the detail it was picked from; from a detail, to the tab.
-  if (id === 'back') return io.state.view.update((v): KnossosView => ((v.route ?? null) !== null ? { ...v, route: null, selected: 0 } : { ...v, inspect: null, selected: v.opened ?? 0 }))
-  if (id === 'keys') return io.state.view.update(v => ({ ...v, showKeys: !v.showKeys }))
-  if (id === 'filter') return openFilter(io)
-  if (id === 'clear') return io.state.view.update(v => ({ ...v, filter: '', filtering: false, degree: null, selected: 0 }))
-  if (id === 'sort') return io.state.view.update(v => ({ ...v, sort: SORTS[(SORTS.indexOf(v.sort) + 1) % SORTS.length] ?? 'in', selected: 0 }))
-  if (id === 'rescan') return requestRescan(io)
-  if (id === 'copy') return copySubject(io, surface)
-  if (id === 'ask') return askClaude(io)
-  // The no-data pane's one action: the person's press sends it, as "Ask Claude" does.
-  if (id === 'scan-ask') return askScan(io)
-  if (id === 'allow') return offerAllow(io)
-  if (id === 'allow-yes') return confirmAllow(io)
-  if (id === 'allow-no') return io.state.allow.update((a): AllowState => (a.phase === 'confirming' ? { phase: 'idle', root: null, reason: null } : a))
+  const press = pressOf(id)
+  return press === null ? undefined : PRESSES.get(press.key)!(io, press.rest, surface, id)
 }
 
 /** Into the field `field` (the finder's, a note's, the hubs filter's): what was typed, kept at once. */
