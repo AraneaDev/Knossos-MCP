@@ -425,7 +425,7 @@ card. Every file there opens to the files that depend on it.
 
 ![The Changes tab, two files marked as reached by no test](docs/images/claude-code-mod/changes-dark.png)
 
-On a wide pane (past 130 columns) Hubs, Changes, Issues, Cycles and Branch stand beside the
+On a wide pane (past 130 columns) Hubs, Changes, Issues, Cycles, Branch and Churn stand beside the
 marked row's detail: move the marker and the neighbourhood, or a changed file's diff, follows
 it, without leaving the list. Paths are drawn in two tones, the directory dim and the file
 name bright, and a long one loses the middle of its directory, never its file name. Rows a
@@ -437,9 +437,32 @@ The Branch tab compares the branch with the retained snapshot at its merge base 
 default branch (found through git, locally): dependencies newly crossing from one boundary
 into another, new cycles, hubs that grew, new dead code and new policy violations, each
 opening its component. When no snapshot near the merge base is kept, it says so, and how
-partial the comparison against the nearest later one is.
+partial the comparison against the nearest later one is. A tall tab gives its spare rows to
+the churn hotspots.
 
-![The Branch tab, saying that no snapshot near the merge base is retained](docs/images/claude-code-mod/branch-dark.png)
+![The Branch tab, saying that no snapshot near the merge base is retained, with the churn hotspots under it](docs/images/claude-code-mod/branch-dark.png)
+
+The Churn tab ranks the files changed most often in the last thirty days that much of the
+project depends on: commits times dependent files. A scatter puts every listed file by its
+commits and its dependents, the nine highest scores drawn as their rank; the list under it
+opens each file. The history is read once per commit the checkout is at.
+
+![The Churn tab: a scatter of commits against dependents over the ranked list](docs/images/claude-code-mod/churn-dark.png)
+
+A component's detail draws its blast radius as concentric rings: what depends on it one hop
+away, two, and further, each ring saying how much of it a test reaches, its untested
+components first and marked, and the test files that reach it. `m` adds a note to the
+component from its detail: knossos checks it first, and only `y` records it. When a scan
+brings a new dependency cycle or policy violation, a toast says so once (the
+`notifications` setting turns that off).
+
+![A component's detail: its dependencies, and its blast radius in three rings around it](docs/images/claude-code-mod/detail-dark.png)
+
+`p` on a component's detail picks another component in the finder and draws the route
+between the two as boxes down the pane, each hop labelled with its kind and where it is
+written; every route found is listed above it.
+
+![The path explorer: every route found, and the first drawn as boxes](docs/images/claude-code-mod/route-dark.png)
 
 `f` opens a finder over every component and file: type letters of a name in order and Enter
 opens the first match. Hubs' own filter is now on `n`.

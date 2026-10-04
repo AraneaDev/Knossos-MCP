@@ -197,7 +197,8 @@ this session and changes, `▥` the composition and the per-boundary table,
 the cross-boundary flows, the marked heat map cell and a detail's
 dependencies, `≡` the files most depended on, `▦` the boundary map, `◈` the
 marked boundary, `↻` cycles, `!` the Issues cards, `✓` the tests that reach
-the changes, `◇` a detail. A card with nothing to list is one line: its
+the changes, `◇` a detail, `∴` the churn scatter, `◎` a blast radius, `⇢` a
+route, `✎` the notes. A card with nothing to list is one line: its
 title and its note (or `none`) set into a rule, at every width. Cards stand
 one blank row apart; labels are dim, numbers right-aligned.
 
@@ -213,7 +214,7 @@ Changes the files beside the tests; Issues the cards with nothing to list side
 by side as one-line rules first, then the lists in pairs. Cycles and a
 detail stand in one column at every width, since a diagram wants the room.
 
-Past 130 columns, Hubs, Changes, Issues, Cycles and Branch are master and
+Past 130 columns, Hubs, Changes, Issues, Cycles, Branch and Churn are master and
 detail: the tab on the left (55 percent, as a medium pane lays it out) and,
 beside it, the detail of the marked row, a component's neighbourhood or a
 file's dependents (with its change since the session began, drawn as text
@@ -225,9 +226,14 @@ shows the tab alone. Boundaries keeps its own grid, whose lower row already
 spells out the marked boundary and its cell. Narrower panes open a row with
 `o`, as before.
 
-The cards stretch to the pane's foot: the last card of a column, or the rows
-of cards side by side in a grid, take the rows left over, so nothing ends
-above blank space. On a tall Overview the rows left after the charts go to
+The cards stretch to the pane's foot: the last framed card of a column, or
+the rows of framed cards side by side in a grid, take the rows left over,
+so nothing ends above blank space. A card with nothing to list is one line
+with no frame to stretch: it stands on a line of its own (just before the
+cards it was beside) and never takes a share of the spare rows, so no gap
+opens under it; when every list of a grid is empty, the card across the top
+takes the height. On a tall Branch tab the spare rows go to the churn
+hotspots (see below), each a link to its file. On a tall Overview the rows left after the charts go to
 two secondary lists, the complexity hotspots and the files most depended
 on, each a link to its file; on a shorter pane they are left out, and the
 marker never walks them, so what it walks does not depend on the height.
@@ -271,7 +277,59 @@ nothing. On the default branch itself, or without git, it says that too.
 The comparison is read when the tab opens and again for each new snapshot,
 never while another tab is open. The tab label counts what it found.
 
-Nothing the pane draws can wrap or push its card wider,Nothing the pane draws can wrap or push its card wider, on a terminal that
+The Churn tab (`8`) ranks the files changed most often in the last thirty
+days that much of the project depends on: commits in the window times the
+files that depend on the file, counted as the fan-in map counts them.
+`knossos churn` reads one `git log` (at most 500 commits, three seconds)
+and the graph's dependents for the files it names; the pane keeps the
+answer for the commit the checkout is at, so a new commit (not a new scan)
+reads it again. A scatter draws every listed file, commits across and
+dependents up on a log scale from the fewest listed to the most, the nine
+highest scores as their rank digits and the marked file as the accent dot;
+under it the ranked list, each file with its commits, its dependents and a
+bar for its score, opening its detail. Without git the tab says so.
+
+A component's detail draws its blast radius: what depends on it one hop
+away, two hops away, and further (`knossos blast-radius`, at most six hops,
+1,500 components and two seconds), as concentric frames with the furthest
+ring outermost and the component in the middle. Each frame's top edge
+carries its hop, how many components it holds and whether a test reaches
+them all (`✓ all tested`) or how many no test reaches (`▲ 2 untested`, in
+the warning colour). Inside it, before the next ring in, its components
+(the untested first, each after a `▲`; a boundary named only where it is
+not the component's own) and the test files that reach the ring, nearest
+first. A test is no member of a ring; a component counts as tested when a
+test depends on it, directly or through others the search found. Every
+named component is a row the marker walks after the detail's own lists,
+and opens as its detail. Below 44 columns the rings are plain lists.
+
+`p` on a component's detail starts a route: the finder opens over the
+pane, offering components only, and the one you open is where the route
+ends. `knossos path-between` finds the routes between the two (at most
+six hops and five routes, the strongest first); when only the other way
+has one, the pane draws that and says so in the warning colour. The route
+is drawn as boxes down the pane, each framed in its boundary's colour with
+the boundary beside it, each hop an arrow labelled with its kind and the
+file and line it is written at; every route found is listed above it, told
+from the last component they all share, and a press draws another. Each
+box opens its component; `b` goes back to the detail the route began on.
+
+`m` on a component's detail adds a note to it (`knossos annotate`, the
+`note` kind of the `annotate_component` tool). A field opens in the notes
+card, holding the note there is; Enter has knossos check it (a preview,
+nothing written) and the card asks `Record this note on StableId?`, saying
+what it replaces. Only `y` (or the `record` button) writes it; `n` drops
+it. A refusal (an ambiguous name, a note too long) is said in the card.
+The detail is read again once the note is recorded, so it shows.
+
+When a scan brings a dependency cycle or a policy violation the graph did
+not hold before, the mod says so in a toast, once per cycle or violation a
+session: `knossos: a new dependency cycle of 3: Router → Handler → Store →
+Router`. Only between two snapshots of the same project, never for the
+first graph a session sees; a scan that brings more than three says the
+rest as one count. The `notifications` setting turns these off.
+
+Nothing the pane draws can wrap or push its card wider, on a terminal that
 counts cells as the layout does or not: every row is a box as wide as the
 pane that clips what passes its edge, every text in it cuts at that edge
 with an ellipsis, and a pressable name draws the name as the layout cut it,
@@ -715,7 +773,7 @@ what can be done to the marked row on the right, only the keys that do
 something in the view on show. For a moment after an action the footer says
 what it did, between the two (`✓ copied StableId`, `✓ opened in editor`,
 `✗ no editor · path copied`, in the success or error colour); the mod's age
-tick lets it fade after about two seconds. `1` to `7` switch tabs, `f` opens the finder, `j` and `k` move the `›` marker (as does moving the focus with
+tick lets it fade after about two seconds. `1` to `8` switch tabs, `f` opens the finder, `p` starts a route and `m` a note on a component's detail, `j` and `k` move the `›` marker (as does moving the focus with
 Tab or the arrows onto a row), `o` or Enter opens the marked row, `e` opens
 the marked row's file in your editor, `c` copies and `q` asks about it, `t`
 copies the test command, `d` lists the drifted files, `l` moves the
@@ -1008,6 +1066,7 @@ percent of one core.
 | `openPaneOnStart` | `false` | Opens the pane when a session starts, on a wide enough terminal.   |
 | `watch`           | `true`  | Runs the live watcher for an allowed, scanned project.             |
 | `watchPollMs`     | `1000`  | How often the watcher looks for changes (250 to 60000 ms).         |
+| `notifications`   | `true`  | Toasts each new cycle or policy violation a scan brings, once.     |
 
 They appear in Claude Code's config menu under the plugin's name.
 
@@ -1024,7 +1083,9 @@ project the oldest are merged into one bounded span). The watcher also writes it
 `watch/` beside the database. They happen only for a project that
 is already scanned and inside an allowed root, never inside a hook dispatch,
 and never two at a time within a session. The pane's allow-root action writes
-the roots file, and only after you confirmed it. `knossos dashboard` and
+the roots file, and only after you confirmed it; a note added on a
+component's detail writes one row of the `annotations` table, also only after
+you confirmed it (`knossos annotate --execute`). `knossos dashboard` and
 `knossos component-detail` and `knossos file-detail` only read the graph, though like the scans they
 bring a database with an older schema up to date before they read it. One
 small exception: the dashboard writes trend cache rows. It keeps the figures
@@ -1057,6 +1118,12 @@ only when the server uses that too.
 knossos install-agent-plugin --data-dir="$HOME/.knossos" --execute
 ```
 
+An install over an earlier one deletes the files the earlier one left in the
+plugin's own directories that this one no longer ships (a module since
+renamed, say), and only those: never a subdirectory, never the target's own
+root (a `--out` directory may hold anything else), never through a linked
+directory. A failed install puts them back.
+
 ## When it stays silent
 
 - No `knossos` binary on the path or in the usual locations.
@@ -1080,13 +1147,19 @@ one log line and turns the band and pane off for the session.
 
 The wrapper bounds each call: 60 seconds for `turn-brief` and the pane's
 rescan, 30 for `dashboard` (a first dashboard of a large project walks the
-whole graph) and for `branch-diff` (two whole graphs compared), 15 for
+whole graph) and for `branch-diff` (two graphs compared, read one after the
+other with only the columns the comparison uses), 15 for
 `component-detail`, `file-detail`, `file-context`, `graph-search`,
+`churn`, `blast-radius`, `path-between`, `annotate`,
 `session-changes`, `session-head`, `session-diff`, `boundary-couplings` and
-`allow-root`. `file-context` takes one file inside the project directory, as
+`allow-root`. `churn` takes nothing but the project; `blast-radius` exactly
+`--component=`; `path-between` exactly `--from=` and `--to=`, in that order;
+`annotate` exactly `--component=` and `--value=` (one printable line of at
+most 2,000 characters) and, last, `--execute` when you confirmed the note,
+without which it writes nothing. `file-context` takes one file inside the project directory, as
 `file-detail` does; `graph-search` exactly `--query=` with one printable line
 of at most 200 characters; `branch-diff` nothing but the project. The
-container wrapper runs `file-context` and `branch-diff` as the image's user,
+container wrapper runs `file-context`, `branch-diff` and `churn` as the image's user,
 so git may refuse the mounted repository there: the context then has no
 commits, and the Branch tab says there is no git.
 `boundary-couplings` takes exactly `--from=` and `--to=`, in that order, each
