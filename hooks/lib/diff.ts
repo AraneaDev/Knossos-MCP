@@ -25,8 +25,9 @@ export const LINE_MAX = 200
 /** The element's own limit on its text. */
 const SOURCE_MAX = 10_000
 /**
- * The most text the card's hunks draw together: the engine refuses a tree past
- * 100,000 characters, and twelve hunks of forty full lines would be most of it.
+ * The most text the card's hunks draw together, serialized as the engine
+ * weighs it: the engine refuses a tree past 100,000 characters, and twelve
+ * hunks of forty full lines would be most of it.
  * Past it the rest of the hunks are counted, as those past {@link HUNKS_SHOWN} are.
  */
 export const DIFF_TEXT_MAX = 24_000
@@ -154,8 +155,10 @@ export function diffSection(view: DiffView, columns: number, asText = false): Se
     if (asText) rows.push(...hunkRows(`diff-hunk-${i}`, hunk, shown, columns))
     else {
       const source = hunkSource(hunk, shown)
-      if (spent + source.length > DIFF_TEXT_MAX) break
-      spent += source.length
+      // Weighed as the engine weighs the tree, serialized: a quote or a backslash counts twice, a control byte six times.
+      const weight = JSON.stringify(source).length
+      if (spent + weight > DIFF_TEXT_MAX) break
+      spent += weight
       rows.push({ key: `diff-hunk-${i}`, segments: [], code: { source, path: view.path } })
     }
     drawn++

@@ -134,6 +134,15 @@ describe('the change as rows', () => {
     expect(text(rows.find(r => r.key === 'diff-hunks-more')!).trim()).toBe(`${14 - drawn.length} more changes further down the file`)
   })
 
+  it('weighs the hunks it draws as the engine does, serialized, so quotes and backslashes count twice', () => {
+    // A change to escaped JSON: every character a quote or a backslash, so its serialized form is twice its length.
+    const line = (h: number, i: number) => `+${`"h${h}\\${i}"`.padEnd(LINE_MAX - 1, '"')}`
+    const full = Array.from({ length: 14 }, (_, h) => `@@ -${h * 100 + 1},0 +${h * 100 + 1},70 @@\n${Array.from({ length: 70 }, (_, i) => line(h, i)).join('\n')}`).join('\n')
+    const drawn = diffRows(viewOf(answer({ diff: `${full}\n` })), 200).filter(r => r.code !== undefined)
+    expect(drawn.length).toBeGreaterThan(0)
+    expect(drawn.reduce((sum, r) => sum + JSON.stringify(r.code?.source ?? '').length, 0)).toBeLessThanOrEqual(DIFF_TEXT_MAX)
+  })
+
   it('stands below the dependents in the file detail, and under the message of a file no longer in the graph', () => {
     const file = {
       path: 'src/Router.php',
