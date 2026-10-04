@@ -241,6 +241,28 @@ final class SessionChangesServiceTest extends KnossosTestCase
         }
     }
 
+    /** More changed files than one test search takes: the tests are still found, a search per batch, rather than the whole read failing. */
+    #[Group('query')]
+    public function testMoreChangedFilesThanOneTestSearchTakesStillFindTheirTests(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $since = (string) (new ScanLedger($pdo))->activeSnapshot($projectId);
+            for ($i = 0; $i < 60; ++$i) {
+                file_put_contents($root . "/src/Core/Many{$i}.php", "<?php\nnamespace App;\nfinal class Many{$i} {}\n");
+            }
+            // The greeter sorts after the many new files: its test is found by the second batch.
+            file_put_contents($root . '/src/Core/Greeter.php', "\n// edited\n", FILE_APPEND);
+            $this->ledgered($pdo, $root);
+            $changes = self::changes($pdo, $root, $since);
+            assertSame('ok', $changes['status']);
+            assertSame(61, count($changes['files']));
+            assertSame(['tests/GreeterTest.php'], array_column($changes['tests'], 'path'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     #[Group('query')]
     public function testTheFileListIsBoundedAndSaysSo(): void
     {

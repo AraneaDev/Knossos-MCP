@@ -335,11 +335,7 @@ final readonly class TurnBriefService
      */
     private function tests(ArchitectureQueryService $queries, string $projectId, array $live): array
     {
-        $data = $queries->testImpact($projectId, $live, limit: self::MAX_TESTS)->data;
-        return array_map(
-            static fn(array $t): array => ['path' => (string) $t['path'], 'distance' => (int) $t['distance']],
-            $data['test_files'] ?? [],
-        );
+        return FileTestReach::testsOf($queries, $projectId, $live, self::MAX_TESTS);
     }
 
     /**

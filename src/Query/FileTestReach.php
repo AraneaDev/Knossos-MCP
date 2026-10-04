@@ -71,4 +71,32 @@ final readonly class FileTestReach
 
         return $counts;
     }
+
+    /**
+     * The tests that reach any of `$files`, nearest first, at most `$limit`:
+     * asked {@see ChangeImpactQueryService::MAX_FILES} files at a time (the
+     * most one search takes), each test kept at its nearest distance. A set
+     * of changed files larger than one search takes was refused outright
+     * before, so a big turn reported no tests at all.
+     *
+     * @param list<string> $files
+     * @return list<array{path: string, distance: int}>
+     */
+    public static function testsOf(ArchitectureQueryService $queries, string $projectId, array $files, int $limit): array
+    {
+        $nearest = [];
+        foreach (array_chunk($files, ChangeImpactQueryService::MAX_FILES) as $chunk) {
+            foreach ($queries->testImpact($projectId, $chunk, limit: $limit)->data['test_files'] ?? [] as $test) {
+                $path = (string) $test['path'];
+                $nearest[$path] = min($nearest[$path] ?? PHP_INT_MAX, (int) $test['distance']);
+            }
+        }
+        $tests = [];
+        foreach ($nearest as $path => $distance) {
+            $tests[] = ['path' => (string) $path, 'distance' => $distance];
+        }
+        usort($tests, static fn(array $a, array $b): int => [$a['distance'], $a['path']] <=> [$b['distance'], $b['path']]);
+
+        return array_slice($tests, 0, $limit);
+    }
 }

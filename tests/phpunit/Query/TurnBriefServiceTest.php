@@ -82,6 +82,25 @@ final class TurnBriefServiceTest extends KnossosTestCase
         return (int) $pdo->query('SELECT COUNT(*) FROM ' . $table)->fetchColumn();
     }
 
+    /** A turn that changed more files than one test search takes still reports the tests that reach them. */
+    #[Group('query')]
+    public function testATurnOfMoreFilesThanOneTestSearchTakesStillNamesItsTests(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            for ($i = 0; $i < 55; ++$i) {
+                file_put_contents($root . "/src/Core/Many{$i}.php", "<?php\nnamespace App;\nfinal class Many{$i} {}\n");
+            }
+            $this->touch($root, self::TARGET);
+            $brief = $this->service($pdo)->brief($root);
+            assertSame('ok', $brief['status']);
+            assertSame(56, count($brief['changed_files']) + count($brief['added_files']));
+            assertSame(['tests/GreeterTest.php'], array_column($brief['tests'], 'path'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     #[Group('query')]
     public function testAnEditedFileIsReportedWithItsImpact(): void
     {

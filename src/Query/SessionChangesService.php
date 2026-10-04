@@ -160,10 +160,6 @@ final readonly class SessionChangesService
      */
     private function tests(string $projectId, array $files): array
     {
-        $data = (new ArchitectureQueryService($this->pdo))->testImpact($projectId, $files, limit: self::MAX_TESTS + 1)->data;
-        return array_map(
-            static fn(array $t): array => ['path' => (string) $t['path'], 'distance' => (int) $t['distance']],
-            $data['test_files'] ?? [],
-        );
+        return FileTestReach::testsOf(new ArchitectureQueryService($this->pdo), $projectId, $files, self::MAX_TESTS + 1);
     }
 }
