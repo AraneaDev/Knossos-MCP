@@ -16,8 +16,9 @@ use Throwable;
  * on it: a file edited often and depended on widely is where a change is
  * both likely and far-reaching. The commits come from one `git log`, bounded
  * in commits read ({@see self::COMMITS}) and in time; the dependents from
- * one grouped read of the graph for the files git named. Files the graph
- * does not hold (deleted since, or not scanned) are left out.
+ * graph for the files git named, counted as the fan-in map counts them
+ * ({@see FileFanInQuery}). Files the graph does not hold (deleted since, or
+ * not scanned) are left out.
  *
  * Read-only, never scans. Without git, or when git does not answer, the
  * status says `no-git` and nothing is listed.
@@ -75,23 +76,22 @@ final readonly class ChurnService
         [$head, $commits, $counts] = $log;
         arsort($counts);
         $counts = array_slice($counts, 0, self::FILES, true);
-        $dependents = $this->dependents($id, array_map('strval', array_keys($counts)));
+        $known = $this->known($id, array_map('strval', array_keys($counts)));
+        // Dependents and the file's own boundary as the fan-in map and the file detail count them.
+        $fanIn = $known === [] ? [] : (new FileFanInQuery($this->pdo))->forPaths($id, $known, 0);
         $files = [];
-        foreach ($counts as $file => $count) {
-            if (isset($dependents[$file])) {
-                $files[] = ['path' => (string) $file, 'commits' => $count, 'dependents' => $dependents[$file], 'score' => $count * $dependents[$file]];
-            }
+        foreach ($fanIn as $file => $row) {
+            $count = $counts[$file];
+            $files[] = ['path' => $file, 'commits' => $count, 'dependents' => $row['dependent_files'], 'score' => $count * $row['dependent_files'], 'boundary' => $row['boundary']];
         }
         usort($files, static fn(array $a, array $b): int => [$b['score'], $b['commits'], $a['path']] <=> [$a['score'], $a['commits'], $b['path']]);
-        $files = array_slice($files, 0, self::LIMIT);
-        $labels = BoundaryLabels::load($this->pdo, $id)->forFiles($id, array_column($files, 'path'));
 
         return [
             'status' => 'ok',
             'head' => $head,
             'commits' => $commits,
             'truncated' => $commits >= self::COMMITS,
-            'files' => array_map(static fn(array $f): array => $f + ['boundary' => $labels[$f['path']] ?? null], $files),
+            'files' => array_slice($files, 0, self::LIMIT),
         ] + $envelope;
     }
 
@@ -130,34 +130,20 @@ final readonly class ChurnService
     }
 
     /**
-     * How many other files depend on each of `$paths` the graph holds, by
-     * path; a file nothing depends on counts 0, a file the graph does not
-     * hold is absent.
+     * Those of `$paths` the graph holds, in the order given.
      *
      * @param list<string> $paths
-     * @return array<string, int>
+     * @return list<string>
      */
-    private function dependents(string $projectId, array $paths): array
+    private function known(string $projectId, array $paths): array
     {
         if ($paths === []) {
             return [];
         }
-        $marks = implode(',', array_fill(0, count($paths), '?'));
-        $known = $this->pdo->prepare("SELECT relative_path FROM files WHERE project_id = ? AND relative_path IN ({$marks})");
-        $known->execute([$projectId, ...$paths]);
-        $counts = array_fill_keys(array_map('strval', $known->fetchAll(PDO::FETCH_COLUMN)), 0);
-        $kinds = implode(',', array_fill(0, count(AbstractArchitectureQueryService::IMPACT_EDGE_KINDS), '?'));
-        $statement = $this->pdo->prepare(
-            'SELECT tf.relative_path, COUNT(DISTINCT sn.file_id) AS dependents FROM edges e '
-            . 'JOIN nodes tn ON tn.id = e.target_id JOIN files tf ON tf.id = tn.file_id JOIN nodes sn ON sn.id = e.source_id '
-            . "WHERE e.project_id = ? AND e.kind IN ({$kinds}) AND sn.file_id IS NOT NULL AND sn.file_id <> tn.file_id AND tf.relative_path IN ({$marks}) "
-            . 'GROUP BY tf.id',
-        );
-        $statement->execute([$projectId, ...AbstractArchitectureQueryService::IMPACT_EDGE_KINDS, ...$paths]);
-        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $counts[(string) $row['relative_path']] = (int) $row['dependents'];
-        }
+        $statement = $this->pdo->prepare('SELECT relative_path FROM files WHERE project_id = ? AND relative_path IN (' . implode(',', array_fill(0, count($paths), '?')) . ')');
+        $statement->execute([$projectId, ...$paths]);
+        $held = array_flip(array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN)));
 
-        return $counts;
+        return array_values(array_filter($paths, static fn(string $path): bool => isset($held[$path])));
     }
 }

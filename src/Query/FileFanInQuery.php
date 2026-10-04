@@ -53,7 +53,8 @@ final readonly class FileFanInQuery extends AbstractArchitectureQueryService
         $result = [];
         foreach ($paths as $path) {
             $row = $found[$path];
-            $row['top_dependents'] = $this->dependents($projectId, $path, $topDependents);
+            // None asked for: no read for each path.
+            $row['top_dependents'] = $topDependents > 0 ? $this->dependents($projectId, $path, $topDependents) : [];
             $result[$path] = $row;
         }
         return $result;
