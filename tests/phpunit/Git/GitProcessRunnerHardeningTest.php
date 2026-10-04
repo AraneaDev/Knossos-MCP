@@ -108,6 +108,12 @@ final class GitProcessRunnerHardeningTest extends TestCase
             // Only an absolute path is a directory to trust.
             putenv('KNOSSOS_GIT_SAFE_DIRECTORY=*');
             self::assertNotContains('safe.directory=*', explode("\037", (new GitProcessRunner())->run([$fakeGit, 'status'], 5000, 'safe probe')));
+            // Nor is a path with a line break after it: one absolute path means nothing follows it.
+            putenv("KNOSSOS_GIT_SAFE_DIRECTORY=/work/project\n");
+            self::assertSame([], array_values(array_filter(
+                explode("\037", (new GitProcessRunner())->run([$fakeGit, 'status'], 5000, 'safe probe')),
+                static fn(string $arg): bool => str_starts_with($arg, 'safe.directory='),
+            )));
         } finally {
             putenv('KNOSSOS_GIT_SAFE_DIRECTORY');
             self::runQuiet(['rm', '-rf', $dir]);

@@ -301,7 +301,7 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     private static function safeDirectory(): array
     {
         $directory = getenv('KNOSSOS_GIT_SAFE_DIRECTORY');
-        if (!is_string($directory) || preg_match('#^/[^\x00-\x1f\x7f]*$#', $directory) !== 1) {
+        if (!is_string($directory) || preg_match('#^/[^\x00-\x1f\x7f]*$#D', $directory) !== 1) {
             return [];
         }
 
