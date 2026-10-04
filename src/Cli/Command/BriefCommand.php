@@ -9,14 +9,15 @@ use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Cli\ProjectDatabaseLocator;
-use Knossos\Query\{BoundaryCouplingsService, BranchDiffService, ComponentDetailService, DashboardService, FileContextService, FileDetailService, GraphSearchService, RescanService, SessionChangesService, TurnBriefService};
+use Knossos\Query\{BoundaryCouplingsService, BranchDiffService, ComponentDetailService, DashboardService, FileContextService, FileDetailService, GraphSearchService, PaneQueries, RescanService, SessionChangesService, TurnBriefService};
 use Knossos\Runtime\RuntimeFactory;
 use Throwable;
 
 /**
  * `turn-brief`, `rescan`, `dashboard`, `component-detail`, `file-detail`,
- * `session-changes`, `boundary-couplings`, `graph-search`, `file-context`
- * and `branch-diff`: the calls the Claude Code mod makes.
+ * `session-changes`, `boundary-couplings`, `graph-search`, `file-context`,
+ * `branch-diff`, and {@see PaneQueries}' `churn`, `blast-radius`,
+ * `path-between` and `annotate`: the calls the Claude Code mod makes.
  *
  * Addressed by path like `session-brief`, through the same database
  * resolution. All always exit 0, even on an unknown option or a stray
@@ -24,14 +25,15 @@ use Throwable;
  * the caller is a hook that must never break a session, so failure is a
  * status in the JSON, not an exit code.
  * None creates a database; only `turn-brief` and `rescan` write, by
- * scanning a project that already exists in an allowed root.
+ * scanning a project that already exists in an allowed root, and
+ * `annotate`, a note on a component, only with `--execute`.
  */
 final class BriefCommand implements CliCommand
 {
     /** {@inheritDoc} */
     public function supports(string $command): bool
     {
-        return in_array($command, ['turn-brief', 'rescan', 'dashboard', 'component-detail', 'file-detail', 'session-changes', 'boundary-couplings', 'graph-search', 'file-context', 'branch-diff'], true);
+        return in_array($command, ['turn-brief', 'rescan', 'dashboard', 'component-detail', 'file-detail', 'session-changes', 'boundary-couplings', 'graph-search', 'file-context', 'branch-diff', ...PaneQueries::COMMANDS], true);
     }
 
     /**
@@ -58,6 +60,7 @@ final class BriefCommand implements CliCommand
             'graph-search' => ['db', 'json', 'query'],
             'session-changes' => ['db', 'json', 'since'],
             'boundary-couplings' => ['db', 'json', 'from', 'to'],
+            'churn', 'blast-radius', 'path-between', 'annotate' => ['db', 'json', ...PaneQueries::options($command)],
             default => ['db', 'json', 'fan-in-threshold'],
         };
     }
@@ -139,6 +142,9 @@ final class BriefCommand implements CliCommand
         }
         if ($command === 'branch-diff') {
             return (new BranchDiffService($pdo))->diff($path);
+        }
+        if (in_array($command, PaneQueries::COMMANDS, true)) {
+            return (new PaneQueries($pdo))->answer($command, $path, static fn(string $name): ?string => $context->options->single($options, $name), static fn(string $name): bool => $context->options->flag($options, $name));
         }
         if ($command === 'rescan') {
             return (new RescanService($pdo, $databasePath, $context->installationRoot()))->rescan($path);

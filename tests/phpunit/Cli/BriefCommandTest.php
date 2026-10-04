@@ -473,6 +473,47 @@ final class BriefCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testThePanesWiderReadsAndItsNotePrintTheirEnvelopesAsJson(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        try {
+            [$status, $out] = $this->runJson('churn', [$root], []);
+            assertSame([0, 'no-git'], [$status, $out['status']]);
+            [$status, $out] = $this->runJson('blast-radius', [$root], ['component' => ['App\\Greeter::greet']]);
+            assertSame([0, 'ok', 3], [$status, $out['status'], count($out['rings'])]);
+            [$status, $out] = $this->runJson('path-between', [$root], ['from' => ['App\\Caller::run'], 'to' => ['App\\Greeter::greet']]);
+            assertSame([0, 'ok'], [$status, $out['status']]);
+            [$status, $out] = $this->runJson('annotate', [$root], ['component' => ['App\\Greeter'], 'value' => ['a note']]);
+            assertSame([0, 'ok', false], [$status, $out['status'], $out['executed']]);
+            // A missing end, an option another command takes, a stray argument: an error status, never a failure.
+            foreach ([['blast-radius', [$root], []], ['path-between', [$root], ['from' => ['a']]], ['churn', [$root], ['query' => ['x']]], ['annotate', [$root], ['value' => ['x']]], ['churn', [$root, 'b'], []]] as [$command, $positionals, $options]) {
+                assertSame([0, ['status' => 'error']], $this->runJson($command, $positionals, $options), $command);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Through the router: a directory never scanned is unscanned, and no database is created, not even by a confirmed note. */
+    #[Group('cli')]
+    public function testThePanesWiderReadsAndItsNoteNeverCreateADatabase(): void
+    {
+        $directory = $this->temporaryDirectory();
+        $router = new CliCommandRouter(self::repositoryRoot(), new CliOptionParser(), new CliHelpRenderer(), 'test');
+        try {
+            foreach ([['churn', []], ['blast-radius', ['component' => ['A']]], ['path-between', ['from' => ['A'], 'to' => ['B']]], ['annotate', ['component' => ['A'], 'value' => ['x'], 'execute' => ['true']]]] as [$command, $options]) {
+                ob_start();
+                $status = $router->route($command, [$directory], $options + ['json' => ['true']]);
+                $out = json_decode((string) ob_get_clean(), true);
+                assertSame([0, 'unscanned'], [$status, $out['status']], $command);
+            }
+            assertFalse(is_dir($directory . '/.knossos'));
+        } finally {
+            $this->removeTempTree($directory);
+        }
+    }
+
+    #[Group('cli')]
     public function testFileDetailPrintsTheEnvelopeAsJson(): void
     {
         $root = $this->scannedFixtureOnDisk();
