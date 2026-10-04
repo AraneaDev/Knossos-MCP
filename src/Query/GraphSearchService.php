@@ -36,11 +36,11 @@ final readonly class GraphSearchService
     public const QUERY_MAX = 80;
 
     /**
-     * The case pair Unicode leaves out: `ß` upper-cases to `SS`, and the
-     * capital `ẞ` (U+1E9E) lower-cases to `ß` but nothing maps back to it, so
-     * a name spelled with one would never be required in the other.
+     * The case pair Unicode leaves out: `ß` upper-cases to `SS`, so nothing
+     * maps it to the capital `ẞ` (U+1E9E). The query is lower-cased first, which
+     * turns a typed `ẞ` into `ß`, so this one direction covers both.
      */
-    private const SHARP_S = ['ß' => ['ẞ'], 'ẞ' => ['ß']];
+    private const SHARP_S = ['ß' => ['ẞ']];
 
     /** The kinds a person looks for by name, in the order a tie is broken by. */
     private const KINDS = ['class', 'interface', 'trait', 'enum', 'module', 'function', 'method'];
