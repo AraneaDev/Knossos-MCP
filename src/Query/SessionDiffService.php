@@ -107,7 +107,7 @@ final readonly class SessionDiffService
         }
         $kind = $before ? ($now ? 'changed' : 'deleted') : 'added';
         if ($kind === 'added' && !$this->succeeds($dir, ['ls-files', '--error-unmatch', '--', $file])) {
-            return ['status' => 'ok', 'kind' => 'added'] + self::untracked($dir . '/' . $file) + $envelope;
+            return ['status' => 'ok', 'kind' => 'added'] + self::untracked($dir, $file) + $envelope;
         }
         $hunks = $this->hunks($dir, ['diff', '--no-ext-diff', '--no-textconv', $rev, '--', $file]);
         return ['status' => 'ok', 'kind' => $kind === 'changed' && $hunks['diff'] === '' && !$hunks['binary'] ? 'unchanged' : $kind] + $hunks + $envelope;
@@ -144,7 +144,8 @@ final readonly class SessionDiffService
      */
     private function git(string $dir, array $args): string
     {
-        return $this->runner->run(['git', '-c', 'core.quotePath=false', '--no-optional-locks', '--no-pager', '-C', $dir, ...$args], self::TIMEOUT_MS, 'session diff');
+        // `--literal-pathspecs`: a file is named by its own path, never as a glob over others.
+        return $this->runner->run(['git', '-c', 'core.quotePath=false', '--no-optional-locks', '--no-pager', '--literal-pathspecs', '-C', $dir, ...$args], self::TIMEOUT_MS, 'session diff');
     }
 
     /**
@@ -162,15 +163,19 @@ final readonly class SessionDiffService
         } catch (Throwable) {
             return null;
         }
-        for ($i = 0; $i < count($fields) - 2; ++$i) {
-            if (!str_starts_with($fields[$i], 'R')) {
+        // Each entry is a status and its path, or a status and two paths for a rename or copy: read by its
+        // status, never by what a field starts with, or a path beginning with R reads as a rename.
+        for ($i = 0; $i + 1 < count($fields);) {
+            $status = $fields[$i];
+            if ($status === '' || !in_array($status[0], ['R', 'C'], true)) {
+                $i += 2;
                 continue;
             }
-            [$from, $to] = [$fields[$i + 1], $fields[$i + 2]];
-            if ($wasThere ? $from === $file : $to === $file) {
+            [$from, $to] = [$fields[$i + 1], $fields[$i + 2] ?? ''];
+            if ($status[0] === 'R' && ($wasThere ? $from === $file : $to === $file)) {
                 return [$from, $to];
             }
-            $i += 2;
+            $i += 3;
         }
         return null;
     }
@@ -197,12 +202,19 @@ final readonly class SessionDiffService
     }
 
     /**
-     * An untracked file shown whole as added: one hunk of every line.
+     * An untracked file shown whole as added: one hunk of every line. A link
+     * that leads out of the project is not read: what it points at is not
+     * the project's to show, and it is `unreadable` instead.
      *
-     * @return array{diff: string, lines: int, truncated: bool, binary: bool}
+     * @return array{diff: string, lines: int, truncated: bool, binary: bool, unreadable?: true}
      */
-    private static function untracked(string $file): array
+    private static function untracked(string $dir, string $relative): array
     {
+        $file = $dir . '/' . $relative;
+        $resolved = realpath($file);
+        if ($resolved === false || !str_starts_with($resolved, rtrim($dir, '/') . '/')) {
+            return ['diff' => '', 'lines' => 0, 'truncated' => false, 'binary' => false, 'unreadable' => true];
+        }
         $text = @file_get_contents($file, false, null, 0, self::READ_BYTES);
         if (!is_string($text) || $text === '') {
             return ['diff' => '', 'lines' => 0, 'truncated' => false, 'binary' => false];

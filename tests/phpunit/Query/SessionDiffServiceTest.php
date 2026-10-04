@@ -144,6 +144,41 @@ final class SessionDiffServiceTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testARenameIsFoundBesideAChangedFileWhosePathStartsLikeAStatus(): void
+    {
+        [$root] = $this->repository();
+        file_put_contents($root . '/README.md', "# Read me\n");
+        $this->git($root, ['add', '.']);
+        $this->git($root, ['commit', '--quiet', '-m', 'readme']);
+        $rev = (string) (new SessionDiffService())->head($root)['rev'];
+        // `M README.md` then `R100 src/Moved.php src/Renamed.php`: a path starting with R is a path, not a status.
+        file_put_contents($root . '/README.md', "# Read me twice\n");
+        $this->git($root, ['mv', 'src/Moved.php', 'src/Renamed.php']);
+        $diff = (new SessionDiffService())->diff($root, $rev, 'src/Renamed.php');
+        assertSame(['renamed', 'src/Moved.php', 'src/Renamed.php'], [$diff['kind'], $diff['from'], $diff['to']]);
+    }
+
+    #[Group('query')]
+    public function testAnUntrackedFileIsReadByItsLiteralNameAndNeverThroughALinkOutOfTheProject(): void
+    {
+        [$root, $rev] = $this->repository();
+        // A name that is a glob over a tracked file: read as itself, not as the files it would match.
+        file_put_contents($root . '/src/*.php', "<?php\n\nliteral();\n");
+        file_put_contents($root . '/src/Kept.php', "<?php\n\nfinal class Kept\n{\n    // changed\n}\n");
+        $service = new SessionDiffService();
+        $glob = $service->diff($root, $rev, 'src/*.php');
+        assertSame('added', $glob['kind']);
+        assertSame("@@ -0,0 +1,3 @@\n+<?php\n+\n+literal();\n", $glob['diff']);
+        // An untracked link to a file outside the project is not shown.
+        $outside = $this->directory();
+        file_put_contents($outside . '/secret.txt', "not the project's\n");
+        symlink($outside . '/secret.txt', $root . '/src/link.txt');
+        $link = $service->diff($root, $rev, 'src/link.txt');
+        assertSame('', $link['diff']);
+        assertSame(true, $link['unreadable']);
+    }
+
+    #[Group('query')]
     public function testALargeChangeIsCutAndSaysSoAndABinaryOneSaysWhatItIs(): void
     {
         [$root, $rev] = $this->repository();
