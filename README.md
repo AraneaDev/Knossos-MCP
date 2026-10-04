@@ -382,31 +382,35 @@ route, is in [the agent plugin guide](docs/guides/agent-plugin.md).
 
 The same plugin carries a [Claude Code mod](docs/capabilities/claude-code-mod.md) that puts
 the graph on screen while a session works. The images below are rendered by
-`tools/pane-preview.mjs` from this repository's own graph. The "Last turn" figures come
-from a sample turn over real files, not from a recorded session. The Changes tab lists real
-changes to this repository, read from its scan ledger; which of them it marks as this
-session's is a sample.
+`tools/pane-preview.mjs` from this repository's own graph. The band's figures come from a
+sample turn over real files, not from a recorded session. The Changes tab and the session
+card list real changes to this repository, read from its scan ledger; which of them they
+mark as this session's is a sample.
 
 After a turn that edited files, one line above the prompt says how far the change reaches:
 the files, their dependents, the tests that reach them, and how old the figures are.
 
 ![The band above the Claude Code prompt](docs/images/claude-code-mod/band-prompt-dark.png)
 
-`/knossos` opens the pane. The Overview opens with a row of stat tiles (components,
-boundaries, cycles, the largest degree, dead code, drift, policy violations and
-diagnostics), coloured only where a figure needs your attention, then leads with the file
-this session touched that most of the project depends on, marked: `o` lists the files that depend on it, `e` opens it in your
-editor, and `t` copies the command for the tests that reach the changes. It draws in your
-Claude Code theme's own colours. The header names the project, its branch and commit and its
-languages, with the status as a pill. A live watcher, one per project shared by your
-sessions, rescans as files change, so the pill reads `● live · 7s` and the figures follow
-your edits and Claude's without a rescan. Resting the pointer on a component or file shows
-the three files that depend on it most, without opening it. A container install has no watcher: there the figures follow each
-turn's own scan, and the pane's `r` rescans on request.
+`/knossos` opens the pane. The Overview measures and leaves the lists to the Hubs tab. A row
+of stat tiles (components, boundaries, cycles, the largest degree, dead code, diagnostics,
+policy violations and drift) says how each figure moved since the previous snapshot, with a
+sparkline where it has a history. Under it: what this session touched and the way to its
+changes, with `t` to copy the command for the tests that reach them; the project as stacked
+bars by boundary, language and kind; how dependencies concentrate, an in-degree histogram
+whose buckets open the hubs in that range; health over time, one row per figure on a shared
+axis; and the strongest dependencies between boundaries, a forbidden one marked as such. It
+draws in your Claude Code theme's own colours, a boundary's colour only on its swatch and
+its bars. The header names the project, its branch and commit and its languages, with the
+status as a pill. A live watcher, one per project shared by your sessions, rescans as files
+change, so the pill reads `● live · 7s` and the figures follow your edits and Claude's
+without a rescan. On Hubs, resting the pointer on a component or file shows the three files
+that depend on it most, without opening it. A container install has no watcher: there the
+figures follow each turn's own scan, and the pane's `r` rescans on request.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/images/claude-code-mod/overview-light.png">
-  <img alt="The pane's Overview: stat tiles, look at now, the last turn, and the components and files most depended on" src="docs/images/claude-code-mod/overview-dark.png">
+  <img alt="The pane's Overview: stat tiles with deltas, this session, the composition by boundary, language and kind, and the in-degree histogram" src="docs/images/claude-code-mod/overview-dark.png">
 </picture>
 
 The Changes tab lists everything that changed in the project since the session began,
@@ -429,8 +433,8 @@ under it, and `l` steps to the next one.
 
 The Cycles tab draws the marked cycle as boxes that snake across the pane, row by row, an
 arrow from each member to the next and a return edge that closes the loop back to the first.
-A cycle that spans boundaries frames each box in its boundary's colour and marks the hop
-where it crosses. `j` and `k` walk the members, `o` opens one, and `q` asks Claude how to
+A cycle that spans boundaries frames each box in its boundary's colour, with its names in the
+text colour, and marks the hop where it crosses. `j` and `k` walk the members, `o` opens one, and `q` asks Claude how to
 break the cycle. On a narrow pane a long cycle folds its middle into one box that unfolds
 when you open it. A component's or a file's detail is drawn the same way: what uses it
 fanning in on the left, what it uses fanning out on the right, each count on its edge.
