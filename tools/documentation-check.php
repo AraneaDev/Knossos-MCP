@@ -50,7 +50,7 @@ foreach ($paths as $path) {
     }
     // `](target)` matches links and images alike, and both halves of the nested
     // `[![alt](image)](href)` badge form. Fenced code is not prose.
-    $prose = (string) preg_replace('/^(```|~~~).*?^\1[^\n]*$/ms', '', $contents);
+    $prose = implode("\n", linesOutsideFences($contents));
     preg_match_all('/]\(([^) ]+)(?:\s+"[^"]*")?\)/', $prose, $matches);
     foreach ($matches[1] as $target) {
         $target = trim($target, '<>');
@@ -170,17 +170,8 @@ function headingSlugs(string $contents): array
 {
     $slugs = [];
     $seen = [];
-    $fence = null;
-    foreach (preg_split('/\R/', $contents) ?: [] as $line) {
-        if (preg_match('/^ {0,3}(```+|~~~+)/', $line, $opening) === 1) {
-            if ($fence === null) {
-                $fence = $opening[1][0];
-            } elseif ($opening[1][0] === $fence) {
-                $fence = null;
-            }
-            continue;
-        }
-        if ($fence !== null || preg_match('/^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/', $line, $heading) !== 1) {
+    foreach (linesOutsideFences($contents) as $line) {
+        if (preg_match('/^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/', $line, $heading) !== 1) {
             continue;
         }
         $text = (string) preg_replace('/!?\[([^]]*)]\([^)]*\)/', '$1', $heading[1]);
@@ -198,4 +189,38 @@ function headingSlugs(string $contents): array
 function relative(string $root, string $path): string
 {
     return str_replace($root . '/', '', $path);
+}
+
+/**
+ * The lines of a Markdown page that are not fenced code, by the CommonMark rules.
+ *
+ * An opener is up to three spaces of indent and a run of three or more backticks
+ * or tildes; a backtick opener's info string may not hold a backtick, which is
+ * what keeps an inline "```code``` is a thing" in prose. The closer uses the same
+ * character, is at least as long as the opener and has no info string. A fence
+ * that never closes runs to the end of the file. The fence lines are dropped too.
+ *
+ * @return list<string>
+ */
+function linesOutsideFences(string $contents): array
+{
+    $kept = [];
+    $char = null;
+    $length = 0;
+    foreach (preg_split('/\R/', $contents) ?: [] as $line) {
+        if ($char === null) {
+            if (preg_match('/^ {0,3}(`{3,}|~{3,})(.*)$/', $line, $open) === 1 && !($open[1][0] === '`' && str_contains($open[2], '`'))) {
+                $char = $open[1][0];
+                $length = strlen($open[1]);
+                continue;
+            }
+            $kept[] = $line;
+            continue;
+        }
+        if (preg_match('/^ {0,3}(`{3,}|~{3,})[ \t]*$/', $line, $close) === 1 && $close[1][0] === $char && strlen($close[1]) >= $length) {
+            $char = null;
+        }
+    }
+
+    return $kept;
 }

@@ -274,6 +274,47 @@ final class DocumentationTest extends KnossosTestCase
     }
 
     /**
+     * @return array<string, array{string, bool}> page body => whether `[bad](nope.md)` must be reported
+     */
+    public static function fenceCases(): array
+    {
+        return [
+            'inline triple backticks in prose' => ["```code``` is a thing\n[bad](nope.md)\n\n```x``` again\n", true],
+            'tilde fence hides a link' => ["~~~\n[bad](nope.md)\n~~~\n", false],
+            'indented fence hides a link' => ["- item\n\n   ```sh\n   [bad](nope.md)\n   ```\n", false],
+            'four backticks contain three' => ["````md\n```\n[bad](nope.md)\n```\n````\n", false],
+            'unclosed fence runs to the end' => ["```\n[bad](nope.md)\n", false],
+            'link after a closed fence is checked' => ["```\nx\n```\n[bad](nope.md)\n", true],
+            'a shorter closer does not end the fence' => ["````\n```\n[bad](nope.md)\n````\n[bad](nope.md)\n", true],
+        ];
+    }
+
+    #[Group('documentation')]
+    #[\PHPUnit\Framework\Attributes\DataProvider('fenceCases')]
+    public function testLinkCheckFollowsCommonMarkFences(string $body, bool $reported): void
+    {
+        [$exit, , $errors] = $this->checkDocumentationTree(['README.md' => "# Home\n\n" . $body]);
+
+        assertSame($reported ? 1 : 0, $exit, $errors);
+        if ($reported) {
+            assertContains('missing link target nope.md', $errors);
+        }
+    }
+
+    #[Group('documentation')]
+    public function testHeadingsInsideALongerFenceAreNotAnchors(): void
+    {
+        [$exit, , $errors] = $this->checkDocumentationTree([
+            'README.md' => "# Home\n\n[a](page.md#fake) [b](page.md#real)\n",
+            'page.md' => "# Page\n\n````md\n```\n## Fake\n```\n## Fake\n````\n\n## Real\n",
+        ]);
+
+        assertSame(1, $exit);
+        assertContains('missing anchor page.md#fake', $errors);
+        self::assertStringNotContainsString('page.md#real', $errors);
+    }
+
+    /**
      * A badge host must never gate the quality profile.
      *
      * mcpobservatory.com reset the connection to a GitHub runner and failed
