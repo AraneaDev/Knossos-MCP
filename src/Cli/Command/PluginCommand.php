@@ -375,6 +375,8 @@ final class PluginCommand implements CliCommand
         // Where a stale skill directory from an earlier install was moved to,
         // so a failure further down can put it back.
         $retired = [];
+        // Files an earlier install left that this one no longer ships, as they were, so a failure can put them back.
+        $pruned = [];
         try {
             foreach (self::DIRECTORIES as $directory) {
                 $path = $out . $directory;
@@ -398,6 +400,7 @@ final class PluginCommand implements CliCommand
                     $createdFiles[] = $target;
                 }
             }
+            $this->pruneUnshipped($out, $scripts, $pruned);
             // Read and rewritten rather than copied. Claude Code caches an
             // installed plugin by the version in this file, so a manifest
             // frozen at a placeholder can never be refreshed: `claude plugin
@@ -437,6 +440,7 @@ final class PluginCommand implements CliCommand
                 }
             }
         } catch (Throwable $error) {
+            $this->restorePruned($pruned);
             foreach ($retired as $original => $parked) {
                 @rename($parked, $original);
             }
@@ -449,6 +453,90 @@ final class PluginCommand implements CliCommand
         }
 
         return $existed;
+    }
+
+    /**
+     * Delete the files in the plugin's own directories that this install does not ship.
+     *
+     * An earlier release's file left in `hooks/lib/` (a module since renamed or
+     * removed) is still bundled by the engine and read by nothing, and a file
+     * there is what a person debugging the plugin reads first. Only the files
+     * directly inside the directories a plugin is made of are looked at, never
+     * their subdirectories, never the target's own root (a `--out` directory
+     * may hold anything), and never a directory that is a link or resolves
+     * outside the target. Each file's bytes are kept so a later failure can
+     * restore it.
+     *
+     * @param array<string, string> $scripts installed relative path => content
+     * @param array<string, array{link: ?string, contents: string, mode: int}> $pruned filled with each deleted file as it
+     *   was, as it is deleted, so a failure half way still knows what to put back
+     */
+    private function pruneUnshipped(string $out, array $scripts, array &$pruned): void
+    {
+        $shipped = array_flip($this->pluginFiles($scripts));
+        $base = realpath($out);
+        if ($base === false) {
+            return;
+        }
+        foreach (self::DIRECTORIES as $directory) {
+            $path = $out . $directory;
+            $resolved = realpath($path);
+            if (is_link($path) || $resolved === false || !str_starts_with($resolved . '/', $base . '/')) {
+                continue;
+            }
+            foreach (scandir($path) ?: [] as $entry) {
+                $file = $path . '/' . $entry;
+                $relative = ltrim($directory, '/') . '/' . $entry;
+                if ($entry === '.' || $entry === '..' || isset($shipped[$relative]) || (is_dir($file) && !is_link($file))) {
+                    continue;
+                }
+                $was = $this->asFound($file);
+                if (!@unlink($file)) {
+                    throw new InvalidArgumentException(sprintf('Unable to remove the stale %s.', $file));
+                }
+                $pruned[$file] = $was;
+            }
+        }
+    }
+
+    /**
+     * A file as it is now, enough to write it back: a link's target, else its bytes and mode.
+     *
+     * @return array{link: ?string, contents: string, mode: int}
+     */
+    private function asFound(string $file): array
+    {
+        if (is_link($file)) {
+            $target = readlink($file);
+            if ($target === false) {
+                throw new InvalidArgumentException(sprintf('Unable to read the stale %s.', $file));
+            }
+            return ['link' => $target, 'contents' => '', 'mode' => 0];
+        }
+        $contents = @file_get_contents($file);
+        if ($contents === false) {
+            throw new InvalidArgumentException(sprintf('Unable to read the stale %s.', $file));
+        }
+
+        return ['link' => null, 'contents' => $contents, 'mode' => fileperms($file) & 0o777];
+    }
+
+    /**
+     * Put back the files {@see pruneUnshipped()} deleted, as they were.
+     *
+     * @param array<string, array{link: ?string, contents: string, mode: int}> $pruned
+     */
+    private function restorePruned(array $pruned): void
+    {
+        foreach ($pruned as $file => $was) {
+            if ($was['link'] !== null) {
+                @symlink($was['link'], $file);
+                continue;
+            }
+            if (@file_put_contents($file, $was['contents']) !== false) {
+                @chmod($file, $was['mode']);
+            }
+        }
     }
 
     /**
