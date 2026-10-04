@@ -618,7 +618,7 @@ describe('the issues tab', () => {
     expect(text).toMatch(/◇ helper/)
     expect(text).toMatch(/Complexity hotspots +lines × dependents/)
     expect(text).toMatch(/workers\/typescript\/src\/scanner\.js .*━+ +4,986 +20/)
-    expect(text).toMatch(/Over the maintainability budget +▲ 3 functions over 205 lines/)
+    expect(text).toMatch(/Over budget +▲ 3 functions over 205 lines/)
     expect(text).toMatch(/▲ src\/Scan\/ProjectScanService\.php +2 +260/)
     expect(text).toContain('+2 not listed')
   })
@@ -853,8 +853,8 @@ describe('tables packed to the left', () => {
   })
   it('says how the budget stands when nothing is over it, or there is none', () => {
     const none = textOf(paneRows(fullInput({ tab: 'issues' }, full({ over_budget: { source: 'maintainability-budgets.json', max_function_lines: 205, total: 0, files: [] } })), 100))
-    expect(none).toMatch(/Over the maintainability budget +✓ 0 functions over 205 lines/)
-    expect(textOf(paneRows(fullInput({ tab: 'issues' }, full({ over_budget: null })), 100))).toMatch(/Over the maintainability budget +no maintainability-budgets\.json/)
+    expect(none).toMatch(/Over budget +✓ 0 functions over 205 lines/)
+    expect(textOf(paneRows(fullInput({ tab: 'issues' }, full({ over_budget: null })), 100))).toMatch(/Over budget +no maintainability-budgets\.json/)
   })
 })
 

@@ -316,6 +316,22 @@ const refused = { ...brief, status: 'not-allowed', refused_root: root, roots_fil
 /** Where the checkout stands, as the header names it: read once, as the mod reads it at start-up. */
 const GIT = envelopes.parseSessionHead(wrapper('session-head')) ?? null
 
+/** The Branch tab's comparison with the merge base, read as the mod reads it (`branch-diff`), once. */
+const BRANCH = { snapshot: dashboard.snapshot_id ?? null, phase: 'done', answer: envelopes.parseBranchDiff(wrapper('branch-diff')) }
+
+/** The finder over the pane, as after typing `dash`: the matches `graph-search` reads for it. */
+const FOUND = { query: 'dash', for: 'dash', phase: 'idle', answer: envelopes.parseGraphSearch(wrapper('graph-search', '--query=dash')) }
+
+/**
+ * The rows the latest scan lit, as after a scan moved the second and fourth
+ * hub, the first file most depended on and the cycles tile: a sample flash
+ * over real rows (the preview draws no scan).
+ */
+const FLASH = {
+  keys: [...layout.mergeRanked(dashboard).filter((_, i) => i === 1 || i === 3).map(i => `hub:${i.canonical}`), ...(dashboard.fan_in ?? []).slice(0, 1).map(f => `file:${f.path}`), 'tile:cycles', 'tile:components'],
+  until: NOW + 3_000,
+}
+
 /**
  * The Boundaries tab's marked cell spelled out, read as the mod reads it
  * (`boundary-couplings` through the wrapper), for the cell `input` marks;
@@ -329,9 +345,9 @@ function couplingsFor(input) {
 }
 
 /** The pane for a state: the view over BASE_VIEW, and what else the state holds. */
-function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null, live = LIVE, feedback = null, hover = false } = {}) {
-  const make = extras => layout.paneInput(dashboard, turn, refresh, rescan, { ...BASE_VIEW, ...view }, NOW, true, shown, allow, changes, null, live, extras)
-  const base = { git: GIT, feedback }
+function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null, live = LIVE, feedback = null, hover = false, peek = null, flash = null, search = null } = {}) {
+  const make = extras => layout.paneInput(dashboard, turn, refresh, rescan, { ...BASE_VIEW, ...view }, NOW, true, shown, allow, changes, null, live, extras, peek)
+  const base = { git: GIT, feedback, branch: BRANCH, flash, search }
   const input = make({ ...base, couplings: couplingsFor(make(base)) })
   // Sized by the pane's height too: its lists grow with the rows it has. `hover` draws the marked row's card as a resting pointer shows it.
   // As the window shows it scrolled to the top: a pane taller than its height has its footer bar over the last rows.
@@ -443,6 +459,16 @@ const VIEWS = [
   ['cycles-fold', pane({ tab: 'cycles', selected: dashboard.cycles.largest[0]?.nodes?.length ?? 0 })],
   ['cycles-second', pane({ tab: 'cycles', selected: (dashboard.cycles.largest[0]?.nodes?.length ?? 0) + 1 })],
   ['issues', pane({ tab: 'issues' })],
+  // Wide, the marked row's detail beside the list (master-detail): a hub, a changed file with its diff, an issue's file.
+  ...(detail === null ? [] : [['hubs-peek', pane({ tab: 'hubs', selected: 0 }, { peek: detail })]]),
+  ...(changedDetail === null ? [] : [['changes-peek', pane({ tab: 'changes', selected: 0 }, { turn: brief, peek: changedDetail })]]),
+  ...(detail === null ? [] : [['cycles-peek', pane({ tab: 'cycles', selected: 0 }, { peek: detail })]]),
+  ['hubs-flash', pane({ tab: 'hubs', selected: 0 }, { flash: FLASH })],
+  ['overview-flash', pane({ tab: 'overview' }, { turn: brief, flash: FLASH })],
+  ['branch', pane({ tab: 'branch' })],
+  ['branch-marked', pane({ tab: 'branch', selected: 1 })],
+  ['finder', pane({ tab: 'issues', finding: true }, { search: FOUND })],
+  ['finder-empty', pane({ tab: 'issues', finding: true }, { search: { query: '', for: null, phase: 'idle', answer: null } })],
   ['changes', pane({ tab: 'changes', selected: 1 }, { turn: brief })],
   ['changes-empty', pane({ tab: 'changes' }, { changes: layout.NO_CHANGES })],
   ...(detail === null ? [] : [['detail', pane({ tab: 'hubs' }, { shown: detail })]]),
@@ -786,11 +812,14 @@ function shrink(file) {
   if (run.status !== 0) console.error(`pane-preview: kept ${file} unshrunk (python3 with Pillow is needed to shrink it): ${run.stderr}`)
 }
 
-/** The README's screenshots: view, theme, and the window's title. One width for all of them. */
+/** The README's screenshots: view, theme and, for a wide layout, its width; every other shot is one width. */
 const README_COLUMNS = 100
 const README_SHOTS = [
   ['overview', 'dark'],
   ['changes', 'dark'],
+  ['hubs-peek', 'dark', 160],
+  ['branch', 'dark'],
+  ['finder', 'dark'],
   ['boundaries-cell', 'dark'],
   ['cycles', 'dark'],
   ['detail', 'dark'],
@@ -806,13 +835,13 @@ const written = []
 if (README) {
   const draws = new Map(VIEWS)
   const project = baseName(dashboard.project_root ?? PROJECT)
-  for (const [name, themeName] of README_SHOTS) {
+  for (const [name, themeName, columns = README_COLUMNS] of README_SHOTS) {
     if (only !== null && !only.has(name)) continue
     const draw = draws.get(name)
     if (draw === undefined) continue
     const file = join(OUT, `${name}-${themeName}.png`)
     const title = name === 'band-prompt' ? `claude · ${project}` : `/knossos · ${project}`
-    png(framedSvg(screen(draw(README_COLUMNS), themeName, README_COLUMNS), README_COLUMNS, themeName, title), file, 2)
+    png(framedSvg(screen(draw(columns), themeName, columns), columns, themeName, title), file, 2)
     shrink(file)
     written.push(file)
   }

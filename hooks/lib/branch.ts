@@ -179,7 +179,7 @@ export function branchArrangement(input: BranchInput, selected: number, hues: Hu
   offsets.push(offsets[3]! + (input.dead?.items.length ?? 0))
   const crossing = listBlock('crossing', 'New cross-boundary dependencies', input.crossing, offsets[0]!, selected, (i, n, columns) => {
     const half = Math.max(8, Math.floor((columns - 7) / 2))
-    return itemRow(`crossing-${n}`, offsets[0]! + n === selected, { text: '⇄', dim: true }, [...named(i.source, `row:${offsets[0]! + n}`, half, hues), { text: ' → ', dim: true }, ...chip(i.target.boundary, hues), { text: ` ${fit(i.target.name, Math.max(1, columns - half - 8 - cells(i.target.boundary ?? '')))}` }], columns)
+    return itemRow(`crossing-${n}`, offsets[0]! + n === selected, { text: ' ' }, [...named(i.source, `row:${offsets[0]! + n}`, half, hues), { text: ' → ', dim: true }, ...chip(i.target.boundary, hues), { text: ` ${fit(i.target.name, Math.max(1, columns - half - 8 - cells(i.target.boundary ?? '')))}` }], columns)
   })
   const cycles = listBlock('branch-cycles', 'New cycles', input.cycles, offsets[1]!, selected, (c, n, columns) => {
     const first = c.members[0]
@@ -192,7 +192,7 @@ export function branchArrangement(input: BranchInput, selected: number, hues: Hu
     const delta = `+${grouped(h.after - h.before)}`
     const room = Math.max(8, columns - 3 - cells(figures) - cells(delta) - 3)
     const name = named(h.component, `row:${offsets[2]! + n}`, room, hues)
-    return itemRow(`grown-${n}`, offsets[2]! + n === selected, { text: '◎', dim: true }, [...name, { text: spaces(room - segmentsWidth(name) + 1) }, { text: figures, dim: true }, { text: ' ' }, { text: delta, color: STATUS_COLOURS.warn }], columns)
+    return itemRow(`grown-${n}`, offsets[2]! + n === selected, { text: ' ' }, [...name, { text: spaces(room - segmentsWidth(name) + 1) }, { text: figures, dim: true }, { text: ' ' }, { text: delta, color: STATUS_COLOURS.warn }], columns)
   })
   const dead = listBlock('branch-dead', 'New dead code', input.dead, offsets[3]!, selected, (d, n, columns) => {
     const place = d.place === '' ? [] : [{ text: '  ' }, { text: fit(d.place, Math.max(4, Math.floor(columns / 3))), dim: true, ...(d.loc === null ? {} : { link: d.loc }) }]

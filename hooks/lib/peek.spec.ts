@@ -82,3 +82,22 @@ describe('cards fill their height', () => {
     }
   })
 })
+
+describe('spare height on the Overview', () => {
+  const rich = { ...d, complexity_hotspots: Array.from({ length: 20 }, (_, i) => ({ path: `src/deep/dir/Big${i}.php`, language: 'php', lines: 900 - i, dependent_files: 12, score: (900 - i) * 12 })), fan_in: Array.from({ length: 20 }, (_, i) => ({ path: `src/Hot${i}.php`, dependent_files: 90 - i, boundaries: [], boundary: null })) }
+  const overview = (columns: number, height: number) => paneLayout(pane(view({ tab: 'overview' }), null, rich), columns, height).body
+  it('goes to the riskiest and the most depended-on files when they fit, never past the pane', () => {
+    for (const columns of [100, 140, 200]) {
+      const tall = overview(columns, 80)
+      expect(tall.some(r => r.key.includes('hotspots-head')), `${columns}`).toBe(true)
+      expect(tall.some(r => r.key.includes('files-head')), `${columns}`).toBe(true)
+      for (const height of [24, 40, 80]) expect(overview(columns, height).length, `${columns}x${height}`).toBeLessThanOrEqual(Math.max(height, 40))
+    }
+    // A short pane keeps its charts and leaves them out.
+    expect(overview(100, 24).some(r => r.key.includes('hotspots-head'))).toBe(false)
+    // Rows a person follows by clicking (a link to the file), never walked by the marker.
+    const row = overview(200, 80).find(r => r.key.includes('hotspots-0'))!
+    expect(row.segments.some(s => s.link !== undefined)).toBe(true)
+    expect(row.segments.some(s => s.press !== undefined)).toBe(false)
+  })
+})

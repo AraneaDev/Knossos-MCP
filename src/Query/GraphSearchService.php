@@ -15,10 +15,11 @@ use PDO;
  * Candidates are read with one bounded `LIKE` per kind of thing, each at most
  * {@see self::CANDIDATES} rows, then ranked here: the whole name, then the
  * name's start, then a run inside the name, then a run anywhere in the full
- * name or path, then the scattered letters, the fewest gaps first; shorter
- * names before longer, then by name, so the order is stable. External
- * symbols (a vendor class, a built-in) are left out: they have no place to
- * open.
+ * name or path, then the scattered letters, the fewest gaps first; among
+ * equals a type before a function or member and a component before a file,
+ * then shorter names before longer, then by name, so the order is stable.
+ * External symbols (a vendor class, a built-in) are left out: they have no
+ * place to open.
  *
  * Read-only, never scans; `truncated` says a list may have missed a match
  * because a candidate read stopped at its bound.
@@ -63,7 +64,7 @@ final readonly class GraphSearchService
         [$components, $cutComponents] = $this->components($id, $needle);
         [$files, $cutFiles] = $this->files($id, $needle);
         $ranked = [...$components, ...$files];
-        usort($ranked, static fn(array $a, array $b): int => [$b['score'], mb_strlen($a['name']), $a['order'], $a['name']] <=> [$a['score'], mb_strlen($b['name']), $b['order'], $b['name']]);
+        usort($ranked, static fn(array $a, array $b): int => [$b['score'], $a['order'], mb_strlen($a['name']), $a['name']] <=> [$a['score'], $b['order'], mb_strlen($b['name']), $b['name']]);
         $results = array_slice($ranked, 0, self::LIMIT);
         $labels = BoundaryLabels::load($this->pdo, $id);
         $nodeLabels = $labels->forNodes(array_values(array_filter(array_column($results, 'id'))));

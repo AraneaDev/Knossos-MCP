@@ -1019,9 +1019,46 @@ function overviewArrangement(input: PaneInput, selected: number, tier: Tier): Ar
   const present = (blocks: (Block | null)[]): Block[] => blocks.filter((b): b is Block => b !== null)
   // A card with nothing to show is one line: it stands on a row of its own rather than beside a card it cannot match in height.
   const quiet = data.flows.length === 0
-  const rows = [[sessionCard], present([composition, concentration]), present([health, ...(quiet ? [] : [flows])]), ...(quiet ? [[flows]] : [])].filter(line => line.length > 0)
-  return { top: tiles, left: [], rows, split: 0.5, order: [...tiles, sessionCard, ...present([composition, concentration, health, flows])] }
+  const rows: Block[][] = [[sessionCard], present([composition, concentration]), present([health, ...(quiet ? [] : [flows])]), ...(quiet ? [[flows]] : [])].filter(line => line.length > 0)
+  // A tall pane's spare rows go to the files a change is riskiest in and the files most depended on, rather than to blank space.
+  const extra = present([spotsBlock(input), topFilesBlock(input)])
+  return { top: tiles, left: [], rows, split: 0.5, order: [...tiles, sessionCard, ...present([composition, concentration, health, flows])], ...(extra.length > 0 ? { extra: [extra] } : {}) }
 }
+
+/** The fewest rows a secondary list on the Overview shows when it shows at all. */
+const SECONDARY_MIN = 3
+
+/**
+ * A secondary list of files on the Overview: each file's path in two tones
+ * (a link that opens it), a bar and its figures. Not walked by the marker:
+ * it shows only when the pane has room to spare, and the walk must not
+ * depend on the height. Null with nothing to list.
+ */
+function fileListBlock(key: string, title: string, note: string, files: { path: string; values: number[]; bar: number; loc: Loc | null }[], titles: string[], tier: Tier, hues: Hues): Block | null {
+  if (files.length === 0) return null
+  return {
+    key,
+    grow: { length: files.length, min: SECONDARY_MIN },
+    make: (columns, limit) => {
+      const window = windowOf(files.length, limit)
+      const shown = files.slice(0, window.end)
+      const spec = tableSpec(columns, shown.map(f => f.path), [], titles.map((t, i) => numberWidth(t, shown.map(f => f.values[i] ?? 0), tier)), 56, { tier })
+      const max = Math.max(0, ...files.map(f => f.bar))
+      const body: Row[] = [tableHead(`${key}-cols`, spec, { name: 'file', boundary: '', numbers: titles })]
+      shown.forEach((f, i) => body.push(tableRow(`${key}-${i}`, { name: f.path, boundary: null, values: f.values, barValue: f.bar, max, path: true, link: f.loc }, spec, hues)))
+      body.push(...moreRows(`${key}-window`, window, files.length, columns))
+      return { key, title, note: noteOf(note), body }
+    },
+  }
+}
+
+/** The Overview's secondary card of complexity hotspots (as Issues lists them). */
+const spotsBlock = (input: PaneInput): Block | null =>
+  fileListBlock('hotspots', 'Complexity hotspots', 'lines × dependents', input.issues.hotspots.map(f => ({ path: f.path, values: [f.lines, f.dependents], bar: f.score, loc: f.loc })), ['lines', 'deps'], 'medium', input.hues)
+
+/** The Overview's secondary card of the files most depended on (as Hubs lists them). */
+const topFilesBlock = (input: PaneInput): Block | null =>
+  fileListBlock('files', 'Files most depended on', 'dependent files', input.fileHubs.map(f => ({ path: f.path, values: [f.dependents], bar: f.dependents, loc: f.loc })), ['deps'], 'medium', input.hues)
 
 /**
  * The pane laid out: its rows from the header down (`body`) and the footer
@@ -1070,7 +1107,7 @@ export function paneLayout(input: PaneInput, columns: number, height: number = D
   const room = () => height - rows.length - footer.length - help.length
   if (input.finder !== null) {
     // The finder stands in for the tab or the detail while it is open; closing it puts them back as they were.
-    rows.push(...fitBlocks([finderBlock(input.finder, selected, tier, input.hues)], width, tier, room()))
+    rows.push(...fillColumn(fitBlocks([finderBlock(input.finder, selected, tier, input.hues)], width, tier, room()), width, room(), tier))
   } else if (input.detail !== null) {
     rows.push(...arrange(detailOf(input.detail, tier, input.hues, selected), width, room(), true))
   } else {
@@ -1124,7 +1161,7 @@ function peekShown(input: PaneInput, tier: Tier): DetailInput | null {
  * what the panel lists, not what the tab lists), and no marker of its own.
  */
 function peekRows(peek: DetailInput, width: number, height: number, hues: Hues): Row[] {
-  const rows = arrange(detailOf(peek, PANEL, hues, -1), width, height, true, PANEL)
+  const rows = arrange(detailOf({ ...peek, panel: true }, PANEL, hues, -1), width, height, true, PANEL)
   return rows.map(row => ({ ...row, key: `peek-${row.key}`, segments: row.segments.map(seg => (seg.press !== undefined && /^(rel|row):\d+$/.test(seg.press.id) ? { ...seg, press: { ...seg.press, id: `peek:${seg.press.id.slice(seg.press.id.indexOf(':') + 1)}` } } : seg)) }))
 }
 

@@ -303,7 +303,18 @@ export function fitBlocks(blocks: Block[], width: number, tier: Tier, budget: nu
  * one side. Narrower: one column, in `order` when given, else top, left,
  * right, float, bottom.
  */
-export type Arrangement = { top?: Block[]; left: Block[]; right?: Block[]; float?: Block[]; bottom?: Block[]; order?: Block[]; split?: number; rows?: Block[][] }
+export type Arrangement = {
+  top?: Block[]
+  left: Block[]
+  right?: Block[]
+  float?: Block[]
+  bottom?: Block[]
+  order?: Block[]
+  split?: number
+  rows?: Block[][]
+  /** Secondary cards for a pane with height to spare: laid out after the rest only when they fit at their fewest rows, else left out. */
+  extra?: Block[][]
+}
 
 /** The most floating cards balanced by trying every way to place them: two to the power of this many layouts. */
 const FLOAT_MAX = 4
@@ -401,10 +412,17 @@ export function gridRows(grid: Block[][], width: number, tier: Tier, budget: num
       })
     }
   }
-  // Filling the height: the last row of cards takes what is left, so the cards end at the pane's foot rather than above blank space.
+  // Filling the height: the rows of cards side by side share what is left evenly (the last one alone when there are none),
+  // so the cards end at the pane's foot rather than above blank space, and no one row stands hollow.
   const spare = fill ? Math.max(0, budget - total()) : 0
+  const sharing = placed.map((p, n) => n).filter(n => placed[n]!.line.length > 1)
+  const takers = sharing.length > 0 ? sharing : [placed.length - 1]
+  const share = (n: number): number => {
+    const at = takers.indexOf(n)
+    return at < 0 ? 0 : Math.floor(spare / takers.length) + (at < spare % takers.length ? 1 : 0)
+  }
   return placed.flatMap((p, n) => {
-    const height = lineHeight(starts[n]!, p.line.length) + (n === placed.length - 1 ? spare : 0)
+    const height = lineHeight(starts[n]!, p.line.length) + share(n)
     const cards = p.line.map((block, j) => stretched(rowsOf(starts[n]! + j), p.widths[j]!, height, tier, block.key))
     let joined = cards[0]!
     let used = p.widths[0]!
@@ -438,6 +456,23 @@ export function fillColumn(rows: Row[], width: number, height: number, tier: Tie
  * a tier other than its width's (a panel of a wider pane keeps its frames).
  */
 export function arrange(arrangement: Arrangement, width: number, budget: number, fill = false, as?: Tier): Row[] {
+  const extra = arrangement.extra ?? []
+  if (extra.length > 0) {
+    // With the secondary cards when they fit the budget at their fewest rows; the rest of the arrangement as it would be without them.
+    const plain = { ...arrangement, extra: [] }
+    const without = arrange(plain, width, budget, false, as)
+    // A card at its fewest rows: its top edge, its list, its bottom edge; a blank row before each card (each grid row, wide).
+    const fewest = (b: Block): number => {
+      const tier = as ?? tierOf(width)
+      const section = b.make(cardInner(width, tier), b.grow === undefined ? 0 : Math.min(b.grow.min, b.grow.length))
+      return section === null ? 0 : cardRows(section, width, tier).length
+    }
+    const wideGrid = (as ?? tierOf(width)) === 'wide' && arrangement.rows !== undefined
+    const least = wideGrid ? extra.reduce((n, line) => n + 1 + Math.max(0, ...line.map(fewest)), 0) : extra.flat().reduce((n, b) => n + 1 + fewest(b), 0)
+    const withExtra = wideGrid ? { ...plain, rows: [...(arrangement.rows ?? []), ...extra] } : { ...plain, order: [...(arrangement.order ?? [...(arrangement.top ?? []), ...arrangement.left, ...(arrangement.right ?? []), ...(arrangement.float ?? []), ...(arrangement.bottom ?? [])]), ...extra.flat()] }
+    if (without.length + least <= budget) return arrange(withExtra, width, budget, fill, as)
+    return fill ? arrange(plain, width, budget, fill, as) : without
+  }
   const tier = as ?? tierOf(width)
   const top = arrangement.top ?? []
   if (tier === 'wide' && arrangement.rows !== undefined) {

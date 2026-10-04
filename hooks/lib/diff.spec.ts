@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DiffState, Inspected, SessionDiff } from '../../types'
-import { diffView, folded, HUNK_LINES, hunkSource, HUNKS_SHOWN, LINE_MAX, parseHunks } from './diff'
+import { diffSection, diffView, folded, HUNK_LINES, hunkSource, HUNKS_SHOWN, LINE_MAX, parseHunks } from './diff'
 import type { DiffView } from './diff'
 import { parseSessionDiff, parseSessionRev } from './envelopes'
 import { diffRows, fileDetailRows } from './__tests__/tabs'
@@ -155,5 +155,19 @@ describe('the envelopes', () => {
     expect(parseSessionRev(JSON.stringify({ status: 'ok', rev: 'HEAD; rm -rf /' }))).toBeNull()
     expect(parseSessionRev('{"status":"no-binary"}')).toBeNull()
     expect(parseSessionRev('')).toBeNull()
+  })
+})
+
+describe('a change drawn in a panel', () => {
+  it('is text rows in the added and removed colours, no diff element, folded shorter, within the width', () => {
+    const view = { phase: 'diff' as const, path: 'a.ts', added: 30, removed: 1, renamed: null, truncated: false, hunks: Array.from({ length: 6 }, (_, h) => ({ oldStart: 10 * h + 1, newStart: 10 * h + 1, heading: 'function f()', lines: [' keep', '-gone', ...Array.from({ length: 20 }, (_, i) => `+added line ${i} with\ta tab`)] })) }
+    const section = diffSection(view, 40, true)
+    expect(section.body.some(r => r.code !== undefined)).toBe(false)
+    for (const r of section.body) expect(r.segments.reduce((n, s) => n + [...s.text].length, 0)).toBeLessThanOrEqual(40)
+    expect(section.body.find(r => r.key === 'diff-hunk-0-1')?.segments[0]).toMatchObject({ text: '− gone', color: 'diffRemovedWord' })
+    expect(section.body.find(r => r.key === 'diff-hunk-0-2')?.segments[0]?.color).toBe('diffAddedWord')
+    expect(section.body.find(r => r.key === 'diff-hunk-0-head')?.segments[0]?.text).toBe('@@ −1 +1 @@ function f()')
+    expect(section.body.map(r => r.key)).toContain('diff-more-0')
+    expect(section.body.map(r => r.key)).toContain('diff-hunks-more')
   })
 })

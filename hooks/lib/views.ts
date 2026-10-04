@@ -111,6 +111,8 @@ export type DetailInput = {
   file?: FileView | null
   /** A changed file's change since the session began, shown below its dependents; absent when it was not opened as a change. */
   diff?: DiffView | null
+  /** Drawn in a panel beside a list (master-detail): its change as text rows, the engine's diff element being the pane's width. */
+  panel?: true
 }
 
 /** One file's detail as the pane draws it; `loc` places each file (and component) on disk. */
@@ -428,7 +430,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
     key: 'budget',
     grow: { length: budget?.files.length ?? 0, min: ISSUES_MIN },
     make: (columns, limit) => {
-      const title = 'Over the maintainability budget'
+      const title = 'Over budget'
       if (budget === undefined) return { key: 'budget', title, note: noteOf('not reported'), body: [], empty: 'not reported' }
       if (budget === null) return { key: 'budget', title, note: [{ text: 'no maintainability-budgets.json', dim: true }], body: [], empty: 'none' }
       const rule = `functions over ${budget.max} lines`
@@ -497,7 +499,7 @@ function sideSection(prefix: string, side: Side, offset: number, columns: number
  */
 export function detailArrangement(detail: DetailInput, tier: Tier, hues: Hues = NO_HUES, selected = -1): Arrangement {
   const c = detail.component
-  const diff = detail.diff ? [diffBlock(detail.diff)] : []
+  const diff = detail.diff ? [diffBlock(detail.diff, detail.panel === true)] : []
   if (c === null) {
     const lines = detail.loading ? [`Inspecting ${detail.label}…`] : (detail.messages ?? [])
     const head: Block = {

@@ -109,7 +109,7 @@ const LIST_MIN = 5
  */
 export function fileDetailArrangement(detail: DetailInput, tier: Tier, hues: Hues = NO_HUES, selected = -1): Arrangement {
   const f = detail.file ?? null
-  const diff = detail.diff ? [diffBlock(detail.diff)] : []
+  const diff = detail.diff ? [diffBlock(detail.diff, detail.panel === true)] : []
   if (f === null) {
     const lines = detail.loading ? [`Reading what depends on ${detail.label}…`] : (detail.messages ?? [])
     const head: Block = {
