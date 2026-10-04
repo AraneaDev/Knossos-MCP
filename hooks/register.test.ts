@@ -2149,10 +2149,10 @@ describe('knossos mod', () => {
         await ui.press({ key: 'tab:hubs' })
         const grid = (await ui.findAll({ type: 'Box' })).some(b => typeof b.key === 'string' && b.key.includes('|'))
         expect(grid, `${surface} ${bodyColumns}`).toBe(bodyColumns > 130)
-        // Framed from 80 columns on, a light top rule below; wide, the files' card stands right in the grid.
-        const keyed = (await ui.findAll({ type: 'Box' })).find(b => typeof b.key === 'string' && (bodyColumns > 130 ? b.key.endsWith('|files-head') : b.key === 'hubs-head'))
+        // Framed from 80 columns on, a light top rule below; wide, the list and the marked row's detail side by side, each framed.
+        const keyed = (await ui.findAll({ type: 'Box' })).find(b => typeof b.key === 'string' && (bodyColumns > 130 ? b.key.startsWith('hubs-head|peek-') : b.key === 'hubs-head'))
         const text = keyed?.text ?? ''
-        const head = bodyColumns > 130 ? text.slice(text.lastIndexOf('╭─ ')) : text
+        const head = text
         expect(head.startsWith(bodyColumns >= 80 ? '╭─ ' : '── '), `${surface} ${bodyColumns}: ${head}`).toBe(true)
         await ui.unmount()
       }
@@ -3261,14 +3261,54 @@ describe('knossos mod', () => {
       const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 200, scroll: { offset: 0, bodyRows: 40 } } })
       await ui.press({ key: 'tab:hubs' })
       const boxes = await ui.findAll({ type: 'Box' })
-      expect(boxes.some(b => typeof b.key === 'string' && b.key.endsWith('|files-head'))).toBe(true)
-      // Wide, the components' table adds the files depending on each and where it is declared.
+      // Wide, the list stands beside the marked row's detail: the files under the components, the detail framed beside them.
+      expect(boxes.some(b => typeof b.key === 'string' && b.key.startsWith('files-head|'))).toBe(true)
       const head = boxes.find(b => typeof b.key === 'string' && b.key.startsWith('hub-head|'))
-      expect(head?.text).toMatch(/in +out +cross +files +where +/)
+      expect(head?.text).toMatch(/in +out +cross +where +/)
       await ui.press({ key: 'row:12' })
       await w.clock.settle()
       expect(titled(drawn((await ui.find({ key: 'detail' }))?.text ?? ''))).toMatch(/Dependencies · used by/)
       await ui.press({ key: 'back' })
+      await ui.unmount()
+    }
+  })
+
+  test('wide, the marked row shows its detail beside the list: looked up after the marker settles, never on a narrower pane', async ($, on) => {
+    const hubs = Array.from({ length: 6 }, (_, i) => ({ name: `Hub${i}`, canonical_name: `App\\Hub${i}`, kind: 'class', in_degree: 300 - i, out_degree: i, cross_boundary_degree: 0, path: `src/Hub${i}.php`, line: 3 }))
+    const w = world(on, { dashboard: [{ stdout: paneDashboard({ hubs, hotspots: [] }) }], detail: [{ stdout: fullDetailOf('Hub1') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      // Medium: the marker moves, nothing is looked up until a row is opened.
+      const narrow = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 120, scroll: { offset: 0, bodyRows: 40 } } })
+      await narrow.press({ key: 'tab:hubs' })
+      const before = w.detailRuns().length
+      await narrow.press({ key: 'down' })
+      await w.clock.advance(500)
+      await w.clock.settle()
+      expect(w.detailRuns()).toHaveLength(before)
+      expect((await narrow.findAll({ type: 'Box' })).some(b => typeof b.key === 'string' && b.key.includes('peek-'))).toBe(false)
+      await narrow.unmount()
+      // Wide: three quick moves are one lookup, of the row the marker rests on, drawn beside the list.
+      const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 200, scroll: { offset: 0, bodyRows: 40 } } })
+      await ui.press({ key: 'tab:overview' })
+      await ui.press({ key: 'tab:hubs' })
+      const start = w.detailRuns().length
+      await ui.press({ key: 'down' })
+      await ui.press({ key: 'down' })
+      await ui.press({ key: 'up' })
+      await w.clock.advance(300)
+      await w.clock.settle()
+      expect(w.detailRuns().slice(start).map(r => r.at(-1))).toEqual(['App\\Hub1'])
+      const boxes = await ui.findAll({ type: 'Box' })
+      expect(boxes.some(b => typeof b.key === 'string' && b.key.includes('|peek-detail-head'))).toBe(true)
+      // Still the tab, not a detail: the way back is not offered; a press in the panel opens its row as the detail.
+      expect(await ui.find({ key: 'back' })).toBeUndefined()
+      await ui.press({ key: 'peek:0' })
+      await w.clock.settle()
+      expect(await ui.find({ key: 'back' })).toBeDefined()
+      await ui.press({ key: 'back' })
+      await ui.press({ key: 'tab:overview' })
       await ui.unmount()
     }
   })

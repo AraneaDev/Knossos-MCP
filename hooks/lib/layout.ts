@@ -60,7 +60,7 @@ import type { Flash } from './flash'
 import { cycleSteps, cyclesArrangement, cyclesInput, cyclesList, unfoldPress } from './cycles'
 import type { CyclesInput } from './cycles'
 import { detailArrangement, detailList, issueCount, issuesArrangement, issuesInput, issuesList, locIn, superscript } from './views'
-import { arrange, cardInner, DEFAULT_ROWS, fitBlocks, moreRows, noteOf, windowOf } from './cards'
+import { arrange, besideRows, cardInner, DEFAULT_ROWS, fillColumn, fitBlocks, gridColumns, moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
 import type { DetailInput, IssuesInput, Openable } from './views'
 
@@ -163,6 +163,8 @@ export type PaneInput = {
   finder: FinderInput | null
   /** The Branch tab: the branch against the snapshot at its merge base. */
   branch: BranchInput
+  /** The marked row's detail, drawn beside the tab on a wide pane (master-detail); null when there is none to show. */
+  peek: DetailInput | null
 }
 
 /** A refused root the pane offers to allow: the root, the roots file it would join, and where the action stands. */
@@ -406,6 +408,7 @@ export function paneInput(
   sessionRoot: string | null = null,
   live: LiveState = LIVE_OFF,
   extras: PaneExtras = {},
+  peek: DetailInput | null = null,
 ): PaneInput {
   const items = mergeRanked(d)
   const summary = summaryParts(d, items.length)
@@ -457,6 +460,7 @@ export function paneInput(
     lit,
     finder: view.finding === true && extras.search !== undefined && extras.search !== null ? finderInput(extras.search, d.project_root) : null,
     branch: branchInput(extras.branch ?? null, d.project_root),
+    peek,
   }
 }
 
@@ -1068,8 +1072,7 @@ export function paneLayout(input: PaneInput, columns: number, height: number = D
     // The finder stands in for the tab or the detail while it is open; closing it puts them back as they were.
     rows.push(...fitBlocks([finderBlock(input.finder, selected, tier, input.hues)], width, tier, room()))
   } else if (input.detail !== null) {
-    const detail = input.detail
-    rows.push(...arrange(detail.file === undefined ? detailArrangement(detail, tier, input.hues, selected) : fileDetailArrangement(detail, tier, input.hues, selected), width, room()))
+    rows.push(...arrange(detailOf(input.detail, tier, input.hues, selected), width, room(), true))
   } else {
     // Listed under the tabs, the drifted files hold the marker; the tab below shows none. They take a third of the room.
     const drift = input.drift
@@ -1078,13 +1081,56 @@ export function paneLayout(input: PaneInput, columns: number, height: number = D
       rows.push(...fitBlocks([{ key: 'drift', grow: { length: drift.items.length, min }, make: (cards, limit) => driftSection(drift, cards, limit, input.hues, selected) }], width, tier, 0))
     }
     const tabSelected = input.driftOpen ? -1 : selected
-    rows.push(...arrange(tabArrangement(input, tabSelected, tier), width, room()))
+    const peek = input.driftOpen ? null : peekShown(input, tier)
+    if (peek === null) {
+      rows.push(...arrange(tabArrangement(input, tabSelected, tier), width, room(), true))
+    } else {
+      // Wide, master-detail: the tab on the left, the marked row's detail beside it, both to the pane's foot.
+      // Each panel is one framed column, as a medium pane draws it, whatever its own width.
+      const [left, right] = gridColumns(width, PEEK_SPLIT)
+      const height = Math.max(0, room())
+      const master = fillColumn(arrange(tabArrangement(input, tabSelected, PANEL), left, height, true, PANEL), left, height, PANEL, 'stretch-m')
+      const detail = fillColumn(peekRows(peek, right, height, input.hues), right, master.length, PANEL, 'stretch-d')
+      rows.push(...besideRows(master.length >= detail.length ? master : fillColumn(master, left, detail.length, PANEL, 'stretch-m'), detail, left))
+    }
   }
   if (help.length > 0) rows.push(blank('gap-help'), ...help)
   const body = rows.map(row => (row.code !== undefined || rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))
   const fill = height - body.length - footer.length
   if (fill >= 0) return { body: [...body, ...Array.from({ length: fill }, (_, i) => blank(`fill-${i}`))], footer, pinned: false }
   return { body, footer, pinned: true }
+}
+
+/** The tabs whose marked row shows its detail beside the list on a wide pane. */
+export const PEEK_TABS: readonly PaneTab[] = ['hubs', 'changes', 'issues', 'cycles', 'branch']
+/** The list's share of a wide pane beside the marked row's detail. */
+const PEEK_SPLIT = 0.55
+/** How each panel of master-detail is laid out: one column of framed cards. */
+const PANEL: Tier = 'medium'
+
+/** A component's or a file's detail arrangement. */
+const detailOf = (detail: DetailInput, tier: Tier, hues: Hues, selected: number): Arrangement =>
+  detail.file === undefined ? detailArrangement(detail, tier, hues, selected) : fileDetailArrangement(detail, tier, hues, selected)
+
+/** The detail drawn beside the tab: on a wide pane, on a tab that has one, while the finder is shut and something is marked. */
+function peekShown(input: PaneInput, tier: Tier): DetailInput | null {
+  if (tier !== 'wide' || input.peek === null || input.finder !== null || !PEEK_TABS.includes(input.tab)) return null
+  return input.peek
+}
+
+/**
+ * The marked row's detail as the panel beside the tab draws it: the detail's
+ * own cards at the panel's width, its presses renamed `peek:N` (they open
+ * what the panel lists, not what the tab lists), and no marker of its own.
+ */
+function peekRows(peek: DetailInput, width: number, height: number, hues: Hues): Row[] {
+  const rows = arrange(detailOf(peek, PANEL, hues, -1), width, height, true, PANEL)
+  return rows.map(row => ({ ...row, key: `peek-${row.key}`, segments: row.segments.map(seg => (seg.press !== undefined && /^(rel|row):\d+$/.test(seg.press.id) ? { ...seg, press: { ...seg.press, id: `peek:${seg.press.id.slice(seg.press.id.indexOf(':') + 1)}` } } : seg)) }))
+}
+
+/** The rows the detail beside the tab lists, which its `peek:N` presses open. */
+export function peekList(peek: DetailInput): Openable[] {
+  return peek.file === undefined ? detailList(peek) : peek.file === null ? [] : fileDetailList(peek.file)
 }
 
 /** A pane this many rows tall or shorter keeps its header tight: no blank rows around it. */

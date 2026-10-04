@@ -370,7 +370,7 @@ function stretched(rows: Row[], width: number, height: number, tier: Tier, key: 
  * {@link fitBlocks} shares it, one row at a time each while the whole fits;
  * a list beside a taller card grows for free up to that card's height.
  */
-export function gridRows(grid: Block[][], width: number, tier: Tier, budget: number, split?: number): Row[] {
+export function gridRows(grid: Block[][], width: number, tier: Tier, budget: number, split?: number, fill = false): Row[] {
   const placed = grid.filter(line => line.length > 0).map(line => ({ line, widths: line.length === 2 && split !== undefined ? gridColumns(width, split) : equalColumns(width, line.length) }))
   const blocks = placed.flatMap(p => p.line.map((block, i) => ({ block, width: p.widths[i]! })))
   const limits = blocks.map(({ block }) => (block.grow === undefined ? 0 : Math.min(block.grow.min, block.grow.length)))
@@ -401,8 +401,10 @@ export function gridRows(grid: Block[][], width: number, tier: Tier, budget: num
       })
     }
   }
+  // Filling the height: the last row of cards takes what is left, so the cards end at the pane's foot rather than above blank space.
+  const spare = fill ? Math.max(0, budget - total()) : 0
   return placed.flatMap((p, n) => {
-    const height = lineHeight(starts[n]!, p.line.length)
+    const height = lineHeight(starts[n]!, p.line.length) + (n === placed.length - 1 ? spare : 0)
     const cards = p.line.map((block, j) => stretched(rowsOf(starts[n]! + j), p.widths[j]!, height, tier, block.key))
     let joined = cards[0]!
     let used = p.widths[0]!
@@ -414,14 +416,34 @@ export function gridRows(grid: Block[][], width: number, tier: Tier, budget: num
   })
 }
 
-/** The rows of `arrangement` at `width`, its lists sized to `budget` rows. */
-export function arrange(arrangement: Arrangement, width: number, budget: number): Row[] {
-  const tier = tierOf(width)
+/**
+ * A column of cards stretched to `height` rows: its last card grows (blank
+ * rows inside its frame, before its bottom edge) so the column ends at the
+ * height rather than above blank space. A frameless (narrow) column gets
+ * blank rows after it. Taller already, it is left as it is.
+ */
+export function fillColumn(rows: Row[], width: number, height: number, tier: Tier, key = 'stretch'): Row[] {
+  if (rows.length >= height || rows.length === 0) return rows
+  const last = rows[rows.length - 1]!
+  const framed = tier !== 'narrow' && last.key.endsWith('-end') && !last.key.includes('|')
+  if (!framed) return [...rows, ...Array.from({ length: height - rows.length }, (_, i): Row => blankRow(`${key}-${i}`))]
+  const fill = Array.from({ length: height - rows.length }, (_, i): Row => ({ key: `${key}-${i}`, segments: [{ text: '│', color: FRAME }, { text: spaces(width - 2) }, { text: '│', color: FRAME }] }))
+  return [...rows.slice(0, -1), ...fill, last]
+}
+
+/**
+ * The rows of `arrangement` at `width`, its lists sized to `budget` rows.
+ * With `fill`, the cards stretch to end at the budget: the last row of a
+ * grid grows, and so does the last card of each column. `as` lays it out at
+ * a tier other than its width's (a panel of a wider pane keeps its frames).
+ */
+export function arrange(arrangement: Arrangement, width: number, budget: number, fill = false, as?: Tier): Row[] {
+  const tier = as ?? tierOf(width)
   const top = arrangement.top ?? []
   if (tier === 'wide' && arrangement.rows !== undefined) {
     const above = fitBlocks(top, width, tier, 0)
     const below = fitBlocks(arrangement.bottom ?? [], width, tier, 0)
-    return [...above, ...gridRows(arrangement.rows, width, tier, budget - above.length - below.length, arrangement.split), ...below]
+    return [...above, ...gridRows(arrangement.rows, width, tier, budget - above.length - below.length, arrangement.split, fill && below.length === 0), ...below]
   }
   const right = arrangement.right ?? []
   const float = arrangement.float ?? []
@@ -429,7 +451,8 @@ export function arrange(arrangement: Arrangement, width: number, budget: number)
   // Two columns need two cards to stand side by side: a floating card can fill either column.
   const sides = arrangement.left.length + right.length + float.length
   if (tier !== 'wide' || sides < 2 || right.length + float.length === 0 || arrangement.left.length + float.length === 0) {
-    return fitBlocks(arrangement.order ?? [...top, ...arrangement.left, ...right, ...float, ...bottom], width, tier, budget)
+    const stacked = fitBlocks(arrangement.order ?? [...top, ...arrangement.left, ...right, ...float, ...bottom], width, tier, budget)
+    return fill ? fillColumn(stacked, width, budget, tier) : stacked
   }
   // Cards across the pane take what they need; the columns share what is left, each on its own.
   const above = fitBlocks(top, width, tier, 0)
@@ -437,7 +460,10 @@ export function arrange(arrangement: Arrangement, width: number, budget: number)
   const room = budget - above.length - below.length
   const widths = gridColumns(width, arrangement.split)
   const [l, r] = balanceColumns(arrangement.left, right, float, widths, tier, room)
-  return [...above, ...besideRows(l, r, widths[0]), ...below]
+  // Filling, both columns end at the same row: the foot of the pane, or the taller column's.
+  const height = Math.max(l.length, r.length, below.length === 0 ? room : 0)
+  const [fl, fr] = fill ? [fillColumn(l, widths[0], height, tier, 'stretch-l'), fillColumn(r, widths[1], height, tier, 'stretch-r')] : [l, r]
+  return [...above, ...besideRows(fl, fr, widths[0]), ...below]
 }
 
 /** The rows the pane's body has, from its scroll window; {@link DEFAULT_ROWS} where the surface does not say. */

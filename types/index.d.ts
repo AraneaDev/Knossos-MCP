@@ -599,6 +599,8 @@ declare module 'claude-code' {
       search: SearchState
       /** The Branch tab's comparison with the merge base, as last read. */
       branch: BranchState | null
+      /** The marked row's detail drawn beside the tab on a wide pane: what is shown, and its lookup. */
+      peek: { shown: Inspected; detail: DetailState } | null
       /** The rows the latest scan changed (`hub:`, `file:`, `tile:`, `boundary:`, `change:` keys), lit until `until` (mod clock, ms). */
       flash: { keys: string[]; until: number } | null
     }

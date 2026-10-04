@@ -34,12 +34,15 @@ import {
   paneInput,
   paneLayout,
   paneStatus,
+  PEEK_TABS,
+  peekList,
   refusedRoot,
   rowWidth,
   SCAN_PROMPT,
   SORTS,
   subjectOf,
   TABS,
+  tierOf,
 } from './lib/layout'
 import type { Loc, Openable, PaneInput, Preview, Row, Segment } from './lib/layout'
 import { FLASH_MS, flashKeys, ledgerFlashKeys } from './lib/flash'
@@ -118,6 +121,8 @@ const SEARCH_DEBOUNCE_MS = 150
 /** The wrapper bounds graph-search at 15 s, and branch-diff (two whole graphs compared) at 30 s. */
 const SEARCH_TIMEOUT_MS = 20_000
 const BRANCH_TIMEOUT_MS = 35_000
+/** How long the detail beside the tab waits after the marker moves before it looks the marked row up: a run of j presses is one lookup. */
+const PEEK_DEBOUNCE_MS = 120
 
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
@@ -166,6 +171,8 @@ const couplings = atom({ plugin: 'knossos', key: 'couplings' } as const, null as
 const feedback = atom({ plugin: 'knossos', key: 'feedback' } as const, null as Feedback | null)
 /** The finder's search: what was typed, and what `graph-search` answered for the query last read. */
 const search = atom({ plugin: 'knossos', key: 'search' } as const, NO_SEARCH as SearchState)
+/** The marked row's detail, drawn beside the tab on a wide pane: what is shown, and its lookup. */
+const peek = atom({ plugin: 'knossos', key: 'peek' } as const, null as { shown: Inspected; detail: DetailState } | null)
 /** The Branch tab's comparison with the merge base, for the snapshot it was read at. */
 const branch = atom({ plugin: 'knossos', key: 'branch' } as const, null as BranchState | null)
 /** The rows the latest scan changed, lit for a moment after it landed. */
@@ -325,6 +332,9 @@ const mod = {
   openWhenFound: false,
   /** Where the tab's marker stood when the finder opened over it: closing the finder puts it back. */
   findFrom: 0,
+  /** Whether the pane was last drawn wide (master-detail), as the render saw it; and the pending lookup of the marked row. */
+  paneWide: false,
+  peekTimer: null as Timer | null,
 }
 
 /** How long to wait before each retry of a refused registration, in milliseconds; after the last, turn ends retry. */
@@ -393,6 +403,8 @@ async function tickAge($: EngineInterface): Promise<void> {
   // The rows a scan lit go back once their moment is over.
   const lit = await read($, flash)
   if (lit !== null && (await $.clock.now()) >= lit.until) await update($, flash, () => null)
+  // A pane drawn wide shows the marked row's detail beside the tab: looked up from here the first time it is drawn so.
+  if (mod.paneWide && (await read($, peek)) === null) await requestPeek($)
   // A pane closed by any means (the command, its own close key) stops drawing; stop ticking for it.
   if (mod.paneText !== null && !(await $.ui.panes()).some(pane => pane.id === PANE)) mod.paneText = null
   if (mod.bandText === null && mod.paneText === null) return
@@ -509,6 +521,7 @@ async function loadDashboard($: EngineInterface): Promise<void> {
   // And the Boundaries tab's cell: its couplings are read for the graph on show; and the Branch tab's comparison.
   await requestCouplings($)
   await requestBranch($)
+  await requestPeek($)
 }
 
 /**
@@ -1278,7 +1291,11 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
   if (shown !== null && v.inspect !== null) shown.diff = diffView(v.inspect, await read($, fileDiff), await read($, sessionRev))
   const extras = { git: await read($, gitHead), feedback: await read($, feedback), couplings: await read($, couplings), flash: await read($, flash), search: await read($, search), branch: await read($, branch) }
-  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await shownChanges($, d.project_root), await read($, sessionRoot), await read($, live), extras)
+  // The marked row's detail beside the tab: only while the pane is drawn wide.
+  const peeked = mod.paneWide ? await read($, peek) : null
+  const side = peeked === null ? null : peeked.shown.file === true ? fileDetailInput(peeked.shown, peeked.detail, d.project_root, huesOf(d)) : detailInput(peeked.shown, peeked.detail, d.project_root)
+  if (side !== null && peeked !== null) side.diff = diffView(peeked.shown, await read($, fileDiff), await read($, sessionRev))
+  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await shownChanges($, d.project_root), await read($, sessionRoot), await read($, live), extras, side)
 }
 
 /** The rows the selection walks on what the pane shows, from state. */
@@ -1560,6 +1577,55 @@ async function pressPane($: EngineInterface, id: string, surface?: RenderSurface
   await pressAction($, id, surface)
   await requestCouplings($)
   await requestBranch($)
+  await requestPeek($)
+}
+
+/**
+ * Starts looking up the marked row for the detail beside the tab, while the
+ * pane is drawn wide on a tab that has one: a component as its detail, a
+ * file as the file's (with its change, when it is one of the session's).
+ * After a short pause, so a run of moves is one lookup; never in a render.
+ * A row with nothing to show (a boundary, a chart's bar) shows none.
+ */
+async function requestPeek($: EngineInterface): Promise<void> {
+  if (mod.disabled || !mod.paneWide) return
+  const v = await read($, view)
+  if (v.inspect !== null || v.finding === true || v.drift === true || !PEEK_TABS.includes(v.tab)) return
+  const list = await currentList($)
+  const item = list[Math.min(Math.max(0, v.selected), Math.max(0, list.length - 1))]
+  if (item === undefined || item.inert === true || item.jump !== undefined) {
+    if ((await read($, peek)) !== null) await update($, peek, () => null)
+    return
+  }
+  const shown: Inspected = { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}), ...(item.changed === true ? { changed: true } : {}) }
+  const snapshot = (await read($, dashboard))?.snapshot_id ?? null
+  const current = await read($, peek)
+  if (current !== null && current.shown.name === shown.name && (current.shown.file === true) === (shown.file === true) && current.detail.snapshot_id === snapshot) return
+  await update($, peek, () => ({ shown, detail: { snapshot_id: snapshot, name: shown.name, ...(shown.file === true ? { file: true as const } : {}), detail: null, phase: 'loading' as const } }))
+  mod.peekTimer?.cancel()
+  mod.peekTimer = $.clock.after(PEEK_DEBOUNCE_MS, () => {
+    mod.peekTimer = null
+    void loadPeek($, shown, snapshot).catch(() => undefined)
+  })
+}
+
+/** One lookup for the detail beside the tab; stored only while that row is still the one shown. */
+async function loadPeek($: EngineInterface, shown: Inspected, snapshot: string | null): Promise<void> {
+  await requestDiff($, shown)
+  const file = shown.file === true
+  const root = file ? ((await read($, dashboard))?.project_root ?? undefined) : undefined
+  const stdout = await wrapper($, file ? 'file-detail' : 'component-detail', [shown.name], DETAIL_TIMEOUT_MS, root)
+  const parsed = file ? parseFileDetail(stdout) : parseComponentDetail(stdout)
+  if (parsed?.status === 'no-binary') return disable($)
+  const answer = file ? { fileDetail: parsed as FileDetail | null } : { detail: parsed as ComponentDetail | null }
+  await update($, peek, p => (p !== null && p.shown.name === shown.name && p.detail.snapshot_id === snapshot ? { shown: p.shown, detail: { ...p.detail, ...answer, phase: 'done' as const } } : p))
+}
+
+/** A press in the detail beside the tab (`peek:N`): opens what it lists as the detail itself. */
+async function openPeeked($: EngineInterface, index: number): Promise<void> {
+  const input = await currentInput($, true)
+  const item = input?.peek === null || input?.peek === undefined ? undefined : peekList(input.peek)[index]
+  if (item !== undefined) await showComponent($, { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}) })
 }
 
 /**
@@ -1624,6 +1690,7 @@ async function pressAction($: EngineInterface, id: string, surface?: RenderSurfa
     return openRow($, Number(id.slice(4)))
   }
   if (id.startsWith('rel:')) return openRelated($, Number(id.slice(4)))
+  if (id.startsWith('peek:')) return openPeeked($, Number(id.slice(5)))
   // On Cycles the layout names the row `j` and `k` (and a cycle's line in the list) move to: what the diagram shows depends on its width.
   if (/^(next|prev|mark):/.test(id)) return update($, view, v => ({ ...v, selected: Math.max(0, Number(id.slice(5)) || 0) }))
   if (id.startsWith('unfold:') || id.startsWith('fold:')) return unfoldCycle($, id)
@@ -1985,6 +2052,9 @@ export const register: Register = (on, options) => {
   mod.searchTimer = null
   mod.openWhenFound = false
   mod.findFrom = 0
+  mod.paneWide = false
+  mod.peekTimer?.cancel()
+  mod.peekTimer = null
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
@@ -2165,6 +2235,7 @@ export const register: Register = (on, options) => {
     if (moved.deny === undefined && Number.isInteger(index)) {
       await update($, view, v => (v.selected === index ? v : { ...v, selected: index, target: undefined }))
       await requestCouplings($)
+      await requestPeek($)
     }
     return moved
   })
@@ -2178,6 +2249,8 @@ export const register: Register = (on, options) => {
     const d = await read($, dashboard)
     const v = await read($, view)
     const columns = Math.max(1, e.props.bodyColumns)
+    // Whether the pane is wide enough for the detail beside the tab: the lookup it needs runs from the next press or tick.
+    mod.paneWide = tierOf(columns) === 'wide'
     const press = (id: string, surface?: RenderSurface) => void pressPane($, id, surface).catch(() => undefined)
     if (d === null || d.status !== 'ok') {
       const offer = allowInput(await read($, brief), await read($, rescan), await read($, allow))
