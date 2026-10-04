@@ -85,4 +85,32 @@ final class GraphSearchServiceTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    #[Group('query')]
+    public function testANonAsciiQueryFindsANameBeyondTheCandidateBound(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            // 676 classes `GrXYe`, each shorter than or as short as the names looked for and sorting before them:
+            // a pattern that let any character through for a non-ASCII letter kept only these.
+            $classes = '';
+            foreach (range('a', 'z') as $x) {
+                foreach (range('a', 'z') as $y) {
+                    $classes .= "final class Gr{$x}{$y}e {}\n";
+                }
+            }
+            file_put_contents($root . '/src/Core/Many.php', "<?php\nnamespace App;\n" . $classes);
+            file_put_contents($root . '/src/Core/Settings.php', "<?php\nnamespace App;\nfinal class 設定Service {}\nfinal class Größe {}\n");
+            (new \Knossos\Scan\ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+            $service = new GraphSearchService($pdo);
+            assertSame(true, $service->search($root, 'gre')['truncated']);
+            foreach (['設定' => 'App\\設定Service', '定s' => 'App\\設定Service', 'größe' => 'App\\Größe', 'GRÖßE' => 'App\\Größe', 'gröe' => 'App\\Größe'] as $typed => $expected) {
+                $found = $service->search($root, $typed);
+                assertSame($expected, $found['results'][0]['canonical_name'] ?? null, $typed);
+                assertSame(false, $found['truncated'], $typed);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }

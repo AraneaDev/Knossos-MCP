@@ -92,11 +92,11 @@ final readonly class GraphSearchService
         $kinds = implode(',', array_fill(0, count(self::KINDS), '?'));
         $statement = $this->pdo->prepare(
             'SELECT n.id, n.kind, n.canonical_name, n.display_name, n.start_line, f.relative_path FROM nodes n LEFT JOIN files f ON f.id = n.file_id '
-            . "WHERE n.project_id = ? AND n.kind IN ({$kinds}) AND (LOWER(n.display_name) LIKE ? ESCAPE '\\' OR LOWER(n.canonical_name) LIKE ? ESCAPE '\\') "
+            . "WHERE n.project_id = ? AND n.kind IN ({$kinds}) AND ({$this->holds('n.display_name', $needle)} OR {$this->holds('n.canonical_name', $needle)}) "
             . 'ORDER BY LENGTH(n.display_name), n.display_name LIMIT ' . (self::CANDIDATES + 1),
         );
-        $pattern = self::pattern($needle);
-        $statement->execute([$projectId, ...self::KINDS, $pattern, $pattern]);
+        $holds = self::holdsValues($needle);
+        $statement->execute([$projectId, ...self::KINDS, ...$holds, ...$holds]);
         $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
         $order = array_flip(self::KINDS);
         $found = [];
@@ -120,9 +120,9 @@ final readonly class GraphSearchService
     private function files(string $projectId, string $needle): array
     {
         $statement = $this->pdo->prepare(
-            "SELECT relative_path FROM files WHERE project_id = ? AND LOWER(relative_path) LIKE ? ESCAPE '\\' ORDER BY LENGTH(relative_path), relative_path LIMIT " . (self::CANDIDATES + 1),
+            "SELECT relative_path FROM files WHERE project_id = ? AND {$this->holds('relative_path', $needle)} ORDER BY LENGTH(relative_path), relative_path LIMIT " . (self::CANDIDATES + 1),
         );
-        $statement->execute([$projectId, self::pattern($needle)]);
+        $statement->execute([$projectId, ...self::holdsValues($needle)]);
         $rows = $statement->fetchAll(PDO::FETCH_COLUMN);
         $found = [];
         foreach (array_slice($rows, 0, self::CANDIDATES) as $path) {
@@ -137,11 +137,62 @@ final readonly class GraphSearchService
     }
 
     /**
+     * The SQL condition that `$column` holds the letters of `$needle` in
+     * order, its values bound by {@see self::holdsValues()} in the same order.
+     *
+     * SQLite's `LOWER()` and `LIKE` fold only ASCII, so the `LIKE` pattern
+     * stands a non-ASCII letter in as any one character. On its own that lets
+     * through nearly every name (`設定` would be `%_%_%`), and the bounded read
+     * would then keep only the shortest names in the project. Each distinct
+     * non-ASCII letter is therefore also required to appear in the name in
+     * one of its cases, compared exactly, so the read is narrowed in SQL
+     * before its bound. {@see self::score()}, which folds every letter,
+     * decides the rest.
+     */
+    private function holds(string $column, string $needle): string
+    {
+        $condition = "LOWER({$column}) LIKE ? ESCAPE '\\'";
+        foreach (self::nonAsciiCases($needle) as $cases) {
+            $condition .= ' AND (' . implode(' OR ', array_fill(0, count($cases), "INSTR({$column}, ?) > 0")) . ')';
+        }
+
+        return '(' . $condition . ')';
+    }
+
+    /**
+     * The values {@see self::holds()} binds: the pattern, then each
+     * non-ASCII letter's cases.
+     *
+     * @return list<string>
+     */
+    private static function holdsValues(string $needle): array
+    {
+        $values = [self::pattern($needle)];
+        foreach (self::nonAsciiCases($needle) as $cases) {
+            array_push($values, ...$cases);
+        }
+
+        return $values;
+    }
+
+    /**
+     * Each distinct non-ASCII letter of `$needle`, as the forms it may take in a name: itself, upper case and title case.
+     *
+     * @return list<list<string>>
+     */
+    private static function nonAsciiCases(string $needle): array
+    {
+        $letters = array_unique(array_filter(preg_split('//u', $needle, -1, PREG_SPLIT_NO_EMPTY) ?: [], static fn(string $c): bool => strlen($c) > 1));
+
+        return array_values(array_map(static fn(string $c): array => array_values(array_unique([
+            $c, mb_strtoupper($c), mb_convert_case($c, MB_CASE_TITLE),
+        ])), $letters));
+    }
+
+    /**
      * A `LIKE` pattern matching the letters in order with anything between
-     * them; `%`, `_` and `\` are matched as themselves. SQLite's `LOWER()`
-     * and `LIKE` fold only ASCII, so a letter outside it stands for any one
-     * character here, and {@see self::score()}, which folds every letter,
-     * decides whether it was the one typed.
+     * them; `%`, `_` and `\` are matched as themselves, and a non-ASCII letter
+     * stands for any one character (see {@see self::holds()}).
      */
     private static function pattern(string $needle): string
     {
