@@ -275,8 +275,9 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
      * dependency is new. Each list holds the first `$limit` and counts them
      * all.
      *
-     * Both graphs are read whole, as {@see self::qualityGate()} reads them,
-     * and analysed the way it does: the same reportable components, impact
+     * Both graphs are read whole, one after the other and with only the
+     * columns the comparison uses ({@see SnapshotGraphReader}), and analysed
+     * the way {@see self::qualityGate()} analyses them: the same reportable components, impact
      * edges, cycles and unreferenced candidates. A dependency is new when no
      * impact edge joined the same two components (by full name) before;
      * boundaries are the active graph's labels ({@see BoundaryLabels}); a
@@ -290,15 +291,18 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     public function branchComparison(string $projectId, string $baseSnapshot, array $policies, int $limit = 8): array
     {
         $project = $this->project($projectId);
-        $active = $project['active_scan_id'] ?? '';
-        $base = $this->snapshotFacts($projectId, $baseSnapshot, $active);
-        $current = $this->snapshotFacts($projectId, 'active', $active);
-        $before = $this->snapshotAnalysis($base['facts']);
-        $after = $this->snapshotAnalysis($current['facts']);
-        $was = self::canonicalNames($base['facts']);
-        $now = self::canonicalNames($current['facts']);
-        $nodes = self::placedNodes($current['facts']);
-        $edgesBefore = self::edgePairs($before['adjacency'], $was);
+        $active = (string) ($project['active_scan_id'] ?? '');
+        // The base first, reduced to what the comparison asks of it (keyed by full name) and let go,
+        // so the two graphs are never held at once.
+        $resolved = $this->resolveSnapshot($projectId, $baseSnapshot, $active);
+        $reader = new SnapshotGraphReader($this->pdo);
+        $was = $this->baseFigures($resolved['is_active'] ? $reader->active($projectId, $active) : $reader->archived((string) $resolved['archived']['payload_json'], $resolved['scan_id']));
+        unset($resolved['archived']);
+        $facts = $reader->active($projectId, $active);
+        $after = $this->snapshotAnalysis($facts);
+        $now = self::canonicalNames($facts);
+        $nodes = self::placedNodes($facts);
+        unset($facts);
         $labels = BoundaryLabels::load($this->pdo, $projectId)->forProject($projectId);
         $item = static fn(string $id): array => $nodes[$id] + ['boundary' => $labels[$id] ?? null];
 
@@ -308,7 +312,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
                 $from = $labels[$source] ?? null;
                 $to = $labels[$target] ?? null;
                 if ($from === null || $to === null || $from === $to || !isset($after['reportable'][$source], $after['reportable'][$target])
-                    || isset($edgesBefore[$now[$source] . "\0" . $now[$target]])) {
+                    || isset($was['edges'][$now[$source] . "\0" . $now[$target]])) {
                     continue;
                 }
                 $crossing[] = ['source' => $item($source), 'target' => $item($target)];
@@ -317,17 +321,9 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         usort($crossing, static fn(array $a, array $b): int => [$a['source']['boundary'], $a['target']['boundary'], $a['source']['canonical_name'], $a['target']['canonical_name']]
             <=> [$b['source']['boundary'], $b['target']['boundary'], $b['source']['canonical_name'], $b['target']['canonical_name']]);
 
-        $cycleOf = [];
-        foreach ($before['sccs'] as $index => $members) {
-            if (count($members) > 1) {
-                foreach ($members as $member) {
-                    $cycleOf[$was[$member]] = $index;
-                }
-            }
-        }
         $cycles = [];
         foreach ($after['sccs'] as $members) {
-            $old = array_unique(array_map(static fn(string $m): int => $cycleOf[$now[$m]] ?? -1, $members));
+            $old = array_unique(array_map(static fn(string $m): int => $was['cycle_of'][$now[$m]] ?? -1, $members));
             if (count($members) > 1 && (count($old) > 1 || $old[array_key_first($old)] < 0)) {
                 $sorted = $members;
                 usort($sorted, static fn(string $a, string $b): int => $now[$a] <=> $now[$b]);
@@ -336,31 +332,60 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         }
         usort($cycles, static fn(array $a, array $b): int => [$b['size'], $a['members'][0]['canonical_name']] <=> [$a['size'], $b['members'][0]['canonical_name']]);
 
-        $inBefore = self::inDegrees($before, $was);
         $idOf = array_flip($now);
         $grown = [];
         foreach (self::inDegrees($after, $now) as $name => $degree) {
-            $previous = $inBefore[$name] ?? 0;
+            $previous = $was['in'][$name] ?? 0;
             if ($degree >= self::HUB_MIN && $degree > $previous) {
                 $grown[] = ['component' => $item((string) $idOf[$name]), 'before' => $previous, 'after' => $degree];
             }
         }
         usort($grown, static fn(array $a, array $b): int => [$b['after'] - $b['before'], $b['after'], $a['component']['canonical_name']] <=> [$a['after'] - $a['before'], $a['after'], $b['component']['canonical_name']]);
 
-        $deadBefore = array_fill_keys(array_map(static fn(string $id): string => $was[$id], $before['unreferenced']), true);
-        $dead = array_values(array_filter($after['unreferenced'], static fn(string $id): bool => !isset($deadBefore[$now[$id]])));
+        $dead = array_values(array_filter($after['unreferenced'], static fn(string $id): bool => !isset($was['dead'][$now[$id]])));
         usort($dead, static fn(string $a, string $b): int => $now[$a] <=> $now[$b]);
 
-        $violations = $this->newViolations($projectId, $policies, $edgesBefore, $limit);
+        $violations = $this->newViolations($projectId, $policies, $was['edges'], $limit);
         $listed = static fn(array $all): array => ['count' => count($all), 'items' => array_slice($all, 0, $limit)];
 
         return [
-            'base' => $base['metadata'],
+            'base' => $resolved['metadata'],
             'crossing' => $listed($crossing),
             'cycles' => $listed($cycles),
             'hubs' => $listed($grown),
             'dead_code' => $listed(array_map($item, $dead)),
             'violations' => $violations,
+        ];
+    }
+
+    /**
+     * What a branch comparison asks of the base graph, by full name: its
+     * impact edges (`source\0target`), the cycle each member of one was in,
+     * how many reportable components depended on each one, and the
+     * unreferenced candidates.
+     *
+     * @param array<string, list<array<string, mixed>>> $facts
+     * @return array{edges: array<string, true>, cycle_of: array<string, int>, in: array<string, int>, dead: array<string, true>}
+     */
+    private function baseFigures(array $facts): array
+    {
+        $before = $this->snapshotAnalysis($facts);
+        $names = self::canonicalNames($facts);
+        unset($facts);
+        $cycleOf = [];
+        foreach ($before['sccs'] as $index => $members) {
+            if (count($members) > 1) {
+                foreach ($members as $member) {
+                    $cycleOf[$names[$member]] = $index;
+                }
+            }
+        }
+
+        return [
+            'edges' => self::edgePairs($before['adjacency'], $names),
+            'cycle_of' => $cycleOf,
+            'in' => self::inDegrees($before, $names),
+            'dead' => array_fill_keys(array_map(static fn(string $id): string => $names[$id], $before['unreferenced']), true),
         ];
     }
 
@@ -460,6 +485,8 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             return null;
         }
         $fresh = array_values(array_filter($check->data['violations'], static fn(array $v): bool => !isset($edgesBefore[$v['source']['canonical_name'] . "\0" . $v['target']['canonical_name']])));
+        // The check's own order follows the graph's storage; the list is the same on every read only once sorted.
+        usort($fresh, static fn(array $a, array $b): int => [$a['policy_id'], $a['source']['canonical_name'], $a['target']['canonical_name']] <=> [$b['policy_id'], $b['source']['canonical_name'], $b['target']['canonical_name']]);
 
         return [
             'count' => count($fresh),
@@ -735,7 +762,8 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
      */
     private function activeSnapshotRows(string $projectId, string $scanId, string $table): array
     {
-        $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
+        // Each column with `+`: ordered by an index, SQLite would walk every project's rows rather than find this one's and sort them.
+        $order = $table === 'boundary_memberships' ? '+boundary_id, +node_id' : '+id';
         $statement = $this->pdo->prepare(sprintf('SELECT * FROM %s WHERE project_id = :project ORDER BY %s LIMIT 200001', $table, $order));
         $statement->execute(['project' => $projectId]);
         $rows = $statement->fetchAll();

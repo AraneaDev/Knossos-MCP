@@ -98,6 +98,31 @@ final class BranchDiffServiceTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testTheComparisonListsExactlyWhatTheBranchChanged(): void
+    {
+        [$pdo, $root] = $this->repository();
+        try {
+            $this->branchWork($pdo, $root);
+            $c = (new BranchDiffService($pdo))->diff($root)['comparison'];
+            unset($c['base']);
+            $greet = ['name' => 'greet', 'canonical_name' => 'App\\Greeter::greet', 'kind' => 'method', 'path' => 'src/Core/Greeter.php', 'line' => 9, 'boundary' => 'Core'];
+            $caller = ['name' => 'Caller', 'canonical_name' => 'App\\Caller', 'kind' => 'class', 'path' => 'src/Edge/Caller.php', 'line' => 7, 'boundary' => 'Edge'];
+            $run = ['name' => 'run', 'canonical_name' => 'App\\Caller::run', 'kind' => 'method', 'path' => 'src/Edge/Caller.php', 'line' => 9, 'boundary' => 'Edge'];
+            $violation = static fn(string $target, string $kind): array => ['policy_id' => 'core-stays-out-of-edge', 'source' => 'App\\Greeter::greet', 'source_kind' => 'method', 'target' => $target, 'target_kind' => $kind];
+            // Everything the comparison says, exactly: reading less of each graph must not change a word of it.
+            assertSame([
+                'crossing' => ['count' => 2, 'items' => [['source' => $greet, 'target' => $caller], ['source' => $greet, 'target' => $run]]],
+                'cycles' => ['count' => 1, 'items' => [['size' => 2, 'members' => [$run, $greet]]]],
+                'hubs' => ['count' => 0, 'items' => []],
+                'dead_code' => ['count' => 1, 'items' => [['name' => 'Unused', 'canonical_name' => 'App\\Unused', 'kind' => 'class', 'path' => 'src/Core/Unused.php', 'line' => 7, 'boundary' => 'Core']]],
+                'violations' => ['count' => 2, 'items' => [$violation('App\\Caller', 'class'), $violation('App\\Caller::run', 'method')], 'truncated' => false],
+            ], $c);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
     public function testANewerDefaultBranchIsMatchedToTheNearestSnapshotBeforeItsMergeBase(): void
     {
         [$pdo, $root] = $this->repository();
