@@ -10,6 +10,7 @@ declare module 'claude-code' {
   export type RenderElement = any
   export type RenderNode = any
   export type RenderSurface = any
+  export type PluginOptions = any
   export type Timer = any
   export function atom<T>(initial: T, options?: any): any
   export function read(...args: any[]): any

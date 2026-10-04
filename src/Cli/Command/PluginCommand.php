@@ -52,7 +52,7 @@ final class PluginCommand implements CliCommand
     private const STALE_SKILLS = ['/skills/knossos', '/skills/ask-the-graph'];
 
     /** The directories a materialised plugin needs, in creation order. */
-    private const DIRECTORIES = ['/.claude-plugin', '/hooks', '/hooks/lib', '/hooks/scripts', '/skills', '/skills/graph', '/types'];
+    private const DIRECTORIES = ['/.claude-plugin', '/hooks', '/hooks/lib', '/hooks/mod', '/hooks/scripts', '/skills', '/skills/graph', '/types'];
 
     /**
      * Copied verbatim from the installation root into a materialised plugin.
@@ -95,6 +95,7 @@ final class PluginCommand implements CliCommand
         '/hooks/lib/sparkline.ts',
         '/hooks/lib/tiles.ts',
         '/hooks/lib/views.ts',
+        '/hooks/mod/state.ts',
         '/skills/graph/SKILL.md',
         '/types/index.d.ts',
     ];
@@ -102,47 +103,8 @@ final class PluginCommand implements CliCommand
     /** The manifest, read from the installation root and rewritten with this CLI's version. */
     private const MANIFEST = '/.claude-plugin/plugin.json';
 
-    /** The files a materialised plugin has besides its scripts, for reporting. */
-    private const STATIC_FILES = [
-        '.claude-plugin/plugin.json',
-        '.claude-plugin/marketplace.json',
-        'hooks/hooks.json',
-        'hooks/register.tsx',
-        'hooks/lib/activity.ts',
-        'hooks/lib/agent.ts',
-        'hooks/lib/alerts.ts',
-        'hooks/lib/band.ts',
-        'hooks/lib/baseline.ts',
-        'hooks/lib/boundaries.ts',
-        'hooks/lib/branch.ts',
-        'hooks/lib/cards.ts',
-        'hooks/lib/changes.ts',
-        'hooks/lib/churn.ts',
-        'hooks/lib/cycles.ts',
-        'hooks/lib/diagram.ts',
-        'hooks/lib/diff.ts',
-        'hooks/lib/envelopes.ts',
-        'hooks/lib/files.ts',
-        'hooks/lib/finder.ts',
-        'hooks/lib/flash.ts',
-        'hooks/lib/hover.ts',
-        'hooks/lib/layout.ts',
-        'hooks/lib/live.ts',
-        'hooks/lib/notes.ts',
-        'hooks/lib/overview.ts',
-        'hooks/lib/palette.ts',
-        'hooks/lib/paths.ts',
-        'hooks/lib/raster.ts',
-        'hooks/lib/rings.ts',
-        'hooks/lib/route.ts',
-        'hooks/lib/rows.ts',
-        'hooks/lib/scheduler.ts',
-        'hooks/lib/sparkline.ts',
-        'hooks/lib/tiles.ts',
-        'hooks/lib/views.ts',
-        'skills/graph/SKILL.md',
-        'types/index.d.ts',
-    ];
+    /** The files a materialised plugin has besides the copies and its scripts: the two it writes itself. */
+    private const WRITTEN_FILES = ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json'];
 
     /** The one script that is sourced rather than executed, so it is not made executable. */
     private const LIBRARY_SCRIPT = 'hooks/scripts/lib.sh';
@@ -601,7 +563,8 @@ final class PluginCommand implements CliCommand
      */
     private function pluginFiles(array $scripts): array
     {
-        $files = [...self::STATIC_FILES, ...array_keys($scripts)];
+        $copies = array_map(static fn(string $copy): string => ltrim($copy, '/'), self::COPIES);
+        $files = [...self::WRITTEN_FILES, ...$copies, ...array_keys($scripts)];
         sort($files);
 
         return $files;
