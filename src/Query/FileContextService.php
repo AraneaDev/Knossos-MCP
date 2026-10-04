@@ -4,8 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
-use Knossos\Git\GitProcessRunner;
-use Knossos\Git\GitProcessRunnerInterface;
+use Knossos\Git\{GitProcessRunner, GitProcessRunnerInterface};
 use PDO;
 use Throwable;
 
