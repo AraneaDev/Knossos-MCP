@@ -25,12 +25,15 @@ use PDO;
  * what the file declares (never the module node that stands for the file
  * itself, nor an external symbol it merely names first)
  * and lists the most used few with how many components in other files use
- * each. Both lists are bounded; `truncated` says the list holds fewer than
- * the count, never that the count is a floor: both counts are exact.
+ * each. `uses` mirrors `dependents`: the other files this one's components
+ * depend on, over the same relationships, the most connected few with their
+ * counts and boundaries. Every list is bounded; `truncated` says the list
+ * holds fewer than the count, never that the count is a floor: every count
+ * is exact.
  */
 final readonly class FileDetailService
 {
-    /** Dependent files listed with their relationship counts. */
+    /** Files listed on each side (dependents, uses) with their relationship counts. */
     private const DEPENDENTS = 10;
 
     /** Components of the file listed with their use counts. */
@@ -66,8 +69,10 @@ final readonly class FileDetailService
         }
         $labels = BoundaryLabels::load($this->pdo, $id);
         $fanIn = (new FileFanInQuery($this->pdo))->forPaths($id, [$relative], 0)[$relative];
-        $dependents = $this->dependents((string) $file['id']);
-        $boundaries = $labels->forFiles($id, array_column($dependents, 'path'));
+        $dependents = $this->linked((string) $file['id'], false);
+        $uses = $this->linked((string) $file['id'], true);
+        $usesCount = $this->usesCount((string) $file['id']);
+        $boundaries = $labels->forFiles($id, [...array_column($dependents, 'path'), ...array_column($uses, 'path')]);
         $components = $this->components((string) $file['id']);
         $componentLabels = $labels->forNodes(array_column($components, 'id'));
         $envelope['status'] = 'ok';
@@ -81,6 +86,11 @@ final readonly class FileDetailService
                 'truncated' => $fanIn['dependent_files'] > count($dependents),
                 'boundaries' => $fanIn['boundaries'],
                 'items' => array_map(static fn(array $d): array => $d + ['boundary' => $boundaries[$d['path']] ?? null], $dependents),
+            ],
+            'uses' => [
+                'count' => $usesCount,
+                'truncated' => $usesCount > count($uses),
+                'items' => array_map(static fn(array $d): array => $d + ['boundary' => $boundaries[$d['path']] ?? null], $uses),
             ],
             'components' => [
                 'count' => $this->componentCount((string) $file['id']),
@@ -100,32 +110,61 @@ final readonly class FileDetailService
 
     /**
      * The files most connected to this one by the impact relationships, each
-     * with how many run from it, most first.
+     * with how many run between them, most first: the files depending on it
+     * (`$outgoing` false) or the files it depends on (true).
      *
      * @return list<array{path: string, edges: int}>
      */
-    private function dependents(string $fileId): array
+    private function linked(string $fileId, bool $outgoing): array
     {
-        $kinds = implode(',', array_fill(0, count(AbstractArchitectureQueryService::IMPACT_EDGE_KINDS), '?'));
+        [$near, $far] = $outgoing ? ['sn', 'tn'] : ['tn', 'sn'];
         $statement = $this->pdo->prepare(<<<SQL
-            SELECT sf.relative_path AS path, COUNT(*) AS edges
+            SELECT ff.relative_path AS path, COUNT(*) AS edges
               FROM edges e
               JOIN nodes tn ON tn.id = e.target_id
               JOIN nodes sn ON sn.id = e.source_id
-              JOIN files sf ON sf.id = sn.file_id
-             WHERE tn.file_id = ? AND sf.id <> tn.file_id AND e.kind IN ($kinds) AND tn.kind NOT LIKE 'external\_%' ESCAPE '\'
-             GROUP BY sf.id
+              JOIN files ff ON ff.id = {$far}.file_id
+             WHERE {$near}.file_id = ? AND ff.id <> {$near}.file_id AND e.kind IN ({$this->kinds()}) AND tn.kind NOT LIKE 'external\_%' ESCAPE '\'
+             GROUP BY ff.id
              ORDER BY edges DESC, path ASC
              LIMIT ?
             SQL);
-        $statement->bindValue(1, $fileId);
-        foreach (AbstractArchitectureQueryService::IMPACT_EDGE_KINDS as $i => $kind) {
-            $statement->bindValue($i + 2, $kind);
-        }
+        $this->bindKinds($statement, $fileId);
         $statement->bindValue(count(AbstractArchitectureQueryService::IMPACT_EDGE_KINDS) + 2, self::DEPENDENTS, PDO::PARAM_INT);
         $statement->execute();
 
         return array_map(static fn(array $row): array => ['path' => (string) $row['path'], 'edges' => (int) $row['edges']], $statement->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /** How many other files this one depends on, over the relationships {@see linked()} counts. */
+    private function usesCount(string $fileId): int
+    {
+        $statement = $this->pdo->prepare(<<<SQL
+            SELECT COUNT(DISTINCT tn.file_id)
+              FROM edges e
+              JOIN nodes tn ON tn.id = e.target_id
+              JOIN nodes sn ON sn.id = e.source_id
+             WHERE sn.file_id = ? AND tn.file_id IS NOT NULL AND tn.file_id <> sn.file_id AND e.kind IN ({$this->kinds()}) AND tn.kind NOT LIKE 'external\_%' ESCAPE '\'
+            SQL);
+        $this->bindKinds($statement, $fileId);
+        $statement->execute();
+
+        return (int) $statement->fetchColumn();
+    }
+
+    /** One placeholder per impact relationship kind, for an `IN (...)`. */
+    private function kinds(): string
+    {
+        return implode(',', array_fill(0, count(AbstractArchitectureQueryService::IMPACT_EDGE_KINDS), '?'));
+    }
+
+    /** Binds the file id first, then each impact relationship kind. */
+    private function bindKinds(\PDOStatement $statement, string $fileId): void
+    {
+        $statement->bindValue(1, $fileId);
+        foreach (AbstractArchitectureQueryService::IMPACT_EDGE_KINDS as $i => $kind) {
+            $statement->bindValue($i + 2, $kind);
+        }
     }
 
     /**

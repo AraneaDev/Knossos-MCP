@@ -82,6 +82,12 @@ final class FileDetailServiceTest extends KnossosTestCase
             $file = (new FileDetailService($pdo))->detail($root . '/tests/GreeterTest.php')['file'];
             assertSame(['count' => 0, 'truncated' => false, 'boundaries' => [], 'items' => []], $file['dependents']);
             assertGreaterThanOrEqual(1, $file['components']['count']);
+            // The test depends on what it tests: the other side of the same relationship.
+            assertSame(['src/Core/Greeter.php'], array_column($file['uses']['items'], 'path'));
+            assertSame(1, $file['uses']['count']);
+            assertSame(false, $file['uses']['truncated']);
+            assertSame('Core', $file['uses']['items'][0]['boundary']);
+            assertGreaterThanOrEqual(1, $file['uses']['items'][0]['edges']);
         } finally {
             $this->removeTempTree($root);
         }
@@ -135,6 +141,15 @@ final class FileDetailServiceTest extends KnossosTestCase
             assertSame(15, $file['components']['count']);
             assertCount(12, $file['components']['items']);
             assertSame(true, $file['components']['truncated']);
+            // A file depending on twelve others lists ten of them, by how much, and counts all twelve.
+            $calls = implode(' ', array_map(static fn(int $i): string => "(new User{$i}())->go();", range(1, 11)));
+            file_put_contents($root . '/src/Edge/Hub.php', "<?php\n\nnamespace App;\n\nfinal class Hub\n{\n    public function run(): void { {$calls} (new Wide())->m2(); (new Wide())->m3(); }\n}\n");
+            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+            $uses = (new FileDetailService($pdo))->detail($root . '/src/Edge/Hub.php')['file']['uses'];
+            assertSame(12, $uses['count']);
+            assertCount(10, $uses['items']);
+            assertSame(true, $uses['truncated']);
+            assertSame('src/Core/Wide.php', $uses['items'][0]['path']);
         } finally {
             $this->removeTempTree($root);
         }
