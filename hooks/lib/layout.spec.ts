@@ -340,10 +340,10 @@ describe('paneRows', () => {
 
   it('shows the key help on request', () => {
     const rows = paneRows(input({ showKeys: true }), 60)
-    expect(textOf(rows)).toMatch(/1–7 +switch tabs \(or click one\)/)
+    expect(textOf(rows)).toMatch(/1–8 +switch tabs \(or click one\)/)
     expect(textOf(rows)).toMatch(/\n q +ask Claude about the marked row/)
     // One key a line, the key in the accent; a long action wraps under its own column.
-    expect(row(rows, 'help-0')!.segments[1]).toMatchObject({ text: '1–7    ', color: 'suggestion' })
+    expect(row(rows, 'help-0')!.segments[1]).toMatchObject({ text: '1–8    ', color: 'suggestion' })
     expect(rows.filter(r => r.key.startsWith('help-')).every(r => r.segments[1]!.text.length === 7)).toBe(true)
     expect(textOf(paneRows(input(), 60))).not.toContain('switch tabs')
   })
@@ -351,21 +351,23 @@ describe('paneRows', () => {
 
 describe('tabRows', () => {
   it('names every tab in full when it fits, the open one on the selection colour, and no digits on the bar', () => {
-    const [strip, ...rest] = tabRows('hubs', 80, true)
+    const [strip, ...rest] = tabRows('hubs', 90, true)
     expect(rest).toHaveLength(0)
-    expect(plainText(strip!)).toBe(' Overview    Hubs    Boundaries    Cycles    Issues    Changes    Branch ')
+    expect(plainText(strip!)).toBe(' Overview    Hubs    Boundaries    Cycles    Issues    Changes    Branch    Churn ')
+    // A little narrower, one cell between the names.
+    expect(plainText(tabRows('hubs', 80, true)[0]!)).toBe(' Overview   Hubs   Boundaries   Cycles   Issues   Changes   Branch   Churn ')
     expect(strip!.segments.find(s => s.press?.id === 'tab:hubs')).toMatchObject({ text: ' Hubs ', bg: 'selectionBg' })
     expect(strip!.segments.find(s => s.press?.id === 'tab:overview')).toMatchObject({ text: ' Overview ', dim: true })
     expect(strip!.segments.find(s => s.press?.id === 'tab:overview')?.bg).toBeUndefined()
     // Counts ride on the name as superscript badges.
-    expect(plainText(tabRows('hubs', 80, true, { issues: '⁴', changes: '¹²' })[0]!)).toContain(' Issues⁴    Changes¹² ')
+    expect(plainText(tabRows('hubs', 90, true, { issues: '⁴', changes: '¹²' })[0]!)).toContain(' Issues⁴    Changes¹² ')
   })
   it('names the open tab and gives the others their digit where the names do not fit, and always when narrow', () => {
-    expect(plainText(tabRows('overview', 50, true)[0]!)).toBe(' Overview    2    3    4    5    6    7 ')
-    expect(plainText(tabRows('overview', 34, true)[0]!)).toBe(' Overview   2   3   4   5   6   7 ')
-    expect(plainText(tabRows('overview', 32, true)[0]!)).toBe(' Overview  2  3  4  5  6  7 ')
-    expect(plainText(tabRows('boundaries', 120, true, { issues: '⁴', changes: '⁸' }, true)[0]!)).toBe(' 1    2    Boundaries    4    5⁴    6⁸    7 ')
-    expect(plainText(tabRows('changes', 30, true, { changes: '¹²' })[0]!)).toBe(' 1  2  3  4  5  Changes¹²  7 ')
+    expect(plainText(tabRows('overview', 50, true)[0]!)).toBe(' Overview    2    3    4    5    6    7    8 ')
+    expect(plainText(tabRows('overview', 38, true)[0]!)).toBe(' Overview   2   3   4   5   6   7   8 ')
+    expect(plainText(tabRows('overview', 34, true)[0]!)).toBe(' Overview  2  3  4  5  6  7  8 ')
+    expect(plainText(tabRows('boundaries', 120, true, { issues: '⁴', changes: '⁸' }, true)[0]!)).toBe(' 1    2    Boundaries    4    5⁴    6⁸    7    8 ')
+    expect(plainText(tabRows('changes', 32, true, { changes: '¹²' })[0]!)).toBe(' 1  2  3  4  5  Changes¹²  7  8 ')
     // Never an abbreviation: a pane too narrow even for that keeps the digits alone.
     expect(plainText(tabRows('boundaries', 20, true)[0]!)).toBe(' 1  2  3  4  5  6 ')
     for (const columns of [20, 40, 60, 72]) expect(plainText(tabRows('issues', columns, true, {}, true)[0]!)).not.toMatch(/\b(Over|Bound|Cyc|Chg)\b/)
@@ -387,7 +389,7 @@ describe('tabRows', () => {
   it('gives every tab its digit as hotkey', () => {
     for (const columns of [60, 80]) {
       const presses = tabRows('overview', columns, true)[0]!.segments.flatMap(s => (s.press?.hotkey ? [s.press] : []))
-      expect(presses.map(p => `${p.hotkey}:${p.id.replace('tabkey:', 'tab:')}`)).toEqual(['1:tab:overview', '2:tab:hubs', '3:tab:boundaries', '4:tab:cycles', '5:tab:issues', '6:tab:changes', '7:tab:branch'])
+      expect(presses.map(p => `${p.hotkey}:${p.id.replace('tabkey:', 'tab:')}`)).toEqual(['1:tab:overview', '2:tab:hubs', '3:tab:boundaries', '4:tab:cycles', '5:tab:issues', '6:tab:changes', '7:tab:branch', '8:tab:churn'])
     }
   })
 })
@@ -653,7 +655,7 @@ describe('the issues tab', () => {
     expect(plainText(row(paneRows(fullInput(), 90), 'tabs')!)).toContain(' Issues⁹ ')
     expect(plainText(row(paneRows(fullInput(), 40), 'tabs')!)).toContain('5⁹')
     // Nothing to act on: no badge.
-    expect(plainText(row(paneRows(input(), 90), 'tabs')!)).toMatch(/ Issues {4}Changes {4}Branch $/)
+    expect(plainText(row(paneRows(input(), 96), 'tabs')!)).toMatch(/ Issues {4}Changes {4}Branch {4}Churn $/)
   })
   it('says what it cannot know from an older knossos, and when no policy is declared', () => {
     const old = textOf(paneRows(input({ tab: 'issues' }), 60))
@@ -777,7 +779,7 @@ describe('the detail view', () => {
     // Nineteen use it and two are listed: the rest as one box.
     expect(raw).toContain('│ +17 more')
     expect(plainText(row(rows, 'hood-head')!)).toMatch(/^Dependencies · used by 19 · uses 2 +edges$/)
-    expect(textOf(rows)).toMatch(/Annotations\n {3}note: Read-only: it never scans\./)
+    expect(textOf(rows)).toMatch(/Notes\n {3}note: Read-only: it never scans\./)
   })
   it('stacks what uses it above it and what it uses below it on a narrow pane, and lists them below fifty columns', () => {
     const raw = paneRows(detailPane(), 60).map(rawText).join('\n')

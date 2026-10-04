@@ -45,7 +45,9 @@ const branch = (n: number): BranchDiff => ({
     violations: { ...list(0, () => ({ policy_id: 'p', source: 'App\\A', source_kind: 'class', target: 'App\\B', target_kind: 'class' })), truncated: false },
   },
 })
-const pane = (tab: PaneTab, b: BranchDiff) => paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, view(tab), 0, true, null, null, undefined, null, undefined, { branch: { snapshot: 's1', phase: 'done', answer: b } })
+/** Churn with the branch's hub count of files: none, a few, many. */
+const churned = (n: number) => ({ head: 'h', phase: 'done' as const, answer: { status: 'ok' as const, days: 30, commits: 9, files: Array.from({ length: n }, (_, i) => ({ path: `src/F${i}.php`, commits: 9 - (i % 9), dependents: 40 - i, score: (9 - (i % 9)) * (40 - i), boundary: 'core' })) } })
+const pane = (tab: PaneTab, b: BranchDiff) => paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, view(tab), 0, true, null, null, undefined, null, undefined, { branch: { snapshot: 's1', phase: 'done', answer: b }, churn: churned(b.comparison?.hubs.count ?? 0) })
 
 const blankRow = (r: Row): boolean => r.code === undefined && rawText(r).trim() === ''
 
@@ -73,7 +75,7 @@ function trailing(body: Row[]): number {
 
 describe('cards fill the height without gaps', () => {
   it('never leaves blank rows between collapsed cards and the cards after them, on any tab', () => {
-    for (const tab of ['overview', 'hubs', 'boundaries', 'cycles', 'issues', 'changes', 'branch'] as PaneTab[]) {
+    for (const tab of ['overview', 'hubs', 'boundaries', 'cycles', 'issues', 'changes', 'branch', 'churn'] as PaneTab[]) {
       for (const b of [branch(0), branch(2), branch(12)]) {
         for (const columns of [40, 60, 80, 100, 130, 140, 200]) {
           for (const height of [24, 40, 60]) {
@@ -86,7 +88,7 @@ describe('cards fill the height without gaps', () => {
   })
 
   it('gives the height to the framed cards: no blank rows at the foot of a framed pane', () => {
-    for (const tab of ['issues', 'cycles', 'branch'] as PaneTab[]) {
+    for (const tab of ['issues', 'cycles', 'branch', 'churn'] as PaneTab[]) {
       for (const b of [branch(0), branch(2)]) {
         for (const columns of [60, 80, 100, 130, 140, 200]) {
           if (tierOf(columns) === 'narrow') continue

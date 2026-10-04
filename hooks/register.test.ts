@@ -80,6 +80,11 @@ function world(
     search?: Answer[]
     branch?: Answer[]
     context?: Answer[]
+    /** What `churn` (the Churn tab), `blast-radius` (a detail's rings), `path-between` (a route) and `annotate` (a note) answer. */
+    churn?: Answer[]
+    rings?: Answer[]
+    route?: Answer[]
+    note?: Answer[]
     editor?: 'opens' | 'missing'
     refuseRegister?: () => boolean | Promise<boolean>
     /** Per watcher start, the event lines it writes at once; none left: the start writes nothing and ends (no watcher offered). */
@@ -125,6 +130,10 @@ function world(
     search: answers.search ?? [{ stdout: '' }],
     branch: answers.branch ?? [{ stdout: '' }],
     context: answers.context ?? [{ stdout: '' }],
+    churn: answers.churn ?? [{ stdout: '' }],
+    rings: answers.rings ?? [{ stdout: '' }],
+    route: answers.route ?? [{ stdout: '' }],
+    note: answers.note ?? [{ stdout: '' }],
   }
   /** Every prompt submitted, and every copy with the surface it was for. */
   const prompts: string[] = []
@@ -275,7 +284,15 @@ function world(
                             ? queues.branch
                             : sub === 'file-context'
                               ? queues.context
-                              : queues.brief
+                              : sub === 'churn'
+                                ? queues.churn
+                                : sub === 'blast-radius'
+                                  ? queues.rings
+                                  : sub === 'path-between'
+                                    ? queues.route
+                                    : sub === 'annotate'
+                                      ? queues.note
+                                      : queues.brief
     const answer = (queue.length > 1 ? queue.shift() : queue[0]) ?? { stdout: '' }
     if (answer.hold !== undefined) await clock.sleep(answer.hold)
     return {
@@ -303,7 +320,11 @@ function world(
   const searchRuns = () => calls.filter(c => c[2] === 'graph-search')
   const branchRuns = () => calls.filter(c => c[2] === 'branch-diff')
   const contextRuns = () => calls.filter(c => c[2] === 'file-context')
-  return { tools, searchRuns, branchRuns, contextRuns, couplingRuns, store, switchSession, headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  const churnRuns = () => calls.filter(c => c[2] === 'churn')
+  const ringRuns = () => calls.filter(c => c[2] === 'blast-radius')
+  const routeRuns = () => calls.filter(c => c[2] === 'path-between')
+  const noteRuns = () => calls.filter(c => c[2] === 'annotate')
+  return { churnRuns, ringRuns, routeRuns, noteRuns, tools, searchRuns, branchRuns, contextRuns, couplingRuns, store, switchSession, headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -736,7 +757,15 @@ describe('knossos mod', () => {
       },
     })
     const found = JSON.stringify({ status: 'ok', query: 'x', truncated: true, results: Array.from({ length: 20 }, (_, i) => ({ type: i % 2 === 0 ? 'component' : 'file', ...placed(i), ...(i % 2 === 0 ? {} : { name: path(i), canonical_name: path(i), kind: 'file', line: null }) })) })
-    const w = world(on, { dashboard: [{ stdout: big }], brief: [{ stdout: touched }], detail: [{ stdout: fullDetailOf('Router') }], file: [{ stdout: fileDetailOf(path(0)) }], branch: [{ stdout: branched }], search: [{ stdout: found }] })
+    const churned = JSON.stringify({ status: 'ok', days: 30, head: 'a'.repeat(40), commits: 500, truncated: true, files: Array.from({ length: 40 }, (_, i) => ({ path: path(i), commits: 90 - i, dependents: 900 - i * 20, score: (90 - i) * (900 - i * 20), boundary: bounds[i % 12] })) })
+    const ringed = JSON.stringify({
+      status: 'ok',
+      component: { ...placed(0), kind: 'class' },
+      truncated: true,
+      rings: [1, 2, 3].map(hop => ({ hop, count: 1_500, tested: 700, items: Array.from({ length: 12 }, (_, i) => ({ ...placed(i + hop * 12), tested: i % 2 === 0 })), tests: { count: 400, items: Array.from({ length: 12 }, (_, i) => ({ path: `tests/${name(i)}Test.php`, hop })) } })),
+    })
+    const routed = JSON.stringify({ status: 'ok', from: placed(0), to: placed(7), reversed: true, truncated: true, routes: Array.from({ length: 5 }, (_, r) => ({ nodes: Array.from({ length: 7 }, (_, i) => placed(i + r)), hops: Array.from({ length: 6 }, (_, i) => ({ kind: 'dispatches', confidence: 'possible', path: path(i), line: i + 1 })) })) })
+    const w = world(on, { dashboard: [{ stdout: big }], brief: [{ stdout: touched }], detail: [{ stdout: fullDetailOf('Router') }], file: [{ stdout: fileDetailOf(path(0)) }], branch: [{ stdout: branched }], search: [{ stdout: found }], churn: [{ stdout: churned }], rings: [{ stdout: ringed }], route: [{ stdout: routed }] })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/${path(0)}`)
@@ -745,12 +774,14 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       for (const [bodyColumns, bodyRows] of [[200, 60], [140, 120], [100, 60], [60, 60]] as const) {
         const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows } } })
-        for (const step of ['tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'tab:issues', 'tab:changes', 'tab:branch', 'keys', 'tab:hubs', 'row:0', 'back', 'row:50', 'find', 'typed', 'find-close']) {
+        // Every tab, the key list, a detail with its rings and a note being typed, a route picked and drawn, the finder.
+        for (const step of ['tab:overview', 'tab:hubs', 'tab:boundaries', 'tab:cycles', 'tab:issues', 'tab:changes', 'tab:branch', 'tab:churn', 'keys', 'tab:hubs', 'row:0', 'note', 'route', 'typed', 'row:0', 'back', 'back', 'row:50', 'find', 'typed', 'find-close']) {
           if (step === 'typed') {
             await ui.input({ key: 'find', text: 'x', kind: 'change' })
             await w.clock.advance(200)
           } else {
-            if ((await ui.find({ key: step })) === undefined) continue
+            // A press only where its Button is drawn: a note still being typed from the last size draws its field instead.
+            if ((await ui.find({ type: 'Button', key: step })) === undefined) continue
             await ui.press({ key: step })
           }
           await w.clock.settle()
@@ -1554,7 +1585,7 @@ describe('knossos mod', () => {
       const tabs = await ui.findAll({ type: 'Button' })
       // Six tabs at 60 columns, narrow: the active one by name, the others by digit, none drawing a hotkey.
       const labelled = (t: (typeof tabs)[number]) => (t.props.hotkey === undefined ? String(t.text) : `${String(t.props.hotkey)}: ${t.text}`)
-      expect(tabs.filter(t => String(t.key).startsWith('tab:')).map(labelled)).toEqual([' Overview ', ' 2 ', ' 3 ', ' 4 ', ' 5 ', ' 6 ', ' 7 '])
+      expect(tabs.filter(t => String(t.key).startsWith('tab:')).map(labelled)).toEqual([' Overview ', ' 2 ', ' 3 ', ' 4 ', ' 5 ', ' 6 ', ' 7 ', ' 8 '])
       // The open tab stands on the selection colour.
       expect((await ui.find({ key: 'tab:overview-bg' }))?.props.backgroundColor).toBe('selectionBg')
       expect(await ui.find({ key: 'tab:hubs-bg' })).toBeUndefined()
@@ -1567,6 +1598,7 @@ describe('knossos mod', () => {
         '5 tabkey:issues',
         '6 tabkey:changes',
         '7 tabkey:branch',
+        '8 tabkey:churn',
       ])
       await ui.press({ key: 'tabkey:cycles' })
       expect((await ui.find({ key: 'tab:cycles' }))?.text).toBe(' Cycles ')
@@ -1916,7 +1948,7 @@ describe('knossos mod', () => {
     const ui = await mountPane($)
     expect(await ui.find({ key: 'help-0' })).toBeUndefined()
     await ui.press({ key: 'keys' })
-    expect((await ui.find({ key: 'help-0' }))?.text).toMatch(/1–7 +switch tabs/)
+    expect((await ui.find({ key: 'help-0' }))?.text).toMatch(/1–8 +switch tabs/)
     await ui.press({ key: 'keys' })
     expect(await ui.find({ key: 'help-0' })).toBeUndefined()
     await ui.unmount()
@@ -4284,6 +4316,183 @@ describe("the pane's header, marked rows, hover cards and heat map cells", () =>
     await ui.press({ key: 'tab:changes' })
     const row = (await ui.find({ key: 'changes-timeline' }))?.text ?? ''
     expect(row).toMatch(/^ {3}scans ●● {2}\d this session/)
+    await ui.unmount()
+  })
+})
+
+describe('round 13: churn, blast radius, routes, notifications and notes', () => {
+  const ringItem = (name: string, tested: boolean) => ({ name, canonical_name: `App\\${name}`, kind: 'class', path: `src/${name}.php`, line: 3, boundary: 'Core', tested })
+  const RINGS = JSON.stringify({
+    status: 'ok',
+    component: { name: 'Greeter', canonical_name: 'App\\Greeter', kind: 'class', boundary: 'Core' },
+    truncated: false,
+    rings: [
+      { hop: 1, count: 2, tested: 1, items: [ringItem('Caller', false), ringItem('Router', true)], tests: { count: 1, items: [{ path: 'tests/RouterTest.php', hop: 2 }] } },
+      { hop: 2, count: 1, tested: 1, items: [ringItem('Kernel', true)], tests: { count: 1, items: [{ path: 'tests/KernelTest.php', hop: 3 }] } },
+      { hop: 3, count: 0, tested: 0, items: [], tests: { count: 0, items: [] } },
+    ],
+  })
+
+  test('the Churn tab reads the history while open, once per commit the checkout is at, and opens what it ranks', async ($, on) => {
+    const churned = JSON.stringify({ status: 'ok', days: 30, head: 'a'.repeat(40), commits: 12, truncated: false, files: [{ path: 'src/Http/Router.php', commits: 9, dependents: 12, score: 108, boundary: 'Http' }, { path: 'src/Core/Kernel.php', commits: 3, dependents: 2, score: 6, boundary: 'Core' }] })
+    const head = (rev: string) => ({ stdout: JSON.stringify({ status: 'ok', rev, branch: 'main' }) })
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], churn: [{ stdout: churned }], head: [head('a'.repeat(40)), head('a'.repeat(40)), head('b'.repeat(40))], file: [{ stdout: fileDetailOf('src/Http/Router.php') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    // Never while the tab is not open.
+    expect(w.churnRuns()).toHaveLength(0)
+    const ui = await mountPane($, 'terminal', 120)
+    expect((await ui.findAll({ key: 'tabkey:churn' })).map(b => b.props.hotkey)).toContain('8')
+    await ui.press({ key: 'tab:churn' })
+    await w.clock.settle()
+    expect(w.churnRuns()).toHaveLength(1)
+    const text = drawn((await ui.find({ key: 'pane' }))?.text ?? '')
+    expect(titled(text)).toMatch(/Churn hotspots · commits × dependents +2 files/)
+    expect(text).toMatch(/1 src\/Http\/\s*Router\.php/)
+    // Kept for the commit: another visit, or a turn that left the checkout where it was, reads nothing.
+    await ui.press({ key: 'tab:overview' })
+    await ui.press({ key: 'tab:churn' })
+    await w.clock.settle()
+    expect(w.churnRuns()).toHaveLength(1)
+    // The marked file opens as its detail.
+    await ui.press({ key: 'row:0' })
+    await w.clock.settle()
+    expect(w.fileRuns().at(-1)?.at(-1)).toBe('src/Http/Router.php')
+    await ui.press({ key: 'back' })
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.churnRuns()).toHaveLength(1)
+    // A new commit reads it again.
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.churnRuns()).toHaveLength(2)
+    await ui.unmount()
+  })
+
+  test("a component's detail draws its blast radius, read once per graph, each ring's components opening theirs", async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: fullDetailOf('Greeter') }], rings: [{ stdout: RINGS }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, 'inspect Greeter')
+    await w.clock.settle()
+    expect(w.ringRuns().map(r => r.slice(4))).toEqual([['--component=Greeter']])
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface, 100)
+      const text = drawn((await ui.find({ key: 'detail' }))?.text ?? '')
+      expect(text).toMatch(/1 hop · 2 +─+ ▲ 1 untested/)
+      expect(text).toMatch(/▲Caller {3}Router/)
+      expect(text).toContain('✓ 1 test file: RouterTest.php')
+      expect(text).toContain('◉ Greeter')
+      await ui.unmount()
+    }
+    // The rings' components follow the detail's own lists: the first is the untested caller.
+    const ui = await mountPane($, 'terminal', 100)
+    // Two that use it and one it uses come first: the rings' own start at the fourth.
+    await ui.press({ key: 'rel:3' })
+    await w.clock.settle()
+    expect(w.detailRuns().at(-1)?.at(-1)).toBe('App\\Caller')
+    await ui.unmount()
+    // Not read again for the same graph.
+    expect(w.ringRuns().filter(r => r.at(-1) === '--component=Greeter')).toHaveLength(1)
+  })
+
+  test('p picks where a route ends in the finder and draws it; b goes back to the detail it began on', async ($, on) => {
+    const found = JSON.stringify({ status: 'ok', query: 'kern', truncated: false, results: [{ type: 'file', name: 'src/Core/Kernel.php', canonical_name: 'src/Core/Kernel.php', kind: 'file', path: 'src/Core/Kernel.php', line: null, boundary: 'Core' }, { type: 'component', name: 'Kernel', canonical_name: 'App\\Core\\Kernel', kind: 'class', path: 'src/Core/Kernel.php', line: 4, boundary: 'Core' }] })
+    const node = (name: string) => ({ name, canonical_name: `App\\${name}`, kind: 'class', boundary: 'Core' })
+    const routed = JSON.stringify({ status: 'ok', from: node('Greeter'), to: node('Kernel'), reversed: false, truncated: false, routes: [{ nodes: [node('Greeter'), node('Router'), node('Kernel')], hops: [{ kind: 'calls', confidence: 'certain', path: 'src/Greeter.php', line: 7 }, { kind: 'constructs', confidence: 'certain', path: 'src/Router.php', line: 9 }] }] })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: fullDetailOf('Greeter') }], search: [{ stdout: found }], route: [{ stdout: routed }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, 'inspect Greeter')
+    await w.clock.settle()
+    const ui = await mountPane($, 'terminal', 100)
+    expect((await ui.find({ key: 'route' }))?.props.hotkey).toBe('p')
+    await ui.press({ key: 'route' })
+    await w.clock.settle()
+    expect((await ui.find({ type: 'Input', key: 'find' }))?.props.autoFocus).toBe(true)
+    expect(drawn((await ui.find({ key: 'pane' }))?.text ?? (await ui.find({ key: 'detail' }))?.text ?? '')).toContain('Route from Greeter to…')
+    await ui.input({ key: 'find', text: 'kern', kind: 'change' })
+    await w.clock.advance(200)
+    await w.clock.settle()
+    // Only the component is offered: a route runs between components.
+    expect((await ui.find({ key: 'found-0' }))?.text).toContain('Kernel')
+    expect(await ui.find({ key: 'found-1' })).toBeUndefined()
+    await ui.input({ key: 'find', text: 'kern' })
+    await w.clock.settle()
+    expect(w.routeRuns().map(r => r.slice(4))).toEqual([['--from=Greeter', '--to=App\\Core\\Kernel']])
+    const text = drawn((await ui.find({ key: 'detail' }))?.text ?? (await ui.find({ key: 'pane' }))?.text ?? '')
+    expect(text).toContain('Route › Greeter → Kernel')
+    expect(text).toMatch(/calls · Greeter\.php:7/)
+    // A box opens its component; back from the route is the detail it began on.
+    await ui.press({ key: 'back' })
+    await w.clock.settle()
+    const back = drawn((await ui.find({ key: 'detail' }))?.text ?? '')
+    expect(back).toMatch(/Overview › Greeter +●/)
+    expect(back).not.toContain('Route ›')
+    await ui.unmount()
+  })
+
+  test('a scan that brings a new cycle or violation says so once, as a toast, unless notifications are off', async ($, on) => {
+    const fresh = (snapshot: string, members: string[][]) =>
+      issuesDashboard({ snapshot_id: snapshot, cycles: { count: members.length, truncated: false, truncation_reasons: [], largest: members.map(m => ({ size: m.length, members: m })) } })
+    const w = world(on, { dashboard: [{ stdout: fresh('s1', [['boot', 'route']]) }, { stdout: fresh('s2', [['boot', 'route'], ['App\\Store', 'App\\Cache']]) }, { stdout: fresh('s3', [['boot', 'route'], ['App\\Store', 'App\\Cache']]) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.toasts.filter(t => t.startsWith('knossos: a new'))).toEqual([])
+    for (const n of [1, 2]) {
+      await edit($, `${ROOT}/src/F${n}.php`)
+      await $.turn.complete(TURN)
+      await w.clock.settle()
+    }
+    expect(w.toasts.filter(t => t.startsWith('knossos: a new'))).toEqual(['knossos: a new dependency cycle of 2: Store → Cache → Store'])
+  })
+
+  test('notifications off: no toast for what a scan brings', { options: { notifications: false } }, async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }, { stdout: issuesDashboard({ snapshot_id: 's2', cycles: { count: 2, truncated: false, truncation_reasons: [], largest: [{ size: 2, members: ['a', 'b'] }, { size: 2, members: ['c', 'd'] }] } }) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/F.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.toasts.filter(t => t.startsWith('knossos: a new'))).toEqual([])
+  })
+
+  test('m adds a note: knossos checks it, the card asks, and only y records it; n drops it', async ($, on) => {
+    const preview = JSON.stringify({ status: 'ok', component: 'App\\Greeter', kind: 'note', action: 'upsert', executed: false, value: 'keep it pure', previous: null })
+    const recorded = JSON.stringify({ status: 'ok', component: 'App\\Greeter', kind: 'note', action: 'upsert', executed: true, value: 'keep it pure', previous: null })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: fullDetailOf('Greeter') }], note: [{ stdout: preview }, { stdout: recorded }, { stdout: preview }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, 'inspect Greeter')
+    await w.clock.settle()
+    const ui = await mountPane($, 'terminal', 100)
+    expect((await ui.find({ key: 'note' }))?.props.hotkey).toBe('m')
+    await ui.press({ key: 'note' })
+    await w.clock.settle()
+    // The field opens holding the note there is, and takes the focus.
+    expect((await ui.find({ type: 'Input', key: 'note' }))?.props).toMatchObject({ autoFocus: true, value: 'The one way in.' })
+    await ui.input({ key: 'note', text: 'keep it pure', kind: 'change' })
+    // Typing writes nothing, nor asks anything.
+    expect(w.noteRuns()).toHaveLength(0)
+    await ui.input({ key: 'note', text: 'keep it pure' })
+    await w.clock.settle()
+    expect(w.noteRuns().map(r => r.slice(4))).toEqual([['--component=App\\Greeter', '--value=keep it pure']])
+    expect(drawn((await ui.find({ key: 'detail' }))?.text ?? '')).toContain('Record this note on Greeter? "keep it pure"')
+    expect((await ui.find({ key: 'note-yes' }))?.props.hotkey).toBe('y')
+    const before = w.detailRuns().length
+    await ui.press({ key: 'note-yes' })
+    await w.clock.settle()
+    expect(w.noteRuns().at(-1)?.slice(4)).toEqual(['--component=App\\Greeter', '--value=keep it pure', '--execute'])
+    // Read again so the note shows; said in the footer.
+    expect(w.detailRuns().length).toBe(before + 1)
+    // Asked again and dropped: nothing more is written.
+    await ui.press({ key: 'note' })
+    await ui.input({ key: 'note', text: 'second thought' })
+    await w.clock.settle()
+    await ui.press({ key: 'note-no' })
+    await w.clock.settle()
+    expect(w.noteRuns().filter(r => r.includes('--execute'))).toHaveLength(1)
+    expect(await ui.find({ key: 'note-yes' })).toBeUndefined()
     await ui.unmount()
   })
 })

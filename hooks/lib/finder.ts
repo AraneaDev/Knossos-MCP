@@ -23,15 +23,24 @@ import type { Openable } from './views'
 export type Found = { name: string; canonical: string; kind: string; file: boolean; boundary: string | null; place: string; loc: Loc | null }
 
 /** The finder as the pane draws it: what is typed, whether its answer is still on the way, and the matches last read. */
-export type FinderInput = { query: string; searching: boolean; results: Found[]; truncated: boolean; failed: boolean }
+export type FinderInput = {
+  query: string
+  searching: boolean
+  results: Found[]
+  truncated: boolean
+  failed: boolean
+  /** While it picks where a route ends (`p`): the component the route starts at, by its label. Only components are listed then. */
+  routeFrom?: string
+}
 
 /** The fewest matches the finder lists, however short the pane. */
 const FOUND_MIN = 5
 
 /** The finder's view of the search state; `root` places each match on disk. */
-export function finderInput(state: SearchState, root: string | null): FinderInput {
+export function finderInput(state: SearchState, root: string | null, routeFrom: string | null = null): FinderInput {
   const answer = state.answer
-  const results = (answer?.status === 'ok' ? answer.results : []).map(
+  // A route runs between components: while one is picked, files are not offered.
+  const results = (answer?.status === 'ok' ? answer.results : []).filter(r => routeFrom === null || r.type !== 'file').map(
     (r): Found => ({
       name: r.type === 'file' ? r.name : displayName({ name: r.name, canonical_name: r.canonical_name, kind: r.kind }),
       canonical: r.canonical_name,
@@ -49,6 +58,7 @@ export function finderInput(state: SearchState, root: string | null): FinderInpu
     results: typed === '' ? [] : results,
     truncated: answer?.status === 'ok' && answer.truncated,
     failed: typed !== '' && state.phase === 'idle' && state.for === typed && answer?.status !== 'ok',
+    ...(routeFrom === null ? {} : { routeFrom }),
   }
 }
 
@@ -65,7 +75,8 @@ export function finderBlock(finder: FinderInput, selected: number, tier: Tier, h
     make: (columns, limit) => {
       const rows: Row[] = [{ key: 'find-row', segments: [{ text: '   find: ', dim: true }, { text: finder.query, field: { id: 'find', value: finder.query, placeholder: 'letters of a name, in order' } }] }]
       const said = (key: string, text: string) => wrapWords(text, Math.max(1, columns - 3)).forEach((line, i) => rows.push(dimRow(`${key}-${i}`, `   ${line}`, columns)))
-      if (finder.query.trim() === '') said('find-hint', 'Type letters of a component or file name, in order. Enter opens the first match; a click opens any.')
+      if (finder.routeFrom !== undefined && finder.query.trim() === '') said('find-route', `A route from ${finder.routeFrom}: type the letters of the component it should reach. Enter takes the first match; a click takes any.`)
+      else if (finder.query.trim() === '') said('find-hint', 'Type letters of a component or file name, in order. Enter opens the first match; a click opens any.')
       else if (finder.failed) said('find-failed', 'knossos did not answer; type on to ask again.')
       else if (!finder.searching && finder.results.length === 0) said('find-none', `Nothing matches "${finder.query.trim()}".`)
       const list = finder.results
@@ -78,7 +89,7 @@ export function finderBlock(finder: FinderInput, selected: number, tier: Tier, h
         if (list.length > shown.length) rows.push(dimRow('found-more', `   ${list.length - shown.length} more ↓ · type more to narrow`, columns))
       }
       const note = finder.searching ? 'searching…' : finder.query.trim() === '' ? 'components and files' : `${list.length}${finder.truncated ? '+' : ''} found`
-      return { key: 'find', title: 'Find', note: noteOf(note), body: rows }
+      return { key: 'find', title: finder.routeFrom === undefined ? 'Find' : `Route from ${finder.routeFrom} to…`, note: noteOf(note), body: rows }
     },
   }
 }

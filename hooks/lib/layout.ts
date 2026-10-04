@@ -7,7 +7,7 @@
  * shared primitives (segments, cutting, bars, the self-fitting table) are in
  * `rows.ts`; the Issues and Cycles tabs and the component detail in `views.ts`.
  */
-import type { AllowState, BranchState, CouplingState, Dashboard, Feedback, GitHead, HubSort, KnossosView, LiveState, PaneTab, Ranked, RefreshState, RescanState, SearchState, SessionChanges, TurnBrief } from '../../types'
+import type { AllowState, BranchState, ChurnState, CouplingState, Dashboard, Feedback, GitHead, HubSort, KnossosView, LiveState, NoteState, PaneTab, Ranked, RefreshState, RescanState, RingsState, RouteState, SearchState, SessionChanges, TurnBrief } from '../../types'
 import { formatAge } from './band'
 import { boundariesArrangement, boundariesInput, boundariesList, couplingView, markedCell } from './boundaries'
 import type { BoundariesInput, CouplingView } from './boundaries'
@@ -52,6 +52,11 @@ import type { Stat } from './tiles'
 import { compositionBlock, concentrationBlock, flowsBlock, healthBlock, overviewData, overviewList as overviewWalk, sessionBlock } from './overview'
 import type { OverviewData } from './overview'
 import { branchArrangement, branchCount, branchInput, branchList } from './branch'
+import { churnArrangement, churnInput, churnList } from './churn'
+import type { ChurnInput } from './churn'
+import { ringsInput } from './rings'
+import { routeArrangement, routeInput, routeList } from './route'
+import type { RouteInput } from './route'
 import type { BranchInput } from './branch'
 import { litAt } from './flash'
 import { finderBlock, finderInput, finderList } from './finder'
@@ -62,7 +67,7 @@ import type { CyclesInput } from './cycles'
 import { detailArrangement, detailList, issueCount, issuesArrangement, issuesInput, issuesList, locIn, superscript } from './views'
 import { arrange, besideRows, cardInner, DEFAULT_ROWS, fillColumn, fitBlocks, gridColumns, moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
-import type { DetailInput, IssuesInput, Openable } from './views'
+import type { DetailInput, IssuesInput, NoteInput, Openable } from './views'
 
 // Everything the specs and the render hook draw with, from one module.
 export { bar, button, cells, displayName, fileHref, fit, linkMarkdown, locOf, locText, rowWidth, tableSpec, tierOf, wrapWords } from './rows'
@@ -165,6 +170,10 @@ export type PaneInput = {
   branch: BranchInput
   /** The marked row's detail, drawn beside the tab on a wide pane (master-detail); null when there is none to show. */
   peek: DetailInput | null
+  /** The Churn tab: the files changed most that much depends on. */
+  churn: ChurnInput
+  /** The route the path explorer draws instead of a tab or a detail, or null. */
+  route: RouteInput | null
 }
 
 /** A refused root the pane offers to allow: the root, the roots file it would join, and where the action stands. */
@@ -179,6 +188,7 @@ export const TABS: { id: PaneTab; full: string; hotkey: string }[] = [
   { id: 'issues', full: 'Issues', hotkey: '5' },
   { id: 'changes', full: 'Changes', hotkey: '6' },
   { id: 'branch', full: 'Branch', hotkey: '7' },
+  { id: 'churn', full: 'Churn', hotkey: '8' },
 ]
 
 export const SORTS: HubSort[] = ['in', 'out', 'cross']
@@ -236,13 +246,26 @@ export function fileHubList(files: FileHub[], filter: string): FileHub[] {
 }
 
 /** What a list addresses: the fields the selection, `o`, `e`, `c` and `q` read. */
-export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'degree' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries' | 'lookAt' | 'overview' | 'drift' | 'driftOpen' | 'fileHubs'> & Partial<Pick<PaneInput, 'finder' | 'branch'>>
+export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'degree' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries' | 'lookAt' | 'overview' | 'drift' | 'driftOpen' | 'fileHubs'> & Partial<Pick<PaneInput, 'finder' | 'branch' | 'churn' | 'route'>>
 
 /** A file row of a list: it opens as the file's detail, and `e` opens the file. */
 const fileRow = (path: string, loc: Loc | null): Openable => ({ name: path, canonical: path, loc, file: true })
 
 /** The pane's state the layout does not read from the dashboard: where the checkout stands, the footer's word, and the Boundaries tab's cell. */
-export type PaneExtras = { git?: GitHead | undefined; feedback?: Feedback | null; couplings?: CouplingState | null; flash?: Flash | null; search?: SearchState | null; branch?: BranchState | null }
+export type PaneExtras = {
+  git?: GitHead | undefined
+  feedback?: Feedback | null
+  couplings?: CouplingState | null
+  flash?: Flash | null
+  search?: SearchState | null
+  branch?: BranchState | null
+  churn?: ChurnState | null
+  /** The blast radius of the component the detail shows, as last read. */
+  rings?: RingsState | null
+  route?: RouteState | null
+  /** A note being added on the detail. */
+  note?: NoteState | null
+}
 
 /**
  * The Overview's walkable rows, in the order a narrow pane draws them: the
@@ -267,6 +290,7 @@ const filesShown = (input: Pick<PaneInput, 'fileHubs' | 'filter' | 'degree'>): F
 export function listFor(input: ListInput): Openable[] {
   // The finder stands over everything: its matches are what the marker walks.
   if (input.finder !== undefined && input.finder !== null) return finderList(input.finder)
+  if (input.route !== undefined && input.route !== null) return routeList(input.route)
   if (input.detail !== null) return input.detail.file === undefined ? detailList(input.detail) : input.detail.file === null ? [] : fileDetailList(input.detail.file)
   if (input.driftOpen && input.drift !== null) return driftList(input.drift)
   if (input.tab === 'overview') return overviewList(input)
@@ -275,6 +299,7 @@ export function listFor(input: ListInput): Openable[] {
   if (input.tab === 'cycles') return cyclesList(input.cycles)
   if (input.tab === 'boundaries') return boundariesList(input.boundaries)
   if (input.tab === 'branch') return input.branch === undefined ? [] : branchList(input.branch)
+  if (input.tab === 'churn') return input.churn === undefined ? [] : churnList(input.churn)
   return input.tab === 'issues' ? issuesList(input.issues) : []
 }
 
@@ -421,6 +446,8 @@ export function paneInput(
   const policy = issues.policy?.evaluated ? issues.policy.total : turn
   const diagnostics = issues.diagnostics === null ? null : issues.diagnostics.errors + issues.diagnostics.warnings
   const lit = litAt(extras.flash ?? null, now)
+  const allowing = allowInput(brief, rescan, allow)
+  const route = view.route ?? null
   return {
     project: baseName(d.project_root ?? d.path) || (d.project_root ?? d.path),
     status: paneStatus(d, refresh, rescan, now, live),
@@ -446,8 +473,8 @@ export function paneInput(
     issues,
     cycles: cyclesInput(d, view.unfolded ?? []),
     boundaries,
-    detail,
-    allow: allowInput(brief, rescan, allow),
+    detail: componentDetail(detail, d.project_root, extras, allowing?.phase !== 'confirming', view.inspect?.name ?? null),
+    allow: allowing,
     hues,
     changes,
     lookAt: lookAtOf(changes),
@@ -458,10 +485,28 @@ export function paneInput(
     target: view.target ?? null,
     couplings: shownCouplings(boundaries, view, d.snapshot_id ?? null, extras.couplings ?? null),
     lit,
-    finder: view.finding === true && extras.search !== undefined && extras.search !== null ? finderInput(extras.search, d.project_root) : null,
+    finder: view.finding === true && extras.search !== undefined && extras.search !== null ? finderInput(extras.search, d.project_root, view.picking?.label ?? null) : null,
     branch: branchInput(extras.branch ?? null, d.project_root),
     peek,
+    churn: churnInput(extras.churn ?? null, d.project_root),
+    route: route === null ? null : routeInput(extras.route ?? null, route.from, route.to, route.index, d.project_root),
   }
+}
+
+/**
+ * A component's own detail with what only it draws: its blast radius and
+ * the notes card that adds one (`m`), with the note under way. A file's
+ * detail, and a detail still loading, are left as they are.
+ */
+function componentDetail(detail: DetailInput | null, root: string | null, extras: PaneExtras, keys: boolean, asked: string | null): DetailInput | null {
+  if (detail === null || detail.file !== undefined || detail.component === null) return detail
+  const canonical = detail.component.canonical
+  // The rings are read by the name the detail was asked for (a short name typed after /knossos inspect, or the full one).
+  const rings = extras.rings ?? null
+  const ringsOf = rings !== null && (rings.name === asked || rings.name === canonical) ? rings.name : canonical
+  const note = extras.note ?? null
+  const shown: NoteInput | null = note === null || note.component !== canonical ? null : { phase: note.phase, value: note.value, previous: note.previous, reason: note.reason, keys }
+  return { ...detail, rings: ringsInput(rings, ringsOf, root), note: shown, notable: true }
 }
 
 /** The in-degree range Hubs is narrowed to, with how many components the Overview's bucket for it counts. */
@@ -517,7 +562,8 @@ export function allowInput(brief: TurnBrief | null, rescan: RescanState, allow: 
  * detail, else the marked row of the tab's list; null when there is none.
  */
 export function subjectOf(input: ListInput & Pick<PaneInput, 'selected'>): Openable | null {
-  if (input.detail !== null) {
+  // A route drawn over a detail: the marked box is the subject, as on any list.
+  if (input.detail !== null && (input.route === undefined || input.route === null)) {
     const f = input.detail.file
     if (f !== undefined) return f === null ? null : fileRow(f.path, f.loc)
     const c = input.detail.component
@@ -604,19 +650,22 @@ export function titleRow(input: PaneInput, columns: number, tier: Tier): Row {
   const note: Segment[] = input.status.note === undefined ? [] : [{ text: `${input.status.note}  `, dim: true }]
   const name: Segment = { text: input.project, bold: true, color: HEADING }
   const crumbs: Segment[] =
-    input.detail === null
-      ? [name]
-      : [name, { text: ' › ', dim: true }, { text: TABS.find(t => t.id === input.tab)?.full ?? '', dim: true }, { text: ' › ', dim: true }, { text: input.detail.label, bold: true, color: HEADING }]
+    input.route !== null
+      ? [name, { text: ' › ', dim: true }, { text: 'Route', dim: true }, { text: ' › ', dim: true }, { text: `${input.route.from} → ${input.route.to}`, bold: true, color: HEADING }]
+      : input.detail === null
+        ? [name]
+        : [name, { text: ' › ', dim: true }, { text: TABS.find(t => t.id === input.tab)?.full ?? '', dim: true }, { text: ' › ', dim: true }, { text: input.detail.label, bold: true, color: HEADING }]
   const git = gitLabel(input.git)
   const where: Segment[] = git === '' || tier === 'narrow' ? [] : [{ text: `  ${git}`, dim: true }]
+  const away = input.detail !== null || input.route !== null
   const chips: Segment[] =
-    tier === 'narrow' || input.detail !== null || input.languages === '' ? [] : input.languages.split(' ').flatMap((l): Segment[] => [{ text: ' ' }, { text: ` ${l} `, dim: true, bg: CHIP_BG }])
+    tier === 'narrow' || away || input.languages === '' ? [] : input.languages.split(' ').flatMap((l): Segment[] => [{ text: ' ' }, { text: ` ${l} `, dim: true, bg: CHIP_BG }])
   const chipsLead: Segment[] = chips.length === 0 ? [] : [{ text: ' ' }, ...chips]
   // Each layout from the fullest down; the first that fits wins.
   const variants: [Segment[], Segment[]][] = [
-    [[...crumbs, ...(input.detail === null ? where : []), ...chipsLead], [...note, pill(input.status), ...rescan]],
-    [[...crumbs, ...(input.detail === null ? where : [])], [...note, pill(input.status), ...rescan]],
-    [[...crumbs, ...(input.detail === null && input.git?.branch ? [{ text: `  ${input.git.branch}`, dim: true }] : [])], [...note, pill(input.status), ...rescan]],
+    [[...crumbs, ...(away ? [] : where), ...chipsLead], [...note, pill(input.status), ...rescan]],
+    [[...crumbs, ...(away ? [] : where)], [...note, pill(input.status), ...rescan]],
+    [[...crumbs, ...(!away && input.git?.branch ? [{ text: `  ${input.git.branch}`, dim: true }] : [])], [...note, pill(input.status), ...rescan]],
     [crumbs, [...note, pill(input.status), ...rescan]],
     [crumbs, [pill(input.status), ...rescan]],
   ]
@@ -762,7 +811,7 @@ function componentRows(prefix: string, items: Item[], selected: number, spec: Ta
 
 /** The keys and what each does, for the key list. */
 const KEY_HELP: [string, string][] = [
-  ['1–7', 'switch tabs (or click one)'],
+  ['1–8', 'switch tabs (or click one)'],
   ['j k', 'move the marker (or Tab, or a click)'],
   ['o', 'open the marked row: a component or a file shows what depends on it, an Overview bar the tab it counts'],
   ['e', "open the marked row's file in your editor"],
@@ -773,6 +822,8 @@ const KEY_HELP: [string, string][] = [
   ['d', 'list the files drifted since the snapshot, or hide them'],
   ['l', "on Boundaries: move the marked cell to the next boundary the marked one depends on, and spell it out"],
   ['f', 'find any component or file by the letters of its name; Enter opens the first match, x closes the finder'],
+  ['p', "in a component's detail: pick another component in the finder and draw the route between them"],
+  ['m', "in a component's detail: add a note to it; knossos checks it first, and y records it"],
   ['n s x', 'on Hubs: narrow the list (type, then Enter), sort by in, out or cross, clear the narrowing or the in-degree range'],
   ['r', 'rescan a stale snapshot'],
   ['a', 'allow a refused root (asks first)'],
@@ -811,8 +862,8 @@ export function footerRows(input: PaneInput, columns: number, hasList: boolean, 
   const moves: Segment[] = []
   const actions: Segment[] = []
   if (input.finder !== null) return finderFooter(input, columns, hasList)
-  const onTab = input.detail === null && !input.driftOpen
-  if (input.detail !== null) moves.push(button('back', 'back', 'b'))
+  const onTab = input.detail === null && input.route === null && !input.driftOpen
+  if (input.detail !== null || input.route !== null) moves.push(button('back', 'back', 'b'))
   // On Cycles the marker walks the boxes the diagram draws, which only the width decides: the keys name the row they move to.
   const tier = tierOf(columns)
   const marked = Math.min(Math.max(0, input.selected), Math.max(0, listFor(input).length - 1))
@@ -833,6 +884,8 @@ export function footerRows(input: PaneInput, columns: number, hasList: boolean, 
     actions.push(button('filter', 'narrow', 'n'), button('sort', `sort: ${input.sort}`, 's'))
     if (input.filter !== '' || input.degree !== null) actions.push(button('clear', 'clear', 'x'))
   }
+  // From a component's own detail, a route to any other component (the finder picks where it ends).
+  if (input.route === null && input.detail?.component !== null && input.detail?.component !== undefined && input.detail.file === undefined) actions.push(button('route', 'route to…', 'p'))
   actions.push(button('find', 'find', 'f'), button('keys', input.showKeys ? 'hide keys' : 'keys', 'h'))
   const pad = padOf(tier)
   const inner = Math.max(1, columns - 2 * pad)
@@ -1086,7 +1139,7 @@ export function paneLayout(input: PaneInput, columns: number, height: number = D
   const rows: Row[] = []
   if (!short && tier !== 'narrow') rows.push(blank('head-top'))
   rows.push(padded(titleRow(input, inner, tier), pad, width))
-  if (input.detail === null) {
+  if (input.detail === null && input.route === null) {
     const count = issueCount(input.issues)
     const touched = input.changes.files.length
     const branched = branchCount(input.branch)
@@ -1108,6 +1161,8 @@ export function paneLayout(input: PaneInput, columns: number, height: number = D
   if (input.finder !== null) {
     // The finder stands in for the tab or the detail while it is open; closing it puts them back as they were.
     rows.push(...fillColumn(fitBlocks([finderBlock(input.finder, selected, tier, input.hues)], width, tier, room()), width, room(), tier))
+  } else if (input.route !== null) {
+    rows.push(...arrange(routeArrangement(input.route, selected, input.hues), width, room(), true))
   } else if (input.detail !== null) {
     rows.push(...arrange(detailOf(input.detail, tier, input.hues, selected), width, room(), true))
   } else {
@@ -1139,7 +1194,7 @@ export function paneLayout(input: PaneInput, columns: number, height: number = D
 }
 
 /** The tabs whose marked row shows its detail beside the list on a wide pane. */
-export const PEEK_TABS: readonly PaneTab[] = ['hubs', 'changes', 'issues', 'cycles', 'branch']
+export const PEEK_TABS: readonly PaneTab[] = ['hubs', 'changes', 'issues', 'cycles', 'branch', 'churn']
 /** The list's share of a wide pane beside the marked row's detail. */
 const PEEK_SPLIT = 0.55
 /** How each panel of master-detail is laid out: one column of framed cards. */
@@ -1181,5 +1236,6 @@ function tabArrangement(input: PaneInput, selected: number, tier: Tier): Arrange
   if (input.tab === 'issues') return issuesArrangement(input.issues, selected, tier, input.hues)
   if (input.tab === 'cycles') return cyclesArrangement(input.cycles, tier, input.hues, selected)
   if (input.tab === 'branch') return branchArrangement(input.branch, selected, input.hues)
+  if (input.tab === 'churn') return churnArrangement(input.churn, selected, tier, input.hues)
   return boundariesArrangement(input.boundaries, tier, input.hues, selected, input.target, input.couplings, input.lit)
 }

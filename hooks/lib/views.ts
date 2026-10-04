@@ -11,7 +11,9 @@ import { diffBlock } from './diff'
 import type { DiffView } from './diff'
 import { moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
-import type { ComponentDetail, Counterpart, Dashboard, DetailState, Inspected, PaneTab } from '../../types'
+import type { ComponentDetail, Counterpart, Dashboard, DetailState, Inspected, NoteState, PaneTab } from '../../types'
+import { ringsBlock, ringsList } from './rings'
+import type { RingsInput } from './rings'
 import { countLabel, detailLines } from './envelopes'
 import { ACCENT, boundaryColour, boundaryLabel, FAINT, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
 import { DIAGRAM_MIN, neighbourhood } from './diagram'
@@ -113,7 +115,20 @@ export type DetailInput = {
   diff?: DiffView | null
   /** Drawn in a panel beside a list (master-detail): its change as text rows, the engine's diff element being the pane's width. */
   panel?: true
+  /** A component's blast radius in rings, once asked for (a component's own detail, never the panel). */
+  rings?: RingsInput | null
+  /** A note being added to the component, while one is; null otherwise (never in the panel). */
+  note?: NoteInput | null
+  /** Whether the notes card offers its key (`m`): a component's own detail, not the panel. */
+  notable?: true
 }
+
+/**
+ * A note being added on the detail: typed, checked, asked about, recorded,
+ * or refused with why. `keys` is false while another question holds `y`
+ * and `n` (the allow-root offer): its answers are then buttons alone.
+ */
+export type NoteInput = { phase: NoteState['phase']; value: string; previous: string | null; reason: string | null; keys: boolean }
 
 /** One file's detail as the pane draws it; `loc` places each file (and component) on disk. */
 export type FileView = {
@@ -254,7 +269,7 @@ export function detailInput(shown: Inspected, state: DetailState | null, root: s
 
 /** The components the detail can open: everything that uses it, then everything it uses. */
 export function detailList(detail: DetailInput): Openable[] {
-  return detail.component === null ? [] : [...detail.component.usedBy.items, ...detail.component.uses.items]
+  return detail.component === null ? [] : [...detail.component.usedBy.items, ...detail.component.uses.items, ...ringsList(detail.rings)]
 }
 
 /** An issue row's columns: its main text, then the boundary, then the place. */
@@ -533,22 +548,46 @@ export function detailArrangement(detail: DetailInput, tier: Tier, hues: Hues = 
       ...sideSection('uses', c.uses, c.usedBy.items.length, columns, limit, tier, hues, selected).body.map(r => ({ ...r, key: `hood-${r.key}` })),
     ],
   )
-  const notes: Block[] =
-    c.annotations.length === 0
-      ? []
-      : [
-          {
-            key: 'notes',
-            make: columns => ({
-              key: 'notes',
-              title: 'Annotations',
-              body: c.annotations.flatMap((a, i) =>
-                wrapWords(`${a.kind.replace(/_/g, ' ')}: ${a.value}`, Math.max(1, columns - MARK)).map((line, j) => ({ key: `note-${i}-${j}`, segments: [{ text: spaces(MARK) }, { text: line }] })),
-              ),
-            }),
-          },
-        ]
-  return { top: [head], left: [hood], bottom: [...notes, ...diff] }
+  const rings: Block[] = detail.rings === undefined || detail.rings === null ? [] : [ringsBlock(detail.rings, selected, c.usedBy.items.length + c.uses.items.length, hues)]
+  const notes: Block[] = c.annotations.length === 0 && detail.notable !== true ? [] : [notesBlock(c.name, c.annotations, detail.note ?? null, detail.notable === true)]
+  return { top: [head], left: [hood], bottom: [...rings, ...notes, ...diff] }
+}
+
+/**
+ * The component's notes as a card: each annotation by its kind, and, on a
+ * component's own detail, the way to add one (`m`) and where that stands:
+ * the field to type it in, knossos checking it, the question before it is
+ * recorded (`y` records, `n` drops it; what it replaces said), recording,
+ * or why knossos refused it. Nothing is written until the person says yes.
+ */
+function notesBlock(name: string, annotations: { kind: string; value: string }[], note: NoteInput | null, notable: boolean): Block {
+  return {
+    key: 'notes',
+    make: columns => {
+      const body: Row[] = annotations.flatMap((a, i) =>
+        wrapWords(`${a.kind.replace(/_/g, ' ')}: ${a.value}`, Math.max(1, columns - MARK)).map((line, j) => ({ key: `note-${i}-${j}`, segments: [{ text: spaces(MARK) }, { text: line }] })),
+      )
+      if (annotations.length === 0) body.push(dimRow('note-none', `   No notes on ${name} yet.`, columns))
+      if (!notable) return { key: 'notes', title: 'Notes', body }
+      const said = (key: string, text: string, style: Omit<Segment, 'text'>): Row[] => wrapWords(text, Math.max(1, columns - MARK)).map((line, i) => ({ key: `${key}-${i}`, segments: [{ text: spaces(MARK) }, { text: line, ...style }] }))
+      const keys = note?.keys !== false
+      if (note === null || note.phase === 'failed') {
+        if (note !== null) body.push(blank('note-gap'), ...said('note-failed', `✗ knossos did not record it: ${note.reason ?? 'it said nothing'}`, { color: STATUS_COLOURS.alert }))
+        const own = annotations.some(a => a.kind === 'note')
+        body.push(blank('note-keys-gap'), { key: 'note-keys', segments: [{ text: spaces(MARK) }, button('note', own ? 'change the note' : 'add a note', 'm', { dim: true })] })
+      } else if (note.phase === 'editing') {
+        body.push(blank('note-gap'), { key: 'note-field', segments: [{ text: '   note: ', dim: true }, { text: note.value, field: { id: 'note', value: note.value, placeholder: `what to remember about ${name}` } }] })
+        body.push(dimRow('note-field-keys', '   Enter checks it with knossos; nothing is written yet.', columns))
+      } else if (note.phase === 'previewing' || note.phase === 'saving') {
+        body.push(blank('note-gap'), dimRow('note-busy', note.phase === 'saving' ? '   recording…' : '   checking with knossos…', columns))
+      } else {
+        const replaces = note.previous === null ? '' : ` It replaces: "${note.previous}"`
+        body.push(blank('note-gap'), ...said('note-ask', `Record this note on ${name}? "${note.value}"${replaces}`, { color: ACCENT }))
+        body.push({ key: 'note-answers', segments: [{ text: spaces(MARK) }, button('note-yes', 'record', keys ? 'y' : undefined, { dim: false }), { text: '   ' }, button('note-no', 'cancel', keys ? 'n' : undefined, { dim: true })] })
+      }
+      return { key: 'notes', title: 'Notes', body }
+    },
+  }
 }
 
 /** One neighbour as the neighbourhood draws it: its name, boundary, edge count and the press that opens it. */

@@ -46,6 +46,12 @@
       "description": "Keep the graph current while you work: rescan an allowed, scanned project as its files change (one watcher per project, shared by your sessions).",
       "default": true
     },
+    "notifications": {
+      "type": "boolean",
+      "title": "Notifications",
+      "description": "Say with a toast when a scan brings a new dependency cycle or policy violation, once each.",
+      "default": true
+    },
     "watchPollMs": {
       "type": "number",
       "title": "Watcher poll interval (ms)",

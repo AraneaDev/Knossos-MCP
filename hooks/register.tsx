@@ -8,7 +8,7 @@ import { BASELINES_KEY, baselinesOf, remember } from './lib/baseline'
 import type { Baseline } from './lib/baseline'
 import type { JobState } from './lib/band'
 import { diffView } from './lib/diff'
-import { parseAllowRoot, parseBranchDiff, parseComponentDetail, parseCouplings, parseDashboard, parseFileContext, parseFileDetail, parseGraphSearch, parseRescan, parseSessionDiff, parseSessionHead, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
+import { parseAllowRoot, parseAnnotate, parseBlastRadius, parseBranchDiff, parseChurn, parseComponentDetail, parseCouplings, parseDashboard, parseFileContext, parseFileDetail, parseGraphSearch, parsePathBetween, parseRescan, parseSessionDiff, parseSessionHead, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { SessionLedger, TurnBrief } from './lib/envelopes'
 import { ledgerChanges, ownTimeline } from './lib/changes'
 import {
@@ -46,6 +46,7 @@ import {
 } from './lib/layout'
 import type { Loc, Openable, PaneInput, Preview, Row, Segment } from './lib/layout'
 import { commitNote, CONTEXT_DESCRIPTION, CONTEXT_SCHEMA, CONTEXT_TOOL, contextAnswer, isGitCommit } from './lib/agent'
+import { alertKeys, freshAlerts } from './lib/alerts'
 import { FLASH_MS, flashKeys, ledgerFlashKeys } from './lib/flash'
 import type { Flash } from './lib/flash'
 import { boundOf, editNote, fanInIndex, freshViolations, readNote, ruleText, testsNote, violationKey, violationNote } from './lib/notes'
@@ -55,7 +56,7 @@ import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { cells, pressLabel, textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
-import type { AllowState, BranchState, ComponentDetail, Dashboard, SearchState, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
+import type { AllowState, BranchState, ChurnState, ComponentDetail, Dashboard, NoteState, RingsState, RouteState, SearchState, CouplingState, DetailState, DiffState, Feedback, GitHead, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -126,6 +127,11 @@ const BRANCH_TIMEOUT_MS = 35_000
 const PEEK_DEBOUNCE_MS = 120
 /** The wrapper bounds file-context at 15 s. */
 const CONTEXT_TIMEOUT_MS = 20_000
+/** The wrapper bounds churn, blast-radius, path-between and annotate at 15 s. */
+const CHURN_TIMEOUT_MS = 20_000
+const RINGS_TIMEOUT_MS = 20_000
+const ROUTE_TIMEOUT_MS = 20_000
+const NOTE_TIMEOUT_MS = 20_000
 /** The model's tool, as the engine lists it (`mcp__<plugin>__<name>`): the plugin is `knossos`, so its hook matches this name. */
 const CONTEXT_TOOL_NAME = `mcp__knossos__${CONTEXT_TOOL}`
 
@@ -182,6 +188,14 @@ const peek = atom({ plugin: 'knossos', key: 'peek' } as const, null as { shown: 
 const branch = atom({ plugin: 'knossos', key: 'branch' } as const, null as BranchState | null)
 /** The rows the latest scan changed, lit for a moment after it landed. */
 const flash = atom({ plugin: 'knossos', key: 'flash' } as const, null as Flash | null)
+/** The Churn tab's hotspots, for the commit they were read at. */
+const churn = atom({ plugin: 'knossos', key: 'churn' } as const, null as ChurnState | null)
+/** The blast radius of the component the detail shows, for its name and snapshot. */
+const rings = atom({ plugin: 'knossos', key: 'rings' } as const, null as RingsState | null)
+/** The route the path explorer draws, for its two ends and snapshot. */
+const route = atom({ plugin: 'knossos', key: 'route' } as const, null as RouteState | null)
+/** A note being added on the detail, until it is recorded or dropped. */
+const note = atom({ plugin: 'knossos', key: 'note' } as const, null as NoteState | null)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -347,6 +361,9 @@ const mod = {
   startCycles: null as { count: number; keys: string[] } | null,
   /** Commit notes already given, by loop and text: the same note is never said twice. */
   commitNoted: new Set<string>(),
+  /** Whether a scan's new cycles and violations are toasted (userConfig `notifications`), and the ones already said. */
+  alertsOn: true,
+  toasted: new Set<string>(),
 }
 
 /**
@@ -587,9 +604,17 @@ async function loadDashboard($: EngineInterface): Promise<void> {
     return
   }
   const now = await $.clock.now()
+  const before = await read($, dashboard)
   // The rows the new snapshot changed light up for a moment once it lands.
-  await light($, flashKeys(await read($, dashboard), parsed as Dashboard), now)
+  await light($, flashKeys(before, parsed as Dashboard), now)
   await update($, dashboard, () => parsed)
+  // A cycle or a policy violation the scan brought: said once, as a toast, unless the person turned that off.
+  if (mod.alertsOn) {
+    for (const alert of freshAlerts(before, parsed as Dashboard, mod.toasted)) {
+      alertKeys(alert).forEach(key => mod.toasted.add(key))
+      $.ui.toast(alert.text)
+    }
+  }
   await update($, refresh, (): RefreshState => ({ fetchedAt: now, failed: false }))
   mod.dashboardStored = true
   if (parsed.status === 'ok') mod.snapshot = parsed.snapshot_id ?? mod.snapshot
@@ -607,6 +632,7 @@ async function loadDashboard($: EngineInterface): Promise<void> {
   await requestCouplings($)
   await requestBranch($)
   await requestPeek($)
+  await requestRoute($)
 }
 
 /**
@@ -692,7 +718,7 @@ async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> 
  */
 async function showComponent($: EngineInterface, shown: Inspected): Promise<void> {
   // The detail's marker starts on its first row; the tab's is kept for `b` to put back.
-  await update($, view, v => ({ ...v, inspect: shown, selected: 0, opened: v.inspect === null ? v.selected : v.opened }))
+  await update($, view, v => ({ ...v, inspect: shown, selected: 0, opened: v.inspect === null ? v.selected : v.opened, route: null, picking: null }))
   await requestDetail($, shown)
 }
 
@@ -703,6 +729,7 @@ const sameDetail = (state: DetailState | null, shown: Inspected, snapshot: strin
 /** Starts a lookup of what `shown` names unless one is running or done for this snapshot; silence is asked again. */
 async function requestDetail($: EngineInterface, shown: Inspected): Promise<void> {
   await requestDiff($, shown)
+  await requestRings($, shown)
   const snapshot = (await read($, dashboard))?.snapshot_id ?? null
   const { name } = shown
   const file = shown.file === true
@@ -804,6 +831,8 @@ async function noteGitHead($: EngineInterface, stdout: string): Promise<void> {
   mod.gitAsked = true
   const head = parseSessionHead(stdout)
   if (head !== undefined) await update($, gitHead, () => head)
+  // The Churn tab's history ends at the checkout's commit: a new one reads it again.
+  await requestChurn($)
 }
 
 /**
@@ -1375,7 +1404,18 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const stored = await read($, detail)
   const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
   if (shown !== null && v.inspect !== null) shown.diff = diffView(v.inspect, await read($, fileDiff), await read($, sessionRev))
-  const extras = { git: await read($, gitHead), feedback: await read($, feedback), couplings: await read($, couplings), flash: await read($, flash), search: await read($, search), branch: await read($, branch) }
+  const extras = {
+    git: await read($, gitHead),
+    feedback: await read($, feedback),
+    couplings: await read($, couplings),
+    flash: await read($, flash),
+    search: await read($, search),
+    branch: await read($, branch),
+    churn: await read($, churn),
+    rings: await read($, rings),
+    route: await read($, route),
+    note: await read($, note),
+  }
   // The marked row's detail beside the tab: only while the pane is drawn wide.
   const peeked = mod.paneWide ? await read($, peek) : null
   const side = peeked === null ? null : peeked.shown.file === true ? fileDetailInput(peeked.shown, peeked.detail, d.project_root, huesOf(d)) : detailInput(peeked.shown, peeked.detail, d.project_root)
@@ -1403,6 +1443,8 @@ async function openRow($: EngineInterface, index?: number): Promise<void> {
   if (item === undefined) return
   // A match opened from the finder closes it: the detail opens over the tab, whose marker stays where it stood.
   if ((await read($, view)).finding === true) {
+    // Picking where a route ends: the match is that end, and the route is drawn.
+    if (((await read($, view)).picking ?? null) !== null) return showRoute($, { name: item.canonical, label: item.name })
     mod.openWhenFound = false
     await update($, view, (v): KnossosView => ({ ...v, finding: false, selected: mod.findFrom }))
     return showComponent($, { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}) })
@@ -1507,7 +1549,7 @@ async function openFinder($: EngineInterface): Promise<void> {
 /** Closes the finder: the tab (or the detail) under it comes back with its marker where it stood. */
 async function closeFinder($: EngineInterface): Promise<void> {
   mod.openWhenFound = false
-  await update($, view, (v): KnossosView => (v.finding === true ? { ...v, finding: false, selected: mod.findFrom } : v))
+  await update($, view, (v): KnossosView => (v.finding === true ? { ...v, finding: false, picking: null, selected: mod.findFrom } : v))
 }
 
 /** What was typed into the finder, kept at once; the search for it runs after a short pause in the typing. */
@@ -1663,6 +1705,7 @@ async function pressPane($: EngineInterface, id: string, surface?: RenderSurface
   await requestCouplings($)
   await requestBranch($)
   await requestPeek($)
+  await requestChurn($)
 }
 
 /**
@@ -1740,6 +1783,182 @@ async function loadBranch($: EngineInterface, snapshot: string | null, root: str
   await update($, branch, (b): BranchState | null => (b !== null && b.snapshot === snapshot ? { snapshot, phase: 'done', answer: parsed } : b))
 }
 
+/**
+ * Starts reading the churn hotspots while the Churn tab is open, unless
+ * they were read (or are being read) for the commit the checkout is at:
+ * the history is kept per commit, so a new commit, not a new scan, reads
+ * it again. The last answer stays on show meanwhile. On a timer, never in
+ * a render.
+ */
+async function requestChurn($: EngineInterface): Promise<void> {
+  if (mod.disabled) return
+  const v = await read($, view)
+  if (v.tab !== 'churn' || v.inspect !== null || (v.route ?? null) !== null) return
+  const d = await read($, dashboard)
+  if (d?.status !== 'ok') return
+  const head = (await read($, gitHead))?.rev ?? null
+  const current = await read($, churn)
+  if (current !== null && current.head === head) return
+  await update($, churn, (c): ChurnState => ({ head, phase: 'loading', answer: c?.answer ?? null }))
+  const root = d.project_root ?? undefined
+  $.clock.after(0, () => void loadChurn($, head, root).catch(() => undefined))
+}
+
+/** One read of the churn hotspots; stored only while it is still for the commit on show. */
+async function loadChurn($: EngineInterface, head: string | null, root: string | undefined): Promise<void> {
+  const parsed = parseChurn(await wrapper($, 'churn', [], CHURN_TIMEOUT_MS, root))
+  if (parsed?.status === 'no-binary') return disable($)
+  await update($, churn, (c): ChurnState | null => (c !== null && c.head === head ? { head, phase: 'done', answer: parsed } : c))
+}
+
+/**
+ * Starts reading a component's blast radius for its detail, unless it was
+ * read (or is being read) for this component and graph; a file's detail
+ * has none. A new snapshot reads it again, the last rings on show
+ * meanwhile. On a timer, never in a render.
+ */
+async function requestRings($: EngineInterface, shown: Inspected): Promise<void> {
+  if (mod.disabled || shown.file === true) return
+  const d = await read($, dashboard)
+  const snapshot = d?.snapshot_id ?? null
+  const current = await read($, rings)
+  if (current !== null && current.name === shown.name && current.snapshot === snapshot) return
+  await update($, rings, (r): RingsState => ({ name: shown.name, snapshot, phase: 'loading', answer: r !== null && r.name === shown.name ? r.answer : null }))
+  const root = d?.status === 'ok' ? (d.project_root ?? undefined) : undefined
+  $.clock.after(0, () => void loadRings($, shown.name, snapshot, root).catch(() => undefined))
+}
+
+/** One read of a blast radius; stored only while the detail still asks for that component and graph. */
+async function loadRings($: EngineInterface, name: string, snapshot: string | null, root: string | undefined): Promise<void> {
+  const parsed = parseBlastRadius(await wrapper($, 'blast-radius', [`--component=${name}`], RINGS_TIMEOUT_MS, root))
+  if (parsed?.status === 'no-binary') return disable($)
+  await update($, rings, (r): RingsState | null => (r !== null && r.name === name && r.snapshot === snapshot ? { ...r, phase: 'done', answer: parsed } : r))
+}
+
+/**
+ * Starts looking for the route the path explorer shows, unless it was
+ * looked for (or is being) between these two components in this graph. On
+ * a timer, never in a render.
+ */
+async function requestRoute($: EngineInterface): Promise<void> {
+  if (mod.disabled) return
+  const shown = (await read($, view)).route ?? null
+  if (shown === null) return
+  const d = await read($, dashboard)
+  const snapshot = d?.snapshot_id ?? null
+  const [from, to] = [shown.from.name, shown.to.name]
+  const current = await read($, route)
+  if (current !== null && current.from === from && current.to === to && current.snapshot === snapshot) return
+  await update($, route, (r): RouteState => ({ from, to, snapshot, phase: 'loading', answer: r !== null && r.from === from && r.to === to ? r.answer : null }))
+  const root = d?.status === 'ok' ? (d.project_root ?? undefined) : undefined
+  $.clock.after(0, () => void loadRoute($, from, to, snapshot, root).catch(() => undefined))
+}
+
+/** One route search; stored only while the explorer still shows these two ends in this graph. */
+async function loadRoute($: EngineInterface, from: string, to: string, snapshot: string | null, root: string | undefined): Promise<void> {
+  const parsed = parsePathBetween(await wrapper($, 'path-between', [`--from=${from}`, `--to=${to}`], ROUTE_TIMEOUT_MS, root))
+  if (parsed?.status === 'no-binary') return disable($)
+  await update($, route, (r): RouteState | null => (r !== null && r.from === from && r.to === to && r.snapshot === snapshot ? { ...r, phase: 'done', answer: parsed } : r))
+}
+
+/**
+ * `p` on a component's detail: the finder opens to pick where a route from
+ * it ends; the component it opens on is the other end. Only components are
+ * offered.
+ */
+async function startRoute($: EngineInterface): Promise<void> {
+  const v = await read($, view)
+  if (v.inspect === null || v.inspect.file === true || (v.route ?? null) !== null) return
+  const from = v.inspect
+  await update($, view, (w): KnossosView => ({ ...w, picking: from }))
+  await openFinder($)
+}
+
+/** The route from the component picked with `p` to `to`, drawn instead of the detail; `b` goes back to it. */
+async function showRoute($: EngineInterface, to: Inspected): Promise<void> {
+  const v = await read($, view)
+  const from = v.picking ?? null
+  if (from === null) return
+  mod.openWhenFound = false
+  await update($, view, (w): KnossosView => ({ ...w, finding: false, picking: null, selected: 0, route: { from, to, index: 0, back: w.inspect } }))
+  await requestRoute($)
+}
+
+/**
+ * `m` on a component's detail: a field opens in its notes card, holding the
+ * component's note when it has one, and takes the focus once it is drawn.
+ * Nothing is written by this, nor by typing.
+ */
+async function startNote($: EngineInterface): Promise<void> {
+  const v = await read($, view)
+  if (v.inspect === null || v.inspect.file === true) return
+  const stored = await read($, detail)
+  const component = stored?.detail?.component?.name ?? v.inspect.name
+  const existing = stored?.detail?.component?.annotations?.find(a => a.kind === 'note')?.value ?? ''
+  await update($, note, (): NoteState => ({ component, phase: 'editing', value: existing, previous: null, reason: null }))
+  $.clock.after(0, () => void $.ui.focus({ requestId: PANE, key: 'note' }).catch(() => undefined))
+}
+
+/** What was typed into the note's field, kept as it is typed. */
+async function typeNote($: EngineInterface, text: string): Promise<void> {
+  await update($, note, (n): NoteState | null => (n !== null && n.phase === 'editing' ? { ...n, value: text } : n))
+}
+
+/**
+ * Enter in the note's field: knossos checks the note (a preview, nothing
+ * written) and the card asks before recording it. An empty field drops it.
+ */
+async function submitNote($: EngineInterface, text: string): Promise<void> {
+  const asked = await read($, note)
+  if (asked === null || asked.phase !== 'editing') return
+  const value = text.trim()
+  if (value === '') return update($, note, () => null)
+  await update($, note, (): NoteState => ({ ...asked, phase: 'previewing', value }))
+  $.clock.after(0, () => void previewNote($, asked.component, value).catch(() => undefined))
+}
+
+/** The preview of a note: what it would replace, or why knossos refuses it. Writes nothing. */
+async function previewNote($: EngineInterface, component: string, value: string): Promise<void> {
+  const root = (await read($, dashboard))?.project_root ?? undefined
+  const parsed = parseAnnotate(await wrapper($, 'annotate', [`--component=${component}`, `--value=${value}`], NOTE_TIMEOUT_MS, root))
+  if (parsed?.status === 'no-binary') return disable($)
+  await update($, note, (n): NoteState | null => {
+    if (n === null || n.component !== component || n.value !== value || n.phase !== 'previewing') return n
+    if (parsed?.status === 'ok' && parsed.executed === false) return { ...n, phase: 'confirming', previous: parsed.previous ?? null }
+    return { ...n, phase: 'failed', reason: parsed?.status === 'refused' ? (parsed.reason ?? 'it refused') : 'it said nothing' }
+  })
+}
+
+/**
+ * `y` on the card's question: records the note, then reads the detail
+ * again so it shows it. Only from the question: a press at any other moment
+ * writes nothing.
+ */
+async function confirmNote($: EngineInterface): Promise<void> {
+  const asked = await read($, note)
+  if (asked === null || asked.phase !== 'confirming') return
+  await update($, note, (): NoteState => ({ ...asked, phase: 'saving' }))
+  $.clock.after(0, () => void recordNote($, asked.component, asked.value).catch(() => undefined))
+}
+
+/** Records a confirmed note; the detail is read again once it is. */
+async function recordNote($: EngineInterface, component: string, value: string): Promise<void> {
+  const root = (await read($, dashboard))?.project_root ?? undefined
+  const parsed = parseAnnotate(await wrapper($, 'annotate', [`--component=${component}`, `--value=${value}`, '--execute'], NOTE_TIMEOUT_MS, root))
+  if (parsed?.status === 'no-binary') return disable($)
+  if (parsed?.status !== 'ok' || parsed.executed !== true) {
+    await update($, note, (n): NoteState | null => (n !== null && n.component === component ? { ...n, phase: 'failed', reason: parsed?.status === 'refused' ? (parsed.reason ?? 'it refused') : 'it said nothing' } : n))
+    return
+  }
+  await update($, note, () => null)
+  await say($, `✓ noted on ${component.slice(component.lastIndexOf('\\') + 1)}`, 'ok')
+  const shown = (await read($, view)).inspect
+  if (shown === null) return
+  // The stored detail predates the note: read it again.
+  await update($, detail, () => null)
+  await requestDetail($, shown)
+}
+
 /** `l`, or a press on one of what the marked boundary depends on: the heat map cell moves to that column. */
 async function moveCell($: EngineInterface, to: number | null): Promise<void> {
   const input = await currentInput($, true)
@@ -1775,6 +1994,11 @@ async function pressAction($: EngineInterface, id: string, surface?: RenderSurfa
     return openRow($, Number(id.slice(4)))
   }
   if (id.startsWith('rel:')) return openRelated($, Number(id.slice(4)))
+  if (id === 'route') return startRoute($)
+  if (id.startsWith('route-pick:')) return update($, view, (v): KnossosView => (v.route === null || v.route === undefined ? v : { ...v, route: { ...v.route, index: Math.max(0, Number(id.slice(11)) || 0) }, selected: 0 }))
+  if (id === 'note') return startNote($)
+  if (id === 'note-yes') return confirmNote($)
+  if (id === 'note-no') return update($, note, () => null)
   if (id.startsWith('peek:')) return openPeeked($, Number(id.slice(5)))
   // On Cycles the layout names the row `j` and `k` (and a cycle's line in the list) move to: what the diagram shows depends on its width.
   if (/^(next|prev|mark):/.test(id)) return update($, view, v => ({ ...v, selected: Math.max(0, Number(id.slice(5)) || 0) }))
@@ -1783,7 +2007,8 @@ async function pressAction($: EngineInterface, id: string, surface?: RenderSurfa
   if (id === 'open') return openRow($)
   if (id === 'edit') return openEditTarget($, surface)
   if (id === 'tests') return copyTestCommand($, surface)
-  if (id === 'back') return update($, view, v => ({ ...v, inspect: null, selected: v.opened ?? 0 }))
+  // Back from a route goes to the detail it was picked from; from a detail, to the tab.
+  if (id === 'back') return update($, view, (v): KnossosView => ((v.route ?? null) !== null ? { ...v, route: null, selected: 0 } : { ...v, inspect: null, selected: v.opened ?? 0 }))
   if (id === 'keys') return update($, view, v => ({ ...v, showKeys: !v.showKeys }))
   if (id === 'filter') return openFilter($)
   if (id === 'clear') return update($, view, v => ({ ...v, filter: '', filtering: false, degree: null, selected: 0 }))
@@ -1846,8 +2071,8 @@ function drawSegment($: EngineInterface, ui: Elements[RenderSurface], row: Row, 
         placeholder={s.field.placeholder}
         submitLabel="keep"
         autoFocus
-        onInput={(value: string) => void (s.field!.id === 'find' ? typeQuery($, value) : typeFilter($, value)).catch(() => undefined)}
-        onSubmit={(value: string) => void (s.field!.id === 'find' ? submitQuery($, value) : submitFilter($, value)).catch(() => undefined)}
+        onInput={(value: string) => void (s.field!.id === 'find' ? typeQuery($, value) : s.field!.id === 'note' ? typeNote($, value) : typeFilter($, value)).catch(() => undefined)}
+        onSubmit={(value: string) => void (s.field!.id === 'find' ? submitQuery($, value) : s.field!.id === 'note' ? submitNote($, value) : submitFilter($, value)).catch(() => undefined)}
       />,
     )
   }
@@ -2144,6 +2369,8 @@ export const register: Register = (on, options) => {
   mod.toolFailureLogged = false
   mod.startCycles = null
   mod.commitNoted = new Set()
+  mod.alertsOn = options.notifications !== false
+  mod.toasted = new Set()
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
@@ -2172,6 +2399,7 @@ export const register: Register = (on, options) => {
       const now = await read($, dashboard)
       mod.startCycles = now?.status === 'ok' ? { count: now.cycles.count, keys: cycleKeys(now) } : null
       mod.commitNoted = new Set()
+      mod.toasted = new Set()
       await update($, sessionBegan, () => null)
       await update($, sessionEdits, () => [])
       await update($, sessionScans, () => [])

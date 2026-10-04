@@ -1,4 +1,4 @@
-import type { AllowRoot, BoundaryCouplings, BoundaryRef, BranchDiff, BranchItem, ComponentDetail, Dashboard, FanIn, FileContext, FileDetail, GitHead, GraphSearch, Listed, Related, Rescan, SessionDiff, SessionLedger, SessionRev, TurnBrief, Violation } from '../../types'
+import type { AllowRoot, Annotate, BlastRadius, BoundaryCouplings, BoundaryRef, BranchDiff, BranchItem, Churn, ComponentDetail, Dashboard, FanIn, FileContext, FileDetail, GitHead, GraphSearch, Listed, PathBetween, Related, Rescan, SessionDiff, SessionLedger, SessionRev, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
@@ -204,6 +204,51 @@ export function parseFileContext(stdout: string): FileContext | null {
   const ok =
     typeof f === 'object' && f !== null && typeof f.path === 'string' && typeof f.dependents?.count === 'number' && Array.isArray(f.dependents.top) && Array.isArray(f.tests?.items) && Array.isArray(f.commits)
   return ok ? parsed : null
+}
+
+const CHURN = new Set(['ok', 'no-git', 'unscanned', 'error', 'no-binary'])
+
+/** The Churn tab's hotspots from the wrapper's stdout; null for silence or anything unexpected (a file without its figures). */
+export function parseChurn(stdout: string): Churn | null {
+  const parsed = parse(stdout, CHURN, ['files'], []) as Churn | null
+  if (parsed === null || parsed.status !== 'ok') return parsed === null ? null : { ...parsed, files: [] }
+  const ok = parsed.files.every(f => typeof f.path === 'string' && typeof f.commits === 'number' && typeof f.dependents === 'number' && typeof f.score === 'number')
+  return ok ? { ...parsed, files: parsed.files.map(f => ({ ...f, boundary: f.boundary ?? null })) } : null
+}
+
+/** A component a ring or a route names: its names and kind, as a string each. */
+const isNamed = (v: unknown): boolean => {
+  const n = v as Record<string, unknown> | null
+  return typeof n === 'object' && n !== null && typeof n.name === 'string' && typeof n.canonical_name === 'string' && typeof n.kind === 'string'
+}
+
+/** A component's blast radius from the wrapper's stdout; null for silence or anything unexpected. */
+export function parseBlastRadius(stdout: string): BlastRadius | null {
+  const parsed = parse(stdout, DETAIL, [], []) as BlastRadius | null
+  if (parsed === null || parsed.status !== 'ok') return parsed === null ? null : { ...parsed, component: null, rings: [], truncated: false }
+  const rings = Array.isArray(parsed.rings) ? parsed.rings : null
+  const ok = isNamed(parsed.component) && rings !== null && rings.every(r => typeof r.hop === 'number' && typeof r.count === 'number' && typeof r.tested === 'number' && Array.isArray(r.items) && r.items.every(isNamed) && Array.isArray(r.tests?.items))
+  return ok ? { ...parsed, truncated: parsed.truncated === true } : null
+}
+
+const PATH = new Set(['ok', 'not-found', 'ambiguous', 'unscanned', 'error', 'no-binary'])
+
+/** The routes between two components from the wrapper's stdout; null for silence or anything unexpected. */
+export function parsePathBetween(stdout: string): PathBetween | null {
+  const parsed = parse(stdout, PATH, [], []) as PathBetween | null
+  if (parsed === null || parsed.status !== 'ok') return parsed === null ? null : { ...parsed, from: null, to: null, reversed: false, routes: [], truncated: false }
+  const routes = Array.isArray(parsed.routes) ? parsed.routes : null
+  const ok = isNamed(parsed.from) && isNamed(parsed.to) && routes !== null && routes.every(r => Array.isArray(r.nodes) && r.nodes.length >= 2 && r.nodes.every(isNamed) && Array.isArray(r.hops) && r.hops.length === r.nodes.length - 1)
+  return ok ? { ...parsed, reversed: parsed.reversed === true, truncated: parsed.truncated === true } : null
+}
+
+const NOTE = new Set(['ok', 'refused', 'unscanned', 'error', 'no-binary'])
+
+/** A note's preview or record from the wrapper's stdout; null for silence or anything unexpected. */
+export function parseAnnotate(stdout: string): Annotate | null {
+  const parsed = parse(stdout, NOTE, [], []) as Annotate | null
+  if (parsed === null || parsed.status !== 'ok') return parsed
+  return typeof parsed.component === 'string' && typeof parsed.executed === 'boolean' ? parsed : null
 }
 
 /** Why a rescan did not land, in a few words for the pane's header. */

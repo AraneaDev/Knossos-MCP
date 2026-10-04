@@ -405,6 +405,81 @@ export type FileContext = {
   } | null
 }
 
+/**
+ * The `churn` subcommand's answer: the files changed most in the last `days`
+ * days (by commits, at most `commits` read, ending at `head`) times the
+ * files depending on each, the highest score first. `no-git` when git is not
+ * there or did not answer.
+ */
+export type Churn = {
+  status: 'ok' | 'no-git' | 'unscanned' | 'error' | 'no-binary'
+  days?: number
+  head?: string | null
+  commits?: number
+  truncated?: boolean
+  files: { path: string; commits: number; dependents: number; score: number; boundary: string | null }[]
+}
+
+/** The Churn tab's answer as last read, for the commit (`head`) it was read at; loading until it lands. */
+export type ChurnState = { head: string | null; phase: 'loading' | 'done'; answer: Churn | null }
+
+/** One component a ring or a route names. */
+export type RingItem = { name: string; canonical_name: string; kind: string; path?: string | null; line?: number | null; boundary: string | null }
+
+/**
+ * The `blast-radius` subcommand's answer: what depends on one component in
+ * rings (one hop, two hops, three and more), each with how many of its
+ * components a test reaches, the first few of them (the untested first) and
+ * the test files that reach the ring, nearest first.
+ */
+export type BlastRadius = {
+  status: 'ok' | 'not-found' | 'unscanned' | 'error' | 'no-binary'
+  component: RingItem | null
+  rings: { hop: number; count: number; tested: number; items: (RingItem & { tested: boolean })[]; tests: { count: number; items: { path: string; hop: number }[] } }[]
+  truncated: boolean
+}
+
+/** The rings of the component the detail shows, read for its name and snapshot; loading until they land. */
+export type RingsState = { name: string; snapshot: string | null; phase: 'loading' | 'done'; answer: BlastRadius | null }
+
+/**
+ * The `path-between` subcommand's answer: the routes from one component to
+ * another, the strongest first, each its components and the hops between
+ * them (kind, and where the hop is written). `reversed` when only the other
+ * way had a route: `from` and `to` stay as asked.
+ */
+export type PathBetween = {
+  status: 'ok' | 'not-found' | 'ambiguous' | 'unscanned' | 'error' | 'no-binary'
+  unresolved?: 'from' | 'to'
+  from: RingItem | null
+  to: RingItem | null
+  reversed: boolean
+  routes: { nodes: RingItem[]; hops: { kind: string; confidence: string; path: string | null; line: number | null }[] }[]
+  truncated: boolean
+}
+
+/** The route the pane draws: its two ends as picked, and the answer read for them at a snapshot. */
+export type RouteState = { from: string; to: string; snapshot: string | null; phase: 'loading' | 'done'; answer: PathBetween | null }
+
+/** The `annotate` subcommand's answer: the note previewed (`executed` false) or recorded, and the one it replaces; `refused` with why. */
+export type Annotate = {
+  status: 'ok' | 'refused' | 'unscanned' | 'error' | 'no-binary'
+  component?: string
+  kind?: string
+  action?: string
+  executed?: boolean
+  value?: string | null
+  previous?: string | null
+  reason?: string
+}
+
+/**
+ * A note being added to the component the detail shows: typed (`editing`),
+ * checked with knossos (`previewing`), waiting for the person's yes
+ * (`confirming`), being recorded (`saving`), or refused with why (`failed`).
+ */
+export type NoteState = { component: string; phase: 'editing' | 'previewing' | 'confirming' | 'saving' | 'failed'; value: string; previous: string | null; reason: string | null }
+
 /** The cell the pane spelled out, loading until its answer lands (null: nothing answered). */
 export type CouplingState = { snapshot: string | null; from: string; to: string; phase: 'loading' | 'done'; answer: BoundaryCouplings | null }
 
@@ -414,8 +489,8 @@ export type Feedback = { text: string; tone: 'ok' | 'alert'; until: number }
 /** The diff the file detail shows: of `name` against `rev` at `snapshot`, loading until it lands (null: nothing answered). */
 export type DiffState = { name: string; rev: string; snapshot: string | null; phase: 'loading' | 'done'; diff: SessionDiff | null }
 
-/** The pane's tabs, in their hotkey order (1 to 7). */
-export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues' | 'changes' | 'branch'
+/** The pane's tabs, in their hotkey order (1 to 8). */
+export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues' | 'changes' | 'branch' | 'churn'
 
 /** How a file this session touched stands now: the last turn that named it decides. */
 export type TouchStatus = 'changed' | 'added' | 'deleted'
@@ -506,6 +581,10 @@ export type KnossosView = {
   degree?: { from: number; to: number | null } | null
   /** Whether the finder is open over the pane (`f`): its field and what it found. */
   finding?: boolean
+  /** The component a route starts at, while the finder picks where it ends (`p`). */
+  picking?: Inspected | null
+  /** The route on show, from one component to another, instead of a tab or a detail; `back` is what `b` returns to. */
+  route?: { from: Inspected; to: Inspected; index: number; back: Inspected | null } | null
 }
 
 /** The `scan` subcommand's answer: an incremental rescan the person asked for from the pane. */
@@ -603,6 +682,14 @@ declare module 'claude-code' {
       peek: { shown: Inspected; detail: DetailState } | null
       /** The rows the latest scan changed (`hub:`, `file:`, `tile:`, `boundary:`, `change:` keys), lit until `until` (mod clock, ms). */
       flash: { keys: string[]; until: number } | null
+      /** The Churn tab's hotspots, as last read for a commit. */
+      churn: ChurnState | null
+      /** The blast radius of the component the detail shows. */
+      rings: RingsState | null
+      /** The route the path explorer draws. */
+      route: RouteState | null
+      /** A note being added on the detail, until it is recorded or dropped. */
+      note: NoteState | null
     }
   }
 }

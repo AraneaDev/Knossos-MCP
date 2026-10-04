@@ -34,7 +34,7 @@ const has = (rows: { key: string }[]) => rows.some(r => r.key.includes('peek-'))
 
 describe('master-detail on a wide pane', () => {
   it("draws the marked row's detail beside the list on the wide tabs, and only past 130 columns", () => {
-    for (const tab of ['hubs', 'changes', 'issues', 'cycles', 'branch'] as PaneTab[]) {
+    for (const tab of ['hubs', 'changes', 'issues', 'cycles', 'branch', 'churn'] as PaneTab[]) {
       expect(has(paneLayout(pane(view({ tab })), 140, 40).body), tab).toBe(true)
       expect(has(paneLayout(pane(view({ tab })), 130, 40).body), tab).toBe(false)
     }
