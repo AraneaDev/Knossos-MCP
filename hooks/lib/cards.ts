@@ -69,6 +69,7 @@ export const GLYPHS: Readonly<Record<string, string>> = {
   churn: '≡',
   'churn-plot': '∴',
   'churn-list': '≡',
+  'churn-extra': '≡',
   rings: '◎',
   route: '⇢',
   'route-others': '⇢',

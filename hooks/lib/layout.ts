@@ -1235,7 +1235,12 @@ function tabArrangement(input: PaneInput, selected: number, tier: Tier): Arrange
   if (input.tab === 'hubs') return hubsArrangement(input, selected, tier)
   if (input.tab === 'issues') return issuesArrangement(input.issues, selected, tier, input.hues)
   if (input.tab === 'cycles') return cyclesArrangement(input.cycles, tier, input.hues, selected)
-  if (input.tab === 'branch') return branchArrangement(input.branch, selected, input.hues)
+  if (input.tab === 'branch') {
+    // The files changed most that much depends on: where the branch's next change most likely lands, when the pane has room for them.
+    const churned = fileListBlock('churn-extra', 'Churn hotspots', 'commits × dependents · last 30 days', input.churn.files.map(f => ({ path: f.path, values: [f.commits, f.dependents], bar: f.score, loc: f.loc })), ['commits', 'deps'], 'medium', input.hues)
+    const arranged = branchArrangement(input.branch, selected, input.hues)
+    return churned === null ? arranged : { ...arranged, extra: [[churned]] }
+  }
   if (input.tab === 'churn') return churnArrangement(input.churn, selected, tier, input.hues)
   return boundariesArrangement(input.boundaries, tier, input.hues, selected, input.target, input.couplings, input.lit)
 }

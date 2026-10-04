@@ -1784,7 +1784,7 @@ async function loadBranch($: EngineInterface, snapshot: string | null, root: str
 }
 
 /**
- * Starts reading the churn hotspots while the Churn tab is open, unless
+ * Starts reading the churn hotspots while the Churn or the Branch tab is open, unless
  * they were read (or are being read) for the commit the checkout is at:
  * the history is kept per commit, so a new commit, not a new scan, reads
  * it again. The last answer stays on show meanwhile. On a timer, never in
@@ -1793,7 +1793,8 @@ async function loadBranch($: EngineInterface, snapshot: string | null, root: str
 async function requestChurn($: EngineInterface): Promise<void> {
   if (mod.disabled) return
   const v = await read($, view)
-  if (v.tab !== 'churn' || v.inspect !== null || (v.route ?? null) !== null) return
+  // The Branch tab shows the hotspots too, where it has room.
+  if ((v.tab !== 'churn' && v.tab !== 'branch') || v.inspect !== null || (v.route ?? null) !== null) return
   const d = await read($, dashboard)
   if (d?.status !== 'ok') return
   const head = (await read($, gitHead))?.rev ?? null

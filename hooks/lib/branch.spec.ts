@@ -80,3 +80,20 @@ describe('the Branch tab', () => {
     }
   })
 })
+
+describe('the Branch tab with room to spare', () => {
+  const churn = { head: 'h', phase: 'done' as const, answer: { status: 'ok' as const, days: 30, commits: 9, files: Array.from({ length: 8 }, (_, i) => ({ path: `src/Hot${i}.php`, commits: 9 - i, dependents: 40 - i, score: (9 - i) * (40 - i), boundary: 'core' })) } }
+  const clean = answer({ comparison: { crossing: { count: 0, items: [] }, cycles: { count: 0, items: [] }, hubs: { count: 0, items: [] }, dead_code: { count: 0, items: [] }, violations: null } })
+  const at = (columns: number, height: number) => paneLayout(paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, view(), 0, true, null, null, undefined, null, undefined, { branch: { snapshot: 's9', phase: 'done', answer: clean }, churn }), columns, height).body
+  it('gives it to the files changed most that much depends on, as links that open them, never walked', () => {
+    for (const columns of [100, 140, 200]) {
+      const rows = at(columns, 60)
+      expect(rows.some(r => r.key.includes('churn-extra-head')), `${columns}`).toBe(true)
+      const first = rows.find(r => r.key.includes('churn-extra-0'))!
+      expect(first.segments.some(s => s.link !== undefined)).toBe(true)
+      expect(first.segments.some(s => s.press !== undefined)).toBe(false)
+    }
+    // A short pane keeps the comparison and leaves them out.
+    expect(at(100, 24).some(r => r.key.includes('churn-extra-head'))).toBe(false)
+  })
+})
