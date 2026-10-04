@@ -527,7 +527,7 @@ function drawn(text: string): string {
 
 /** A card's text without its frame and the glyph before its title: the rule's dashes, corners and sides as single spaces. */
 function titled(text: string | undefined): string {
-  return (text ?? '').replace(/[╭╮╰╯│]/g, ' ').replace(/─+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^[◆▤◎≡▦▥◈⇄↻⚠±✓∿◇←→✎Δ] /u, '')
+  return (text ?? '').replace(/[╭╮╰╯│]/g, ' ').replace(/─+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^[◆▤◎≡▦▥◈⇄↻!±✓∿◇←→✎Δ] /u, '')
 }
 
 const PANE_PROPS = {
@@ -1221,7 +1221,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
-      expect((await ui.find({ key: 'title' }))?.text).toMatch(/^repo +● fresh 1s $/)
+      expect((await ui.find({ key: 'title' }))?.text).toMatch(/^ repo +● fresh 1s $/)
       // The header is two rows, the title and the tabs: no summary line under them.
       expect(await ui.find({ key: 'summary' })).toBeUndefined()
       // Narrow, the stat tiles are a line of figures under the tabs.
@@ -1674,7 +1674,7 @@ describe('knossos mod', () => {
           const boxes = await ui.findAll({ type: 'Box' })
           // A hidden tab twin draws nothing: its label is out of the strip's width.
           const hidden = boxes.filter(b => b.props.display === 'none').reduce((n, b) => n + [...b.text].length, 0)
-          const rows = boxes.filter(b => b.key !== 'pane' && b.key !== 'detail' && b.props.display !== 'none')
+          const rows = boxes.filter(b => b.key !== 'pane' && b.key !== 'detail' && b.key !== 'bar' && b.props.display !== 'none')
           expect(rows.length).toBeGreaterThan(5)
           for (const row of rows) {
             const width = [...drawn(row.text)].length + hotkeyPrefixes(row) - (row.key === 'tabs' ? hidden : 0)
@@ -1763,7 +1763,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const detail = (await ui.find({ key: 'detail' }))?.text
     expect(detail).toContain('App\\Router')
-    expect(titled(detail)).toMatch(/Used by · 1 *› *Kernel/)
+    expect(titled(detail)).toMatch(/Dependencies · used by 1 · uses 0.*Kernel/)
     expect(w.detailRuns()).toEqual([
       ['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'component-detail', ROOT, 'App\\Router'],
     ])
@@ -2099,34 +2099,45 @@ describe('knossos mod', () => {
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     expect(w.detailRuns()[0]?.slice(4)).toEqual(['App\\Core\\Kernel::boot'])
-    expect((await ui.find({ key: 'detail' }))?.text).toContain('Used by · 2')
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('Dependencies · used by 2')
     await ui.unmount()
   })
 
-  test('the cycles tab draws each cycle as a chain coloured by boundary', async ($, on) => {
+  test('the cycles tab draws the marked cycle as boxes framed in their boundary colours, and j walks its members', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: issuesDashboard() }] })
     await $.session.start(START)
     await w.clock.settle()
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
       await ui.press({ key: 'tab:cycles' })
+      expect(titled((await ui.find({ key: 'cycle-diagram-head' }))?.text)).toMatch(/^Cycle 1 +3 members · crosses 2 boundaries$/)
+      expect((await ui.find({ key: 'cycle-legend' }))?.text).toBe('■ Core  ■ Http  ╫ crosses a boundary')
       expect(titled((await ui.find({ key: 'cycles-head' }))?.text)).toMatch(/^Cycles +1 · largest first$/)
-      expect((await ui.find({ key: 'cycle-0' }))?.text).toContain('cycle 1 · 3 members')
-      expect((await ui.find({ key: 'chain-0' }))?.text).toBe('   ↻ Kernel::boot → Router::route → Router::dispatch → ↻')
-      const boot = await ui.find({ type: 'Text', text: 'Kernel::boot' })
-      const route = await ui.find({ type: 'Text', text: 'Router::route' })
-      expect(boot?.props.color).toBeDefined()
-      expect(boot?.props.color).not.toBe(route?.props.color)
-      // Most members are in Http: the cycle's line names it; every hop is in its own boundary's colour, Core where it crosses.
-      expect((await ui.find({ key: 'cycle-0' }))?.text).toMatch(/^› {2}cycle 1 · 3 members · Http *$/)
-      expect(route?.props.color).toBeDefined()
-      expect((await ui.find({ key: 'cycles-legend' }))?.text).toBe('   ■ Core  ■ Http')
-      expect((await ui.find({ key: 'down' }))?.props.hotkey).toBe('j')
+      // Most members are in Http: the cycle's line names it, and how many other boundaries it reaches.
+      expect((await ui.find({ key: 'cycle-0' }))?.text).toMatch(/^› {2}cycle 1 · 3 members · Http \+1 boundary *$/)
+      // Each member a box whose name opens it; the marked one on the tint.
+      expect((await ui.find({ key: 'row:0' }))?.props.label).toBe('Kernel::boot')
+      expect(await ui.find({ key: 'row:0-bg' })).toBeDefined()
+      expect((await ui.find({ key: 'row:2' }))?.props.label).toBe('Router::dispatch')
+      // The frames carry the boundaries' colours, two of them.
+      // The marked one's frame in the accent.
+      const frames = new Set((await ui.findAll({ type: 'Text' })).filter(t => /^╭─+╮$/.test(t.text)).map(t => String(t.props.color)))
+      expect(frames.has('suggestion')).toBe(true)
+      expect([...frames].some(c => /_FOR_SUBAGENTS_ONLY$/.test(c))).toBe(true)
+      // j names the member it moves to; pressing it moves the tint there.
+      expect((await ui.find({ key: 'next:1' }))?.props.hotkey).toBe('j')
+      await ui.press({ key: 'next:1' })
+      expect(await ui.find({ key: 'row:1-bg' })).toBeDefined()
+      expect(await ui.find({ key: 'row:0-bg' })).toBeUndefined()
+      expect((await ui.find({ key: 'prev:0' }))?.props.hotkey).toBe('k')
+      // A press on the cycle's line in the list marks its first member again.
+      await ui.press({ key: 'mark:0' })
+      expect(await ui.find({ key: 'row:0-bg' })).toBeDefined()
       await ui.unmount()
     }
   })
 
-  test('a marked cycle copies its chain, asks how to break it on q alone, and opens the member where it crosses', async ($, on) => {
+  test('a marked member copies its name, asks how to break its cycle on q alone, and opens on o', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], detail: [{ stdout: fullDetailOf('Kernel') }] })
     await $.session.start(START)
     await w.clock.settle()
@@ -2135,17 +2146,37 @@ describe('knossos mod', () => {
     const chain = 'App\\Core\\Kernel::boot → App\\Http\\Router::route → App\\Http\\Router::dispatch → App\\Core\\Kernel::boot'
     await ui.press({ key: 'copy' })
     await w.clock.settle()
-    expect(w.copies.at(-1)?.text).toBe(chain)
-    expect(await said(ui)).toBe('✓ copied cycle 1')
+    expect(w.copies.at(-1)?.text).toBe('App\\Core\\Kernel::boot')
+    expect(await said(ui)).toBe('✓ copied Kernel::boot')
     expect(w.prompts).toEqual([])
     await ui.press({ key: 'ask' })
     await w.clock.settle()
     expect(w.prompts).toEqual([`Using the Knossos graph, how could I break this dependency cycle: ${chain}? Name the edge to cut and what would have to move.`])
-    // Kernel::boot is the member outside Http, the cycle's own boundary: o shows it.
     await ui.press({ key: 'open' })
     await w.clock.settle()
     expect(w.detailRuns().at(-1)?.at(-1)).toBe('App\\Core\\Kernel::boot')
     expect(await ui.find({ key: 'detail' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a long cycle folds its middle on a narrow pane; o on the fold unfolds it and marks the first member it hid', async ($, on) => {
+    const names = Array.from({ length: 9 }, (_, i) => `m${i}`)
+    const cycles = { count: 1, truncated: false, truncation_reasons: [], largest: [{ size: 9, members: names, nodes: names.map(n => ({ name: n, canonical_name: `App\\Loop::${n}`, kind: 'method', boundary: 'Core' })), nodes_truncated: false }] }
+    const w = world(on, { dashboard: [{ stdout: paneDashboard({ cycles }) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:cycles' })
+    // Six boxes on a narrow pane: four members, the fold, the last.
+    expect(await ui.find({ key: 'row:4' })).toBeUndefined()
+    expect((await ui.find({ key: 'fold:0:4' }))?.props.label).toBe('… 4 more …')
+    for (const step of ['next:1', 'next:2', 'next:3', 'next:9']) await ui.press({ key: step })
+    // On the fold, o unfolds.
+    const o = (await ui.findAll({ type: 'Button' })).find(b => b.props.hotkey === 'o')
+    expect(o?.key).toBe('unfold:0:4')
+    await ui.press({ key: 'unfold:0:4' })
+    expect((await ui.find({ key: 'row:4' }))?.props.label).toBe('Loop::m4')
+    expect(await ui.find({ key: 'row:4-bg' })).toBeDefined()
     await ui.unmount()
   })
 
@@ -2177,7 +2208,7 @@ describe('knossos mod', () => {
     await ui.unmount()
   })
 
-  test('the detail sets used by beside uses when wide, stacks them when narrow, and opens either', async ($, on) => {
+  test('the detail draws its neighbourhood: used by fanning in, uses fanning out when wide, stacked when narrow, each opening', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], detail: [{ stdout: fullDetailOf('Router') }, { stdout: fullDetailOf('Request') }] })
     await $.session.start(START)
     await w.clock.settle()
@@ -2187,18 +2218,23 @@ describe('knossos mod', () => {
       await w.clock.settle()
       expect(titled((await wide.find({ key: 'detail-head' }))?.text)).toMatch(/^Router +class · Http$/)
       expect(titled(drawn((await wide.find({ key: 'detail-place' }))?.text ?? ''))).toBe('src/Http/Router.php:3')
-      // Wide: one row holds both cards' top edges, then a counterpart of each.
-      expect(titled((await wide.find({ key: 'used-head|uses-head' }))?.text)).toMatch(/^Used by · 2 +edges +→ Uses · 1 +edges$/)
-      expect(titled((await wide.find({ key: 'used-0|uses-0' }))?.text)).toMatch(/Kernel +Core +[━╸]+·* +4 +Request +Http +[━╸]+·* +2$/)
+      expect(titled((await wide.find({ key: 'hood-head' }))?.text)).toMatch(/^Dependencies · used by 2 · uses 1 +edges$/)
+      // Each neighbour a box whose name opens it, its count on its edge; the centre between them.
+      expect((await wide.find({ key: 'rel:0' }))?.props.label).toBe('Kernel')
+      expect((await wide.find({ key: 'rel:2' }))?.props.label).toBe('Request')
+      const lines = (await wide.findAll({ type: 'Box' })).filter(b => String(b.key).startsWith('hood-')).map(b => b.text)
+      const centre = lines.findIndex(l => l.includes('Router ├'))
+      expect(lines[centre]).toMatch(/►│ Router ├/)
+      expect(lines.join('\n')).toMatch(/─ 4 ─/)
       expect((await wide.find({ key: 'detail' }))?.text).toContain('note: The one way in.')
       // The tab strip gives way to the detail; back is a key and a click.
       expect(await wide.find({ key: 'tab:hubs' })).toBeUndefined()
       expect((await wide.find({ key: 'back' }))?.props.hotkey).toBe('b')
       await wide.unmount()
       const narrow = await mountPane($, surface)
-      expect(await narrow.find({ key: 'used-0|uses-0' })).toBeUndefined()
-      expect(titled((await narrow.find({ key: 'used-head' }))?.text)).toMatch(/^Used by · 2 +edges$/)
-      expect((await narrow.find({ key: 'uses-0' }))?.text).toMatch(/Request +Http +[━╸]+·* +2$/)
+      const stacked = (await narrow.findAll({ type: 'Box' })).filter(b => String(b.key).startsWith('hood-')).map(b => b.text).join('\n')
+      expect(stacked.indexOf('Kernel')).toBeLessThan(stacked.indexOf('Router'))
+      expect(stacked.indexOf('Router')).toBeLessThan(stacked.indexOf('Request'))
       await narrow.press({ key: 'back' })
       expect(await narrow.find({ key: 'detail' })).toBeUndefined()
       await narrow.unmount()
@@ -2657,8 +2693,11 @@ describe('knossos mod', () => {
         await w.clock.settle()
         const text = drawn((await ui.find({ key: 'detail' }))?.text ?? '')
         expect(titled(text), `${tab} ${key}`).toMatch(/Router\.php +Http/)
-        expect(titled(text)).toMatch(/Depended on by · 14 files +edges/)
-        expect(drawn((await ui.find({ key: 'dep-0' }))?.text ?? '')).toMatch(/^› +src\/Core\/Kernel\.php +Core .*6 *$/)
+        expect(titled(text)).toMatch(/Dependencies · used by 14 · uses 0 +edges/)
+        // The marked dependent: a box by its name, on the tint, its count on its edge.
+        expect((await ui.find({ key: 'row:0' }))?.props.label).toBe('Kernel.php')
+        expect(await ui.find({ key: 'row:0-bg' })).toBeDefined()
+        expect(text).toMatch(/Kernel\.php +├─* 6 /)
         expect(titled(text)).toMatch(/Declares · 2 components/)
         await ui.press({ key: 'back' })
         // Back on the tab, the marker stands where the detail was opened from.
@@ -2718,7 +2757,7 @@ describe('knossos mod', () => {
       expect(w.editorRuns().at(-1)).toEqual(['code', '-g', '/repo/src/Router.php'])
       await ui.press({ key: 'open' })
       await w.clock.settle()
-      expect(titled(drawn((await ui.find({ key: 'detail' }))?.text ?? ''))).toMatch(/Depended on by · 14 files/)
+      expect(titled(drawn((await ui.find({ key: 'detail' }))?.text ?? ''))).toMatch(/Dependencies · used by 14/)
       await ui.press({ key: 'back' })
       // `d` hides them again; a tab switch does too.
       await ui.press({ key: 'drift' })
@@ -2775,7 +2814,7 @@ describe('knossos mod', () => {
       expect(head?.text).toMatch(/in +out +cross +files +where +/)
       await ui.press({ key: 'row:12' })
       await w.clock.settle()
-      expect(titled(drawn((await ui.find({ key: 'detail' }))?.text ?? ''))).toMatch(/Depended on by/)
+      expect(titled(drawn((await ui.find({ key: 'detail' }))?.text ?? ''))).toMatch(/Dependencies · used by/)
       await ui.press({ key: 'back' })
       await ui.unmount()
     }
@@ -3439,7 +3478,7 @@ describe("the pane's header, marked rows, hover cards and heat map cells", () =>
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await wide($, surface)
       const title = (await ui.find({ key: 'title' }))?.text ?? ''
-      expect(title).toMatch(/^repo {2}feat\/pane · 0123456 {3}PHP {3}TS +● fresh 1s $/)
+      expect(title).toMatch(/^ {2}repo {2}feat\/pane · 0123456 {3}PHP {3}TS +● fresh 1s $/)
       const pill = (await ui.findAll({ type: 'Text' })).find(t => t.text === ' ● fresh 1s ')
       expect(pill?.props).toMatchObject({ backgroundColor: 'success', color: 'inverseText', bold: true })
       await ui.unmount()
@@ -3451,16 +3490,48 @@ describe("the pane's header, marked rows, hover cards and heat map cells", () =>
     expect(w.headRuns()).toHaveLength(2)
   })
 
+  test('the header has room around it, and the footer is a bar at the bottom of the pane, over its last rows when the pane scrolls', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      // Tall enough for everything: blank rows above the name, between it and the tabs, and before the rule; the bar the last row of the pane.
+      const tall = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...WIDE, scroll: { offset: 0, bodyRows: 80 } } })
+      const rows = ((await tall.find({ key: 'pane' }))!.children as { key?: unknown; props?: { key?: unknown; position?: unknown } }[]).filter(c => c.props?.position !== 'absolute').map(c => String(c.key ?? c.props?.key))
+      expect(rows.slice(0, 6)).toEqual(['head-top', 'title', 'head-gap', 'tabs', 'head-end', 'head-rule'])
+      expect(rows).toHaveLength(80)
+      expect(rows.at(-1)).toBe('keys')
+      expect(await tall.find({ key: 'bar' })).toBeUndefined()
+      await tall.unmount()
+      // Shorter than what it draws: the bar is drawn over the window's last rows, and says the graph's state once the header is out of view.
+      const short = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...WIDE, bodyColumns: 60, scroll: { offset: 0, bodyRows: 16 } } })
+      // The lists shrink to the height; the key list does not.
+      expect(await short.find({ key: 'bar' })).toBeUndefined()
+      await short.press({ key: 'keys' })
+      const bar = await short.find({ key: 'bar' })
+      expect(bar?.props).toMatchObject({ position: 'absolute', top: 15 })
+      expect(bar?.text).not.toContain('● fresh')
+      await short.unmount()
+      const scrolled = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...WIDE, bodyColumns: 60, scroll: { offset: 6, bodyRows: 16 } } })
+      // The key list is still open: the view outlives the mount.
+      // Its state takes the bar a second row.
+      expect((await scrolled.find({ key: 'bar' }))?.props).toMatchObject({ position: 'absolute', top: 20 })
+      expect((await scrolled.find({ key: 'bar' }))?.text).toContain('● fresh 1s')
+      await scrolled.press({ key: 'keys' })
+      await scrolled.unmount()
+    }
+  })
+
   test('without git the title row names no branch, and a detail turns it into the way back', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }], head: [{ stdout: JSON.stringify({ status: 'no-git', path: ROOT, rev: null }) }], detail: [{ stdout: fullDetailOf('Router') }] })
     await $.session.start(START)
     await w.clock.settle()
     const ui = await wide($)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/^repo +● fresh 1s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/^ +repo +● fresh 1s $/)
     await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'open' })
     await w.clock.settle()
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/^repo › Hubs › Router +● fresh 1s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/^ +repo › Hubs › Router +● fresh 1s $/)
     await ui.unmount()
   })
 
@@ -3534,7 +3605,7 @@ describe("the pane's header, marked rows, hover cards and heat map cells", () =>
     expect(titled((await ui.find({ key: 'coupling-head' }))?.text)).toMatch(/^Http → Core +14 deps$/)
     await w.clock.settle()
     expect(w.couplingRuns()).toEqual([['sh', expect.stringMatching(/knossos-run\.sh$/), 'boundary-couplings', ROOT, '--from=Http', '--to=Core']])
-    expect((await ui.find({ key: 'coupling-0' }))?.text).toMatch(/Router::route → Kernel +9$/)
+    expect((await ui.find({ key: 'coupling-0' }))?.text).toMatch(/Router::route +──► Kernel +9$/)
     // Read once for this cell of this graph.
     await ui.press({ key: 'keys' })
     await w.clock.settle()

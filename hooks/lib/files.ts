@@ -17,6 +17,7 @@ import { boundaryLabel, NO_HUES } from './palette'
 import type { Hues } from './palette'
 import {
   baseName,
+  blank,
   boundaryStyle,
   cells,
   dimRow,
@@ -30,8 +31,8 @@ import {
   wrapWords,
 } from './rows'
 import type { Loc, Row, Segment, TableSpec, Tier } from './rows'
-import { locIn } from './views'
-import type { DetailInput, FileView, Openable } from './views'
+import { hoodBlock, locIn } from './views'
+import type { DetailInput, FileView, HoodSide, Openable } from './views'
 
 /** Paths longer than this are cut from the front in a table, as on Changes. */
 const PATH_MAX = 56
@@ -67,6 +68,7 @@ export function fileDetailInput(shown: Inspected, state: DetailState | null, roo
         boundaries: [...f.dependents.boundaries].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)),
         items: f.dependents.items.map(d => ({ ...d, loc: locIn(root, d.path) })),
       },
+      uses: f.uses === undefined ? null : { count: f.uses.count, truncated: f.uses.truncated, items: f.uses.items.map(u => ({ ...u, loc: locIn(root, u.path) })) },
       components: {
         count: f.components.count,
         truncated: f.components.truncated,
@@ -76,10 +78,11 @@ export function fileDetailInput(shown: Inspected, state: DetailState | null, roo
   }
 }
 
-/** What the file's detail walks: the files that depend on it (each opens as its own detail), then its components. */
+/** What the file's detail walks: the files that depend on it, the files it depends on (each opens as its own detail), then its components. */
 export function fileDetailList(file: FileView): Openable[] {
   return [
     ...file.dependents.items.map((d): Openable => ({ name: d.path, canonical: d.path, loc: d.loc, file: true })),
+    ...(file.uses?.items ?? []).map((u): Openable => ({ name: u.path, canonical: u.path, loc: u.loc, file: true })),
     ...file.components.items.map((c): Openable => ({ name: c.name, canonical: c.canonical, loc: c.loc })),
   ]
 }
@@ -133,31 +136,45 @@ export function fileDetailArrangement(detail: DetailInput, tier: Tier, hues: Hue
     }),
   }
 
-  // Who depends on it: what a change here reaches.
+  // Who depends on it (what a change here reaches) and what it depends on, drawn round it.
   const deps = f.dependents
-  const depBlock: Block = {
-    key: 'deps',
-    grow: { length: deps.items.length, min: LIST_MIN },
+  const uses = f.uses ?? { count: 0, truncated: false, items: [] }
+  const table = (key: string, items: { path: string; edges: number; boundary: string | null }[], offset: number, columns: number, limit: number): Row[] => {
+    const spec = countedSpec(columns, items.map(d => d.path), items.map(d => boundaryLabel(d.boundary, hues)), items.map(d => d.edges), tier)
+    const max = Math.max(0, ...items.map(d => d.edges))
+    const local = selected - offset
+    const window = windowOf(items.length, limit, local >= 0 && local < items.length ? local : -1)
+    return [
+      ...items.slice(window.start, window.end).map((d, n) => {
+        const i = offset + window.start + n
+        return tableRow(`${key}-${window.start + n}`, { name: d.path, boundary: d.boundary, values: [d.edges], max, selected: i === selected, cutStart: true, press: `row:${i}` }, spec, hues)
+      }),
+      ...moreRows(`${key}-window`, window, items.length, columns),
+    ]
+  }
+  const side = (title: string, count: number, items: { path: string; edges: number; boundary: string | null }[], offset: number): HoodSide => ({
+    title,
+    count,
+    items: items.map((d, n) => ({ name: baseName(d.path), boundary: d.boundary, edges: d.edges, press: `row:${offset + n}` })),
+  })
+  const hood = hoodBlock({ name: baseName(f.path), boundary: f.boundary }, side('Depended on by', deps.count, deps.items, 0), side('Depends on', uses.count, uses.items, deps.items.length), selected, hues, (columns, limit) => [
+    ...(deps.items.length === 0 ? [dimRow('deps-none', '   none: no other file depends on it', columns)] : table('dep', deps.items, 0, columns, limit)),
+    ...moreRow('deps-more', deps.count, deps.items.length, columns),
+    ...(f.uses === null ? [] : [blank('uses-gap'), dimRow('uses-title', `   Depends on · ${plural(uses.count, 'file', 'files')}`, columns), ...table('use', uses.items, deps.items.length, columns, limit), ...moreRow('uses-more', uses.count, uses.items.length, columns)]),
+  ])
+  // The boundaries a change here reaches, above the drawing.
+  const reached: Block = {
+    ...hood,
     make: (columns, limit) => {
-      const spec = countedSpec(columns, deps.items.map(d => d.path), deps.items.map(d => boundaryLabel(d.boundary, hues)), deps.items.map(d => d.edges), tier)
-      const rows: Row[] = []
-      if (deps.boundaries.length > 0) rows.push(...reachRows('deps-reach', '', deps.boundaries, columns, hues))
-      if (deps.items.length === 0) rows.push(dimRow('deps-none', '   none: no other file depends on it', columns))
-      const max = Math.max(0, ...deps.items.map(d => d.edges))
-      const window = windowOf(deps.items.length, limit, selected < deps.items.length ? selected : -1)
-      deps.items
-        .slice(window.start, window.end)
-        .forEach((d, n) =>
-          rows.push(tableRow(`dep-${window.start + n}`, { name: d.path, boundary: d.boundary, values: [d.edges], max, selected: window.start + n === selected, cutStart: true, press: `row:${window.start + n}` }, spec, hues)),
-        )
-      rows.push(...moreRows('deps-window', window, deps.items.length, columns), ...moreRow('deps-more', deps.count, deps.items.length, columns))
-      return { key: 'deps', title: 'Depended on by', subtitle: plural(deps.count, 'file', 'files'), note: noteOf(deps.items.length > 0 ? 'edges' : ''), body: rows }
+      const section = hood.make(columns, limit)
+      if (section === null || deps.boundaries.length === 0) return section
+      return { ...section, body: [...reachRows('deps-reach', '', deps.boundaries, columns, hues), blank('deps-reach-gap'), ...section.body] }
     },
   }
 
   // What it declares, the most used first; they share the file's boundary, so no column for it.
   const comps = f.components
-  const offset = deps.items.length
+  const offset = deps.items.length + uses.items.length
   const compBlock: Block = {
     key: 'comps',
     grow: { length: comps.items.length, min: LIST_MIN },
@@ -175,7 +192,7 @@ export function fileDetailArrangement(detail: DetailInput, tier: Tier, hues: Hue
       return { key: 'comps', title: 'Declares', subtitle: plural(comps.count, 'component', 'components'), note: noteOf(comps.items.length > 0 ? 'used by' : ''), body: rows }
     },
   }
-  return { top: [head], left: [depBlock], right: [compBlock], bottom: diff, order: [head, depBlock, ...diff, compBlock] }
+  return { top: [head], left: [reached, compBlock], bottom: diff, order: [head, reached, ...diff, compBlock] }
 }
 
 /** The files drifted since the snapshot, from a dashboard that names them; null when it names none. */

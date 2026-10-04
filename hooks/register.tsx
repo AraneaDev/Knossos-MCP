@@ -32,7 +32,7 @@ import {
   noGraphOf,
   paneHeight,
   paneInput,
-  paneRows,
+  paneLayout,
   paneStatus,
   refusedRoot,
   rowWidth,
@@ -1457,6 +1457,13 @@ async function moveCell($: EngineInterface, to: number | null): Promise<void> {
   if (target !== null) await update($, view, v => ({ ...v, target }))
 }
 
+/** `o` on a cycle's fold (`unfold:<cycle>:<row>`), or a press on its box (`fold:…`): the cycle shows every member, the marker on the first it hid. */
+async function unfoldCycle($: EngineInterface, id: string): Promise<void> {
+  const [cycle, row] = id.slice(id.indexOf(':') + 1).split(':').map(Number)
+  if (!Number.isInteger(cycle) || !Number.isInteger(row)) return
+  await update($, view, v => ({ ...v, unfolded: [...new Set([...(v.unfolded ?? []), cycle!])], selected: row! }))
+}
+
 /** What a press on the pane does, by the pressed element's id; `surface` is where the press came from. */
 async function pressAction($: EngineInterface, id: string, surface?: RenderSurface): Promise<unknown> {
   if (id.startsWith('tab:') || id.startsWith('tabkey:')) {
@@ -1473,6 +1480,9 @@ async function pressAction($: EngineInterface, id: string, surface?: RenderSurfa
     return openRow($, Number(id.slice(4)))
   }
   if (id.startsWith('rel:')) return openRelated($, Number(id.slice(4)))
+  // On Cycles the layout names the row `j` and `k` (and a cycle's line in the list) move to: what the diagram shows depends on its width.
+  if (/^(next|prev|mark):/.test(id)) return update($, view, v => ({ ...v, selected: Math.max(0, Number(id.slice(5)) || 0) }))
+  if (id.startsWith('unfold:') || id.startsWith('fold:')) return unfoldCycle($, id)
   if (id === 'down' || id === 'up') return moveSelection($, id === 'down' ? 1 : -1)
   if (id === 'open') return openRow($)
   if (id === 'edit') return openEditTarget($, surface)
@@ -1931,9 +1941,26 @@ export const register: Register = (on, options) => {
     // No loop variable may be called `h`: JSX compiles to h(...), and a
     // parameter of that name shadows the element factory inside its callback.
     // A press that outlives the session (a teardown under it) fails quietly.
+    const height = paneHeight(e.props.scroll)
+    const offset = Math.max(0, e.props.scroll?.offset ?? 0)
+    const laidOut = paneLayout(input, columns, height, offset)
+    const themeName = await read($, theme)
+    if (!laidOut.pinned) {
+      return (
+        <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
+          {drawRows($, ui, e.surface, themeName, [...laidOut.body, ...laidOut.footer], columns, press)}
+        </Box>
+      )
+    }
+    // Taller than the window: the bar is drawn over its last rows wherever it is scrolled to, and the body ends in room for it.
+    const reserve = laidOut.footer.map((_, i) => ({ key: `bar-room-${i}`, segments: [{ text: ' ' }] }))
+    const top = Math.min(offset, laidOut.body.length + reserve.length - height) + height - laidOut.footer.length
     return (
       <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
-        {drawRows($, ui, e.surface, await read($, theme), paneRows(input, columns, paneHeight(e.props.scroll)), columns, press)}
+        {drawRows($, ui, e.surface, themeName, [...laidOut.body, ...reserve], columns, press)}
+        <Box key="bar" position="absolute" top={Math.max(0, top)} left={0} flexDirection="column">
+          {laidOut.footer.map(row => drawRow($, ui, row, press))}
+        </Box>
       </Box>
     )
   })

@@ -4,7 +4,7 @@ import { axisCode, boundariesArrangement, boundariesInput, boundariesList, coupl
 import { arrange } from './cards'
 import { ACCENT, boundaryColour, NO_HUES } from './palette'
 import { HEAT_KEYS } from './raster'
-import { findRow, plainText } from './__tests__/plain-text'
+import { findRow, plainText, rawText } from './__tests__/plain-text'
 import { boundaryRows } from './__tests__/tabs'
 import { rowWidth } from './rows'
 import type { Row } from './rows'
@@ -245,11 +245,17 @@ describe('the marked heat map cell', () => {
       for (const r of section.body) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
     }
     const section = couplingSection(input, { from: 0, to: 1 }, couplingView({ phase: 'done', answer }), 80)!
-    expect(plainText(section.body[0]!)).toMatch(/^ {3}ScanTest::scan → StableId +812$/)
-    expect(plainText(section.body[1]!)).toMatch(/^ {3}Fixtures → SqliteConnection::open +97$/)
+    // The two boundaries drawn, the dependencies on the arrow between them.
+    expect(rawText(section.body[1]!)).toMatch(/^│ tests ├─+ 10,779 deps ─+►│ core │$/)
+    // Under them the pairs behind it, in columns: the sources padded, an arrow, the targets, the counts.
+    expect(plainText(section.body[4]!)).toMatch(/^ {3}ScanTest::scan +──► StableId +812$/)
+    expect(plainText(section.body[5]!)).toMatch(/^ {3}Fixtures +──► SqliteConnection::open +97$/)
+    expect(rawText(section.body[4]!).indexOf('──►')).toBe(rawText(section.body[5]!).indexOf('──►'))
     // A pair forbidden by a policy says so in the error colour.
     const forbidden = couplingSection(input, { from: 1, to: 0 }, null, 80)!
     expect(forbidden.note!.find(n => n.text === ' · forbidden')?.color).toBe('error')
+    expect(forbidden.body[1]!.segments.find(s => s.text.includes('✕'))).toMatchObject({ color: 'error', bold: true })
+    expect(forbidden.body[1]!.segments.filter(s => s.text.includes('─')).every(s => s.color === 'error')).toBe(true)
   })
 
   it('says it is reading, that knossos did not say, or that no pair is listed', () => {

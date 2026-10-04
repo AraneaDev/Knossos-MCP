@@ -1,5 +1,5 @@
 /**
- * The pane's Issues and Cycles tabs and its component detail: a view model
+ * The pane's Issues tab and its component detail: a view model
  * read from the envelopes, and the rows each draws at a given width.
  *
  * Pure, like the rest of the layout: envelopes in, rows of styled segments
@@ -13,7 +13,9 @@ import { moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
 import type { ComponentDetail, Counterpart, Dashboard, DetailState, Inspected } from '../../types'
 import { countLabel, detailLines } from './envelopes'
-import { ACCENT, boundaryColour, boundaryLabel, FAINT, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryColour, boundaryLabel, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
+import { DIAGRAM_MIN, neighbourhood } from './diagram'
+import type { Neighbour } from './diagram'
 import type { Hues } from './palette'
 import {
   absolute,
@@ -21,11 +23,11 @@ import {
   boundaryStyle,
   button,
   cells,
-  clip,
   dimRow,
   displayName,
   fit,
   fitStart,
+  grouped,
   linked,
   MARK,
   numberWidth,
@@ -37,7 +39,6 @@ import {
   tableRow,
   tableSpec,
   tinted,
-  wrapGroups,
   wrapWords,
 } from './rows'
 import type { Loc, Row, Segment, Tier } from './rows'
@@ -74,9 +75,6 @@ export type IssuesInput = {
   largest: { path: string; lines: number; loc: Loc | null }[]
 }
 
-export type CycleLine = { size: number; nodes: { name: string; canonical: string; boundary: string | null }[]; more: number }
-export type CyclesInput = { count: string; cycles: CycleLine[] }
-
 export type Side = { title: string; count: string; items: (Openable & { boundary: string | null; edges: number })[] }
 export type DetailInput = {
   label: string
@@ -108,6 +106,8 @@ export type FileView = {
   boundary: string | null
   loc: Loc | null
   dependents: { count: number; truncated: boolean; boundaries: string[]; items: { path: string; edges: number; boundary: string | null; loc: Loc | null }[] }
+  /** The files it depends on; null from a knossos that does not say. */
+  uses: { count: number; truncated: boolean; items: { path: string; edges: number; boundary: string | null; loc: Loc | null }[] } | null
   components: { count: number; truncated: boolean; items: { name: string; canonical: string; kind: string; boundary: string | null; usedBy: number; loc: Loc | null }[] }
 }
 
@@ -182,38 +182,6 @@ export function issueCount(issues: IssuesInput): { n: number; plus: boolean } {
 /** The components the Issues tab walks: each violation's source, then each dead-code candidate. */
 export function issuesList(issues: IssuesInput): Openable[] {
   return [...(issues.policy?.items ?? []).map(v => v.source), ...issues.deadCode.items]
-}
-
-/** The Cycles tab's view of a dashboard: the largest first, each member with its boundary. */
-export function cyclesInput(d: Dashboard): CyclesInput {
-  return {
-    count: countLabel(d.cycles.count, d.cycles.truncated),
-    cycles: d.cycles.largest.map(c => {
-      const nodes = c.nodes?.map(n => ({ name: displayName(n), canonical: n.canonical_name, boundary: n.boundary })) ?? c.members.map(name => ({ name, canonical: name, boundary: null }))
-      return { size: c.size, nodes, more: Math.max(0, c.size - nodes.length) }
-    }),
-  }
-}
-
-/**
- * The cycles the marker walks, one per cycle. Opening one shows the member
- * where it leaves its own boundary (else its first): its uses include the
- * edge that closes the loop. `c` copies the chain and "Ask Claude" asks how
- * to break it.
- */
-export function cyclesList(input: CyclesInput): Openable[] {
-  return input.cycles.map((cycle, i) => {
-    const home = homeBoundary(cycle)
-    const first = cycle.nodes.find(n => n.boundary !== home) ?? cycle.nodes[0]
-    const names = cycle.nodes.map(n => n.canonical)
-    const chain = `${names.join(' → ')}${cycle.more > 0 ? ` → … (+${cycle.more} more)` : names.length > 0 ? ` → ${names[0]}` : ''}`
-    return {
-      name: `cycle ${i + 1}`,
-      canonical: first?.canonical ?? '',
-      copy: chain,
-      ask: `Using the Knossos graph, how could I break this dependency cycle: ${chain}? Name the edge to cut and what would have to move.`,
-    }
-  })
 }
 
 const sideOf = (title: string, related: { count: number; truncated: boolean; names: string[]; items?: Counterpart[] }): Side => ({
@@ -333,7 +301,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
   }))
   const d = issues.diagnostics
   const diagEntries: Entry[] = (d?.items ?? []).map(x => ({
-    mark: x.severity === 'error' ? { text: '✖', color: STATUS_COLOURS.alert } : { text: '▲', color: STATUS_COLOURS.warn },
+    mark: x.severity === 'error' ? { text: '✗', color: STATUS_COLOURS.alert } : { text: '▲', color: STATUS_COLOURS.warn },
     place: x.place,
     loc: x.loc,
     need: cells(x.text),
@@ -428,109 +396,6 @@ export function issueGrid(blocks: Block[]): Block[][] {
   return [...(empty.length > 3 ? pairs(empty) : empty.length > 0 ? [empty] : []), ...pairs(listed)]
 }
 
-/** The boundary most of a cycle's members are in (the first such, on a tie), or null when none has one. */
-function homeBoundary(cycle: CycleLine): string | null {
-  const counts = new Map<string, number>()
-  for (const node of cycle.nodes) if (node.boundary !== null) counts.set(node.boundary, (counts.get(node.boundary) ?? 0) + 1)
-  let home: string | null = null
-  for (const [name, n] of counts) if (home === null || n > counts.get(home)!) home = name
-  return home
-}
-
-/** The fewest cycles the Cycles tab lists, however short the pane. */
-const CYCLES_MIN = 2
-
-/**
- * The Cycles tab: each cycle, largest first, as a chain of names wrapped to
- * width, under a line naming the boundary most of its members are in.
- * Members outside that boundary are drawn in their own boundary's colour.
- * Wide, the marked cycle is spelled out beside the list, a member a row.
- */
-export function cyclesArrangement(input: CyclesInput, hues: Hues = NO_HUES, selected = -1): Arrangement {
-  const shown = input.cycles.length
-  const list: Block = {
-    key: 'cycles',
-    grow: { length: shown, min: CYCLES_MIN },
-    make: (columns, limit) => {
-      const note = shown === 0 ? 'none' : `${input.count}${String(shown) === input.count ? '' : ` · ${shown} shown`} · largest first`
-      const section = (body: Row[]): Section => ({ key: 'cycles', title: 'Cycles', note: noteOf(note), body })
-      if (shown === 0) return section([{ key: 'cycles-none', segments: [{ text: '   No dependency cycles.', dim: true }] }])
-      return section(cycleListRows(input, columns, hues, selected, windowOf(shown, limit, selected)))
-    },
-  }
-  const marked = input.cycles[Math.min(Math.max(0, selected), shown - 1)]
-  if (marked === undefined) return { left: [list] }
-  const index = input.cycles.indexOf(marked)
-  const members: Block = { key: 'cycle-members', make: columns => memberSection(marked, index, columns, hues) }
-  return { left: [list], right: [members], order: [list] }
-}
-
-/**
- * The cycles in `window` as rows: a legend for the colours, then each
- * cycle's line and its chain. The chain opens with `↻` and runs member to
- * member, each hop in its own boundary's colour, so the eye sees where the
- * loop crosses from one boundary into another; it wraps across the width
- * and closes with `→ ↻`, back to where it began.
- */
-function cycleListRows(input: CyclesInput, columns: number, hues: Hues, selected: number, window: { start: number; end: number }): Row[] {
-  const rows: Row[] = []
-  const visible = input.cycles.slice(window.start, window.end)
-  // A legend for the members' colours, in the order they first appear.
-  const seen = new Map<string, Segment[]>()
-  for (const node of visible.flatMap(c => c.nodes)) {
-    if (node.boundary === null || seen.has(node.boundary) || boundaryColour(node.boundary, hues) === undefined) continue
-    seen.set(node.boundary, [{ text: `■ ${boundaryLabel(node.boundary, hues)}`, color: boundaryColour(node.boundary, hues) }])
-  }
-  if (seen.size > 1) rows.push(...wrapGroups('cycles-legend', [...seen.values()], columns, 2, MARK))
-  visible.forEach((cycle, n) => {
-    const i = window.start + n
-    // The boundary most members share is named once, in its colour.
-    const home = homeBoundary(cycle)
-    const head: Segment[] = [
-      { text: i === selected ? '›' : ' ', color: ACCENT, bold: true },
-      { text: '  ' },
-      button(`row:${i}`, `cycle ${i + 1}`),
-      { text: ` · ${plural(cycle.size, 'member', 'members')}`, dim: true },
-    ]
-    if (home !== null) head.push({ text: ' · ', dim: true }, { text: boundaryLabel(home, hues), ...boundaryStyle(home, hues) })
-    if (n > 0 || seen.size > 1) rows.push(blank(`gap-cycle-${i}`))
-    rows.push(i === selected ? { key: `cycle-${i}`, segments: tinted(clip(head, columns), SELECTED_BG), tint: SELECTED_BG } : { key: `cycle-${i}`, segments: clip(head, columns) })
-    rows.push(...wrapGroups(`chain-${i}`, chainGroups(cycle, Math.max(1, columns - MARK - 4), hues), columns, 1, MARK))
-  })
-  return [...rows, ...moreRows('cycles-window', window, input.cycles.length, columns)]
-}
-
-/** A cycle's chain as groups that wrap whole: `↻`, then each member (in its boundary's colour) with the arrow after it, then the loop's close. */
-export function chainGroups(cycle: CycleLine, room: number, hues: Hues = NO_HUES): Segment[][] {
-  const groups: Segment[][] = [[{ text: '↻', color: ACCENT }]]
-  cycle.nodes.forEach((node, j) => {
-    const last = j === cycle.nodes.length - 1
-    groups.push([{ text: fit(node.name, room), ...boundaryStyle(node.boundary, hues) }, ...(last && cycle.more === 0 ? [] : [{ text: ' →', dim: true }])])
-  })
-  groups.push(cycle.more > 0 ? [{ text: `… +${cycle.more} more`, dim: true }] : [{ text: '→ ↻', dim: true }])
-  return groups
-}
-
-/** The widest a member's boundary label is drawn beside it. */
-const MEMBER_BOUNDARY_MAX = 20
-
-/** The marked cycle spelled out: one member a row, its boundary beside it, the last closing the loop. */
-function memberSection(cycle: CycleLine, index: number, columns: number, hues: Hues): Section {
-  const home = homeBoundary(cycle)
-  // No numbers and no bar: the names take what they need, the boundary what is left.
-  const boundary = Math.min(MEMBER_BOUNDARY_MAX, Math.max(0, ...cycle.nodes.map(n => cells(boundaryLabel(n.boundary, hues)))))
-  const name = Math.max(1, Math.min(Math.max(1, ...cycle.nodes.map(n => cells(n.name))), columns - MARK - (boundary > 0 ? boundary + 1 : 0)))
-  const spec = { name, boundary: columns - MARK - name - 1 >= Math.min(boundary, 6) && boundary > 0 ? Math.min(boundary, columns - MARK - name - 1) : 0, bar: 0, numbers: [] }
-  const body: Row[] = cycle.nodes.map((node, j) =>
-    tableRow(`member-${j}`, { name: node.name, boundary: node.boundary, values: [], max: 0, mark: { text: j === 0 ? '┌' : '│', color: FAINT }, repeat: node.boundary === home && j > 0 }, spec, hues),
-  )
-  body.push({ key: 'member-close', segments: [{ text: ' ' }, { text: cycle.more > 0 ? '┆' : '└', color: FAINT }, { text: cycle.more > 0 ? ` … +${cycle.more} more` : ` ↻ back to ${fit(cycle.nodes[0]?.name ?? '', Math.max(1, columns - 12))}`, dim: true }] })
-  return { key: 'cycle-members', title: `Cycle ${index + 1}`, note: noteOf(plural(cycle.size, 'member', 'members')), body }
-}
-
-/** The fewest counterparts each side of the detail lists, however short the pane. */
-const SIDE_MIN = 5
-
 /** One side of the detail ("used by" or "uses") as a card: a small table `limit` rows long around the marker. */
 function sideSection(prefix: string, side: Side, offset: number, columns: number, limit: number, tier: Tier, hues: Hues, selected = -1): Section {
   const counted = side.items.some(i => i.edges > 0)
@@ -583,12 +448,20 @@ export function detailArrangement(detail: DetailInput, tier: Tier, hues: Hues = 
       return { key: 'detail', title: c.name, note: label, body }
     },
   }
-  const used: Block = { key: 'used', grow: { length: c.usedBy.items.length, min: SIDE_MIN }, make: (columns, limit) => sideSection('used', c.usedBy, 0, columns, limit, tier, hues, selected) }
-  const uses: Block = {
-    key: 'uses',
-    grow: { length: c.uses.items.length, min: SIDE_MIN },
-    make: (columns, limit) => sideSection('uses', c.uses, c.usedBy.items.length, columns, limit, tier, hues, selected),
-  }
+  const items = (side: Side, offset: number): HoodItem[] => side.items.map((item, i) => ({ name: item.name, boundary: item.boundary, edges: item.edges, press: `rel:${offset + i}` }))
+  const hood = hoodBlock(
+    { name: c.name, boundary: c.boundary },
+    { title: c.usedBy.title, count: Number.parseInt(c.usedBy.count, 10) || c.usedBy.items.length, items: items(c.usedBy, 0) },
+    { title: c.uses.title, count: Number.parseInt(c.uses.count, 10) || c.uses.items.length, items: items(c.uses, c.usedBy.items.length) },
+    selected,
+    hues,
+    (columns, limit) => [
+      ...sideSection('used', c.usedBy, 0, columns, limit, tier, hues, selected).body.map(r => ({ ...r, key: `hood-${r.key}` })),
+      blank('hood-sides-gap'),
+      { key: 'hood-uses-title', segments: [{ text: `   ${c.uses.title} · ${c.uses.count}`, dim: true }] },
+      ...sideSection('uses', c.uses, c.usedBy.items.length, columns, limit, tier, hues, selected).body.map(r => ({ ...r, key: `hood-${r.key}` })),
+    ],
+  )
   const notes: Block[] =
     c.annotations.length === 0
       ? []
@@ -604,5 +477,53 @@ export function detailArrangement(detail: DetailInput, tier: Tier, hues: Hues = 
             }),
           },
         ]
-  return { top: [head], left: [used], right: [uses], bottom: [...notes, ...diff] }
+  return { top: [head], left: [hood], bottom: [...notes, ...diff] }
 }
+
+/** One neighbour as the neighbourhood draws it: its name, boundary, edge count and the press that opens it. */
+export type HoodItem = { name: string; boundary: string | null; edges: number; press: string }
+/** One side of a neighbourhood: its title, how many there are in all, and those listed, in walking order from `items[0]`'s press. */
+export type HoodSide = { title: string; count: number; items: HoodItem[] }
+
+/** The fewest neighbours each side of the neighbourhood shows, however short the pane. */
+const HOOD_MIN = 3
+
+/**
+ * The neighbourhood as a card: the thing on show in the middle, what uses it
+ * fanning in, what it uses fanning out, each neighbour a box carrying its
+ * count on its edge and a press that opens it (see `diagram.ts`). Each side
+ * shows `limit` neighbours around the marker; the rest, and those knossos
+ * did not list, are one `+N more` box. Below {@link DIAGRAM_MIN} columns,
+ * `fallback`'s rows (the two lists as tables) instead.
+ */
+export function hoodBlock(centre: { name: string; boundary: string | null }, usedBy: HoodSide, uses: HoodSide, selected: number, hues: Hues, fallback: (columns: number, limit: number) => Row[]): Block {
+  const note = noteOf(usedBy.items.some(i => i.edges > 0) || uses.items.some(i => i.edges > 0) ? 'edges' : '')
+  const subtitle = `used by ${usedBy.count} · uses ${uses.count}`
+  return {
+    key: 'hood',
+    grow: { length: Math.max(usedBy.items.length, uses.items.length) + 1, min: HOOD_MIN },
+    make: (columns, limit) => {
+      if (columns < DIAGRAM_MIN) return { key: 'hood', title: usedBy.title, subtitle: String(usedBy.count), note, body: fallback(columns, limit) }
+      const side = (s: HoodSide): Neighbour[] => {
+        const pressed = s.items.findIndex(i => pressIndex(i.press) === selected)
+        const room = s.items.length > limit || s.count > s.items.length ? Math.max(1, limit - 1) : limit
+        const window = windowOf(s.items.length, room, pressed)
+        const shown = s.items.slice(window.start, window.end).map((item): Neighbour => {
+          const colour = boundaryColour(item.boundary, hues)
+          return {
+            node: { key: item.press, label: item.name, ...(colour === undefined ? {} : { color: colour }), press: { id: item.press, label: item.name }, selected: pressIndex(item.press) === selected },
+            edge: item.edges > 0 ? grouped(item.edges) : '',
+          }
+        })
+        const hidden = s.count - shown.length
+        return hidden > 0 ? [...shown, { node: { key: `${s.title}-more`, label: `+${hidden} more`, dim: true }, edge: '' }] : shown
+      }
+      const colour = boundaryColour(centre.boundary, hues)
+      const drawn = neighbourhood({ key: 'centre', label: centre.name, ...(colour === undefined ? {} : { color: colour }) }, side(usedBy), side(uses), columns, { usedBy: 'nothing uses it', uses: 'uses nothing' }, 'hood')
+      return { key: 'hood', title: 'Dependencies', subtitle, note, body: drawn.rows }
+    },
+  }
+}
+
+/** The list index a `rel:N` or `row:N` press names. */
+const pressIndex = (press: string): number => Number(press.slice(press.indexOf(':') + 1))

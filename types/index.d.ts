@@ -235,6 +235,8 @@ export type FileDetail = {
     lines: number | null
     boundary: string | null
     dependents: { count: number; truncated: boolean; boundaries: string[]; items: { path: string; edges: number; boundary: string | null }[] }
+    /** The files it depends on, most connected first; absent from an older knossos. */
+    uses?: { count: number; truncated: boolean; items: { path: string; edges: number; boundary: string | null }[] }
     components: { count: number; truncated: boolean; items: (Listed & { line: number | null; boundary: string | null; used_by: number })[] }
   } | null
 }
@@ -391,6 +393,8 @@ export type KnossosView = {
   opened?: number
   /** On the Boundaries tab, the boundary the marked one's heat map cell runs to (its top dependency when absent or gone). */
   target?: string
+  /** On the Cycles tab, the cycles whose folded middle the person opened, by index. */
+  unfolded?: number[]
 }
 
 /** The `scan` subcommand's answer: an incremental rescan the person asked for from the pane. */

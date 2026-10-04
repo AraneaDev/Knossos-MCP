@@ -334,7 +334,12 @@ function pane(view, { turn = null, shown = null, changes = session, refresh = FE
   const base = { git: GIT, feedback }
   const input = make({ ...base, couplings: couplingsFor(make(base)) })
   // Sized by the pane's height too: its lists grow with the rows it has. `hover` draws the marked row's card as a resting pointer shows it.
-  return Object.assign((columns, height = layout.DEFAULT_ROWS) => (hover ? hovered(layout.paneRows(input, columns, height), columns) : layout.paneRows(input, columns, height)), { sized: true })
+  // As the window shows it scrolled to the top: a pane taller than its height has its footer bar over the last rows.
+  const windowed = (columns, height) => {
+    const { body, footer, pinned } = layout.paneLayout(input, columns, height)
+    return pinned ? [...body.slice(0, Math.max(0, height - footer.length)), ...footer] : [...body, ...footer]
+  }
+  return Object.assign((columns, height = layout.DEFAULT_ROWS) => (hover ? hovered(windowed(columns, height), columns) : windowed(columns, height)), { sized: true })
 }
 
 /**
@@ -431,6 +436,10 @@ const VIEWS = [
   // The first boundary's cell stepped on once with `l`: its second dependency spelled out.
   ['boundaries-cell', pane({ tab: 'boundaries', selected: 0, target: secondTarget(dashboard) })],
   ['cycles', pane({ tab: 'cycles' })],
+  // The marker on the fourth member, then on a long cycle's fold (narrow), then on the second cycle.
+  ['cycles-member', pane({ tab: 'cycles', selected: 3 })],
+  ['cycles-fold', pane({ tab: 'cycles', selected: dashboard.cycles.largest[0]?.nodes?.length ?? 0 })],
+  ['cycles-second', pane({ tab: 'cycles', selected: (dashboard.cycles.largest[0]?.nodes?.length ?? 0) + 1 })],
   ['issues', pane({ tab: 'issues' })],
   ['changes', pane({ tab: 'changes', selected: 1 }, { turn: brief })],
   ['changes-empty', pane({ tab: 'changes' }, { changes: layout.NO_CHANGES })],
@@ -607,6 +616,14 @@ function blockShape(ch, x, y, fg) {
   if (ch === '━') return `<rect x="${x}" y="${y + h / 2 - 1.5}" width="${w}" height="3" fill="${fg}"/>`
   if (ch === '─') return `<rect x="${x}" y="${y + h / 2 - 0.5}" width="${w}" height="1" fill="${fg}"/>`
   if (ch === '│') return `<rect x="${x + w / 2 - 0.5}" y="${y}" width="1" height="${h}" fill="${fg}"/>`
+  // Junctions as terminals draw them: each arm from the cell's middle to its edge.
+  const arms = { '├': 'udr', '┤': 'udl', '┬': 'lrd', '┴': 'lru', '┼': 'udlr' }[ch]
+  if (arms !== undefined) {
+    const mx = x + w / 2 - 0.5
+    const my = y + h / 2 - 0.5
+    const arm = { u: [mx, y, 1, h / 2], d: [mx, my, 1, h / 2 + 0.5], l: [x, my, w / 2, 1], r: [mx, my, w / 2 + 0.5, 1] }
+    return [...arms].map(a => `<rect x="${arm[a][0]}" y="${arm[a][1]}" width="${arm[a][2]}" height="${arm[a][3]}" fill="${fg}"/>`).join('')
+  }
   // Rounded corners as terminals draw them: a quarter circle joining the cell's middle lines.
   const cx = x + w / 2
   const cy = y + h / 2

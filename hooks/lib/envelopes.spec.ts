@@ -139,6 +139,13 @@ describe('file detail', () => {
   it('an ok answer parses with its lists', () => expect(parseFileDetail(envelope())?.file?.dependents.items[0]?.path).toBe('src/Kernel.php'))
   it('an ok answer without its file is no data', () => expect(parseFileDetail(envelope({ file: null }))).toBeNull())
   it('an ok answer whose lists are missing is no data', () => expect(parseFileDetail(envelope({ file: { ...file, components: {} } }))).toBeNull())
+  it('keeps what the file depends on, and drops it alone when misshapen', () => {
+    const uses = { count: 1, truncated: false, items: [{ path: 'src/Core.php', edges: 2, boundary: 'core' }] }
+    expect(parseFileDetail(envelope({ file: { ...file, uses } }))?.file?.uses?.items[0]?.path).toBe('src/Core.php')
+    const odd = parseFileDetail(envelope({ file: { ...file, uses: { count: 1 } } }))
+    expect(odd?.file?.dependents.items[0]?.path).toBe('src/Kernel.php')
+    expect(odd?.file?.uses).toBeUndefined()
+  })
   it('a component status that is no file status is no data', () => expect(parseFileDetail('{"status":"ambiguous"}')).toBeNull())
   it('not-found and unscanned parse without a file', () => {
     expect(parseFileDetail(envelope({ status: 'not-found', file: null }))?.status).toBe('not-found')

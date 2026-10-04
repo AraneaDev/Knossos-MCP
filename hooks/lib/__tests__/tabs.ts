@@ -11,8 +11,8 @@ import { NO_HUES } from '../palette'
 import type { Hues } from '../palette'
 import { tierOf } from '../rows'
 import type { Row } from '../rows'
-import { cyclesArrangement, detailArrangement, issuesArrangement } from '../views'
-import type { CyclesInput, DetailInput, IssuesInput } from '../views'
+import { detailArrangement, issuesArrangement } from '../views'
+import type { DetailInput, IssuesInput } from '../views'
 
 /**
  * Each tab's and card's rows at a width, laid out as the pane lays them out
@@ -32,8 +32,6 @@ export const boundaryRows = (input: BoundariesInput | null, columns: number, hue
 
 export const issueRows = (issues: IssuesInput, selected: number, columns: number, hues: Hues = NO_HUES): Row[] =>
   arrange(issuesArrangement(issues, selected, tierOf(columns), hues), columns, TALL)
-
-export const cycleRows = (input: CyclesInput, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] => arrange(cyclesArrangement(input, hues, selected), columns, TALL)
 
 export const detailRows = (detail: DetailInput, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] =>
   arrange(detailArrangement(detail, tierOf(columns), hues, selected), columns, TALL)

@@ -318,7 +318,7 @@ describe('notes', () => {
 describe('card glyphs', () => {
   it('mark each kind of card with one dim, one-cell glyph before its title, the same on every tab', () => {
     for (const glyph of Object.values(GLYPHS)) expect([...glyph]).toHaveLength(1)
-    expect(GLYPHS).toMatchObject({ look: '◆', turn: '▤', map: '▦', bounds: '▦', cycles: '↻', policy: '⚠', diag: '⚠', dead: '⚠', large: '⚠', changes: '±' })
+    expect(GLYPHS).toMatchObject({ look: '◆', turn: '▤', map: '▦', bounds: '▦', cycles: '↻', policy: '!', diag: '!', dead: '!', large: '!', changes: '±' })
     for (const tier of ['narrow', 'medium', 'wide'] as const) {
       const head = topRow({ key: 'cycles', title: 'Cycles', note: [{ text: '2' }], body: [] }, 60, tier)
       expect(head.segments.find(s => s.text === '↻ ')).toMatchObject({ dim: true })

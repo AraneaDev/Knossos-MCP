@@ -27,11 +27,10 @@ import {
 } from './layout'
 import type { PaneInput, Row } from './layout'
 import { findRow, plainText, rawText } from './__tests__/plain-text'
-import { cycleRows } from './__tests__/tabs'
 import { compact, fitStart, shortName, wrapGroups } from './rows'
 import { gitLabel, titleRow } from './layout'
-import { chainGroups } from './views'
-import { cyclesInput, issueCount, issuesInput, issuesList, superscript } from './views'
+import { chainGroups, cyclesInput } from './cycles'
+import { issueCount, issuesInput, issuesList, superscript } from './views'
 
 const WIDTHS = [40, 60, 80, 100, 130, 140, 200] as const
 const TABS: PaneTab[] = ['overview', 'hubs', 'boundaries', 'cycles', 'issues', 'changes']
@@ -241,10 +240,11 @@ describe('paneRows', () => {
   it('draws the header with the project, the status and the rescan action', () => {
     const rows = paneRows(input(), 60)
     // Narrow: the name and the status as a pill in its colour, the rescan beside it; no summary line under it.
-    expect(plainText(row(rows, 'title')!)).toMatch(/^Knossos-MCP +● stale 11h {3}r: rescan$/)
+    expect(plainText(row(rows, 'title')!)).toMatch(/^ Knossos-MCP +● stale 11h {3}r: rescan$/)
     expect(row(rows, 'title')!.segments.find(s => s.text === ' ● stale 11h ')).toMatchObject({ bg: 'warning', color: 'inverseText', bold: true })
     expect(row(rows, 'summary')).toBeUndefined()
-    expect(rows[1]!.key).toBe('tabs')
+    // Narrow: no row above the name, one between it and the tabs, then a blank row and a rule before the first card.
+    expect(rows.slice(0, 5).map(r => r.key)).toEqual(['title', 'head-gap', 'tabs', 'head-end', 'head-rule'])
     const press = row(rows, 'title')!.segments.find(s => s.press)?.press
     expect(press).toEqual({ id: 'rescan', label: 'rescan', hotkey: 'r' })
   })
@@ -354,10 +354,10 @@ describe('paneRows', () => {
   it('shows the key help on request', () => {
     const rows = paneRows(input({ showKeys: true }), 60)
     expect(textOf(rows)).toMatch(/1–6 +switch tabs \(or click one\)/)
-    expect(textOf(rows)).toMatch(/\nq +ask Claude about the marked row/)
+    expect(textOf(rows)).toMatch(/\n q +ask Claude about the marked row/)
     // One key a line, the key in the accent; a long action wraps under its own column.
-    expect(row(rows, 'help-0')!.segments[0]).toMatchObject({ text: '1–6    ', color: 'suggestion' })
-    expect(rows.filter(r => r.key.startsWith('help-')).every(r => r.segments[0]!.text.length === 7)).toBe(true)
+    expect(row(rows, 'help-0')!.segments[1]).toMatchObject({ text: '1–6    ', color: 'suggestion' })
+    expect(rows.filter(r => r.key.startsWith('help-')).every(r => r.segments[1]!.text.length === 7)).toBe(true)
     expect(textOf(paneRows(input(), 60))).not.toContain('switch tabs')
   })
 })
@@ -366,16 +366,17 @@ describe('tabRows', () => {
   it('names every tab in full when it fits, the open one on the selection colour, and no digits on the bar', () => {
     const [strip, ...rest] = tabRows('hubs', 80, true)
     expect(rest).toHaveLength(0)
-    expect(plainText(strip!)).toBe(' Overview   Hubs   Boundaries   Cycles   Issues   Changes ')
+    expect(plainText(strip!)).toBe(' Overview    Hubs    Boundaries    Cycles    Issues    Changes ')
     expect(strip!.segments.find(s => s.press?.id === 'tab:hubs')).toMatchObject({ text: ' Hubs ', bg: 'selectionBg' })
     expect(strip!.segments.find(s => s.press?.id === 'tab:overview')).toMatchObject({ text: ' Overview ', dim: true })
     expect(strip!.segments.find(s => s.press?.id === 'tab:overview')?.bg).toBeUndefined()
     // Counts ride on the name as superscript badges.
-    expect(plainText(tabRows('hubs', 80, true, { issues: '⁴', changes: '¹²' })[0]!)).toContain(' Issues⁴   Changes¹² ')
+    expect(plainText(tabRows('hubs', 80, true, { issues: '⁴', changes: '¹²' })[0]!)).toContain(' Issues⁴    Changes¹² ')
   })
   it('names the open tab and gives the others their digit where the names do not fit, and always when narrow', () => {
-    expect(plainText(tabRows('overview', 50, true)[0]!)).toBe(' Overview   2   3   4   5   6 ')
-    expect(plainText(tabRows('boundaries', 120, true, { issues: '⁴', changes: '⁸' }, true)[0]!)).toBe(' 1   2   Boundaries   4   5⁴   6⁸ ')
+    expect(plainText(tabRows('overview', 50, true)[0]!)).toBe(' Overview    2    3    4    5    6 ')
+    expect(plainText(tabRows('overview', 32, true)[0]!)).toBe(' Overview   2   3   4   5   6 ')
+    expect(plainText(tabRows('boundaries', 120, true, { issues: '⁴', changes: '⁸' }, true)[0]!)).toBe(' 1    2    Boundaries    4    5⁴    6⁸ ')
     expect(plainText(tabRows('changes', 30, true, { changes: '¹²' })[0]!)).toBe(' 1  2  3  4  5  Changes¹² ')
     // Never an abbreviation: a pane too narrow even for that keeps the digits alone.
     expect(plainText(tabRows('boundaries', 20, true)[0]!)).toBe(' 1  2  3  4  5  6 ')
@@ -621,7 +622,7 @@ describe('the issues tab', () => {
     expect(text).toMatch(/ArchitectureQueryService::fileMetrics → FactCollector +core +ArchitectureQueryService\.php:191/)
     expect(text).toContain('+6 not listed')
     expect(text).toMatch(/Diagnostics +1 error · 1 warning · 1 note/)
-    expect(text).toMatch(/✖ TS2307 Cannot find module/)
+    expect(text).toMatch(/✗ TS2307 Cannot find module/)
     expect(text).toMatch(/scanner\.ts:14$/m)
     expect(text).toMatch(/Dead code +55 · first 2/)
     expect(text).toMatch(/FactCollector::beforeTraverse +php-worker +FactCollector\.php:108/)
@@ -657,7 +658,7 @@ describe('the issues tab', () => {
     expect(plainText(row(paneRows(fullInput(), 90), 'tabs')!)).toContain(' Issues⁹ ')
     expect(plainText(row(paneRows(fullInput(), 40), 'tabs')!)).toContain('5⁹')
     // Nothing to act on: no badge.
-    expect(plainText(row(paneRows(input(), 90), 'tabs')!)).toMatch(/ Issues {3}Changes $/)
+    expect(plainText(row(paneRows(input(), 90), 'tabs')!)).toMatch(/ Issues {4}Changes $/)
   })
   it('says what it cannot know from an older knossos, and when no policy is declared', () => {
     const old = textOf(paneRows(input({ tab: 'issues' }), 60))
@@ -678,59 +679,81 @@ describe('the cycles tab', () => {
   for (const columns of WIDTHS) {
     it(`fits ${columns} columns`, () => widthsFit(paneRows(fullInput({ tab: 'cycles' }), columns), columns))
   }
-  it('draws each cycle as a chain opening and closing on ↻, each hop in its boundary colour', () => {
+  it('draws the marked cycle as boxes in a serpentine, each member in its boundary colour, the crossings marked', () => {
     const rows = paneRows(fullInput({ tab: 'cycles' }), 100)
     const text = textOf(rows)
-    expect(text).toMatch(/Cycles +2 · largest first/)
-    expect(text).toContain('cycle 1 · 5 members')
-    expect(text).toContain('↻ Index::_add_instances → Index::module_declarations → ')
-    expect(text).toContain('Index::safe_file → ↻')
-    const chain = rows.filter(r => r.key.startsWith('chain-0')).flatMap(r => r.segments)
-    const coloured = (name: string) => chain.find(s => s.text === name)?.color
-    // Most members are python-worker: the cycle's line names it, in its colour, and so are its members.
-    expect(plainText(row(rows, 'cycle-0')!)).toBe('›  cycle 1 · 5 members · python-worker')
-    const home = row(rows, 'cycle-0')!.segments.find(s => s.text === 'python-worker')
-    expect(home?.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
-    expect(coloured('Index::_add_instances')).toBe(home?.color)
-    expect(coloured('Index::read_bounded')).toBe(home?.color)
-    // The one member in core is where the cycle crosses: its hop in core's colour.
-    expect(coloured('Index::safe_file')).toMatch(/_FOR_SUBAGENTS_ONLY$/)
-    expect(coloured('Index::safe_file')).not.toBe(home?.color)
-    // The marked cycle's line is tinted across; the legend names every colour drawn on members.
+    expect(text).toMatch(/Cycle 1 +5 members · crosses 2 boundaries/)
+    expect(text).toMatch(/All cycles +2 · largest first/)
+    // Each member a box, the first marked: its frame and its label in the accent, its inside tinted.
+    expect(text).toContain('│ Index::_add_instances')
+    const drawn = rows.filter(r => r.key.split('|').some(k => k.startsWith('diagram-0-')))
+    expect(drawn.length).toBeGreaterThan(5)
+    const label = (name: string) => drawn.flatMap(r => r.segments).find(s => s.text === name)
+    expect(label('Index::_add_instances')).toMatchObject({ bold: true, bg: 'userMessageBackground', press: { id: 'row:0' } })
+    // Spanning two boundaries: every member's frame in its own boundary's colour (a pressable label keeps the engine's), the hop into core marked.
+    const frames = new Set(drawn.flatMap(r => r.segments).filter(s => /[╭╮╰╯]/.test(s.text)).map(s => s.color))
+    expect([...frames].filter(c => /_FOR_SUBAGENTS_ONLY$/.test(c ?? '')).length).toBe(2)
+    expect(label('Index::read_bounded')?.press?.id).toBe('row:2')
+    expect(drawn.flatMap(r => r.segments).some(s => s.text.includes('╫') || s.text.includes('╪'))).toBe(true)
+    expect(plainText(row(rows, 'cycle-legend')!)).toBe('■ python-worker  ■ core  ╫ crosses a boundary')
+    // The list under it names each cycle, the marked one tinted.
+    expect(plainText(row(rows, 'cycle-0')!)).toBe('›  cycle 1 · 5 members · python-worker +1 boundary')
     expect(row(rows, 'cycle-0')!.tint).toBe('userMessageBackground')
-    expect(plainText(row(rows, 'cycles-legend')!)).toBe('   ■ python-worker  ■ core')
   })
-  it('wraps a chain onto more rows as the pane narrows, keeping each name whole where it can', () => {
-    const at = (columns: number) => paneRows(fullInput({ tab: 'cycles' }), columns).filter(r => r.key.startsWith('chain-0'))
-    expect(at(100)).toHaveLength(2)
-    expect(at(40).length).toBeGreaterThan(at(100).length)
-    expect(at(40).map(plainText).join(' ')).toContain('Index::module_declarations →')
+  it('falls back to the chain as text and a member a row below fifty columns', () => {
+    const rows = paneRows(fullInput({ tab: 'cycles' }), 40)
+    const text = textOf(rows)
+    expect(text).toContain('↻ Index::_add_instances →')
+    expect(text).toContain('→ ↻')
+    expect(rows.some(r => r.key.startsWith('diagram-'))).toBe(false)
+    expect(row(rows, 'member-0')!.segments.find(s => s.press)?.press?.id).toBe('row:0')
+    expect(plainText(row(rows, 'member-0')!).startsWith('›')).toBe(true)
   })
-  it('lists names alone from an older knossos, and says how many more a long cycle has', () => {
-    const text = textOf(cycleRows(cyclesInput(full()), 60))
-    expect(text).toContain('↻ visit → walk → Scanner::scan → emit → ↻')
+  it('draws a cycle from an older knossos plain, and the members knossos did not list as one box', () => {
+    const text = textOf(paneRows(fullInput({ tab: 'cycles', selected: 6 }), 100))
+    expect(text).toContain('│ visit')
+    expect(text).toMatch(/Cycle 2 +4 members/)
     const long = full({ cycles: { count: 60, truncated: true, truncation_reasons: ['result_limit'], largest: [{ size: 50, members: [], nodes: [{ name: 'a', canonical_name: 'a', kind: 'function', boundary: null }], nodes_truncated: true }] } })
-    const cut = textOf(cycleRows(cyclesInput(long), 60))
+    const cut = textOf(paneRows(fullInput({ tab: 'cycles' }, long), 100))
     expect(cut).toMatch(/Cycles +60\+ · 1 shown · largest first/)
-    expect(cut).toContain('↻ a → … +49 more')
+    expect(cut).toContain('│ +49 not listed')
   })
-  it('walks the cycles: the marker on a cycle, o opens the member where it crosses, c copies its chain, q asks how to break it', () => {
+  it('walks members: j and k name the box they move to, o opens a member, c copies it, q asks how to break its cycle', () => {
     const input = fullInput({ tab: 'cycles', selected: 1 })
     const list = listFor(input)
-    expect(list.map(c => c.name)).toEqual(['cycle 1', 'cycle 2'])
+    expect(list.map(c => c.name)).toEqual(['Index::_add_instances', 'Index::module_declarations', 'Index::read_bounded', 'Index::_add_reexports', 'Index::safe_file', 'cycle 1', 'visit', 'walk', 'Scanner::scan', 'emit', 'cycle 2'])
     const rows = paneRows(input, 100)
-    expect(plainText(row(rows, 'cycle-1')!).startsWith('›')).toBe(true)
-    expect(plainText(row(rows, 'cycle-0')!).startsWith('›')).toBe(false)
-    expect(row(rows, 'cycle-0')!.segments.find(s => s.press)?.press).toEqual({ id: 'row:0', label: 'cycle 1' })
-    const first = subjectOf({ ...input, selected: 0 })!
-    // The member outside the cycle's own boundary is where it crosses: that one opens.
-    expect(first.canonical).toBe(list[0]!.canonical)
-    expect(first.canonical).toContain('safe_file')
-    expect(first.copy).toMatch(/_add_instances → .* → .*_add_instances$/)
-    expect(first.ask).toContain('how could I break this dependency cycle')
-    expect(first.ask).toContain(first.copy)
-    const keys = row(rows, 'keys')!.segments.flatMap(s => (s.press ? [s.press.hotkey] : []))
-    expect(keys).toEqual(expect.arrayContaining(['j', 'k', 'o', 'c', 'q']))
+    const keys = rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.flatMap(s => (s.press ? [s.press] : [])))
+    expect(keys.find(k => k.hotkey === 'j')?.id).toBe('next:2')
+    expect(keys.find(k => k.hotkey === 'k')?.id).toBe('prev:0')
+    expect(keys.find(k => k.hotkey === 'o')?.id).toBe('open')
+    // Past a cycle's last member, the next cycle's first; a press on a cycle in the list marks its first member.
+    expect(paneRows(fullInput({ tab: 'cycles', selected: 4 }), 100).flatMap(r => r.segments).find(s => s.press?.hotkey === 'j')?.press?.id).toBe('next:6')
+    expect(row(rows, 'cycle-1')!.segments.find(s => s.press)?.press).toEqual({ id: 'mark:6', label: 'cycle 2' })
+    const subject = subjectOf(input)!
+    expect(subject.canonical).toBe('python.bin.worker.Index::module_declarations')
+    expect(subject.ask).toContain('how could I break this dependency cycle')
+    expect(subject.ask).toMatch(/_add_instances → .* → .*_add_instances\?/)
+  })
+  it('folds the middle of a long cycle on a narrow pane into a box the marker can rest on, and o unfolds it', () => {
+    const names = Array.from({ length: 10 }, (_, i) => `m${i}`)
+    const long = full({ cycles: { count: 1, truncated: false, truncation_reasons: [], largest: [{ size: 10, members: names, nodes: names.map(n => ({ name: n, canonical_name: `A::${n}`, kind: 'method', boundary: null })), nodes_truncated: false }] } })
+    const at = (selected: number, columns: number, unfolded: number[] = []) => paneRows(fullInput({ tab: 'cycles', selected, cycles: cyclesInput(long, unfolded) }, long), columns)
+    const press = (rows: Row[], key: string) => rows.flatMap(r => r.segments).find(s => s.press?.hotkey === key)?.press?.id
+    // Narrow: four members, the fold, the last.
+    const raw = (rows: Row[]) => rows.map(rawText).join('\n')
+    const text = raw(at(0, 60))
+    expect(text).toContain(' … 5 more … │')
+    expect(text).not.toMatch(/[│┤├] A::m5/)
+    expect(text).toMatch(/[│┤├] A::m9/)
+    expect(press(at(3, 60), 'j')).toBe('next:10')
+    expect(press(at(10, 60), 'j')).toBe('next:9')
+    expect(press(at(10, 60), 'o')).toBe('unfold:0:4')
+    expect(at(10, 60).flatMap(r => r.segments).find(s => s.text.includes('… 5 more …'))).toMatchObject({ press: { id: 'fold:0:4' }, bg: 'userMessageBackground' })
+    // Unfolded, or wide enough, every member.
+    expect(raw(at(4, 60, [0]))).toMatch(/[│┤├] A::m5/)
+    expect(raw(at(0, 200))).toMatch(/[│┤├] A::m5/)
+    expect(press(at(3, 200), 'j')).toBe('next:4')
   })
   it('says when there is none', () => {
     expect(textOf(paneRows(fullInput({ tab: 'cycles' }, full({ cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] } })), 60))).toContain('No dependency cycles.')
@@ -745,40 +768,48 @@ describe('the detail view', () => {
       widthsFit(paneRows(detailPane({ ...detailAnswer(), status: 'not-found', component: null }), columns), columns)
     })
   }
-  it('heads with name, kind, boundary and place, then used by and uses side by side when wide', () => {
+  it('heads with name, kind, boundary and place, then draws its neighbourhood round it', () => {
     const rows = paneRows(detailPane(), 140)
     expect(plainText(row(rows, 'detail-head')!)).toMatch(/^DashboardService +class · core$/)
     expect(plainText(row(rows, 'detail-place')!)).toBe('src/Query/DashboardService.php:28')
     expect(plainText(row(rows, 'detail-canonical')!)).toBe('Knossos\\Query\\DashboardService')
-    // One row holds both cards' top edges, and then a counterpart of each.
-    expect(rows.find(r => r.key === 'used-head|uses-head')).toBeDefined()
-    const pair = rows.find(r => r.key === 'used-0|uses-0')!
-    expect(rawText(pair)).toMatch(/DashboardServiceTest::testDrift +tests +[━╸]+·* +3 +│ +│ +BoundaryLabels +core +[━╸]+·* +4 +│$/)
-    expect(textOf(rows)).toContain('+17 not listed')
+    // Drawn round it: what uses it on the left, each with its count on its edge, what it uses on the right.
+    const raw = rows.map(rawText).join('\n')
+    expect(raw).toContain('│ DashboardServiceTest::testDrift ├')
+    expect(raw).toMatch(/►│ DashboardService ├/)
+    expect(raw).toMatch(/─ 3 ─/)
+    expect(raw).toMatch(/─ 4 ─+►│ BoundaryLabels/)
+    // Nineteen use it and two are listed: the rest as one box.
+    expect(raw).toContain('│ +17 more')
+    expect(plainText(row(rows, 'hood-head')!)).toMatch(/^Dependencies · used by 19 · uses 2 +edges$/)
     expect(textOf(rows)).toMatch(/Annotations\n {3}note: Read-only: it never scans\./)
   })
-  it('stacks uses under used by below the wide tier', () => {
-    const rows = paneRows(detailPane(), 100)
-    expect(rows.some(r => r.key.includes('|'))).toBe(false)
-    const text = textOf(rows)
+  it('stacks what uses it above it and what it uses below it on a narrow pane, and lists them below fifty columns', () => {
+    const raw = paneRows(detailPane(), 60).map(rawText).join('\n')
+    expect(raw.indexOf('DashboardServiceTest::')).toBeLessThan(raw.indexOf('│ DashboardService '))
+    expect(raw.indexOf('│ DashboardService ')).toBeLessThan(raw.indexOf('BoundaryLabels'))
+    expect(raw).toContain('▼')
+    const text = textOf(paneRows(detailPane(), 40))
     expect(text.indexOf('Used by · 19')).toBeLessThan(text.indexOf('Uses · 2'))
-    expect(plainText(row(rows, 'uses-0')!)).toMatch(/BoundaryLabels +core +[━╸]+·* +4$/)
+    expect(text).toMatch(/BoundaryLabels +core +[━╸·]+ +4/)
   })
-  it('makes every counterpart pressable, used by first, marks the one j and k reach, and offers back beside the list keys', () => {
+  it('makes every neighbour pressable, used by first, marks the one j and k reach, and offers back beside the list keys', () => {
     const input = detailPane()
     expect(listFor(input).map(i => i.name)).toEqual(['DashboardServiceTest::testDrift', 'BriefCommand::answer', 'BoundaryLabels', 'ProjectFindings'])
-    const rows = paneRows(input, 60)
-    expect(row(rows, 'uses-1')!.segments.find(s => s.press)?.press?.id).toBe('rel:3')
-    // Moving about on the first row, what to do with the marked one after it.
-    const keys = rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))
-    expect(keys.slice(0, 4)).toEqual(['b', 'j', 'k', 'o'])
-    expect(keys).toContain('q')
-    // The marker walks used by, then uses: the third counterpart is the first it uses.
-    expect(plainText(row(rows, 'used-0')!).startsWith('›')).toBe(true)
-    const third = paneRows({ ...input, selected: 2 }, 60)
-    expect(plainText(row(third, 'used-0')!).startsWith('›')).toBe(false)
-    expect(plainText(row(third, 'uses-0')!).startsWith('›')).toBe(true)
-    expect(row(rows, 'tabs')).toBeUndefined()
+    for (const columns of [60, 140]) {
+      const rows = paneRows(input, columns)
+      const labels = rows.flatMap(r => r.segments).filter(s => s.press?.id.startsWith('rel:'))
+      expect(labels.map(s => s.press!.id), `${columns}`).toEqual(expect.arrayContaining(['rel:0', 'rel:1', 'rel:2', 'rel:3']))
+      // Moving about on the first row, what to do with the marked one after it.
+      const keys = rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))
+      expect(keys.slice(0, 4)).toEqual(['b', 'j', 'k', 'o'])
+      expect(keys).toContain('q')
+      // The marker walks used by, then uses: the third neighbour is the first it uses, its box tinted.
+      const third = paneRows({ ...input, selected: 2 }, columns).flatMap(r => r.segments)
+      expect(third.find(s => s.press?.id === 'rel:2'), `${columns}`).toMatchObject({ bold: true, bg: 'userMessageBackground' })
+      expect(third.find(s => s.press?.id === 'rel:0')?.bg, `${columns}`).toBeUndefined()
+      expect(row(rows, 'tabs')).toBeUndefined()
+    }
   })
   it('says it is looking, or what knossos said instead', () => {
     expect(textOf(paneRows(detailPane(null, { ...done(null), phase: 'loading' }), 60))).toContain('Inspecting DashboardService…')
@@ -787,7 +818,8 @@ describe('the detail view', () => {
   })
   it('lists names without counts or bars from an older knossos', () => {
     const old = detailAnswer({ used_by: { count: 1, truncated: false, names: ['Kernel'] }, uses: { count: 0, truncated: false, names: [] } })
-    const text = textOf(paneRows(detailPane(old), 60))
+    expect(paneRows(detailPane(old), 60).map(rawText).join('\n')).toMatch(/│ Kernel +├─+╮/)
+    const text = textOf(paneRows(detailPane(old), 40))
     expect(text).toMatch(/Used by · 1\n› {2}Kernel/)
     expect(text).not.toMatch(/█/)
   })
@@ -1185,7 +1217,7 @@ describe('the pane at every width and height, with a large project', () => {
       const narrow = columns < 80
       expect(rows.some(r => r.key === 'tiles-line'), `${columns}`).toBe(narrow)
       expect(rows.some(r => r.key === 'tiles-top'), `${columns}`).toBe(!narrow)
-      expect(rows.slice(0, 2).map(r => r.key), `${columns}`).toEqual(['title', 'tabs'])
+      expect(rows.slice(0, 6).map(r => r.key).filter(k => k === 'title' || k === 'tabs'), `${columns}`).toEqual(['title', 'tabs'])
       expect(row(rows, 'summary'), `${columns}`).toBeUndefined()
     }
     // Off the Overview there are no tiles, at any width.
@@ -1254,7 +1286,11 @@ describe('the header: the project, where its checkout stands, its languages and 
       for (const height of HEIGHTS) {
         for (const tab of TABS) {
           const rows = paneRows(pane({ tab }), columns, height)
-          expect(rows.slice(0, 2).map(r => r.key), `${columns}x${height} ${tab}`).toEqual(['title', 'tabs'])
+          // Room around it on a tall pane (none above the name when narrow); on a short one, the rows that say something and the rule.
+          const head = height <= 24 ? ['title', 'tabs', 'head-rule'] : columns < 80 ? ['title', 'head-gap', 'tabs', 'head-end', 'head-rule'] : ['head-top', 'title', 'head-gap', 'tabs', 'head-end', 'head-rule']
+          expect(rows.slice(0, head.length).map(r => r.key), `${columns}x${height} ${tab}`).toEqual(head)
+          // Padded in from the edges: one cell narrow, two from the medium tier on.
+          expect(plainText(row(rows, 'title')!).startsWith(columns < 80 ? ' K' : '  K'), `${columns}x${height} ${tab}`).toBe(true)
           for (const r of rows) expect(rowWidth(r), `${columns}x${height} ${tab} ${r.key}`).toBeLessThanOrEqual(columns)
         }
       }
@@ -1284,11 +1320,11 @@ describe('the header: the project, where its checkout stands, its languages and 
 
   it('becomes the way back in a detail: project › tab › what is shown', () => {
     const rows = paneRows({ ...detailPane(), git }, 140)
-    expect(plainText(row(rows, 'title')!)).toMatch(/^Knossos-MCP › Overview › DashboardService +● stale 11h {3}r: rescan$/)
+    expect(plainText(row(rows, 'title')!)).toMatch(/^ {2}Knossos-MCP › Overview › DashboardService +● stale 11h {3}r: rescan$/)
     expect(row(rows, 'tabs')).toBeUndefined()
     // Cut from the label: the project and the way back stay.
     const narrow = plainText(row(paneRows({ ...detailPane(), git }, 50), 'title')!)
-    expect(narrow.startsWith('Knossos-MCP › ')).toBe(true)
+    expect(narrow.startsWith(' Knossos-MCP › ')).toBe(true)
     for (const columns of WIDTHS) widthsFit(paneRows({ ...detailPane(), git }, columns), columns)
   })
 })
@@ -1318,8 +1354,10 @@ describe('the footer: moves on the left, actions on the right, and a word after 
     const rows = paneRows(fullInput({ tab: 'hubs' }), 200)
     expect(keyRows(rows)).toHaveLength(1)
     const text = rawText(keyRows(rows)[0]!)
-    expect(text).toMatch(/^j: ↓ {2}k: ↑ +o: open .* h: keys$/)
+    expect(text).toMatch(/^ {2}j: ↓ {2}k: ↑ +o: open .* h: keys {2}$/)
+    // A bar: its ground laid across the whole pane, padding included.
     expect(rowWidth(keyRows(rows)[0]!)).toBe(200)
+    expect(keyRows(rows)[0]!.segments.every(s => s.bg === 'composerSidebarBackground')).toBe(true)
   })
 
   it('offers only what does something here, and never drops a key as it wraps', () => {
@@ -1342,7 +1380,7 @@ describe('the footer: moves on the left, actions on the right, and a word after 
     // A failure in the error colour; past the width the word takes a row of its own above the keys.
     const failed = paneInput(full(), brief(), FETCHED, IDLE, view({ tab: 'hubs' }), 0, true, null, null, undefined, null, undefined, { feedback: { text: '✗ no editor', tone: 'alert', until: 1 } })
     const narrow = paneRows(failed, 60)
-    expect(row(narrow, 'keys-said')!.segments[0]).toMatchObject({ text: '✗ no editor', color: 'error' })
+    expect(row(narrow, 'keys-said')!.segments[1]).toMatchObject({ text: '✗ no editor', color: 'error' })
     expect(textOf(paneRows(at(5_000), 200))).not.toContain('copied')
   })
 })

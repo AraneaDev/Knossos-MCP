@@ -16,7 +16,7 @@ import type { ChangesInput, LookAt } from './changes'
 import { countLabel } from './envelopes'
 import { driftInput, driftList, driftSection, fileDetailArrangement, fileDetailList } from './files'
 import type { DriftInput } from './files'
-import { ACCENT, boundaryLabel, CHIP_BG, declaredOf, HEADING, huesOf, ON_FILL, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryLabel, CHIP_BG, declaredOf, FAINT, HEADING, huesOf, ON_FILL, STATUS_COLOURS } from './palette'
 import type { Hues, Tone } from './palette'
 import {
   baseName,
@@ -40,6 +40,7 @@ import {
   tableRow,
   tableSpec,
   tierOf,
+  tinted,
   wrapGroups,
   wrapWords,
 } from './rows'
@@ -50,10 +51,12 @@ import { tilesBlock } from './tiles'
 import type { Stat } from './tiles'
 import { trendBlock } from './trend'
 import type { Series } from './trend'
-import { cyclesArrangement, cyclesInput, cyclesList, detailArrangement, detailList, issueCount, issuesArrangement, issuesInput, issuesList, locIn, superscript } from './views'
-import { arrange, DEFAULT_ROWS, fitBlocks, moreRows, noteOf, windowOf } from './cards'
+import { cycleSteps, cyclesArrangement, cyclesInput, cyclesList, unfoldPress } from './cycles'
+import type { CyclesInput } from './cycles'
+import { detailArrangement, detailList, issueCount, issuesArrangement, issuesInput, issuesList, locIn, superscript } from './views'
+import { arrange, cardInner, DEFAULT_ROWS, fitBlocks, moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
-import type { CyclesInput, DetailInput, IssuesInput, Openable } from './views'
+import type { DetailInput, IssuesInput, Openable } from './views'
 
 // Everything the specs and the render hook draw with, from one module.
 export { bar, button, cells, displayName, fileHref, fit, linkMarkdown, locOf, locText, rowWidth, tableSpec, tierOf, wrapWords } from './rows'
@@ -423,7 +426,7 @@ export function paneInput(
     filtering: view.filtering ?? false,
     sort: view.sort ?? 'in',
     issues,
-    cycles: cyclesInput(d),
+    cycles: cyclesInput(d, view.unfolded ?? []),
     boundaries,
     detail,
     allow: allowInput(brief, rescan, allow),
@@ -628,7 +631,8 @@ export function tabRows(active: PaneTab, columns: number, terminal: boolean, bad
   const full = (t: Tab) => `${t.full}${badges[t.id] ?? ''}`
   const digit = (t: Tab) => `${t.hotkey}${badges[t.id] ?? ''}`
   const variants: [(t: Tab) => boolean, number][] = [
-    ...(narrow ? [] : [[() => true, 1] as [(t: Tab) => boolean, number]]),
+    ...(narrow ? [] : [[() => true, 2] as [(t: Tab) => boolean, number], [() => true, 1] as [(t: Tab) => boolean, number]]),
+    [t => t.id === active, 2],
     [t => t.id === active, 1],
     [t => t.id === active, 0],
     [() => false, 0],
@@ -762,22 +766,45 @@ const KEY_WIDTH = Math.max(...KEY_HELP.map(([k]) => cells(k))) + 2
 /** How long the footer's word after an action stays, in milliseconds. */
 export const FEEDBACK_MS = 2_000
 
+/** The footer bar's ground: a faint fill across the pane, under the keys. */
+export const BAR_BG = 'composerSidebarBackground'
+
+/** The cells of room inside the header and the footer bar, either side, per tier. */
+export const padOf = (tier: Tier): number => (tier === 'narrow' ? 1 : 2)
+
+/** `row` set `pad` cells in from the left; with `bg`, that ground laid across the whole of `columns`, padding included. */
+function padded(row: Row, pad: number, columns: number, bg?: string): Row {
+  const used = pad + rowWidth(row)
+  const segments: Segment[] = [{ text: spaces(pad) }, ...row.segments, ...(bg !== undefined && used < columns ? [{ text: spaces(columns - used) }] : [])]
+  return { ...row, segments: bg === undefined ? segments.filter(s => s.text !== '' || s.hidden === true) : tinted(segments, bg) }
+}
+
 /**
- * The key hints, grouped: moving about (the marker, back) dim on the left,
- * what can be done to the marked row on the right, and between them, for a
- * moment after an action, what it did (`✓ copied`, `✗ no editor`). Only the
- * keys that do something in this view are offered. Each group stays whole;
- * past the width the actions wrap under the moves, and a key is never
- * dropped, since it would stop working.
+ * The footer bar: the keys, grouped, on a faint ground across the pane,
+ * padded in from either edge. Moving about (the marker, back) dim on the
+ * left, what can be done to the marked row on the right, and between them,
+ * for a moment after an action, what it did (`✓ copied`, `✗ no editor`).
+ * Once the header is scrolled out of view (`scrolled`), the graph's state
+ * stands at the right edge (`● live · 7s`). Only the keys that do something
+ * in this view are offered. Each group stays whole; past the width the
+ * actions wrap under the moves, and a key is never dropped, since it would
+ * stop working. The key list `h` opens is returned apart (`help`): it is
+ * drawn above the bar, not in it.
  */
-function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] {
+export function footerRows(input: PaneInput, columns: number, hasList: boolean, scrolled = false): { bar: Row[]; help: Row[] } {
   const moves: Segment[] = []
   const actions: Segment[] = []
   const onTab = input.detail === null && !input.driftOpen
   if (input.detail !== null) moves.push(button('back', 'back', 'b'))
-  if (hasList) moves.push(button('down', '↓', 'j'), button('up', '↑', 'k'))
-  // A boundary has nothing to open: the marker only shows what it depends on.
-  if (hasList && !listFor(input).every(item => item.inert === true)) actions.push(button('open', 'open', 'o'))
+  // On Cycles the marker walks the boxes the diagram draws, which only the width decides: the keys name the row they move to.
+  const tier = tierOf(columns)
+  const marked = Math.min(Math.max(0, input.selected), Math.max(0, listFor(input).length - 1))
+  const steps = onTab && input.tab === 'cycles' ? cycleSteps(input.cycles, cardInner(columns, tier), tier, marked) : null
+  const unfold = onTab && input.tab === 'cycles' ? unfoldPress(input.cycles, cardInner(columns, tier), tier, marked) : null
+  if (hasList) moves.push(button(steps === null ? 'down' : `next:${steps.next}`, '↓', 'j'), button(steps === null ? 'up' : `prev:${steps.prev}`, '↑', 'k'))
+  // A boundary has nothing to open: the marker only shows what it depends on. A cycle's fold opens into its members.
+  if (unfold !== null) actions.push(button(unfold, 'unfold', 'o'))
+  else if (hasList && !listFor(input).every(item => item.inert === true)) actions.push(button('open', 'open', 'o'))
   // The same keys on every list: `e` whenever the marked row has a file.
   if (editTarget(input) !== null) actions.push(button('edit', 'edit', 'e'))
   if (subjectOf(input) !== null) actions.push(button('copy', 'copy', 'c'), button('ask', 'ask Claude', 'q'))
@@ -790,28 +817,32 @@ function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] 
     if (input.filter !== '') actions.push(button('clear', 'clear', 'x'))
   }
   actions.push(button('keys', input.showKeys ? 'hide keys' : 'keys', 'h'))
+  const pad = padOf(tier)
+  const inner = Math.max(1, columns - 2 * pad)
   const said: Segment[] = input.feedback === null ? [] : [{ text: input.feedback.text, color: input.feedback.tone === 'ok' ? STATUS_COLOURS.ok : STATUS_COLOURS.alert }]
+  const state: Segment[] = scrolled ? [{ text: `● ${input.status.text}`, color: STATUS_COLOURS[input.status.tone] }] : []
   const left = joinGroups(moves.map(k => [{ ...k, dim: true }]))
-  const right = joinGroups(actions.map(k => [{ ...k, dim: true }]))
-  const rows: Row[] = []
+  const right = joinGroups([...actions.map(k => [{ ...k, dim: true }]), ...(state.length > 0 ? [state] : [])])
+  const lines: Row[] = []
   const middle = said.length === 0 ? [] : [{ text: '   ' }, ...said]
-  if (segmentsWidth(left) + segmentsWidth(middle) + 2 + segmentsWidth(right) <= columns) {
-    rows.push(spread('keys', [...left, ...middle], right, columns))
+  if (segmentsWidth(left) + segmentsWidth(middle) + 2 + segmentsWidth(right) <= inner) {
+    lines.push(spread('keys', [...left, ...middle], right, inner))
   } else {
-    if (said.length > 0) rows.push({ key: 'keys-said', segments: clip(said, columns) })
-    if (moves.length > 0) rows.push(...wrapGroups('keys', moves.map(k => [{ ...k, dim: true }]), columns))
-    rows.push(...wrapGroups(moves.length > 0 ? 'keys-actions' : 'keys', actions.map(k => [{ ...k, dim: true }]), columns))
+    if (said.length > 0) lines.push({ key: 'keys-said', segments: clip(said, inner) })
+    if (moves.length > 0) lines.push(...wrapGroups('keys', moves.map(k => [{ ...k, dim: true }]), inner))
+    lines.push(...wrapGroups(moves.length > 0 ? 'keys-actions' : 'keys', [...actions.map(k => [{ ...k, dim: true }]), ...(state.length > 0 ? [state] : [])], inner))
   }
+  const help: Row[] = []
   if (input.showKeys) {
     // One key a line, its action wrapped beside it: a list to look up, not a paragraph to read.
     let n = 0
     for (const [key, action] of [...KEY_HELP, ['', 'A file:line opens in your editor on a click. Every key has a button.'] as [string, string]]) {
-      wrapWords(action, Math.max(1, columns - KEY_WIDTH)).forEach((line, i) =>
-        rows.push({ key: `help-${n++}`, segments: [{ text: padEnd(i === 0 ? key : '', KEY_WIDTH), color: ACCENT }, { text: line, dim: true }] }),
+      wrapWords(action, Math.max(1, inner - KEY_WIDTH)).forEach((line, i) =>
+        help.push(padded({ key: `help-${n++}`, segments: [{ text: padEnd(i === 0 ? key : '', KEY_WIDTH), color: ACCENT }, { text: line, dim: true }] }, pad, columns)),
       )
     }
   }
-  return rows
+  return { bar: lines.map(row => padded(row, pad, columns, BAR_BG)), help }
 }
 
 /** Groups of segments on one line, two cells apart. */
@@ -967,41 +998,79 @@ function overviewArrangement(input: PaneInput, selected: number, tier: Tier): Ar
 }
 
 /**
- * Every row of the pane for `input`, none wider than `columns`: the header,
- * then the tab (or the detail) laid out for the width's tier, its lists as
- * long as `height` rows allow once the header and the keys are drawn.
+ * The pane laid out: its rows from the header down (`body`) and the footer
+ * bar (`footer`). When the two fit the height, the body is filled with blank
+ * rows so the bar sits at the bottom of the pane; when they do not (`pinned`),
+ * the bar is drawn over the window's last rows wherever the pane is scrolled
+ * to, and the body ends in as many blank rows as the bar has, so its last row
+ * can still be scrolled clear of it. `offset` is how far the pane is scrolled:
+ * once the header is out of view, the bar says the graph's state.
+ *
+ * The header has room around it: a blank row above the name and another
+ * between it and the tabs, both padded in from the edges, then a blank row
+ * and a rule before the first card. Narrow, the row above the name goes; on
+ * a short pane (24 rows or fewer) the blank rows go first, never a line that
+ * says something.
  */
-export function paneRows(input: PaneInput, columns: number, height: number = DEFAULT_ROWS): Row[] {
+export function paneLayout(input: PaneInput, columns: number, height: number = DEFAULT_ROWS, offset = 0): { body: Row[]; footer: Row[]; pinned: boolean } {
   const width = Math.max(1, columns)
   const tier = tierOf(width)
   const list = listFor(input)
   const selected = Math.min(Math.max(0, input.selected), Math.max(0, list.length - 1))
-  const rows: Row[] = [titleRow(input, width, tier)]
-  if (input.allow !== null) rows.push(blank('gap-allow-top'), ...allowRows(input.allow, width))
-  const footer = [blank('gap-keys'), ...footerRows(input, width, list.length > 0)]
-  const room = () => height - rows.length - footer.length
-  if (input.detail !== null) {
-    const detail = input.detail
-    rows.push(...arrange(detail.file === undefined ? detailArrangement(detail, tier, input.hues, selected) : fileDetailArrangement(detail, tier, input.hues, selected), width, room()))
-  } else {
+  const short = height <= SHORT_PANE
+  const pad = padOf(tier)
+  const inner = Math.max(1, width - 2 * pad)
+  const rows: Row[] = []
+  if (!short && tier !== 'narrow') rows.push(blank('head-top'))
+  rows.push(padded(titleRow(input, inner, tier), pad, width))
+  if (input.detail === null) {
     const count = issueCount(input.issues)
     const touched = input.changes.files.length
     const badges: Partial<Record<PaneTab, string>> = {
       ...(count.n > 0 ? { issues: superscript(count.n, count.plus) } : {}),
       ...(touched > 0 ? { changes: superscript(touched, input.changes.truncated) } : {}),
     }
-    rows.push(...tabRows(input.tab, width, input.terminal, badges, tier === 'narrow'))
+    if (!short) rows.push(blank('head-gap'))
+    rows.push(...tabRows(input.tab, inner, input.terminal, badges, tier === 'narrow').map(row => padded(row, pad, width)))
+  }
+  if (!short) rows.push(blank('head-end'))
+  rows.push({ key: 'head-rule', segments: [{ text: '─'.repeat(width), color: FAINT }] })
+  const header = rows.length
+  if (input.allow !== null) rows.push(blank('gap-allow-top'), ...allowRows(input.allow, width))
+  const { bar, help } = footerRows(input, width, list.length > 0, offset >= header)
+  const footer = [...(short ? [] : [blank('gap-keys')]), ...bar]
+  const room = () => height - rows.length - footer.length - help.length
+  if (input.detail !== null) {
+    const detail = input.detail
+    rows.push(...arrange(detail.file === undefined ? detailArrangement(detail, tier, input.hues, selected) : fileDetailArrangement(detail, tier, input.hues, selected), width, room()))
+  } else {
     // Listed under the tabs, the drifted files hold the marker; the tab below shows none. They take a third of the room.
     const drift = input.drift
     if (input.driftOpen && drift !== null) {
       const min = Math.max(3, Math.floor(room() / 3))
-      rows.push(...fitBlocks([{ key: 'drift', grow: { length: drift.items.length, min }, make: (inner, limit) => driftSection(drift, inner, limit, input.hues, selected) }], width, tier, 0))
+      rows.push(...fitBlocks([{ key: 'drift', grow: { length: drift.items.length, min }, make: (cards, limit) => driftSection(drift, cards, limit, input.hues, selected) }], width, tier, 0))
     }
     const tabSelected = input.driftOpen ? -1 : selected
     rows.push(...arrange(tabArrangement(input, tabSelected, tier), width, room()))
   }
-  rows.push(...footer)
-  return rows.map(row => (row.code !== undefined || rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))
+  if (help.length > 0) rows.push(blank('gap-help'), ...help)
+  const body = rows.map(row => (row.code !== undefined || rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))
+  const fill = height - body.length - footer.length
+  if (fill >= 0) return { body: [...body, ...Array.from({ length: fill }, (_, i) => blank(`fill-${i}`))], footer, pinned: false }
+  return { body, footer, pinned: true }
+}
+
+/** A pane this many rows tall or shorter keeps its header tight: no blank rows around it. */
+export const SHORT_PANE = 24
+
+/**
+ * Every row of the pane for `input`, none wider than `columns`: the header,
+ * the tab (or the detail) laid out for the width's tier, its lists as long as
+ * `height` rows allow, then the footer bar (see {@link paneLayout}).
+ */
+export function paneRows(input: PaneInput, columns: number, height: number = DEFAULT_ROWS): Row[] {
+  const { body, footer } = paneLayout(input, columns, height)
+  return [...body, ...footer]
 }
 
 /** The open tab's cards. */
@@ -1010,6 +1079,6 @@ function tabArrangement(input: PaneInput, selected: number, tier: Tier): Arrange
   if (input.tab === 'changes') return changesArrangement(input.changes, selected, tier, input.hues)
   if (input.tab === 'hubs') return hubsArrangement(input, selected, tier)
   if (input.tab === 'issues') return issuesArrangement(input.issues, selected, tier, input.hues)
-  if (input.tab === 'cycles') return cyclesArrangement(input.cycles, input.hues, selected)
+  if (input.tab === 'cycles') return cyclesArrangement(input.cycles, tier, input.hues, selected)
   return boundariesArrangement(input.boundaries, tier, input.hues, selected, input.target, input.couplings)
 }

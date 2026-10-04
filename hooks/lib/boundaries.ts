@@ -19,13 +19,14 @@
  * scales up as a square, two glyphs wide for every row tall.
  */
 import type { Dashboard } from '../../types'
-import { ACCENT, boundaryLabel, FAINT, HEADING, huesOf, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryColour, boundaryLabel, FAINT, HEADING, huesOf, NO_HUES, SELECTED_BG, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import { HEAT_KEYS } from './raster'
-import { boundaryStyle, button, cells, dimRow, fit, grouped, numberWidth, padEnd, padStart, shortName, spaces, tableHead, tableRow, tableSpec, wrapGroups } from './rows'
+import { blank, boundaryStyle, button, cells, dimRow, fit, grouped, numberWidth, padEnd, shortName, spaces, tableHead, tableRow, tableSpec, wrapGroups } from './rows'
 import type { Row, Segment, TableSpec, Tier } from './rows'
 import { moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
+import { pairColumns, pairDiagram } from './diagram'
 import type { Openable } from './views'
 
 export type BoundaryLine = {
@@ -374,39 +375,15 @@ export function couplingSection(input: BoundariesInput, cell: HeatCell, view: Co
     ...(forbidden ? [{ text: ' · forbidden', color: STATUS_COLOURS.alert }] : []),
   ]
   const title = `${from.label} → ${to.label}`
-  const body: Row[] = []
+  // The two boundaries drawn, the dependencies between them on the arrow; under them the component pairs behind it.
+  const node = (b: BoundaryLine) => ({ key: b.name, label: b.label, ...(boundaryColour(b.name, hues) === undefined ? {} : { color: boundaryColour(b.name, hues)! }) })
+  const said = `${grouped(count)}${view?.truncated === true ? '+' : ''} ${count === 1 ? 'dep' : 'deps'}`
+  const body: Row[] = [...pairDiagram(node(from), node(to), said, columns, forbidden, 'coupling-pair').rows, blank('coupling-gap')]
   if (view === null || view.phase === 'loading') body.push(dimRow('coupling-loading', '   reading the couplings…', columns))
   else if (view.phase === 'silent') body.push(dimRow('coupling-silent', '   knossos did not say which components; press l to try another cell', columns))
   else if (view.items.length === 0) body.push(dimRow('coupling-none', '   no component pair listed', columns))
-  else {
-    const width = Math.max(1, ...view.items.map(i => cells(grouped(i.edges))))
-    const room = Math.max(3, columns - INDENT - width - 1)
-    view.items.forEach((item, i) => {
-      const [a, b] = pairOf(item.source, item.target, room)
-      const used = cells(a) + 3 + cells(b)
-      body.push({
-        key: `coupling-${i}`,
-        segments: [
-          { text: spaces(INDENT) },
-          { text: a, ...boundaryStyle(from.name, hues) },
-          { text: ' → ', dim: true },
-          { text: b, ...boundaryStyle(to.name, hues) },
-          { text: spaces(Math.max(1, room - used + 1)) },
-          { text: padStart(grouped(item.edges), width), color: HEADING },
-        ],
-      })
-    })
-  }
+  else body.push(...pairColumns(view.items.map(i => ({ source: i.source, target: i.target, edges: grouped(i.edges) })), columns, boundaryStyle(from.name, hues), boundaryStyle(to.name, hues), INDENT, 'coupling'))
   return { key: 'coupling', title, note, body }
-}
-
-/** Two names joined by an arrow in `width`, each cut only as far as it must be. */
-function pairOf(a: string, b: string, width: number): [string, string] {
-  const room = width - 3
-  if (cells(a) + cells(b) <= room) return [a, b]
-  const half = Math.floor(room / 2)
-  const aw = Math.min(cells(a), Math.max(half, room - cells(b)))
-  return [fit(a, aw), fit(b, Math.max(1, room - aw))]
 }
 
 /** The couplings answer as the card draws it: short names, most edges first; null before anything was asked. */

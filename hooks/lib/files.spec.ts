@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, DetailState, FileDetail, KnossosView, SessionChanges, TurnBrief } from '../../types'
 import { accumulate, editTarget, fileDetailInput, listFor, NO_CHANGES, paneInput, paneRows, rowWidth, subjectOf } from './layout'
-import { findRow, plainText } from './__tests__/plain-text'
+import { findRow, plainText, rawText } from './__tests__/plain-text'
 import type { PaneInput, Row } from './layout'
 import { huesOf } from './palette'
 
@@ -82,6 +82,7 @@ const answer = (over: Partial<NonNullable<FileDetail['file']>> = {}): FileDetail
         { path: 'tests/Http/RouterTest.php', edges: 3, boundary: 'tests' },
       ],
     },
+    uses: { count: 1, truncated: false, items: [{ path: 'src/Core/Container.php', edges: 2, boundary: 'Core' }] },
     components: {
       count: 3,
       truncated: true,
@@ -111,36 +112,51 @@ const keysOf = (rows: Row[]) => rows.filter(r => r.key.startsWith('keys')).flatM
 describe('a file detail', () => {
   const shown = pane({ view: { inspect: SHOWN }, state: done(answer()) })
 
-  it('names who depends on the file, with counts and boundaries, and what it declares', () => {
+  it('draws who depends on the file and what it depends on round it, with counts and boundaries, and what it declares', () => {
     const rows = paneRows(shown, 90)
     const text = textOf(rows)
+    const raw = rows.map(rawText).join('\n')
     expect(plainText(row(rows, 'detail-head')!)).toMatch(/^Router\.php +Http$/)
     expect(plainText(row(rows, 'detail-place')!)).toBe('src/Http/Router.php · PHP · 240 lines')
     expect(row(rows, 'detail-place')!.segments.find(s => s.link)!.link).toEqual({ path: `${ROOT}/src/Http/Router.php`, line: null })
-    expect(text).toMatch(/Depended on by · 14 files +edges/)
+    expect(text).toMatch(/Dependencies · used by 14 · uses 1 +edges/)
     // The dependents' boundaries in the project's colour order: declared ones first.
     expect(plainText(row(rows, 'deps-reach')!)).toBe('   reaching Http Core tests')
-    expect(plainText(row(rows, 'dep-0')!)).toMatch(/^› {2}src\/Core\/Kernel\.php +Core +━+ +6$/)
-    expect(plainText(row(rows, 'dep-1')!)).toMatch(/^ {3}tests\/Http\/RouterTest\.php +tests +[━╸]+·* +3$/)
-    expect(plainText(row(rows, 'deps-more')!)).toBe('   +12 not listed')
+    // Each file by its name in a box, its count on its edge; the twelve not listed as one box.
+    expect(raw).toMatch(/│ Kernel\.php +├─+ 6 ─+[╮┤┼]/)
+    expect(raw).toContain('│ +12 more')
+    expect(raw).toMatch(/─ 2 ─+►│ Container\.php/)
+    expect(raw).toMatch(/►│ Router\.php ├/)
     expect(text).toMatch(/Declares · 3 components +used by/)
     expect(plainText(row(rows, 'comp-1')!)).toMatch(/^ {3}Router::dispatch +━+·* +4$/)
     expect(plainText(row(rows, 'comps-more')!)).toBe('   +1 not listed')
+    // Below fifty columns the two lists as tables.
+    const narrow = paneRows(shown, 40)
+    expect(plainText(row(narrow, 'dep-0')!)).toMatch(/^› {2}…?[a-zA-Z/]*Kernel\.php +Core +━+ +6$/)
+    expect(plainText(row(narrow, 'deps-more')!)).toBe('   +12 not listed')
+    expect(plainText(row(narrow, 'use-0')!)).toMatch(/Container\.php +Core/)
   })
 
-  it('walks the dependents (each a file) then the components, by the indexes their presses carry', () => {
+  it('walks the dependents, then what it depends on (each a file), then the components, by the indexes their presses carry', () => {
     const list = listFor(shown)
     expect(list.map(o => [o.canonical, o.file === true])).toEqual([
       ['src/Core/Kernel.php', true],
       ['tests/Http/RouterTest.php', true],
+      ['src/Core/Container.php', true],
       ['App\\Http\\Router', false],
       ['App\\Http\\Router::dispatch', false],
     ])
     const rows = paneRows(shown, 60)
-    expect(row(rows, 'dep-1')!.segments.find(s => s.press)?.press?.id).toBe('row:1')
-    expect(row(rows, 'comp-0')!.segments.find(s => s.press)?.press?.id).toBe('row:2')
+    const press = (id: string) => rows.flatMap(r => r.segments).find(s => s.press?.id === id)
+    expect(press('row:1')?.text).toBe('RouterTest.php')
+    expect(press('row:2')?.text).toBe('Container.php')
+    expect(row(rows, 'comp-0')!.segments.find(s => s.press)?.press?.id).toBe('row:3')
     // A component opens at its line in the file.
-    expect(list[3]!.loc).toEqual({ path: `${ROOT}/src/Http/Router.php`, line: 30 })
+    expect(list[4]!.loc).toEqual({ path: `${ROOT}/src/Http/Router.php`, line: 30 })
+    // An older knossos says nothing of what the file depends on: its dependents alone.
+    const old = pane({ view: { inspect: SHOWN }, state: done(answer({ uses: undefined })) })
+    expect(listFor(old).map(o => o.canonical)).toEqual(['src/Core/Kernel.php', 'tests/Http/RouterTest.php', 'App\\Http\\Router', 'App\\Http\\Router::dispatch'])
+    expect(textOf(paneRows(old, 90))).toMatch(/used by 14 · uses 0/)
   })
 
   it('copies, asks about and opens the file itself', () => {
@@ -162,8 +178,9 @@ describe('a file detail', () => {
 
   it('says when nothing else depends on the file', () => {
     const alone = answer({ dependents: { count: 0, truncated: false, boundaries: [], items: [] } })
-    const text = textOf(paneRows(pane({ view: { inspect: SHOWN }, state: done(alone) }), 60))
-    expect(text).toContain('Depended on by · 0 files')
+    expect(paneRows(pane({ view: { inspect: SHOWN }, state: done(alone) }), 90).map(rawText).join('\n')).toContain('nothing uses it')
+    const text = textOf(paneRows(pane({ view: { inspect: SHOWN }, state: done(alone) }), 40))
+    expect(text).toContain('Depended on by · 0')
     expect(text).toContain('none: no other file depends on it')
   })
 
@@ -256,10 +273,10 @@ describe('the key model', () => {
 
   it('lists every key in the help, t and d among them', () => {
     const text = textOf(paneRows({ ...pane({ session }), showKeys: true }, 90))
-    expect(text).toMatch(/\no +open the marked row: a component or a file shows what depends on it/)
-    expect(text).toMatch(/\ne +open the marked row's file in your editor\n/)
-    expect(text).toMatch(/\nt +copy the command for the tests that reach this session's changes/)
-    expect(text).toMatch(/\nd +list the files drifted since the snapshot/)
+    expect(text).toMatch(/\n {2}o +open the marked row: a component or a file shows what depends on it/)
+    expect(text).toMatch(/\n {2}e +open the marked row's file in your editor\n/)
+    expect(text).toMatch(/\n {2}t +copy the command for the tests that reach this session's changes/)
+    expect(text).toMatch(/\n {2}d +list the files drifted since the snapshot/)
   })
 })
 

@@ -101,6 +101,8 @@ export function parseFileDetail(stdout: string): FileDetail | null {
   // The lists are drawn as they come: an `ok` without them is as unexpected as one without the file.
   const file = parsed?.status === 'ok' ? parsed.file : null
   if (file !== null && file !== undefined && !(Array.isArray(file.dependents?.items) && Array.isArray(file.components?.items))) return null
+  // What it depends on came later: an answer without it, or with it misshapen, draws its dependents alone.
+  if (file !== null && file !== undefined && file.uses !== undefined && !Array.isArray(file.uses?.items)) delete file.uses
   return parsed
 }
 
