@@ -9,7 +9,8 @@
     "format:check": "prettier --check \"**/*.{js,json,jsonc,yaml,yml,md}\"",
     "format:write": "prettier --write \"**/*.{js,json,jsonc,yaml,yml,md}\"",
     "lint:md": "node tools/lint-md.mjs",
-    "test:mod": "vitest run --config vitest.config.mjs"
+    "test:mod": "vitest run --config vitest.config.mjs",
+    "typecheck:mod": "tsc -p hooks/tsconfig.json && tsc -p hooks/tsconfig.spec.json"
   },
   "devDependencies": {
     "@eslint/js": "latest",

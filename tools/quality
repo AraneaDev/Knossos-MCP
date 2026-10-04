@@ -114,6 +114,13 @@ composer lint
 vendor/bin/php-cs-fixer check --using-cache=no --allow-risky=yes --sequential
 vendor/bin/phpstan analyse --no-progress --debug --memory-limit=512M
 npm run lint:js
+# The mod's sources under hooks/lib, then every module and spec under
+# hooks/lib and hooks/mod. Vitest strips the specs' types without reading
+# them, and the staged type-check below reaches only what an install ships,
+# so without this a spec drifts from the types it builds silently. The specs
+# resolve `claude-code` through the stand-in (hooks/engine.d.ts), because the
+# engine's own declarations exist only where a session has loaded the mod.
+npm run typecheck:mod
 npm run format:check
 npm run lint:md
 # The tests are linted and formatted alongside the worker they exercise: a
