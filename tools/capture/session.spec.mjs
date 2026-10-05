@@ -24,7 +24,6 @@ import {
     sessionName,
     snapshot,
     stopWatchers,
-    withSession,
 } from "./session.mjs";
 
 describe("guardEnv", () => {
@@ -261,40 +260,6 @@ describe("guardEnv edges", () => {
                 real,
             ),
         ).not.toThrow();
-    });
-});
-
-describe("withSession", () => {
-    it("cleans up after the work, also when it throws", async () => {
-        const seen = [];
-        const create = async () => {
-            registerCleanup(() => seen.push("stop"));
-            return { name: "s" };
-        };
-        await expect(
-            withSession({}, async (s) => s.name, { create }),
-        ).resolves.toBe("s");
-        await expect(
-            withSession(
-                {},
-                async () => {
-                    throw new Error("boom");
-                },
-                { create },
-            ),
-        ).rejects.toThrow("boom");
-        expect(seen).toEqual(["stop", "stop"]);
-    });
-    it("cleans up when creating the session fails half way", async () => {
-        const seen = [];
-        const create = async () => {
-            registerCleanup(() => seen.push("rm"));
-            throw new Error("no tmux");
-        };
-        await expect(
-            withSession({}, async () => "never", { create }),
-        ).rejects.toThrow("no tmux");
-        expect(seen).toEqual(["rm"]);
     });
 });
 

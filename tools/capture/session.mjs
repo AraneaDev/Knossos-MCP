@@ -510,16 +510,3 @@ export async function createSession({
     await run(cmd, argv);
     return session;
 }
-
-/** Runs `fn` with a fresh session, and cleans up afterwards however it ends. */
-export async function withSession(
-    options,
-    fn,
-    { create = createSession } = {},
-) {
-    try {
-        return await fn(await create(options));
-    } finally {
-        await runCleanups();
-    }
-}
