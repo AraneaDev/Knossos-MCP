@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChurnState, Dashboard, DetailState, Inspected, KnossosView } from '../../types'
 import { NO_CHANGES } from '../lib/layout'
 import { LIVE_OFF } from '../lib/live'
-import { LOADERS, request } from './loaders'
+import { LOADERS, request, settleBaseline } from './loaders'
 import type { Port } from './port'
 import { mod, reset } from './state'
 
@@ -194,5 +194,27 @@ describe('the loaders', () => {
     const moved = { ...w, to: 'hooks', phase: 'loading' as const, answer: null }
     expect(LOADERS.route.landed(moved, w, parsed)).toBe(moved)
     expect(LOADERS.route.landed(null, w, parsed)).toBeNull()
+  })
+})
+
+describe('settling the baseline', () => {
+  it('settles even when the view cannot be read, as after a teardown under it', async () => {
+    reset({})
+    const rev = { status: 'ok', rev: '0123456789abcdef0123456789abcdef01234567' }
+    const values = new Map<string, unknown>([['sessionRev', null]])
+    const cell = (key: string) => ({
+      read: async () => {
+        if (key === 'view') throw new Error('torn down')
+        return values.get(key)
+      },
+      update: async (change: (v: unknown) => unknown) => void values.set(key, change(values.get(key))),
+    })
+    const io = {
+      session: { id: async () => 'session-1' },
+      store: { get: async () => ({ 'session-1': { rev, snapshot: 's1', startedAt: 5 } }), set: async () => undefined },
+      state: new Proxy({}, { get: (_, key: string) => cell(key) }),
+    } as unknown as Port
+    await expect(settleBaseline(io)).resolves.toBeUndefined()
+    expect(values.get('sessionRev')).toEqual(rev)
   })
 })

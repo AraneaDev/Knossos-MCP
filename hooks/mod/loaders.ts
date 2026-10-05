@@ -429,7 +429,8 @@ export async function settleBaseline(io: Port): Promise<void> {
  * changes, so the card would say it is reading the change for good.
  */
 async function rereadDiff(io: Port): Promise<void> {
-  const shown = (await io.state.view.read()).inspect
+  // A view torn down under it (the session ending again) asks for nothing.
+  const shown = (await io.state.view.read().catch(() => null))?.inspect ?? null
   if (shown !== null) await requestDiff(io, shown)
 }
 
