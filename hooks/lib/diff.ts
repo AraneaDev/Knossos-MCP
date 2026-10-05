@@ -51,7 +51,9 @@ const capped = (line: string): string => ([...line].length <= LINE_MAX ? line : 
 /**
  * The hunks of a unified diff with no headers. A line before the first
  * hunk, or of no hunk's shape, is passed by; `\ No newline at end of file`
- * too, as the element would.
+ * too, as the element would. A hunk left with no lines is passed by as
+ * well: there is nothing in it to draw, and so every element the detail
+ * draws holds at least one line under its header.
  */
 export function parseHunks(diff: string): Hunk[] {
   const hunks: Hunk[] = []
@@ -65,7 +67,7 @@ export function parseHunks(diff: string): Hunk[] {
     const last = hunks.at(-1)
     if (last !== undefined && /^[ +-]/.test(line)) last.lines.push(capped(line))
   }
-  return hunks
+  return hunks.filter(hunk => hunk.lines.length > 0)
 }
 
 /**

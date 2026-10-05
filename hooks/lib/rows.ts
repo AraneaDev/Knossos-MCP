@@ -124,9 +124,11 @@ export const rowWidth = (row: Row): number => row.segments.reduce((n, s) => n + 
  * element numbers the lines in its gutter instead. Neither the engine's
  * types nor its docs say so; a live session showed it, a hunk of a header
  * and seven lines drawn in seven rows. What the pane counts its height and
- * its scrolling in. Each element holds one hunk (see `hunkSource`).
+ * its scrolling in. Each element holds one hunk (see `hunkSource`), and
+ * never a header alone: `parseHunks` passes a hunk with no lines by, and
+ * `hunkSource` keeps at least one line of the rest.
  */
-export const rowHeight = (row: Row): number => (row.code === undefined ? 1 : Math.max(1, row.code.source.split('\n').length - 1))
+export const rowHeight = (row: Row): number => (row.code === undefined ? 1 : row.code.source.split('\n').length - 1)
 /** The rows `rows` take on screen together (see {@link rowHeight}). */
 export const rowsHeight = (rows: readonly Row[]): number => rows.reduce((n, row) => n + rowHeight(row), 0)
 export const segmentsWidth = (segments: Segment[]): number => segments.reduce((n, s) => n + cells(s.text), 0)
