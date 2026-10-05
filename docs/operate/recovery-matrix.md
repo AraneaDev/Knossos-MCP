@@ -81,19 +81,31 @@ cancellation is never retried.
 
 Each retry halves both the file count and the bytes the batch actually held.
 For `WORKER_FRAME_TOO_LARGE` the files the worker had already answered are not
-the cause, so they go back as one batch and only the rest is split. Those
-splits are not charged against `max_scan_batch_halvings`, because each one
-shrinks the search, which is how a small file with a huge frame is found among
-hundreds of neighbours.
+the cause, so they go back as one batch and only the rest is split. Such a
+frame search is not held to `max_scan_batch_halvings`, which would stop it short
+of a small file with a huge frame among hundreds of neighbours. A split that the
+worker's answers narrowed is free, because it confirmed at least one file. Every
+other retry is charged against an allowance per language of
+`max_scan_batch_halvings` plus two binary searches over the files it scans (16
+for 64 files, 26 for 2,000), so a worker that fails before answering anything is
+not searched file by file. An oversized frame that opens as a response rather
+than as a file's contribution belongs to no file, and degrades the language
+instead of leaving a file out.
 
 A batch of one file cannot be split any further, so it is never retried. When
 that one file's own frame or output is what outgrew a limit, as a generated
-bundle can, the file is left out with a diagnostic naming the limit, counted in
-`left_out_files`, and the rest of the language is kept. The left-out result is
+bundle can, the file is left out with a diagnostic naming the limit and the rest
+of the language is kept. The scan names it in its summary line and in a
+`SCANNER_FILES_LEFT_OUT` warning, and counts it in `left_out_files` and nowhere
+else among the processing counts: not in `parsed_files`, and not in
+`unchanged_files` when a rescan reuses it. Its content still counts in
+`added_files` or `changed_files` like any other file's. The left-out result is
 cached against the file's content and the limits that excluded it, so an
-unchanged file stays out without being sent again. Any other failure of a
-one-file batch degrades the language at once. When retries run out, the
-diagnostic says how many retries were made.
+unchanged file stays out without being sent again. When every file of a
+language (two or more) is left out, the language is reported as failed with
+`WORKER_EVERY_FILE_LEFT_OUT`, since that points to a limit set too low or a
+broken worker. Any other failure of a one-file batch degrades the language at
+once. When retries run out, the diagnostic says how many retries were made.
 
 Sending a whole project in one request made `max_output_bytes` a project-wide
 ceiling: at roughly 14.9 KB of protocol output per PHP file, a scan of more than

@@ -319,6 +319,23 @@ while (($line = fgets(STDIN)) !== false) {
                 sleep(5);
                 exit(0);
             }
+            // Every request fails on an oversized frame before any file is
+            // answered, as a line limit set far too low would make it.
+            if ($mode === 'per_file_frame_too_large_always') {
+                fwrite(STDOUT, str_repeat('x', 150_000));
+                fflush(STDOUT);
+                exit(0);
+            }
+            // Answers every file, then sends a final response too large for
+            // one frame: an oversized frame that belongs to no file.
+            if ($mode === 'per_file_frame_too_large_result') {
+                foreach ($requested as $relativePath) {
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                fwrite(STDOUT, '{"jsonrpc":"2.0","id":' . json_encode($id) . ',"result":{"pad":"' . str_repeat('x', 150_000));
+                fflush(STDOUT);
+                exit(0);
+            }
             // Answers in request order and fails at the oversized file, so the
             // files after it are unanswered too and nothing narrows it down
             // but splitting.
@@ -345,7 +362,12 @@ while (($line = fgets(STDIN)) !== false) {
                 }
                 foreach ($requested as $relativePath) {
                     if (str_contains((string) $relativePath, 'Huge')) {
-                        fwrite(STDOUT, str_repeat('x', 150_000));
+                        // The threshold, when given, sets the frame's size, so a
+                        // caller with production limits can be made to overflow.
+                        // Blocking first: run under node, the pipe is non-blocking
+                        // and a large write would stop at the pipe's capacity.
+                        stream_set_blocking(STDOUT, true);
+                        fwrite(STDOUT, str_repeat('x', $threshold > 0 ? $threshold : 150_000));
                         fflush(STDOUT);
                         exit(0);
                     }

@@ -14,10 +14,12 @@ namespace Knossos\Scanner\Worker;
  * - SIGTERM and SIGKILL are what a memory guard (earlyoom, systemd-oomd) or the
  *   kernel's OOM killer send. A fresh worker on a smaller batch needs less
  *   memory at its peak, so these are retried.
- * - SIGHUP and SIGINT come from a person or a supervisor. The worker runs in
- *   its own session with no controlling terminal, so neither a closed terminal
- *   nor Ctrl-C reaches it by accident. Someone meant to stop it, and retrying
- *   would fight them, so these are not retried.
+ * - SIGHUP and SIGINT are how a person, a supervisor or a closing terminal
+ *   stops a process. Where `setsid` exists the worker leads its own session,
+ *   so a terminal's Ctrl-C or hangup does not reach it, but the supervisor
+ *   runs it without `setsid` where there is none (macOS), and then they can.
+ *   Either way something meant to stop it, and retrying would fight that, so
+ *   these are not retried.
  * - Anything else (SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE, SIGPIPE, ...) is
  *   what a process raises against itself when it crashes. A smaller batch does
  *   not stop a crash, so these are not retried either.
@@ -64,8 +66,8 @@ final class WorkerSignal
         }
         if (self::isDeliberateStop($signal)) {
             return sprintf(
-                'Scanner worker was stopped by signal %s before responding, and Knossos did not send it. The worker '
-                . 'runs in its own session with no terminal, so this signal came from a person or a supervisor.',
+                'Scanner worker was stopped by signal %s before responding, and Knossos did not send it. A person, '
+                . 'a supervisor or a closing terminal sends this signal to stop a process.',
                 $named,
             );
         }

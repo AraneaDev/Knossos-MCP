@@ -104,6 +104,52 @@ final class ScanResultFactoryTest extends TestCase
         assertSame([], $envelope->data['degraded_languages']);
     }
 
+    public function testLeftOutFilesAreNamedInTheSummaryAndTheWarnings(): void
+    {
+        // A file left out has no facts in the graph, which a caller reading
+        // only the summary would otherwise never learn.
+        $factory = new ScanResultFactory();
+        $plan = new ScanPlan($this->makePreparation(), 'plan-proj', 'fast', [], 0);
+        $language = new LanguageScanResult(
+            manifests: [],
+            contributions: [],
+            cacheEntries: [],
+            parsed: 3,
+            unchanged: 0,
+            added: 5,
+            changed: 0,
+            scannerMetadata: [],
+            stageMilliseconds: [],
+            leftOut: 2,
+            leftOutPaths: ['dist/a.js', 'dist/b.js'],
+        );
+        $result = new ReconciliationResult('rec-proj', 'scan-abc', 5, 10, 15, 2, 0);
+
+        $envelope = $factory->create($plan, $language, $result, 1_000_000_000, []);
+
+        assertSame(2, $envelope->data['left_out_files']);
+        assertSame(
+            'Scanned 5 files into 10 nodes and 15 relationships. 2 files were left out of the graph because their own '
+            . 'answer outgrew a size limit: dist/a.js, dist/b.js.',
+            $envelope->summary,
+        );
+        assertSame(
+            ['SCANNER_FILES_LEFT_OUT: 2 files were left out of the graph because their own answer outgrew a size limit: '
+            . 'dist/a.js, dist/b.js. Each file\'s diagnostic names the limit.'],
+            $envelope->warnings,
+        );
+    }
+
+    public function testNoLeftOutFileAddsNothingToTheSummary(): void
+    {
+        $factory = new ScanResultFactory();
+        $plan = new ScanPlan($this->makePreparation(), 'plan-proj', 'fast', [], 0);
+        $envelope = $factory->create($plan, $this->makeLanguageResult(1, 0, 1, 0, []), new ReconciliationResult('p', 's', 1, 1, 0, 0, 0), 1_000_000_000, []);
+
+        assertSame('Scanned 1 files into 1 nodes and 0 relationships.', $envelope->summary);
+        assertSame([], $envelope->warnings);
+    }
+
     public function testCreateReportsDegradedLanguagesAndWarnsAboutEachWorkerFailure(): void
     {
         // Two failures from one owner: the envelope names the language once, but

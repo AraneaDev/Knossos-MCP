@@ -743,9 +743,11 @@ final class NdjsonRpcChannelTest extends TestCase
 
         $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
 
+        // Not "no terminal": that holds only where setsid exists, and the
+        // supervisor runs the worker without it elsewhere (macOS).
         assertSame(
-            'Scanner worker was stopped by signal 1 (SIGHUP) before responding, and Knossos did not send it. The worker '
-            . 'runs in its own session with no terminal, so this signal came from a person or a supervisor.',
+            'Scanner worker was stopped by signal 1 (SIGHUP) before responding, and Knossos did not send it. A person, '
+            . 'a supervisor or a closing terminal sends this signal to stop a process.',
             $error->getMessage(),
         );
     }
@@ -763,10 +765,49 @@ final class NdjsonRpcChannelTest extends TestCase
 
         assertSame('WORKER_REQUEST_TOO_LARGE', $error->diagnosticCode);
         assertSame(
-            'Worker request exceeds the 256-byte request frame limit, so Knossos did not send it. The request carries what '
-            . 'every file in the batch shares, so a smaller batch may still fit.',
+            'Worker request exceeds the 256-byte request frame limit (the larger of worker_execution.max_line_bytes '
+            . 'and worker_execution.max_output_bytes), so Knossos did not send it.',
             $error->getMessage(),
         );
+    }
+
+    public function testAnOversizedFrameWrittenBeforeTheWorkerExitedIsStillTooLarge(): void
+    {
+        // The whole frame can arrive with the end of the stream. Reported as
+        // an exit, it lost the one fact that splitting the batch can act on.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat('x', 300));
+        rewind($process->pipes[1]);
+        $process->running = false;
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame('WORKER_FRAME_TOO_LARGE', $error->diagnosticCode);
+    }
+
+    public function testAnOversizedFrameSaysWhetherItWasAFilesAnswer(): void
+    {
+        $frames = [
+            '{"jsonrpc":"2.0","method":"scan/contribution","params":{"owner_key":"w:file:a.ts","pad":"' => true,
+            '{"jsonrpc":"2.0","id":3,"result":{"input_hashes":{"' => false,
+            '{"jsonrpc":"2.0","id":3,"error":{"message":"' => false,
+            '{"jsonrpc":"2.0","method":"scan/input_hashes","params":{"' => false,
+            'xxxxxxxx' => null,
+        ];
+        foreach ($frames as $prefix => $expected) {
+            $process = $this->mockProcess();
+            $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+            $deadline = $channel->beginRequest();
+            fwrite($process->pipes[1], $prefix . str_repeat('x', 300));
+            rewind($process->pipes[1]);
+
+            $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+            assertSame('WORKER_FRAME_TOO_LARGE', $error->diagnosticCode);
+            assertSame($expected, $error->frameIsAFilesAnswer, $prefix);
+        }
     }
 
     public function testAWorkerThatChoseItsExitCodeStillReportsThatCode(): void

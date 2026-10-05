@@ -1091,8 +1091,11 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame($requestsBefore, count($this->recordedBatches()), 'Nothing was sent: both files were reused.');
         assertSame(0, $second->added);
         assertSame(0, $second->changed);
-        assertSame(2, $second->unchanged);
+        // Counted as left out and nothing else, as on the scan that left it
+        // out, where it was neither parsed nor unchanged.
+        assertSame(1, $second->unchanged);
         assertSame(1, $second->leftOut);
+        assertSame(['src/Huge.js'], $second->leftOutPaths);
         assertSame([], $second->workerDiagnostics);
         $huge = array_values(array_filter(
             $second->contributions,
@@ -1125,14 +1128,17 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame([], $result->workerDiagnostics);
         assertSame(32, $result->parsed);
         assertSame(1, $result->leftOut);
+        // Narrowing to the unanswered file is not a reduction of the budget
+        // the language settled on, so it is not reported as one.
+        assertSame(4_000_000, $result->batchBudgets['knossos.typescript']['source_bytes_used']);
     }
 
-    public function testFrameSplitsAreNotChargedAgainstTheBoundWhileTheBatchShrinks(): void
+    public function testABlindSearchForOneOversizedFrameFitsTheRetryAllowance(): void
     {
         // A worker that answers in order and fails at the first file leaves
         // nothing answered to narrow on, so only splitting finds the file. It
-        // takes five splits from 32 files, one more than the halving bound,
-        // and each one shrinks the batch, so the search always ends.
+        // takes five charged splits from 32 files, one more than the halving
+        // bound, which the language's allowance of MAX + 2*ceil(log2 n) covers.
         $this->allocateRecordPath();
         $files = ['src/a00Huge.js' => 'typescript'];
         for ($index = 1; $index < 32; ++$index) {
@@ -1149,6 +1155,53 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame([], $result->workerDiagnostics);
         assertSame(31, $result->parsed);
         assertSame(1, $result->leftOut);
+    }
+
+    public function testAWorkerThatFailsEveryFrameBeforeAnsweringIsNotSearchedFileByFile(): void
+    {
+        // A line limit set far too low fails every request before any file is
+        // answered. Splitting that without charge searched all 64 files one by
+        // one; on a 2,000-file batch it meant about 4,000 requests and worker
+        // restarts. Splits that answered nothing are charged, and the
+        // language's allowance ends the search.
+        $this->allocateRecordPath();
+        $files = [];
+        for ($index = 0; $index < 64; ++$index) {
+            $files[sprintf('src/f%02d.ts', $index)] = 'typescript';
+        }
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_frame_too_large_always', tightCap: true),
+            $this->descriptorFor('typescript', batchSourceBytes: 4_000_000),
+        );
+
+        $result = $runner->run($this->planForFiles($files, 1_000), new CancellationToken());
+
+        assertSame(1, count($result->workerDiagnostics));
+        assertSame('WORKER_FRAME_TOO_LARGE', $result->workerDiagnostics[0]['code']);
+        // The allowance for 64 files is 4 + 2 * 6 = 16 charged retries, and a
+        // left-out request is not charged: well under the 127 of a full search.
+        assertSame(true, count($this->recordedBatches()) < 40, (string) count($this->recordedBatches()));
+        assertContains('16 retries', $result->workerDiagnostics[0]['message']);
+    }
+
+    public function testAnOversizedFrameThatBelongsToNoFileDegradesInsteadOfLeavingAFileOut(): void
+    {
+        // Every file was answered and the final response was too large. No
+        // file's answer caused that, so splitting would only end by leaving
+        // an innocent file out and caching it there.
+        $this->allocateRecordPath();
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_frame_too_large_result', tightCap: true),
+            $this->descriptorFor('typescript', batchSourceBytes: 400_000),
+        );
+        $files = ['src/a.ts' => 'typescript', 'src/b.ts' => 'typescript', 'src/c.ts' => 'typescript', 'src/d.ts' => 'typescript'];
+
+        $result = $runner->run($this->planForFiles($files, 100_000), new CancellationToken());
+
+        assertSame([4], $this->recordedBatches());
+        assertSame(0, $result->leftOut);
+        assertSame('WORKER_FRAME_TOO_LARGE', $result->workerDiagnostics[0]['code']);
+        assertContains('belongs to no file', $result->workerDiagnostics[0]['message']);
     }
 
     public function testARetryAfterAKillIsSmallerEvenWhenTheBatchWasUnderItsBudget(): void
@@ -1206,7 +1259,11 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame([], $this->recordedBatches());
         assertSame(0, $result->leftOut);
         assertSame('WORKER_REQUEST_TOO_LARGE', $result->workerDiagnostics[0]['code']);
-        assertContains('200000-byte request frame limit', $result->workerDiagnostics[0]['message']);
+        $message = $result->workerDiagnostics[0]['message'];
+        assertContains('200000-byte request frame limit (the larger of worker_execution.max_line_bytes and worker_execution.max_output_bytes)', $message);
+        // One file is as small as a batch gets.
+        assertContains('The batch held a single file, so a smaller batch cannot help.', $message);
+        assertSame(false, str_contains($message, 'may still fit'), $message);
     }
 
     public function testAReducedBudgetDoesNotPinTheRestOfTheLanguage(): void
@@ -1508,9 +1565,17 @@ final class LanguageScanRunnerTest extends TestCase
         // Halving by file count reaches single files, each of which is then
         // left out on its own; the byte budget bottoms out at 1 on the way.
         assertSame([4, 2, 1, 1, 2, 1, 1], $this->recordedBatches());
-        assertSame([], $result->workerDiagnostics);
-        assertSame(4, $result->leftOut);
         assertSame(1, $result->batchBudgets['knossos.php']['source_bytes_used']);
+        // Every file left out is not four oversized files: it is a limit set
+        // too low or a broken worker, and the language says so loudly.
+        assertSame(0, $result->leftOut);
+        assertSame('WORKER_EVERY_FILE_LEFT_OUT', $result->workerDiagnostics[0]['code']);
+        assertSame(
+            'php scanner failed: Every one of the 4 files was left out because its own answer outgrew a size limit. '
+            . 'That points to a limit set too low or a broken worker rather than 4 oversized files, so the language is '
+            . 'reported as failed.',
+            $result->workerDiagnostics[0]['message'],
+        );
     }
 
     /** Every language's new and changed files are counted, not only the last language's. */

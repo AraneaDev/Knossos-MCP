@@ -59,7 +59,7 @@ final readonly class ContributionCacheService
         $scan = [];
         $added = 0;
         $changed = 0;
-        $leftOut = 0;
+        $leftOutPaths = [];
         $sinceLastPoll = 0;
         foreach ($files as $file) {
             // Once per 256 files. A counter that restarts, rather than a
@@ -86,7 +86,7 @@ final readonly class ContributionCacheService
                     $cached[] = $contribution;
                     $entries[] = $this->entry($file, $manifest, (string) $row['configuration_hash'], $contribution);
                     if ($wasLeftOut) {
-                        ++$leftOut;
+                        $leftOutPaths[] = $file->relativePath;
                     }
                     continue;
                 } catch (Throwable) {
@@ -96,7 +96,7 @@ final readonly class ContributionCacheService
             $scan[] = $file;
             $row === null ? ++$added : ++$changed;
         }
-        return new ContributionPartition($cached, $entries, $scan, $added, $changed, $leftOut);
+        return new ContributionPartition($cached, $entries, $scan, $added, $changed, $leftOutPaths);
     }
 
     /**

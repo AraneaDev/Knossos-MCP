@@ -30,7 +30,8 @@ final readonly class LanguageScanRunner
     public function run(ScanPlan $plan, CancellationToken $cancellation): LanguageScanResult
     {
         $manifests = $contributions = $cacheEntries = [];
-        $parsed = $unchanged = $added = $changed = $leftOut = 0;
+        $parsed = $unchanged = $added = $changed = 0;
+        $leftOutPaths = [];
         $scannerMetadata = $stages = $workerDiagnostics = $batchBudgets = [];
         // One for the whole scan: the same file read with different results
         // by two languages fails the scan just as two requests of one do.
@@ -102,12 +103,12 @@ final readonly class LanguageScanRunner
             $unchanged += $outcome['unchanged'];
             $added += $outcome['added'];
             $changed += $outcome['changed'];
-            $leftOut += $outcome['left_out'];
+            array_push($leftOutPaths, ...$outcome['left_out_paths']);
             $scannerMetadata += $outcome['scanner_metadata'];
             $stages[$descriptor->stage] = $outcome['milliseconds'];
         }
 
-        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all(), $leftOut);
+        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all(), count($leftOutPaths), $leftOutPaths);
     }
 
     /**
@@ -128,7 +129,7 @@ final readonly class LanguageScanRunner
      *     unchanged: int,
      *     added: int,
      *     changed: int,
-     *     left_out: int,
+     *     left_out_paths: list<string>,
      *     scanner_metadata: array<string, mixed>,
      *     milliseconds: float,
      *     undiscovered_inputs: array<string, string|null>
@@ -207,8 +208,17 @@ final readonly class LanguageScanRunner
         $scanned = $metadata = [];
         // Files left out because their answer alone outgrew a size cap, each
         // with a contribution saying so. Kept apart from $scanned so they are
-        // neither counted as parsed nor cached.
+        // not counted as parsed, and cached under $leftOutHash rather than
+        // the language's own configuration hash.
         $leftOut = $leftOutPaths = $leftOutEntries = [];
+        // Retries charged against this language, and how many it may have:
+        // the halving bound plus two blind binary searches over its files,
+        // enough to isolate an oversized frame the worker's answers do not
+        // narrow, twice, and far short of searching a broken worker's batch
+        // file by file.
+        $chargedRetries = 0;
+        $allowance = WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS
+            + 2 * (int) ceil(log(max(2, count($partition->filesToScan)), 2));
         // Every path discovery hashed, not only this language's files: a worker
         // may read a file another language claims, or a manifest such as the
         // package.json module resolution reads or the Cargo.toml a crate is
@@ -238,6 +248,17 @@ final readonly class LanguageScanRunner
                 // is retried on a fresh worker; anything else, and above all a
                 // cancellation, is rethrown for run() to degrade or propagate.
                 $retryable = OversizedBatch::signalledBy($descriptor, $error, $request) && !$cancellation->isCancelled();
+                if ($error->diagnosticCode === 'WORKER_FRAME_TOO_LARGE' && $error->frameIsAFilesAnswer === false) {
+                    // No file's answer was too large, so neither splitting nor
+                    // leaving a file out can help, and the second would cache
+                    // an innocent file as too large.
+                    throw new WorkerException(
+                        $error->diagnosticCode,
+                        $error->getMessage() . " The oversized frame belongs to no file: it was the worker's response "
+                        . "rather than a file's contribution, so no file is left out over it.",
+                        $error,
+                    );
+                }
                 if ($retryable && count($item['files']) === 1 && OversizedBatch::leavesAFileOut($error)) {
                     // That one file's own answer is what outgrew the cap, and it
                     // will do so in any batch. Failing the language for it threw
@@ -256,11 +277,8 @@ final readonly class LanguageScanRunner
                 // A single file cannot be split any further, so retrying it
                 // would only burn worker restarts on the same failure.
                 if (!$retryable || count($item['files']) <= 1) {
-                    throw self::withRetries($error, $item['retries']);
+                    throw self::withRetries(self::forOneFile($error, count($item['files'])), $item['retries']);
                 }
-                // The failed request closed its session, so this language needs
-                // a fresh worker before the smaller batches can be sent.
-                $client = $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
                 // Halved from what the batch actually held, not from its
                 // budget: a batch using a tenth of its budget would otherwise
                 // be re-sent whole while counting as a smaller retry. The file
@@ -271,36 +289,65 @@ final readonly class LanguageScanRunner
                     $item['files'],
                 ));
                 $budget = max(1, intdiv($batchBytes > 0 ? min($item['budget'], $batchBytes) : $item['budget'], 2));
-                $files = $item['files'];
+                $searched = $item['files'];
                 $tail = [];
                 $halvings = $item['halvings'] + 1;
+                // Whether this retry is charged against the language's
+                // allowance: every retry is, except a frame search that the
+                // worker's own answers have already narrowed.
+                $charged = true;
                 if ($error->diagnosticCode === 'WORKER_FRAME_TOO_LARGE') {
                     // One file's frame was too large, and it is not one the
                     // worker already answered: only the rest is searched, and
-                    // the answered files go back as one batch that fits. Each
-                    // step strictly shrinks what is searched, so the search
-                    // ends without the halving bound, which stopped it short
-                    // of a small file among many neighbours.
+                    // the answered files go back as one batch that fits. The
+                    // halving bound would stop a search for a small file among
+                    // many neighbours short, so a frame search is held to the
+                    // language's allowance instead. A split the answers
+                    // narrowed confirmed at least one file and is free; a
+                    // split that learned nothing is charged, which is what
+                    // keeps a worker that fails before every first answer from
+                    // being searched file by file.
                     $answered = [];
                     foreach ($received as $contribution) {
                         $answered[$contribution->ownerKey] = true;
                     }
-                    $files = array_values(array_filter($item['files'], static fn(object $file): bool => !isset($answered[$manifest->id . ':file:' . $file->relativePath])));
+                    $unanswered = array_values(array_filter($item['files'], static fn(object $file): bool => !isset($answered[$manifest->id . ':file:' . $file->relativePath])));
                     $done = array_values(array_filter($item['files'], static fn(object $file): bool => isset($answered[$manifest->id . ':file:' . $file->relativePath])));
-                    if ($files === []) {
-                        // Every file was answered, so the oversized frame was
-                        // not any one file's: fall back to an ordinary halving.
-                        $files = $item['files'];
-                    } else {
+                    if ($unanswered !== []) {
+                        $searched = $unanswered;
                         $halvings = $item['halvings'];
+                        $charged = $done === [];
                         $tail = $done === [] ? [] : self::queued([$done], $item['budget'], $item['halvings'], $item['retries'] + 1);
                     }
                 }
                 if ($halvings > WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS) {
                     throw self::withRetries($error, $item['retries']);
                 }
-                $sourceBytes = min($sourceBytes, $budget);
-                $maxFiles = min($descriptor->scanBatchFiles, intdiv(count($files) + 1, 2));
+                if ($charged) {
+                    if ($chargedRetries >= $allowance) {
+                        throw new WorkerException(
+                            $error->diagnosticCode,
+                            sprintf(
+                                '%s This was after %d retries in smaller batches with a fresh worker, the most a language of %d files to scan is allowed.',
+                                $error->getMessage(),
+                                $chargedRetries,
+                                count($partition->filesToScan),
+                            ),
+                            $error,
+                            $error->terminatingSignal,
+                        );
+                    }
+                    ++$chargedRetries;
+                    // The narrowest budget a charged retry settled on. A
+                    // narrowed frame search sends its suspects at a smaller
+                    // budget only to isolate them, which the rest of the
+                    // language never ran at.
+                    $sourceBytes = min($sourceBytes, $budget);
+                }
+                // The failed request closed its session, so this language needs
+                // a fresh worker before the smaller batches can be sent.
+                $client = $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
+                $maxFiles = min($descriptor->scanBatchFiles, intdiv(count($searched) + 1, 2));
                 // Only the batch that overflowed is re-split, and only its own
                 // descendants inherit the reduced budget. Carrying the reduction
                 // across the rest of the language would let one pathological
@@ -309,7 +356,7 @@ final readonly class LanguageScanRunner
                 // The cost of keeping the others at full width is one doomed
                 // request each if they overflow too: a tax, not a cliff.
                 $pending = [
-                    ...self::queued(self::batches($files, max(1, $maxFiles), $budget), $budget, $halvings, $item['retries'] + 1),
+                    ...self::queued(self::batches($searched, max(1, $maxFiles), $budget), $budget, $halvings, $item['retries'] + 1),
                     ...$tail,
                     ...$pending,
                 ];
@@ -330,6 +377,18 @@ final readonly class LanguageScanRunner
             // boundary instead of running the language to completion.
             $cancellation->throwIfCancelled();
         }
+        // Every file left out is not that many oversized files: it is a limit
+        // set too low or a broken worker, and a language with no facts at all
+        // must read as failed rather than as a quiet success.
+        $leftOutCount = count($partition->leftOutPaths) + count($leftOut);
+        if (count($files) >= 2 && $leftOutCount === count($files)) {
+            throw new WorkerException('WORKER_EVERY_FILE_LEFT_OUT', sprintf(
+                'Every one of the %1$d files was left out because its own answer outgrew a size limit. That points to '
+                . 'a limit set too low or a broken worker rather than %1$d oversized files, so the language is reported '
+                . 'as failed.',
+                count($files),
+            ));
+        }
         $recorded = $this->cache->entriesForScanned(
             $scanned,
             array_values(array_filter(
@@ -344,9 +403,11 @@ final readonly class LanguageScanRunner
             'manifest' => $manifest,
             'contributions' => [...$partition->cached, ...$recorded['contributions'], ...$leftOut],
             'cache_entries' => [...$partition->cacheEntries, ...$recorded['cache_entries'], ...$leftOutEntries],
-            'left_out' => $partition->leftOut + count($leftOut),
+            'left_out_paths' => [...$partition->leftOutPaths, ...array_keys($leftOutPaths)],
             'parsed' => count($scanned),
-            'unchanged' => count($partition->cached),
+            // A left-out file is counted only as left out, on the scan that
+            // found it (where it is not parsed) and on every reuse after it.
+            'unchanged' => count($partition->cached) - count($partition->leftOutPaths),
             'added' => $partition->added,
             'changed' => $partition->changed,
             'scanner_metadata' => $partition->filesToScan === [] ? [] : [$manifest->id => $metadata],
@@ -457,10 +518,13 @@ final readonly class LanguageScanRunner
      *
      * Without it a degraded language reads as if one request failed once,
      * and the obvious next step, retrying smaller, looks untried.
+     *
+     * @param int $retries how many failed requests the batch's lineage was
+     *        retried after before this one, charged against the allowance or not
      */
-    private static function withRetries(WorkerException $error, int $halvings): WorkerException
+    private static function withRetries(WorkerException $error, int $retries): WorkerException
     {
-        if ($halvings === 0) {
+        if ($retries === 0) {
             return $error;
         }
 
@@ -469,11 +533,30 @@ final readonly class LanguageScanRunner
             sprintf(
                 '%s This was after %d %s in smaller batches with a fresh worker.',
                 $error->getMessage(),
-                $halvings,
-                $halvings === 1 ? 'retry' : 'retries',
+                $retries,
+                $retries === 1 ? 'retry' : 'retries',
             ),
             $error,
             $error->terminatingSignal,
+        );
+    }
+
+    /**
+     * Add that a request too large for a single file cannot be made smaller.
+     *
+     * The request frame limit is otherwise met by splitting, so its message
+     * alone would leave the reader expecting a retry that cannot come.
+     */
+    private static function forOneFile(WorkerException $error, int $files): WorkerException
+    {
+        if ($files !== 1 || $error->diagnosticCode !== 'WORKER_REQUEST_TOO_LARGE') {
+            return $error;
+        }
+
+        return new WorkerException(
+            $error->diagnosticCode,
+            $error->getMessage() . ' The batch held a single file, so a smaller batch cannot help.',
+            $error,
         );
     }
 

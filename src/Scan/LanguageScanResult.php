@@ -47,5 +47,7 @@ final readonly class LanguageScanResult
          * size limit, whether found this scan or reused from the cache.
          */
         public int $leftOut = 0,
+        /** @var list<string> the paths of those files, in the order they were found */
+        public array $leftOutPaths = [],
     ) {}
 }
