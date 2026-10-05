@@ -345,6 +345,21 @@ describe("throwawayWorktree", () => {
                 (await lstat(path.join(dir, "node_modules"))).isSymbolicLink(),
             ).toBe(false);
             await expect(stat(path.join(dir, "out"))).rejects.toThrow(/ENOENT/);
+            // Removing the worktree removes its copy, never the checkout's packages.
+            await runCleanups();
+            await expect(stat(dir)).rejects.toThrow(/ENOENT/);
+            expect(
+                await readFile(
+                    path.join(repo, "node_modules/@types/node/index.d.ts"),
+                    "utf8",
+                ),
+            ).toBe("export {}\n");
+            expect(
+                await readFile(
+                    path.join(repo, "worker/node_modules/pkg/index.js"),
+                    "utf8",
+                ),
+            ).toBe("1\n");
         } finally {
             await runCleanups();
             await rm(root, { recursive: true, force: true });
