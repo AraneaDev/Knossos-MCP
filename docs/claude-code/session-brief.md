@@ -1,310 +1,199 @@
 # Session brief
 
-`session-brief` renders the short orientation text a Claude Code session sees
-before it does anything else. It is addressed by filesystem path rather than
-by project id, because the hook that calls it runs at session start, before
-anyone has a project id to hand it. Its own CLI command exists rather than
-another arm of the query command for the same reason its failure contract is
-inverted: every other query command signals a bad invocation by throwing,
-which is right for a person at a terminal and wrong for a hook that runs
-before a session starts. `session-brief` never throws. It exits 0 and prints
-nothing on any failure, because a broken brief that breaks a session start
-costs more than the brief was ever worth.
+When a Claude Code session starts in a scanned project, the
+[plugin](plugin.md) injects a short brief before anything else happens. It
+tells the model whether the graph can be trusted, what the project's boundary
+rules and recorded notes are, and, when the graph is fresh, where execution
+enters and which components carry the most weight. For a small project whose
+files changed since its scan:
+
+```text
+STALE (2 files, 1m). Run scan_project path=/home/me/shop first.
+Knossos project_b003edea9a1368da547daaad922429bad1e5828ffb41edda0e3e1fb8e4131283 (shop)
+Rules:
+  app -x-> cli, tests
+  cli --> only app
+Notes: App\Kernel: boots twice in tests; the second boot is the one that counts.
+Ask before grepping for structure: the `knossos:graph` skill.
+```
+
+Once the graph is fresh, two graph sections, Entry and Hubs, follow the notes.
+This project declares no rules or notes and has no entry points, so only Hubs
+shows:
+
+```text
+FRESH (scanned 3m ago).
+Knossos project_4e273d56974562dde33b88495d8118a6604b19633c9dacd56efa42ec8c0eee3f (shop)
+Hubs:
+  run (method, degree 2)
+  B (class, degree 2)
+Ask before grepping for structure: the `knossos:graph` skill.
+```
 
 The brief reflects the last scan, not the working tree. For anything current,
-call `scan_project`, then the live query tools the pointer at the end of the
-brief names.
+the model calls `scan_project`, then the query tools the last line points at.
 
-## The five states
+## The verdict line
 
-| State        | Meaning                                                                                                                                                     |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fresh`      | Scanned, and a drift probe found nothing changed since.                                                                                                     |
-| `stale`      | Scanned, but files have changed since the last scan.                                                                                                        |
-| `unverified` | Scanned, but drift probing was skipped: over 20,000 tracked files with no usable Git history to ask instead, or the root is currently unavailable to check. |
-| `missing`    | The path belongs to a known project, but that project has no graph at all.                                                                                  |
-| `unscanned`  | The path belongs to no project.                                                                                                                             |
+The first line is the verdict, one of five states:
 
-Each state renders exactly one verdict line, verbatim (the placeholders shown
-are substituted at render time):
+| state        | meaning                                                                                                                    |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `fresh`      | scanned, and a drift probe found nothing changed since                                                                     |
+| `stale`      | scanned, but files changed since the last scan                                                                             |
+| `unverified` | scanned, but the drift probe was skipped: over 20,000 tracked files with no usable git history, or the root is unavailable |
+| `missing`    | the path belongs to a known project that has no graph                                                                      |
+| `unscanned`  | the path belongs to no project                                                                                             |
 
-- `fresh`: `FRESH (scanned {age} ago).`
-- `stale`, path allowed: `STALE ({n} files, {age}). Run scan_project path={path} first.`
-- `stale`, path not allowed: `STALE ({n} files, {age}), and {path} is not an allowed root in {roots_file}. Add it: knossos allow-root {path} --execute`
-- `unverified`, path allowed: `UNVERIFIED ({n} files, over probe limit; scanned {age} ago). Rescan if exactness matters.`
-- `unverified`, path not allowed: `UNVERIFIED ({n} files, over probe limit; scanned {age} ago), and {path} is not an allowed root in {roots_file}. Add it: knossos allow-root {path} --execute`
-- `missing`, path allowed: `NO GRAPH. Run scan_project path={path} first.`
-- `missing`, path not allowed: `NO GRAPH, and {path} is not an allowed root in {roots_file}. Add it: knossos allow-root {path} --execute`
-- `unscanned`, path allowed: `NOT SCANNED. Run scan_project path={path} to map this repository.`
-- `unscanned`, path not allowed: `NOT SCANNED, and {path} is not an allowed root in {roots_file}. Add it: knossos allow-root {path} --execute`
+Each renders one line. The placeholders are filled in when it renders:
 
-`age` is a coarse, single-token duration (`17d`, `3h`, `9m`); minute precision
-on a seventeen-day-old scan is noise, not accuracy.
+| state        | verdict                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------- |
+| `fresh`      | `FRESH (scanned {age} ago).`                                                                |
+| `stale`      | `STALE ({n} files, {age}). Run scan_project path={path} first.`                             |
+| `unverified` | `UNVERIFIED ({n} files, over probe limit; scanned {age} ago). Rescan if exactness matters.` |
+| `missing`    | `NO GRAPH. Run scan_project path={path} first.`                                             |
+| `unscanned`  | `NOT SCANNED. Run scan_project path={path} to map this repository.`                         |
 
-`roots_file` is the file this brief actually read, following the same
-precedence `AllowedRoots` uses: `KNOSSOS_ROOTS_FILE`, else `roots.json` beside
-the database. It is named because a machine can have more than one, and the
-one a running server reads is not necessarily the one derived here. Compare it
-against `server_info` when a scan is refused anyway. The clause is dropped when
-there was no file to consult, which is the in-memory and no-database case.
+`age` is a coarse, single-token duration (`17d`, `3h`, `9m`).
 
-## Naming `allow-root` instead of a scan that would be rejected
+Every state except `fresh` has two more forms, because a `scan_project` the
+server would refuse is advice nobody can follow:
 
-Four of the five verdicts carry two forms, chosen by whether the path lies
-inside a root the server can currently see. When it does not, the verdict
-does not tell the agent to run `scan_project`, because that call would only
-fail against the allow-list `RootGuard` enforces. It names the actual fix
-instead: `knossos allow-root {path} --execute`.
+- When the path is outside the allowed roots, the instruction becomes the fix:
+  `{state}, and {path} is not an allowed root in {roots_file}. Add it: knossos allow-root {path} --execute`.
+  `roots_file` names the file this brief read, since a machine can have more
+  than one; compare it with `server_info` when a scan is refused anyway. The
+  clause is dropped when there was no roots file to read.
+- When the path does not exist:
+  `{state}, and {path} does not exist. Neither scan_project nor allow-root will accept it.`
 
-This check reuses `RootGuard::resolve()`, the same containment logic a real
-`scan_project` call would run, so the warning can never drift from what a
-scan attempt would actually decide. It has a deliberate blind spot, though: a
-server started with `--allow-root` flags on its own command line has roots
-this check has no way to see, since those never touch `roots.json` or
-`KNOSSOS_ALLOWED_ROOTS`. A path permitted only through such a flag is
-reported here as not allowed, which is a false positive.
+`fresh` asks for nothing, so it never carries a root warning.
 
-That blind spot is acceptable, and not merely tolerated, because of how
-`serve` actually combines its sources. `--allow-root` flags and
-`KNOSSOS_ALLOWED_ROOTS` are not both consulted: the environment variable is
-read only when no `--allow-root` flag was passed, so exactly one of the two
-supplies the static roots for a given run. Whichever one that is, it is then
-unioned with the roots file, so `roots.json` always adds to whatever static
-roots are active rather than replacing them. That is what keeps the advice
-safe to act on even where the check is wrong: appending an already-permitted
-root to `roots.json` is a no-op, not a widening of anything, because the
-file was already being unioned with the active flags or environment
-variable before the addition. The check is not authoritative and the docs
-and the verdict text both treat it that way; it is a best-effort warning
-that only ever fires in the safe direction.
+The root check reuses the containment logic a real `scan_project` call runs,
+but it cannot see roots a server was given with `--allow-root` flags on its own
+command line. A path allowed only that way is reported as not allowed. The
+advice is still safe: the roots file is always added to whatever static roots
+are active, so appending a root that is already allowed widens nothing.
 
-The check runs for every state. An earlier version skipped it for `fresh`,
-`stale` and `unverified`, reasoning that a scanned project must have had its
-root accepted at some point, and that reasoning is wrong: `knossos scan`
-passes the root it was handed to the guard as its own allow-list, so a scan
-from the CLI self-authorises any path and leaves a project no `roots.json`
-covers. A `stale` verdict on such a project used to end in
-`Run scan_project path=... first.`, which is the exact call the server would
-refuse, so the brief walked the agent into the dead end it exists to prevent.
+## What follows the verdict
 
-Only `fresh` ignores the result. It asks for nothing, so it has nothing to
-redirect, and a root warning on a graph that is currently correct would be
-noise on the one verdict that needs none.
+**The identity line**: `Knossos {project_id} ({name})`. When the path you
+started in resolved to an ancestor project, it says so:
+`…, rooted at {root}. {path} lies inside it and is not a scanned project of its own.`
+That matters for a repository nested inside a scanned one: everything below the
+line describes the ancestor.
 
-## Granting a root: `allow-root`
+**Rules**: the boundary policies from `knossos.json` on disk, so a policy edited
+since the last scan is still the one CI enforces. `core -x-> tests` means core
+may not depend on tests; `edge --> only core` means edge may depend only on
+core. See [declared rules and budgets](../concepts/architecture-rules.md).
 
-`knossos allow-root <path> [--execute] [--db=FILE] [--json]` appends a path
-to `roots.json` (found beside the database) without hand-editing the file.
-Like `annotate-component` and `install-agent-plugin`, it previews by default:
-without `--execute` it reports what it would add and changes nothing. With
-`--execute`, it writes the file, atomically (write to a temporary name
-beside the target, then `rename`, preserving the target's existing file
-mode).
+**Notes**: up to five `note` annotations, the newest first, as
+`{component}: {note}`. These are what earlier sessions wrote down with
+`annotate_component` (see [the routing skill](skill.md#writing-a-fact-back)).
 
-`roots.json` is re-read on every request a running server handles, not cached
-at startup, so a newly-granted root needs no restart and no re-registration.
-A second `allow-root` run for a path already present reports it as already
-there and writes nothing.
+**Entry**: up to four ways into the system. A component counts by its kind
+(`route`, `command`, `endpoint`) or by its classification
+(`application.controller`, `application.command`, `application.entry_point`,
+`laravel.controller`, `laravel.command`), and never when it is classified as
+test code. Kinds come first, since a scanner read them off a declaration.
 
-What the command says about that depends on how it found the file, because
-only one of the two answers is worth relying on:
+**Hubs**: the top five components by degree, counted as `architecture_health`
+counts it: dependencies in plus out, with `contains`, vendor code, unresolved
+references and test code left out.
 
-- **Named**, by `KNOSSOS_ROOTS_FILE`, `KNOSSOS_DATA_DIR`, or `--db`: the file
-  is the one the caller meant, so the command reports that a server configured
-  with it picks the addition up with no restart.
-- **Derived** from the working directory, when none of those is set: the file
-  is wherever the shell happened to be, which is rarely the file a running
-  server reads. The command says so and points at `server_info` rather than
-  promising an effect the caller cannot rely on. Under `--json` the same fact
-  is `roots_file_source`, either `named` or `working-directory`.
+**The pointer**, always last:
 
-A registration written by `tools/install` pins `KNOSSOS_DATA_DIR`, so a shell
-that exports the same value is in the first case and agrees with the server.
+```text
+Ask before grepping for structure: the `knossos:graph` skill.
+```
 
-The path must be absolute and must already exist as a directory: roots are
-compared as literal strings against the path a scan request names, so a
-relative path would never match anything and would silently grant nothing,
-and a root that does not exist looks identical to a working one until
-something tries to scan it.
+It is what arms the [routing skill](skill.md) for the rest of the session.
 
-## Which database it reads, and why it never creates one
+Rules and notes appear for every state that has a project, since a stale scan
+says nothing about whether a declared rule or a written note still holds.
+Entry and Hubs appear only when the graph is `fresh`: both are read from the
+graph tables, so on a stale graph they could describe code that no longer
+exists.
 
-Every other CLI command opens the graph through the shared runtime, which
-creates the data directory and applies every migration before handing back a
-connection. That is right for a command that is about to write and wrong
-here: a `session-brief` in a directory nobody ever scanned would leave a
-migrated SQLite file behind, from a hook nobody asked to run. So the command
-locates the database itself, asks whether that file already exists, and opens
-it only then. An absent database renders the `unscanned` verdict and touches
-nothing.
+The brief leaves out file and component counts and the language mix. It is
+billed on every session start, resume and compact, and those figures change no
+decision the model is about to make. The [agent brief](../agents/agent-integration.md#agent-brief)
+has them.
 
-Where it looks is derived from the path argument, not from the process's
-working directory:
+## Budgets
 
-1. `--db=FILE`, when given.
-2. `KNOSSOS_DATA_DIR`, which a containerised installation depends on.
-3. `.knossos/knossos.sqlite` under the path argument, then under each of its
-   parents, taking the nearest one that exists.
+The optional sections (rules, notes, entry points, hubs) fit within a budget per
+state:
 
-The parent walk mirrors the one that resolves a path to its project: a
-session started in `src/` of a scanned repository has to reach that
-repository's graph, and a lookup that stopped at the argument would find no
-database there and report a fully scanned project as `NOT SCANNED`. It also
-kept dropping an untracked `.knossos/` into whichever subdirectory the
-session happened to start in.
-
-The hook completes the pair from the other side: it `cd`s into the project
-directory before invoking the binary, so the working directory and the
-argument name the same place even for a caller that passes no path at all. A
-directory it cannot enter is silent and exits 0, like every other failure
-path in that script.
-
-## Budgets: bounding the optional sections, not the whole output
-
-Each state has a character budget on its _optional_ sections:
-
-| State                            | Budget          |
+| state                            | budget          |
 | -------------------------------- | --------------- |
 | `unscanned`                      | 210 characters  |
 | `stale`, `unverified`, `missing` | 500 characters  |
 | `fresh`                          | 1200 characters |
 
-Sections are appended and kept only while the running total (including the
-closing pointer) still fits; a section that would not fit is dropped whole,
-never truncated mid-list. A list cut off partway through reads as a complete
-list that happens to be wrong, which is worse than a shorter list.
+A section is kept only while the running total, pointer included, still fits.
+One that does not fit is dropped whole, never cut mid-list, since a cut list
+reads as a complete one.
 
-The verdict line, the identity line and the closing skill pointer (``Ask
-before grepping for structure: the `knossos:graph` skill.``) sit **beneath** this
-budget as an irreducible floor, not subject to it. The identity line is the
-project id and name (`Knossos {project_id} ({name})`), followed, when the
-path you asked about resolved to an ancestor project, by the sentence that
-discloses the ancestor's root. It is part of the floor whenever there is a
-project, which is every state except `unscanned`. All three lines are always
-emitted, even when the verdict line alone would already exceed the budget for
-that state. The verdict line embeds the project path and the identity line
-can name two paths, neither of which has an upper bound, so "never exceed the
-budget" and "never drop the floor" cannot both hold for every possible path;
-the floor wins. Dropping or truncating the verdict would hand back a
-`scan_project path=...` that nobody could actually run. Dropping the identity
-line would leave a brief that no longer says which project it describes, while
-the rules, entry points and hubs beneath it still speak for that project (on a
-nested checkout, for an ancestor you did not ask about). Dropping the pointer
-would mean the `knossos:graph` skill is never armed for that session. An unusually
-long path can therefore push the rendered output past its nominal budget; that
-is accepted as the price of never emitting a broken command or an unattributed
-brief.
+The verdict, the identity line and the pointer are always printed, even past
+the budget. A long path can therefore push the brief over its budget. That is
+the price of never printing a broken command or a brief that does not say which
+project it describes.
 
-## What survives a stale verdict, and what does not
+## Which database it reads
 
-The brief draws a hard line between two kinds of material:
+Every other CLI command creates the data directory and migrates the database
+before it answers. `session-brief` must not leave a database behind in a
+directory nobody scanned, so it looks for an existing one and opens it only
+then:
 
-- **Config-derived**: boundary rules, read from `knossos.json` on disk (not
-  from the config snapshot stored at scan time, so a policy edited since the
-  last scan is still the policy CI will enforce), and notes, read from the
-  `note`-kind rows in the annotations table.
-- **Graph-derived**: entry points and hubs, both filtered (see below).
+1. `--db=FILE`, when given.
+2. `KNOSSOS_DATA_DIR`, as the plugin's hooks set it (see
+   [the data directory](plugin.md#the-data-directory)).
+3. `.knossos/knossos.sqlite` under the path, then under each of its parents,
+   the nearest that exists.
 
-Rules and notes are rendered for every state that has a project at all
-(fresh, stale, unverified, missing), because neither a declaration in
-`knossos.json` nor an annotation written in an earlier session is
-invalidated by the current scan being out of date. A stale scan means the
-_graph_ might not match the working tree; it says nothing about whether a
-boundary rule still applies or a note is still true.
+The parent walk lets a session started in `src/` reach its repository's graph.
+No database found renders `NOT SCANNED` and touches nothing. The hook changes
+into the project directory before it calls the binary, so the working
+directory and the path agree.
 
-Entry points and hubs, by contrast, are omitted for every state except
-`fresh`. Both are read straight out of the graph tables (`nodes`, `edges`),
-so they can describe a codebase that no longer exists once the tree has
-drifted from the scan that produced them. Showing them under `stale` or
-`unverified` would present stale structural claims with the same confidence
-as current ones.
+## Granting a root
 
-## What the two graph sections show, and what they leave out
+```sh
+knossos allow-root <path> [--execute] [--db=FILE] [--json]
+```
 
-Both sections rank over the graph, and both have to leave most of it out. A
-section an agent cannot trust at a glance is worse than an absent one,
-because it is read anyway.
+`allow-root` adds a path to the roots file without hand-editing it. Without
+`--execute` it reports what it would add and changes nothing. With
+`--execute` it writes the file atomically, keeping its file mode. The path must
+be absolute and an existing directory. A path already present is reported as
+such and nothing is written.
 
-**Hubs** are the top five components by degree, counted the way
-`architecture_health` counts: inbound plus outbound over dependency
-relationships, so `contains` (which every declaration has with its own
-members, and which therefore ranks nothing) is not in the tally. Vendor code,
-unresolved references and test code are excluded, on exactly the terms
-`architecture_health` applies them; the predicates are shared rather than
-restated. Each hub is rendered with its
-kind and degree, one line each, because a bare name says nothing about why
-it is on the list.
+A running server reads the roots file on every request, so a granted root needs
+no restart. Whether that reaches your server depends on how the command found
+the file:
 
-Ranking on raw edge counts instead is what this section used to do, and
-against this repository's own graph it produced `assertSame`,
-`InvalidArgumentException`, `count`, `StableId` and `sprintf`: a test
-assertion helper, an SPL class, two PHP built-ins, and one real component.
+- **Named**, by `KNOSSOS_ROOTS_FILE`, `KNOSSOS_DATA_DIR` or `--db`: the command
+  says a server configured with that file picks the addition up.
+- **Derived** from the working directory, when none of those is set: the file
+  may not be the one your server reads, so the command points at
+  `server_info` instead. Under `--json` this is `roots_file_source`, `named` or
+  `working-directory`.
 
-The full `architecture_health` report is not what produces this. That call
-also computes hotspots, detects cycles and finds dead-code candidates across
-the whole project before it can hand back a hub list, which on this repository's graph costs
-about 0.4s against 0.03s for the ranking alone. This runs on every session
-start behind a hook that bounds itself at three seconds, so the brief asks
-for the ranking and nothing else.
+## Failures are silent
 
-**Entry points** are the first four ways into the system, matched either by
-node kind (`route`, `command`, `endpoint`) or by a classification role
-(`application.controller`, `application.command`, `application.entry_point`,
-`laravel.controller`, `laravel.command`), and never when the component is
-classified as test code. Kind-declared entry points lead, because a scanner
-read those off a route or command declaration rather than inferring them
-from shape; the rest are ordered by kind and name, which is arbitrary but
-stable across sessions on an unchanged graph.
+The hook, its container variant and the command share one contract: nothing
+they do costs a session more than a bounded amount of time. No binary found, a
+non-zero exit, empty output, a timeout: each exits 0 and prints nothing.
+`session-brief` itself never throws, unlike every other query command.
 
-Matching on kind alone, as this section used to, found nothing at all in a
-repository whose ways in are classified rather than kind-tagged: this one
-holds 11 `application.command` and 32 `application.entry_point`
-classifications and not a single `route`, `command` or `endpoint` node, so
-the section was simply never rendered. Nothing failed, which is why it went
-unnoticed. The predicate now lives in one place and is shared with the
-[agent brief](../agents/agent-integration.md#agent-brief).
-
-## Why node counts and language mix are missing
-
-`export_agent_brief` (see [agent brief](../agents/agent-integration.md#agent-brief)) leads with file,
-component, and relationship counts and the language mix, because it is read
-once by a person settling into a codebase. `session-brief` deliberately
-drops all of that. It is billed on every session start, resume, and compact,
-not read once, and counts that read impressively change no decision an agent
-is about to make. What remains is action-shaped: a verdict, rules, notes,
-and (when fresh) where to look next.
-
-## Binary discovery and the timeout chain
-
-The `SessionStart` hook that calls `session-brief` looks for the `knossos`
-binary in a fixed, short order, because a long search is a slow session
-start:
-
-1. `KNOSSOS_BIN`, if set and executable.
-2. `knossos` on `PATH`.
-3. Conventional locations: `$CLAUDE_PROJECT_DIR/bin/knossos`,
-   `$HOME/.local/bin/knossos`, `/usr/local/bin/knossos`.
-
-Nothing found at any of those means the hook exits 0 with no output.
-
-The call itself is bounded by `timeout`, then `gtimeout`, in that order. A
-plain macOS install ships neither GNU coreutils' `timeout` nor, by extension,
-`gtimeout`; Homebrew's coreutils installs the GNU tool under the `gtimeout`
-name specifically so it never shadows a BSD tool of the same name, which is
-why the hook tries that name second rather than assuming it is absent. If
-neither binary exists, the call runs unbounded at the shell level, and the
-backstop becomes the harness itself: `hooks/hooks.json` sets this hook's own
-`timeout` to 15 seconds, which Claude Code enforces on the whole process
-regardless of what runs inside it.
-
-## Every failure path is silent and exits 0
-
-The hook script, the container variant of it, and the `session-brief`
-command itself share one contract: nothing they do can cost a session
-anything beyond a bounded amount of time. No binary found, the command
-exits non-zero, the output is empty, the timeout fires: every one of these
-exits 0 with nothing printed. A brief that fails to help is acceptable. A
-brief that fails to be harmless is not.
+The hook finds the binary as the [plugin page](plugin.md#the-hooks-need-a-knossos-binary)
+describes, and bounds the call at three seconds with `timeout`, else
+`gtimeout` (Homebrew's name for the GNU tool on macOS). Without either, Claude
+Code's own limit on the hook, 15 seconds in `hooks/hooks.json`, is the bound.
 
 ## Invocation
 
@@ -312,6 +201,5 @@ brief that fails to be harmless is not.
 knossos session-brief [path] [--db=FILE] [--json]
 ```
 
-`path` defaults to the current working directory. `--json` prints the full
-result envelope instead of the plain text a hook injects directly. The
-command always exits 0.
+`path` defaults to the current directory. `--json` prints the full result
+envelope instead of the text a hook injects. The command always exits 0.

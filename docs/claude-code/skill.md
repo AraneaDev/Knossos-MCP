@@ -1,9 +1,9 @@
 # The routing skill
 
-The [agent orientation plugin](plugin.md) installs two things
-that do different jobs. The [session brief](session-brief.md) tells a session
-what this repository looks like at the moment it starts. The skill,
-`skills/graph/SKILL.md`, tells it which questions to bring back to the graph
+The [plugin](plugin.md) carries two pieces that orient a session, and they do
+different jobs. The [session brief](session-brief.md) tells a session what the
+repository looks like at the moment it starts. The skill, `knossos:graph`
+(`skills/graph/SKILL.md`), tells it which questions to bring back to the graph
 for the rest of that session, and which to answer the ordinary way.
 
 Nothing invokes the skill by name. Claude Code loads a skill when its
@@ -14,9 +14,9 @@ line the brief always emits:
 Ask before grepping for structure: the `knossos:graph` skill.
 ```
 
-That line sits beneath the brief's character budget as an irreducible floor
-rather than as one more droppable section, because a brief that fits its budget
-by dropping the pointer leaves the skill unarmed for the whole session.
+The brief always prints that line, past its character budget if it must (see
+[budgets](session-brief.md#budgets)): a brief that dropped it to fit would leave
+the skill unarmed for the whole session.
 
 ## What it routes to the graph
 
@@ -45,13 +45,13 @@ gets called for the wrong question wastes a call and hands back the wrong shape.
 It names five cases and why each one belongs elsewhere:
 
 - **Exact string or regex search**: a config key, an error message, a TODO. The
-  graph indexes structure, not text. Use grep.
+  graph indexes structure, so use grep.
 - **Reading a file about to be edited.** Edit matches against exact bytes, so
-  the file has to be read, not summarised.
+  the file has to be read in full.
 - **Runtime values or behaviour.** Scanning never executes anything, so the
   graph cannot say what a variable holds.
 - **Confirming an edge labelled `probable` or `possible`.** Those are leads to
-  check against the source, not facts to repeat.
+  check against the source.
 - **Anything structural while the verdict is `STALE`, `UNVERIFIED`, `NO GRAPH`
   or `NOT SCANNED`.** Run `scan_project` first, or accept an answer that may
   describe a codebase that no longer exists.
@@ -76,9 +76,8 @@ covers the mechanics.
 
 ## Where it lives, and when a change to it takes effect
 
-The skill is a normal file in this repository. `install-agent-plugin --execute`
-copies it into the git-ignored `.plugin/` directory that Claude Code is pointed
-at, so the installed copy is a snapshot taken at install time and cached by the
-version in the manifest. Editing `SKILL.md` without cutting a release therefore
-needs an uninstall to force a fresh copy; see
-[the agent plugin guide](plugin.md#plugin-is-git-ignored-deliberately).
+The skill is `skills/graph/SKILL.md` in the repository.
+`install-agent-plugin --execute` copies it into `.plugin/`, and Claude Code
+caches that copy by the version in the plugin's manifest. A change to
+`SKILL.md` without a release therefore needs an uninstall to force a fresh
+copy; see [updating the plugin](plugin.md#update).
