@@ -165,7 +165,7 @@ where they run:
 | Dockerfile                   | Hadolint 2.14.0, digest-pinned base images, clean build/doctor                  |
 | Dependencies                 | Composer validation/audit, npm lock integrity/audit                             |
 | Repository hygiene           | private-key/access-key patterns, 2 MB file cap, conflict markers, line endings  |
-| MCP contract                 | test suite plus Inspector 0.21.2 `tools/list` smoke                             |
+| MCP contract                 | test suite plus Inspector 2.9.0 `tools/list` smoke                              |
 | Adversarial testing          | fixed-seed properties/fuzz, differential scans, semantic mutation score         |
 | Mutation testing             | Infection 0.34 over `src`, scheduled workflow (not a profile gate)              |
 | Performance                  | mixed-language cold/incremental/query/RSS/SQLite budgets                        |
