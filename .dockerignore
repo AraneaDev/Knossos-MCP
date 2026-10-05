@@ -36,3 +36,5 @@ infection.out.log
 docs/audits
 .plugin
 .claude/settings.local.json
+.claude-plugin/types
+tools/capture/out
