@@ -126,10 +126,13 @@ Two habits keep a tall pane cheap. A `Text` carries no key and no `Box` of its
 own, and a `Box` gets a key only where one is needed, such as a tint or a hidden
 twin.
 
-The plugin test (below) holds every view to a stricter guard than the budget:
-under 72,000 characters, under 10,000 nodes and under 16 deep, at every pane size
-and surface, with the largest lists the dashboard sends. A change that pushes a
-view past the guard fails there, well before the engine's own bounds.
+The plugin test (below) holds every view to a guard at every pane size and
+surface, with the largest lists the dashboard sends: under 72,000 characters,
+under 10,000 nodes and under 16 deep. On characters the guard leaves 2,000 of
+slack over the 70,000 budget, so it catches a view the budget failed to shrink.
+All three limits sit well inside the engine's bounds of 100,000 characters,
+20,000 nodes and 32 deep, so a change that pushes a view past the guard fails
+there first.
 
 ## Scan ledger
 
