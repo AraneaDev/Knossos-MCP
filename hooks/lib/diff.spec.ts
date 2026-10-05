@@ -285,8 +285,8 @@ describe('the full detail of a long change', () => {
     fan_in_truncated: false,
   } as unknown as Dashboard
   const view: KnossosView = { inspect: SHOWN, isBandHidden: false, tab: 'changes', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
-  /** The rows a row takes on screen: a diff element one per line of its source (it wraps nothing), any other one. */
-  const height = (rows: Row[]): number => rows.reduce((n, r) => n + (r.code === undefined ? 1 : r.code.source.split('\n').length), 0)
+  /** The rows a row takes on screen: a diff element one per line under its header (it wraps nothing, and draws no header row), any other one. */
+  const height = (rows: Row[]): number => rows.reduce((n, r) => n + (r.code === undefined ? 1 : r.code.source.split('\n').length - 1), 0)
 
   for (const columns of [60, 100, 140, 200]) {
     it(`counts every line of its diff elements, so the pane scrolls to the last and the bar stays pinned (${columns} columns)`, () => {

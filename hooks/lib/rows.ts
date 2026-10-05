@@ -118,11 +118,15 @@ export const MARK = 3
 export const cells = (text: string): number => [...text].length
 export const rowWidth = (row: Row): number => row.segments.reduce((n, s) => n + cells(s.text), 0)
 /**
- * The rows `row` takes on screen: a diff element one per line of its text,
- * since it wraps nothing (`truncate-end`) and cuts a line at the edge; any
- * other row one. What the pane counts its height and its scrolling in.
+ * The rows `row` takes on screen: any row one, and a diff element one per
+ * line under its `@@` header, since it wraps nothing (`truncate-end`) and
+ * cuts a line at the edge. The header itself is drawn as no row: the
+ * element numbers the lines in its gutter instead. Neither the engine's
+ * types nor its docs say so; a live session showed it, a hunk of a header
+ * and seven lines drawn in seven rows. What the pane counts its height and
+ * its scrolling in. Each element holds one hunk (see `hunkSource`).
  */
-export const rowHeight = (row: Row): number => (row.code === undefined ? 1 : row.code.source.split('\n').length)
+export const rowHeight = (row: Row): number => (row.code === undefined ? 1 : Math.max(1, row.code.source.split('\n').length - 1))
 /** The rows `rows` take on screen together (see {@link rowHeight}). */
 export const rowsHeight = (rows: readonly Row[]): number => rows.reduce((n, row) => n + rowHeight(row), 0)
 export const segmentsWidth = (segments: Segment[]): number => segments.reduce((n, s) => n + cells(s.text), 0)

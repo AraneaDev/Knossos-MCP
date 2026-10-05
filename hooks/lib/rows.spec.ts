@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cells, pathParts, tableRow, tableSpec } from './rows'
+import { cells, pathParts, rowHeight, rowsHeight, tableRow, tableSpec } from './rows'
 
 const PATH = 'src/Query/Drift/GitDriftOracle.php'
 
@@ -35,5 +35,15 @@ describe('a path in two tones', () => {
     expect(base?.text).toBe('GitDriftOracle.php')
     expect(base?.dim).toBeUndefined()
     expect(base?.press).toEqual({ id: 'row:0', label: PATH })
+  })
+})
+
+describe('the rows a row takes on screen', () => {
+  it('is one for a row of text, and one per changed or context line for a diff element, its @@ header drawn as no row', () => {
+    expect(rowHeight({ key: 'a', segments: [{ text: 'x' }] })).toBe(1)
+    // As the engine drew it in a live session: a hunk of seven lines took seven rows, the header none.
+    const hunk = { key: 'h', segments: [], code: { source: '@@ -5,6 +5,7 @@\n a\n b\n c\n+d\n e\n f\n g', path: 'x.ts' } }
+    expect(rowHeight(hunk)).toBe(7)
+    expect(rowsHeight([hunk, { key: 'b', segments: [{ text: 'y' }] }])).toBe(8)
   })
 })
