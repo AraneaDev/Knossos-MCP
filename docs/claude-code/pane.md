@@ -435,7 +435,9 @@ the project's root (inside an ancestor project), the command starts with
 `cd <project root> &&`. `t` copies it.
 
 `o` opens the marked file's detail, with its [diff](#the-diff-since-the-session-began),
-and `e` opens the file.
+and `e` opens the file. On a wide pane the marked file's diff stands beside the
+list as text, cut short; its last row, `open the full diff`, opens the same
+detail as `o`, where the diff is drawn across the pane.
 
 ### Where the list comes from
 
@@ -676,9 +678,22 @@ the commits made during the session and the working tree alike.
 - A hunk longer than 40 lines is folded with how many lines are left out.
   Past twelve hunks, or about 24,000 characters, the rest are counted instead.
   Lines longer than 200 characters are cut.
+- `N more lines` under a folded hunk is a button: pressing it shows the whole
+  hunk. A hunk longer than the diff element takes (10,000 characters) shows
+  as much as fits and ends in `N more lines: too long to draw here, e opens the
+file`.
+- `N more changes further down the file` is a button too: it shows the next
+  hunks in place of these, and `N earlier changes` above them goes back. The
+  detail shows at most twelve hunks, or about 24,000 characters, at a time.
+- What you opened is kept while the detail shows that file. Opening the file
+  again, or a new scan that reads its diff again, starts it folded.
 - On a wide pane, beside a tab, the diff is drawn as text lines in the added
-  and removed colours. Opened on its own, it uses Claude Code's own diff
-  element, with line numbers and markers.
+  and removed colours, at most four hunks of twelve lines. Its last row, `open
+the full diff`, opens the file's detail, the same as `o`. Opened on its own,
+  the diff uses Claude Code's own diff element, with line numbers and markers.
+- The detail scrolls over every line of the diff. Focus the pane, then use the
+  wheel, the arrows or Page Up and Page Down; the key bar stays at the bottom.
+  Tab and Enter reach the diff's buttons as well as a click does.
 
 With no git repository, no commit yet, a commit that is gone, a binary file
 or no answer, the card says which instead of a diff.
