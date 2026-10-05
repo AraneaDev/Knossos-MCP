@@ -160,10 +160,9 @@ claude mcp add knossos --scope user \
 and exit status to `mcp-serve.log` in the data directory. A host that reports
 only "server disconnected" leaves you that log to read.
 
-Every path in the registration is absolute. A registration that resolves
-against the client's working directory is portable across checkouts and
-ambiguous about which graph it means, and the absolute one is neither. Without
-the data directory, `tools/mcp-serve` falls back to `<checkout>/.knossos` and
+Every path in the registration is absolute. A relative path resolves against
+the client's working directory, so the same registration would reach a
+different graph from each checkout. Without the data directory, `tools/mcp-serve` falls back to `<checkout>/.knossos` and
 builds a second graph beside the installed one. Nothing warns about it: both
 servers answer, each from its own database.
 
@@ -227,6 +226,9 @@ repository.
 - Scanning never installs dependencies, executes project code or boots Laravel.
 - Preconfigure every allowed root before you hand the server to an agent.
 - Prefer read-only source mounts and `--network none`.
-- Back up no index state: the SQLite database is derived and rebuildable.
+- Back up the database when agents annotate components. The graph rebuilds
+  from a scan, but annotations live only in that database, and bundles leave
+  them out. `knossos maintain-database backup --execute` writes a copy under
+  `backups/`; see [maintenance](../operate/maintenance.md).
 - Call `scan_project` with `mode: auto`. Force `full` to verify a result, or
   after changing analyzer code outside the packaged release.

@@ -42,12 +42,11 @@ wins over both the default and the switch, so `false` returns the stored graph
 as stored. The budget and the warning's shape are in
 [response envelopes](../reference/response-envelopes.md#refreshing-a-stale-graph).
 
-A rescan writes Knossos's own graph and starts language workers. The tools that
-declare `refresh_if_stale` therefore carry `readOnlyHint: false`, together with
-`destructiveHint: false` and `idempotentHint: true`. A client that asks for
-confirmation on write tools will ask here. Pass `refresh_if_stale: false` for
-read-only behaviour on one call. `KNOSSOS_AUTO_REFRESH=0` alone does not do
-that, because an explicit `refresh_if_stale: true` still overrides it.
+A rescan writes Knossos's own graph and starts language workers, so these tools
+carry `readOnlyHint: false` and a client that confirms write tools will confirm
+here. Pass `refresh_if_stale: false` for a call that is read-only. The
+annotation details are in
+[response envelopes](../reference/response-envelopes.md#refreshing-a-stale-graph).
 
 ## Agent brief
 
@@ -123,7 +122,7 @@ call. It assembles a deterministic, bounded bundle of the project summary,
 likely location, explicit changed-file impact and a few component dossiers,
 without executing target-project code.
 
-Supply a task description (up to 2000 characters), up to 50 changed files, or
+Supply a task description (up to 2000 bytes), up to 50 changed files, or
 both:
 
 ```json
@@ -200,15 +199,17 @@ knossos list-annotations project_... --json
 
 - `intended_boundary`: this component's placement is deliberate.
 - `confirmed_dead`: a human or agent verified that nothing uses this component,
-  beyond what static analysis can prove.
+  beyond what static analysis can prove. `architecture_health` attaches
+  `annotation: {kind, value}` to that component's dead-code candidate entry, so
+  the judgment shows next to the candidate.
 - `false_positive`: this component was flagged wrongly. `architecture_health`
   leaves it out of its dead-code candidates and counts it under
   `annotated_false_positives`.
 - `note`: a free-form remark. The [session brief](../claude-code/session-brief.md)
   lists the most recent notes at the start of a session.
 
-Only `false_positive` and `note` change what another tool shows. The other two
-kinds are recorded and listed, and no tool reads them.
+`false_positive`, `confirmed_dead` and `note` change what another tool shows.
+`intended_boundary` is recorded and listed, and no tool reads it.
 
 ### Survival across rescans
 
@@ -224,7 +225,9 @@ rescan keeps them. Removing the project cascades the cleanup.
 again is an upsert: the value and `updated_at` change, `created_at` stays. The
 response's `previous` field holds the annotation as it stood before the write,
 or `null`, so a caller can tell an upsert from a fresh insert. A `value` is at
-most 2000 characters.
+most 2000 bytes, like `task_description` on `architecture_context`. Both
+limits count bytes, so text with accents or CJK characters, which take two to
+four bytes each, hits them sooner than a character count suggests.
 
 `component` resolves like in other tools: an exact canonical or display name,
 or a unique name prefix. An ambiguous prefix is rejected with the candidates.
