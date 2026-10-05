@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Dev-only. Shoots the README and docs captures: the hero GIF and the pane
  * stills, each in its own isolated Claude Code session (see session.mjs).

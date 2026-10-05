@@ -393,3 +393,14 @@ describe("stageGraph", () => {
         }
     });
 });
+
+describe("shoot.mjs as a command", () => {
+    const self = new URL("./shoot.mjs", import.meta.url);
+    it("starts with a node shebang, so a scan reads it as an executable script", async () => {
+        const [first] = (await readFile(self, "utf8")).split("\n", 1);
+        expect(first).toBe("#!/usr/bin/env node");
+    });
+    it("is executable", async () => {
+        expect((await stat(self)).mode & 0o111).not.toBe(0);
+    });
+});
