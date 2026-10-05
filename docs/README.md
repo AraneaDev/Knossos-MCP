@@ -8,8 +8,7 @@ is the short version.
 ## Get started
 
 - [Installation](get-started/installation.md): how do I install Knossos and
-  register it with Claude Code, Codex or another MCP client, and what goes
-  wrong?
+  register it with Claude Code, and what goes wrong?
 - [First scan](get-started/first-scan.md): how do I scan a project, check the
   result, and what does an answer look like?
 - [Project configuration](get-started/project-configuration.md): how do I tell
@@ -31,6 +30,8 @@ is the short version.
 
 ## Agents
 
+- [Codex and other MCP clients](agents/clients.md): how do I register Knossos
+  with Codex or another MCP client, and add the routing skill to Codex?
 - [Agent integration](agents/agent-integration.md): which tools orient an agent
   before it greps, how does it get an evidence bundle for one task, and how does
   it record a judgment for later sessions?

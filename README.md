@@ -118,7 +118,7 @@ codex mcp add knossos \
 
 A Codex plugin in this checkout adds the routing skill. The pane and the notes are Claude Code
 hooks and do not run in Codex. Both steps, and a Docker variant, are in
-[installation](docs/get-started/installation.md#codex).
+[Codex and other MCP clients](docs/agents/clients.md#codex).
 
 ### Any MCP client
 
