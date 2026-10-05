@@ -10,8 +10,8 @@ use Knossos\Cli\CliInputLoader;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Cli\Command\QueryCommand;
 use Knossos\Mcp\ToolCatalog;
-use Knossos\Scan\ProjectScanService;
 use Knossos\Runtime\RuntimeFactory;
+use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 use Throwable;
@@ -141,18 +141,18 @@ final class QueryCommandContractTest extends KnossosTestCase
         $base = sys_get_temp_dir() . '/knossos-stale-ranking-' . bin2hex(random_bytes(6));
         $root = $base . '/project';
         $database = $base . '/data/knossos.sqlite';
-        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
-        $runtime = new RuntimeFactory(self::repositoryRoot());
-        $pdo = $runtime->database($database);
-        $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root)->projectId;
-        unset($pdo);
 
         try {
+            $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
+            $runtime = new RuntimeFactory(self::repositoryRoot());
+            $pdo = $runtime->database($database);
+            $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root)->projectId;
+            unset($pdo);
             $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), $runtime, $database);
-            $run = static function (string $mode) use ($context, $projectId): string {
+            $run = static function (?string $mode) use ($context, $projectId): string {
                 ob_start();
                 try {
-                    (new QueryCommand())->run('suggest-location', [$projectId, 'build a billing workflow'], ['json' => ['true'], 'ranking-mode' => [$mode]], $context);
+                    (new QueryCommand())->run('suggest-location', [$projectId, 'build a billing workflow'], ['json' => ['true']] + ($mode === null ? [] : ['ranking-mode' => [$mode]]), $context);
 
                     return (string) ob_get_contents();
                 } finally {
@@ -162,6 +162,8 @@ final class QueryCommandContractTest extends KnossosTestCase
 
             $semantic = json_decode($run('semantic_if_available'), true, 64, JSON_THROW_ON_ERROR);
             assertSame('semantic_if_available', $semantic['data']['ranking']['requested_mode']);
+            $absent = json_decode($run(null), true, 64, JSON_THROW_ON_ERROR);
+            assertSame('deterministic', $absent['data']['ranking']['requested_mode']);
             $default = json_decode($run('deterministic'), true, 64, JSON_THROW_ON_ERROR);
             assertSame('deterministic', $default['data']['ranking']['requested_mode']);
 
