@@ -326,6 +326,16 @@ while (($line = fgets(STDIN)) !== false) {
                 fflush(STDOUT);
                 exit(0);
             }
+            // Answers every file, then writes an oversized frame that names
+            // nothing at all: by elimination it belongs to no file.
+            if ($mode === 'per_file_frame_too_large_after_all') {
+                foreach ($requested as $relativePath) {
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                fwrite(STDOUT, str_repeat('x', 150_000));
+                fflush(STDOUT);
+                exit(0);
+            }
             // Answers every file, then sends a final response too large for
             // one frame: an oversized frame that belongs to no file.
             if ($mode === 'per_file_frame_too_large_result') {

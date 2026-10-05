@@ -771,6 +771,57 @@ final class NdjsonRpcChannelTest extends TestCase
         );
     }
 
+    public function testAnOversizedFrameSaysWhatItWas(): void
+    {
+        $frames = [
+            '{"jsonrpc":"2.0","id":3,"result":{"pad":"' => "it was the worker's response to the request",
+            '{"jsonrpc":"2.0","method":"scan\\/progress","params":{"pad":"' => 'it was a scan/progress notification',
+            '{"jsonrpc":"2.0","method":"scan/contribution","params":{"pad":"' => null,
+            'xxxxxxxx' => null,
+        ];
+        foreach ($frames as $prefix => $expected) {
+            $process = $this->mockProcess();
+            $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+            $deadline = $channel->beginRequest();
+            fwrite($process->pipes[1], $prefix . str_repeat('x', 300));
+            rewind($process->pipes[1]);
+
+            $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+            assertSame($expected, $error->frameDescription, $prefix);
+        }
+    }
+
+    public function testACompleteFrameJustOverTheLimitIsTooLargeRatherThanInvalid(): void
+    {
+        // Over the limit by less than one read, the frame and its newline
+        // arrive together, and the line is taken whole. It is still a frame
+        // too large, which splitting can act on, not a malformed one.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], '{"jsonrpc":"2.0","method":"scan/contribution","params":{"owner_key":"w:file:a.ts","pad":"' . str_repeat('x', 100) . "\"}}\n");
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame('WORKER_FRAME_TOO_LARGE', $error->diagnosticCode);
+        assertSame(true, $error->frameIsAFilesAnswer);
+    }
+
+    public function testAnEmptyFrameIsStillInvalid(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], "\n");
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame('WORKER_FRAME_INVALID', $error->diagnosticCode);
+    }
+
     public function testAnOversizedFrameWrittenBeforeTheWorkerExitedIsStillTooLarge(): void
     {
         // The whole frame can arrive with the end of the stream. Reported as
@@ -794,6 +845,9 @@ final class NdjsonRpcChannelTest extends TestCase
             '{"jsonrpc":"2.0","id":3,"result":{"input_hashes":{"' => false,
             '{"jsonrpc":"2.0","id":3,"error":{"message":"' => false,
             '{"jsonrpc":"2.0","method":"scan/input_hashes","params":{"' => false,
+            // JSON may escape a slash, and json_encode does by default.
+            '{"jsonrpc":"2.0","method":"scan\\/contribution","params":{"owner_key":"w:file:a.ts","pad":"' => true,
+            '{"jsonrpc":"2.0","method":"scan\\/input_hashes","params":{"' => false,
             'xxxxxxxx' => null,
         ];
         foreach ($frames as $prefix => $expected) {

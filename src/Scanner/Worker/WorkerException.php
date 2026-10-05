@@ -24,6 +24,8 @@ final class WorkerException extends RuntimeException
      *        oversized frame opened as one file's contribution (true), as some
      *        other message such as the final response (false), or could not be
      *        told (null)
+     * @param ?string $frameDescription for a frame that is not a file's answer,
+     *        what it was, as a clause ("it was the worker's response to the request")
      */
     public function __construct(
         public readonly string $diagnosticCode,
@@ -31,6 +33,7 @@ final class WorkerException extends RuntimeException
         ?Throwable $previous = null,
         public readonly ?int $terminatingSignal = null,
         public readonly ?bool $frameIsAFilesAnswer = null,
+        public readonly ?string $frameDescription = null,
     ) {
         parent::__construct($message, previous: $previous);
     }

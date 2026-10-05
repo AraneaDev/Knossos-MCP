@@ -61,10 +61,11 @@ When a scan request fails with a size signal, the budget is halved, that
 language's worker is restarted, and **the failing batch** is re-split and
 retried. The reduction applies only to that batch and its descendants: later
 batches start again at the configured budget, so one pathological directory
-costs a single wasted request, and the rest of the language keeps its
-budget for the rest of the scan. This repeats up to
-`max_scan_batch_halvings` times (4) per batch, after which the failure falls
-through to the ordinary degrade path below.
+costs that batch its own retries, and the rest of the language keeps its budget
+for the rest of the scan. A batch and its descendants may be halved up to
+`max_scan_batch_halvings` times (4), however many other batches also needed
+retries, after which the failure falls through to the ordinary degrade path
+below.
 
 Three kinds of failure are retried this way: a size signal
 (`WORKER_OUTPUT_LIMIT`, `WORKER_FRAME_TOO_LARGE`, `WORKER_REQUEST_TOO_LARGE`), a
@@ -80,17 +81,27 @@ stopped by SIGHUP or SIGINT, a crash for any other reason, a timeout, or a
 cancellation is never retried.
 
 Each retry halves both the file count and the bytes the batch actually held.
-For `WORKER_FRAME_TOO_LARGE` the files the worker had already answered are not
-the cause, so they go back as one batch and only the rest is split. Such a
-frame search is not held to `max_scan_batch_halvings`, which would stop it short
-of a small file with a huge frame among hundreds of neighbours. A split that the
-worker's answers narrowed is free, because it confirmed at least one file. Every
-other retry is charged against an allowance per language of
+`source_bytes_used` reports the narrowest budget these ordinary retries settled
+on.
+
+`WORKER_FRAME_TOO_LARGE` is searched for differently, because it is one file's
+answer that did not fit one frame. The files the worker had already answered are
+not the cause, so they go back as one batch and only the rest is split. A split
+that confirmed at least as many files as it still suspects halves the search and
+is free. Every other split draws on a search allowance per language of
 `max_scan_batch_halvings` plus two binary searches over the files it scans (16
-for 64 files, 26 for 2,000), so a worker that fails before answering anything is
-not searched file by file. An oversized frame that opens as a response rather
-than as a file's contribution belongs to no file, and degrades the language
-instead of leaving a file out.
+for 64 files, 26 for 2,000). A worker that fails before answering anything, or
+answers one file before each failure, is therefore not searched file by file;
+when the allowance runs out the language degrades with a diagnostic saying the
+line limit is probably too low for the project. These splits do not lower
+`source_bytes_used`. An oversized frame that is not a file's contribution (the
+worker's response, another notification, or anything after every file in the
+batch was answered) belongs to no file, and degrades the language instead of
+leaving a file out.
+
+On top of both, a language may send at most two requests per file plus four per
+batch in one scan. Reaching that cap degrades the language with
+`WORKER_REQUEST_CAP`, naming the cap and the last failure.
 
 A batch of one file cannot be split any further, so it is never retried. When
 that one file's own frame or output is what outgrew a limit, as a generated
