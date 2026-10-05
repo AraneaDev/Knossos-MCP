@@ -69,7 +69,7 @@ count (`routes_to`, `calls`, `dispatches`, `handles`, `listens_to`,
 `uses_middleware`), so a link through `extends` or `implements` is not a path.
 
 A pair with no static path returns an empty `paths` list rather than an error.
-That is a real answer, and not the same as proof that no route exists.
+That is a real answer, though it proves nothing about the runtime.
 
 <!-- still:route -->
 
@@ -110,8 +110,7 @@ knossos architecture-health project_... --limit=20 --json
 
 A hub's score is its degree, the number of edges in and out. A hotspot adds
 twice its cross-boundary degree, plus three if it takes part in a cycle.
-Hotspots are static structural signals, not change frequency or defect
-predictions. For that, read [change review](change-review.md).
+Hotspots are static structural signals and predict neither change frequency nor defects. For that, read [change review](change-review.md).
 
 The dead-code half of the result is the subtlest thing Knossos reports. It
 splits what nothing references from what only tests reach. What it excludes
@@ -151,6 +150,6 @@ The packaged CLI and MCP runtime configure no external provider on purpose, so
 an opt-in semantic request reports `provider_unavailable` and returns the exact
 deterministic ordering. Missing or extra candidates, non-numeric or
 out-of-range scores, exceptions and deadline overruns produce the same
-fallback, with a `provider_failed` reason cut to 200 characters. Project code
+fallback, with a `provider_failed` reason cut to 200 bytes. Project code
 is never sent to a provider or executed by the core. A custom provider is
 responsible for its own data-handling policy.

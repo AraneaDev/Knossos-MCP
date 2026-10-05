@@ -37,7 +37,7 @@ written. Two calls from one method to the same target, on different lines, are
 two edges. That is why [`list_usages`](finding-components.md#list-usages) can
 list call sites one by one.
 
-`contains` edges record structure (a class holds its methods), not dependency.
+`contains` edges record structure only: a class holds its methods.
 The queries that ask what depends on what use a fixed set of dependency kinds
 instead: `routes_to`, `calls`, `dispatches`, `handles`, `listens_to`,
 `constructs`, `injects`, `binds`, `observes`, `depends_on`, `imports`,
@@ -57,8 +57,7 @@ A boundary groups components so you can ask questions about modules rather than
 single symbols. You declare boundaries in
 [`knossos.json`](../get-started/project-configuration.md) or with `--boundary`
 on `knossos scan`. Without them, Knossos infers boundaries from what the
-project already says about itself: one per manifest (`composer:<name>`,
-`module:<directory>`) and one per top-level PHP namespace (`namespace:App`).
+project already says about itself: one per manifest of a Cargo, Composer, Node or Python project (`composer:<name>`), one per top-level PHP namespace (`namespace:App`), one per top-level directory of TypeScript code (`module:src`) and one per top-level directory of Python code (`python-package:<directory>`). A TypeScript project's own config path names its boundary.
 Every boundary carries a `source` of `explicit` or `inferred`, so an inferred
 grouping is never mistaken for a decision someone made. A component can sit in
 more than one boundary. `list_boundaries` shows them, and
@@ -84,8 +83,8 @@ every edge carries one, and the scanner protocol rejects a fact without it.
     "confidence": "certain",
     "evidence": {
         "path": "src/Scanner/Worker/ProcessScannerClient.php",
-        "start_line": 11,
-        "end_line": 11
+        "start_line": 10,
+        "end_line": 10
     }
 }
 ```
@@ -142,7 +141,7 @@ Knossos labels the limits instead of hiding them:
 - **Warnings.** Every result carries `warnings` that qualify it. Impact says it
   is a conservative blast radius, a flow says it is a plausible static path,
   and dead-code results say they are candidates only.
-- **Absence is not proof.** A flow query with no path returns an empty list.
+- **Absence proves nothing.** A flow query with no path returns an empty list.
   An unreferenced component is a candidate, and a component the scan could not
   type is demoted to `possible`. See [dead-code candidates](dead-code-candidates.md).
 - **Bounds.** Every walk has limits on depth, nodes, edges and time. Hitting
@@ -150,9 +149,7 @@ Knossos labels the limits instead of hiding them:
   never passes for a complete one.
 - **Diagnostics.** A file the scan skipped or could not parse becomes a
   diagnostic with a code, so a gap in the graph has an explanation.
-- **Type-only imports.** An import that exists only for the compiler is erased
-  at runtime and not treated as a dependency. A cycle closed only by such
-  imports is not reported.
+- **Type-only imports.** An import that exists only for the compiler is dropped when looking for cycles, so a loop closed only by such imports is not reported. Impact, flow, hub and policy checks still count it.
 
 Treat the graph as strong evidence about what the code says and silent about
 what the runtime does.
@@ -177,7 +174,7 @@ The scan treats your project as untrusted input:
   instead of scanning part of it.
 - It does not hand your environment to the workers. Each worker is a separate
   process with a neutral working directory, a short allow-list of environment
-  variables, a request timeout and a memory limit.
+  variables, a request timeout and, for the PHP and TypeScript workers, a memory limit.
 - It does not replace a good graph with a bad one. A scan that fails or is
   cancelled leaves the previous snapshot active, and `list_projects` shows the
   state as `latest_scan_failed` or `latest_scan_cancelled`.

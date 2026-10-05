@@ -105,8 +105,7 @@ upgrading their confidence.
 Use `list_usages` when you need every call/reference site of a symbol with
 file:line evidence: the grep killer. Because edges are occurrence-level
 facts (their stable id includes the evidence location), this is a direct
-listing, not an aggregation: two calls from the same caller to the same
-callee on different lines are two distinct rows, not one merged edge.
+listing: two calls from the same caller to the same callee on different lines are two distinct rows.
 
 ```json
 {
@@ -177,5 +176,5 @@ truncation reasons. A CLI call without `--json` prints the raw diagram:
 knossos export-diagram PROJECT_ID --format=mermaid --boundary=BOUNDARY_ID
 ```
 
-The export is a bounded view of indexed static facts, not a runtime trace. It
+The export is a bounded view of indexed static facts and shows no runtime behaviour. It
 may omit dynamic relationships and is explicitly incomplete when truncated.

@@ -68,7 +68,7 @@ total and reported counts.
 A removed component becomes a rename candidate when exactly one added
 component has the same kind and display name. Candidates are labelled
 `possible` and name the heuristic (`exact_kind_and_display_name`). They are
-navigation hints, not asserted identity.
+navigation hints that assert no identity.
 
 <!-- still:changes-diff -->
 

@@ -83,7 +83,7 @@ evaluated), capped at the first 100 rows; a section that degrades to
 `not_evaluated` contributes no evidence.
 
 Results are static and conservative, subject to the same caveats as the
-underlying tools: impact is a blast-radius estimate, not a guarantee; change
+underlying tools: impact is a blast-radius estimate that guarantees nothing; change
 frequency signals are absent here (see `change_impact` for those); and a
 truncated cycle or edge scan may under-report.
 
@@ -128,15 +128,14 @@ old rename paths can still resolve when they exist in the active indexed
 snapshot.
 
 Results are static and conservative. Dynamic dispatch may be absent, unresolved
-paths are returned explicitly, and truncation means the reported set is not a
-complete proof of runtime impact.
+paths are returned explicitly, and truncation means the reported set may be incomplete.
 
 ## Test impact
 
 `test_impact` projects a changed-files blast radius (the same analysis behind
 `changed_files_impact`) onto the test files that statically reach the changed
 code, ranked by distance. Use it to run the relevant tests first in an
-edit-test loop; it is a lower bound, not a substitute for the full suite:
+edit-test loop; it is a lower bound, so keep running the full suite:
 data-driven tests, fixtures, and glob-only discovery are invisible to the
 graph.
 
@@ -174,7 +173,7 @@ count, distinct author email identifiers, and latest author timestamp. The risk
 ranking exposes its simple factors: three points per commit, one per distinct
 author, and a bounded static-proximity weight.
 
-These are prioritization heuristics, not proof of risk, ownership, code quality,
+These are prioritization heuristics. They prove nothing about risk, ownership, code quality,
 or future failure. Renames are not followed, and history outside the selected window is absent. If Git is unavailable or the
 scanned root is not a repository, the tool returns the static impact with zero
 change scores and a reason instead of failing the whole query.

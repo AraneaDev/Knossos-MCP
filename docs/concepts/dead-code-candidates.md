@@ -4,8 +4,7 @@
 `dead_code_candidates` alongside its hubs and hotspots: components with no
 inbound edge among the selected edge kinds.
 
-These are **candidates, not findings**. They rest on what [the graph and its evidence](graph-and-evidence.md) can and cannot see. A zero in-degree is absence of static
-evidence, not proof of absence: reflection, configuration, templates, registry
+These are **candidates, not findings**. They rest on what [the graph and its evidence](graph-and-evidence.md) can and cannot see. A zero in-degree is only the absence of static evidence: reflection, configuration, templates, registry
 arrays, callbacks, dispatch tables, and framework conventions all reference code
 without leaving a statically visible edge. The tool says so in its own
 `warnings`, and every candidate carries a `reachability`, a `confidence` and a
@@ -29,7 +28,7 @@ test-only findings are waiting behind a higher `limit`.
 `test_only` is usually the more valuable half. A component nothing references
 may be waiting on a caller nobody has written yet; one whose own test is its
 only caller is finished work that no product path reaches, and it still costs
-review, refactors, and CI time. In a scan of this repository's PHP and TypeScript sources together with their tests, 56 of the 65 candidates were `test_only`.
+review, refactors, and CI time. In a codebase with a thorough test suite, `test_only` is often the larger half of the list.
 
 Passing `include_tests` asks for test code to count as part of the architecture,
 which collapses the distinction: nothing is reported as `test_only`, and a
@@ -76,8 +75,8 @@ auditable rather than invisible.
 
 | `bounds` counter                 | Excluded                                                                                                                                                                                                                                                                                         |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `excluded_external_components`   | Hub ranking, not candidates: nodes in the examined window resolved outside the project (`external_*` kinds, `external`/`unresolved` origins), left out of hubs and hotspots. Include with `include_external`. External nodes are never candidates.                                               |
-| `excluded_test_components`       | Hub ranking, not candidates: nodes in the examined window classified `quality.test_module`, left out of hubs and hotspots. Include with `include_tests`. An unreferenced test module is counted in `excluded_convention_discovered`, since a runner discovers it by glob.                        |
+| `excluded_external_components`   | Hub ranking only: nodes in the examined window resolved outside the project (`external_*` kinds, `external`/`unresolved` origins), left out of hubs and hotspots. Include with `include_external`. External nodes are never candidates.                                                          |
+| `excluded_test_components`       | Hub ranking only: nodes in the examined window classified `quality.test_module`, left out of hubs and hotspots. Include with `include_tests`. An unreferenced test module is counted in `excluded_convention_discovered`, since a runner discovers it by glob.                                   |
 | `excluded_inherited_methods`     | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it. Also methods a scanner marks `overrides` (see below), whose supertype may live outside the project.                                                          |
 | `excluded_contract_methods`      | The mirror: declarations an internal implementation carries, when the declaring type is used (see below).                                                                                                                                                                                        |
 | `excluded_constructors`          | Engine-invoked members (constructors, destructors, magic/protocol methods) whose declaring type is referenced (see below), and components a scanner marks `runtime_invoked`: Rust's `Drop::drop`, and functions exported to a foreign host (`#[no_mangle]`, `#[wasm_bindgen]`, an `extern` ABI). |
@@ -93,7 +92,7 @@ Instantiating a type is recorded as a `constructs` edge to the **class**, never
 to its constructor. Every constructor in every graph therefore has an in-degree
 of zero, however heavily the class is used. Without the exclusion, a small TypeScript project reports constructors of classes the same graph shows being instantiated.
 
-Constructors are the most common case, not the only one. `__destruct` runs when
+Constructors are the most common case among several. `__destruct` runs when
 the last reference drops, `__toString` on a string cast, `__invoke` on a call,
 and Python's protocol methods (`__repr__`, `__enter__`, `__eq__`) the same way.
 None is ever written at a call site, so each is structurally unreferenced.
@@ -280,12 +279,11 @@ The candidate list reports its own truncation in `bounds.candidates_truncated` a
 ## Limits
 
 - Candidates depend on the selected `edge_kinds` and `min_confidence`. Narrowing
-  either produces more candidates, not fewer.
+  either produces more candidates.
 - The candidate search is bounded by `candidate_timeout_ms` alone; a search cut
   short reports `time_limit` among `candidate_truncation_reasons`, and its candidate list is
   partial.
-  `max_nodes`, `max_edges` and `timeout_ms` bound the hub ranking, not the
-  candidates.
+  `max_nodes`, `max_edges` and `timeout_ms` bound the hub ranking only.
 - `limit` caps the reported list. The candidate counters in `bounds` describe the
   whole project; `excluded_external_components` and `excluded_test_components`
   describe the hub ranking's window. None describe only the reported slice.
