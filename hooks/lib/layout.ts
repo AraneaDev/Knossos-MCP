@@ -374,12 +374,14 @@ export function statsOf(d: Dashboard, summary: string[], policy: string | null, 
   const counted = (part: string | undefined, label: string, extra: Partial<Stat> = {}): Stat[] => (part === undefined ? [] : [{ key: label, label, value: part.slice(0, part.indexOf(' ')), ...extra }])
   // A figure that counts a set the pane lists presses to that list (see the `stat:` press); at zero there is nothing to go to.
   const listing = (key: string, value: string): Pick<Stat, 'press'> => (above(value) ? { press: `stat:${key}` } : {})
+  // A summary part's figure, as its tile shows it: `9,008 components` gives `9,008`.
+  const figureOf = (part: string | undefined): string => (part === undefined ? '0' : part.slice(0, part.indexOf(' ')))
   return [
     ...(d.summary === undefined
       ? []
       : [
-          ...counted(summary[0], 'components', { ...moved('components'), ...series(t => t.components), press: 'stat:components' }),
-          ...counted(summary[1], summary[1]?.endsWith('boundary') ? 'boundary' : 'boundaries', { press: 'stat:boundaries' }),
+          ...counted(summary[0], 'components', { ...moved('components'), ...series(t => t.components), ...listing('components', figureOf(summary[0])) }),
+          ...counted(summary[1], summary[1]?.endsWith('boundary') ? 'boundary' : 'boundaries', listing('boundaries', figureOf(summary[1]))),
         ]),
     { key: 'cycles', label: d.cycles.count === 1 && !d.cycles.truncated ? 'cycle' : 'cycles', value: cycles, ...series(t => t.cycles), ...moved('cycles', true), ...(above(cycles) ? { tone: 'warn' as const } : {}), ...listing('cycles', cycles) },
     ...(maxDegree === null ? [] : [{ key: 'degree', label: 'max degree', value: String(maxDegree), ...series(t => t.max_degree), ...moved('max_degree') }]),

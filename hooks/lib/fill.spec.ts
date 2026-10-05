@@ -123,5 +123,11 @@ describe('the stat tiles', () => {
   it('stay text at zero', () => {
     const list = stats({ cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] }, dead_code_candidates: 0 }, '0', 0)
     for (const key of ['cycles', 'dead', 'policy', 'diagnostics']) expect(press(list, key), key).toBeUndefined()
+    // An empty graph: no component and no boundary to list either.
+    const empty = statsOf({ ...d, summary: { components: 0, boundaries: 0, files: 0, languages: [], kinds: [] } } as Dashboard, ['0 components', '0 boundaries'], null, null, false)
+    for (const key of ['components', 'boundaries']) {
+      expect(empty.some(s => s.key === key), key).toBe(true)
+      expect(press(empty, key), key).toBeUndefined()
+    }
   })
 })
