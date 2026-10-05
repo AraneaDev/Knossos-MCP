@@ -201,14 +201,19 @@ class InputReadRecorder {
  */
 export class TypeScriptScanner {
     /**
-     * @param {{observeHostPath?: (stage: "load"|"read", absolute: string) => void}} [options]
+     * @param {{observeHostPath?: (stage: "load"|"read", absolute: string) => void, collectGarbage?: () => void}} [options]
      *   `observeHostPath` is a test seam, handed to each request's recorder.
+     *   `collectGarbage` runs a full collection; it defaults to the `gc` that
+     *   `--expose-gc` provides, and does nothing when the flag was not given.
      */
-    constructor({ observeHostPath } = {}) {
+    constructor({ observeHostPath, collectGarbage } = {}) {
         this.programCache = new Map();
         this.observeHostPath = observeHostPath;
+        this.collectGarbage = collectGarbage ?? (() => globalThis.gc?.());
         // Reset per request; see #cacheProgram.
         this.programsBuiltThisRequest = 0;
+        // Set when a program leaves the cache; see #collectReleasedPrograms.
+        this.releasedSinceCollection = false;
     }
 
     /**
@@ -408,6 +413,7 @@ export class TypeScriptScanner {
         },
     ) {
         this.#reserveProgramSlot(key);
+        this.#collectReleasedPrograms();
         const oldProgram = this.programCache.get(key);
         let program;
         try {
@@ -477,7 +483,23 @@ export class TypeScriptScanner {
             if (this.programCache.size <= limit) break;
             if (oldest === key) continue;
             this.programCache.delete(oldest);
+            this.releasedSinceCollection = true;
         }
+    }
+
+    // A released program is only garbage until V8 collects it, and under the
+    // worker's 2 GB heap cap V8 has no reason to: on a project with nine
+    // programs per request the worker grew to 1.7 GB resident with under
+    // 0.5 GB live, and a host memory guard (earlyoom) SIGTERMed it as the
+    // largest process on the machine. Collecting before the next build keeps
+    // the process near its live set, about two programs: on that project the
+    // peak fell to 1.2 GB with no measurable change in scan time. Only when
+    // something was released, so a request within the cache's bound pays
+    // nothing.
+    #collectReleasedPrograms() {
+        if (!this.releasedSinceCollection) return;
+        this.releasedSinceCollection = false;
+        this.collectGarbage();
     }
 
     /**
@@ -500,6 +522,7 @@ export class TypeScriptScanner {
         this.programsBuiltThisRequest += 1;
         if (this.programsBuiltThisRequest > MAX_CACHED_PROGRAMS) {
             this.programCache.clear();
+            this.releasedSinceCollection = true;
             return;
         }
         this.programCache.delete(key);
@@ -507,6 +530,7 @@ export class TypeScriptScanner {
         while (this.programCache.size > MAX_CACHED_PROGRAMS) {
             const oldest = this.programCache.keys().next().value;
             this.programCache.delete(oldest);
+            this.releasedSinceCollection = true;
         }
     }
 

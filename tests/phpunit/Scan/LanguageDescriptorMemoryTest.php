@@ -52,6 +52,25 @@ final class LanguageDescriptorMemoryTest extends KnossosTestCase
         assertSame(count($typescript->command), count($adjusted->command));
     }
 
+    /**
+     * The TypeScript worker can collect the programs it releases.
+     *
+     * Without `gc` a released program stays resident until V8 decides to
+     * collect it, which under a 2 GB cap it may never do: the worker reached
+     * 1.7 GB resident with under 0.5 GB live and was SIGTERMed by the host's
+     * memory guard. The flag must survive a rewritten heap cap as well.
+     */
+    #[Group('scan')]
+    public function testTheTypescriptWorkerIsStartedWithGarbageCollectionExposed(): void
+    {
+        $typescript = self::descriptor('typescript');
+
+        assertSame(true, in_array('--expose-gc', $typescript->command, true), implode(' ', $typescript->command));
+        assertSame(true, in_array('--expose-gc', $typescript->withMemoryMb(768)->command, true));
+        // A node option, so it comes before the script it applies to.
+        assertSame(true, array_search('--expose-gc', $typescript->command, true) < count($typescript->command) - 1);
+    }
+
     /** Asking for the cap a descriptor already has changes nothing. */
     #[Group('scan')]
     public function testAskingForTheCapItAlreadyHasReturnsTheSameDescriptor(): void
