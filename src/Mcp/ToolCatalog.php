@@ -263,7 +263,7 @@ final readonly class ToolCatalog
             [
                 'name' => 'list_usages',
                 'title' => 'List usages',
-                'description' => 'List every usage site of a symbol with file:line evidence: one row per occurrence. Use instead of grepping for callers; unlike impact_analysis this shows the exact call sites, not the transitive set.',
+                'description' => 'List every usage site of a symbol with file:line evidence: one row per occurrence. Use instead of grepping for callers; where impact_analysis gives the transitive set, this gives the exact call sites.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -480,7 +480,7 @@ final readonly class ToolCatalog
             [
                 'name' => 'change_impact',
                 'title' => 'Change-aware impact',
-                'description' => 'Blend static blast radius with recent Git churn to prioritize review. Use when you want risk-ranked impact, not just a reachable-set list.',
+                'description' => 'Blend static blast radius with recent Git churn to prioritize review. Use when you want impact ranked by risk, beyond the plain reachable set.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -538,7 +538,7 @@ final readonly class ToolCatalog
             [
                 'name' => 'test_impact',
                 'title' => 'Test impact',
-                'description' => 'Map a change set to the test files that statically exercise it, ranked by distance. Use to run the relevant tests first in an edit-test loop; the list is a lower bound, not a substitute for the full suite.',
+                'description' => 'Map a change set to the test files that statically exercise it, ranked by distance. Use to run the relevant tests first in an edit-test loop; the list is a lower bound, so the full suite still has to run.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
