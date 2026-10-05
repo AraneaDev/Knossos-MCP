@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lapse, paneFocused, parseArgs, promptText } from "./shoot.mjs";
+import { lapse, paneFocused, parseArgs, promptText, shown } from "./shoot.mjs";
 import { SHOTS, STEP_KINDS, THIS_SESSION, WAIT_BUDGET_MS } from "./shots.mjs";
 
 const entries = Object.entries(SHOTS);
@@ -123,5 +123,17 @@ describe("THIS_SESSION", () => {
         expect(
             steps.slice(turn, still).some((s) => s.match === THIS_SESSION),
         ).toBe(true);
+    });
+});
+
+describe("shown", () => {
+    it("leaves out a frame with the spinner's token count, and keeps the rest", () => {
+        const frames = [
+            "✶ Churning… (2s · \u001b[2m↓ 82 tokens)\u001b[0m",
+            "· Wibbling… (12s · ↑ 1.2k tokens)",
+            "✻ Brewed for 6s · done",
+            "knossos · 1 file → 2 dependents",
+        ];
+        expect(shown(frames)).toEqual(frames.slice(2));
     });
 });

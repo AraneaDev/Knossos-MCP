@@ -37,7 +37,7 @@ import {
     registerCleanup,
     runCleanups,
 } from "./session.mjs";
-import { FIXTURE, FRAME_MS, SHOTS, WAIT_MS } from "./shots.mjs";
+import { FIXTURE, FRAME_MS, NEVER_SHOWN, SHOTS, WAIT_MS } from "./shots.mjs";
 
 const run = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -627,8 +627,14 @@ export async function checkLength(dir, shot) {
     return ms;
 }
 
+/** The frames a GIF may show: none with what NEVER_SHOWN matches. */
+export const shown = (frames) =>
+    frames.filter((f) => !new RegExp(NEVER_SHOWN).test(plain(f)));
+
 /** Writes a shot's GIF (from its frames, when it records) and its stills under `out`. */
-async function writeShot(name, shot, { frames, stills }, { out, view }) {
+async function writeShot(name, shot, taken, { out, view }) {
+    const { stills } = taken;
+    const frames = shown(taken.frames);
     const dir = path.join(OUT, name);
     await rm(dir, { recursive: true, force: true });
     await mkdir(dir, { recursive: true });

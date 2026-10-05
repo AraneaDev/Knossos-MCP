@@ -59,6 +59,12 @@ export const FIXTURE = {
 /** A FIXTURE value inside a regex, matched as written. */
 const lit = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/**
+ * What no GIF frame may show: the token count Claude Code's spinner gives
+ * mid-turn (`↓ 82 tokens`). A frame that shows it is left out of the GIF.
+ */
+export const NEVER_SHOWN = String.raw`\b\d[\d,.]*k? tokens\b`;
+
 /** The GIF's frame interval: 8 frames a second. */
 export const FRAME_MS = 125;
 /** How long a `wait` lets the screen stand once its text is there. */
