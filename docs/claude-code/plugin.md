@@ -132,10 +132,11 @@ command puts it back.
 Claude Code reads a plugin installed from a local directory in place:
 `claude plugin list --json` shows `.plugin/` as its `readFromFolder`. After you
 update your checkout, or change a hook script, the skill or the mod, rewrite
-`.plugin/`:
+`.plugin/` with the same `--data-dir` you installed with, because an update
+without it writes hooks that fall back to the project's own `.knossos/`:
 
 ```sh
-knossos install-agent-plugin --execute
+knossos install-agent-plugin --data-dir="$HOME/.knossos" --execute
 ```
 
 The change takes effect at the next session start, or at once with
@@ -149,7 +150,7 @@ and a change within one version needs a fresh copy:
 
 ```sh
 claude plugin uninstall knossos@knossos --scope user
-knossos install-agent-plugin --execute
+knossos install-agent-plugin --data-dir="$HOME/.knossos" --execute
 ```
 
 An install over an earlier one deletes the files the earlier one left in the
