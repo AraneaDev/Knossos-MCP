@@ -11,11 +11,13 @@ use function PHPUnit\Framework\assertNotSame;
 use function PHPUnit\Framework\assertSame;
 
 /**
- * The image is built from the working tree, and .gitignore never reaches the
- * build context, so what git keeps out of the repository has to be kept out of
- * the image on its own. A directory left out of .dockerignore puts a
- * developer's local output (frames, caches, generated types) into a locally
- * built image, and the container no longer answers the same question CI does.
+ * The image is built from the working tree, and docker reads .dockerignore,
+ * never .gitignore, so what git keeps out of the repository has to be kept out
+ * of the image on its own. Both files are copied into the quality stage only,
+ * so this check runs in CI; the runtime image ships neither. A directory left
+ * out of .dockerignore puts a developer's local output (frames, caches,
+ * generated types) into a locally built image, and the container no longer
+ * answers the same question CI does.
  */
 final class DockerIgnoreTest extends KnossosTestCase
 {
