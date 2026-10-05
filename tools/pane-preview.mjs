@@ -48,7 +48,7 @@
  */
 import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename as baseName, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -85,25 +85,49 @@ registerHooks({
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-/** Where `path` really lands: the real path of its deepest ancestor that exists, then the rest of it, so a symlink anywhere above it is followed. */
-function realTarget(path) {
-  const rest = []
-  let head = resolve(path)
-  while (!existsSync(head) && dirname(head) !== head) {
-    rest.unshift(baseName(head))
-    head = dirname(head)
+const MAX_LINKS = 40
+
+/**
+ * Where `path` really lands, symlinks followed one entry at a time with
+ * lstat: a link is read (relative to its own dir) and the walk starts again
+ * from its target, so a dangling link to a dir not made yet is followed as
+ * mkdir would follow it. Past MAX_LINKS links (a loop) it throws.
+ */
+function realTarget(path, links = 0) {
+  const parts = resolve(path).split('/').filter(part => part !== '')
+  let at = '/'
+  for (const [i, part] of parts.entries()) {
+    const next = join(at, part)
+    let stat
+    try {
+      stat = lstatSync(next)
+    } catch {
+      // Nothing there: what follows is made as it is named.
+      return join(next, ...parts.slice(i + 1))
+    }
+    if (stat.isSymbolicLink()) {
+      if (links >= MAX_LINKS) throw new Error(`more than ${MAX_LINKS} symlinks (a loop?) resolving ${path}`)
+      return realTarget(join(resolve(at, readlinkSync(next)), ...parts.slice(i + 1)), links + 1)
+    }
+    at = next
   }
-  return join(realpathSync(head), ...rest)
+  return at
 }
 
 // The real captures (tools/capture/shoot.mjs) are never written here, through a symlink or not; checked before anything is drawn.
 {
-  const captures = realTarget(join(REPO, 'docs/images/claude-code'))
-  const out = realTarget(args.out ?? join(REPO, 'readme' in args ? '.superpowers/pane-preview/readme' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
-  if (out === captures || out.startsWith(captures + '/')) {
-    console.error(`pane-preview: refusing to write to ${out}: docs/images/claude-code holds the real Claude Code captures (tools/capture/shoot.mjs)`)
+  const refuse = why => {
+    console.error(`pane-preview: refusing to write to ${why}: docs/images/claude-code holds the real Claude Code captures (tools/capture/shoot.mjs)`)
     process.exit(2)
   }
+  const captures = realpathSync(join(REPO, 'docs/images/claude-code'))
+  let out
+  try {
+    out = realTarget(args.out ?? join(REPO, 'readme' in args ? '.superpowers/pane-preview/readme' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
+  } catch (error) {
+    refuse(`${args.out} (${error.message})`)
+  }
+  if (out === captures || out.startsWith(captures + '/')) refuse(out)
 }
 const layout = await import(join(REPO, 'hooks/lib/layout.ts'))
 const envelopes = await import(join(REPO, 'hooks/lib/envelopes.ts'))

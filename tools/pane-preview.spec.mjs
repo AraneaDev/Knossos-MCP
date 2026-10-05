@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -59,5 +59,24 @@ describe('pane-preview', () => {
       expect(run.stderr).toContain('refusing to write')
     }
     expect(readdirSync(CAPTURES).sort()).toEqual(before)
+  })
+
+  it('refuses a dangling symlink into the captures (a dir not made yet), a relative one, and a loop, and writes nothing there', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'knossos-stale-preview-'))
+    const before = readdirSync(CAPTURES).sort()
+    const data = join(scratch, 'data')
+    mkdirSync(data)
+    symlinkSync(join(CAPTURES, 'newdir'), join(scratch, 'dangling'))
+    symlinkSync(relative(scratch, join(CAPTURES, 'other', 'deeper')), join(scratch, 'relative'))
+    symlinkSync(join(scratch, 'dangling'), join(scratch, 'chained'))
+    symlinkSync(join(scratch, 'loop-b'), join(scratch, 'loop-a'))
+    symlinkSync(join(scratch, 'loop-a'), join(scratch, 'loop-b'))
+    for (const out of [join(scratch, 'dangling'), join(scratch, 'dangling', 'x'), join(scratch, 'relative'), join(scratch, 'chained'), join(scratch, 'loop-a')]) {
+      const run = spawnSync(process.execPath, [SCRIPT, `--data-dir=${data}`, `--out=${out}`], { encoding: 'utf8' })
+      expect(run.status, out).toBe(2)
+      expect(run.stderr, out).toContain('refusing to write')
+    }
+    expect(readdirSync(CAPTURES).sort()).toEqual(before)
+    expect(existsSync(join(CAPTURES, 'newdir'))).toBe(false)
   })
 })
