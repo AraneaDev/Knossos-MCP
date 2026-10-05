@@ -149,7 +149,7 @@ export function fileDetailArrangement(detail: DetailInput, tier: Tier, hues: Hue
         const i = offset + window.start + n
         return tableRow(`${key}-${window.start + n}`, { name: d.path, boundary: d.boundary, values: [d.edges], max, selected: i === selected, path: true, press: `row:${i}` }, spec, hues)
       }),
-      ...moreRows(`${key}-window`, window, items.length, columns),
+      ...moreRows(`${key}-window`, window, items.length, columns, offset),
     ]
   }
   const side = (title: string, count: number, items: { path: string; edges: number; boundary: string | null }[], offset: number): HoodSide => ({
@@ -188,7 +188,7 @@ export function fileDetailArrangement(detail: DetailInput, tier: Tier, hues: Hue
         const i = offset + window.start + n
         rows.push(tableRow(`comp-${window.start + n}`, { name: c.name, boundary: null, values: [c.usedBy], max, selected: i === selected, press: `row:${i}` }, spec, hues))
       })
-      rows.push(...moreRows('comps-window', window, comps.items.length, columns), ...moreRow('comps-more', comps.count, comps.items.length, columns))
+      rows.push(...moreRows('comps-window', window, comps.items.length, columns, offset), ...moreRow('comps-more', comps.count, comps.items.length, columns))
       return { key: 'comps', title: 'Declares', subtitle: plural(comps.count, 'component', 'components'), note: noteOf(comps.items.length > 0 ? 'used by' : ''), body: rows }
     },
   }
@@ -224,6 +224,6 @@ export function driftSection(drift: DriftInput, columns: number, limit: number, 
     .map((i, n) =>
       tableRow(`drift-${window.start + n}`, { name: i.path, boundary: i.boundary, values: [], max: 0, selected: window.start + n === selected, mark: statusMark(i.change), path: true, press: `row:${window.start + n}` }, spec, hues),
     )
-  rows.push(...moreRows('drift-window', window, drift.items.length, columns), ...moreRow('drift-more', drift.count, drift.items.length, columns))
+  rows.push(...moreRows('drift-window', window, drift.items.length, columns, 0), ...moreRow('drift-more', drift.count, drift.items.length, columns))
   return { key: 'drift', title: 'Drifted since the snapshot', note: noteOf(note), body: rows }
 }

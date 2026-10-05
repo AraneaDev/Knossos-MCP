@@ -10,11 +10,11 @@
  * searching and keeps the last matches.
  */
 import type { SearchState } from '../../types'
-import { noteOf } from './cards'
+import { moreRows, noteOf } from './cards'
 import type { Block } from './cards'
 import { boundaryLabel, NO_HUES } from './palette'
 import type { Hues } from './palette'
-import { dimRow, displayName, placeOf, tableRow, tableSpec, wrapWords } from './rows'
+import { clip, dimRow, displayName, placeOf, tableRow, tableSpec, wrapWords } from './rows'
 import type { Loc, Row, Tier } from './rows'
 import { locIn } from './views'
 import type { Openable } from './views'
@@ -90,9 +90,9 @@ export function finderBlock(finder: FinderInput, selected: number, tier: Tier, h
           const i = start + j
           rows.push(tableRow(`found-${i}`, { name: f.name, boundary: f.boundary, values: [], max: 0, kind: f.kind, place: f.place, placeLoc: f.loc, path: f.file, press: `row:${i}`, selected: i === selected }, { ...spec, bar: 0 }, hues))
         })
-        const below = list.length - start - shown.length
-        const parts = [...(start > 0 ? [`${start} above ↑`] : []), ...(below > 0 ? [`${below} more ↓`] : [])]
-        if (parts.length > 0) rows.push(dimRow('found-more', `   ${parts.join(' · ')} · type more to narrow`, columns))
+        // What is above and below, each a press that moves the marker onto the nearest match it counts, then the hint.
+        const cut = moreRows('found-more', { start, end: start + shown.length }, list.length, columns, 0)[0]
+        if (cut !== undefined) rows.push({ key: 'found-more', segments: clip([...cut.segments, { text: ' · type more to narrow', dim: true }], columns) })
       }
       const note = finder.searching ? 'searching…' : finder.query.trim() === '' ? 'components and files' : `${list.length}${finder.truncated ? '+' : ''} found`
       return { key: 'find', title: finder.routeFrom === undefined ? 'Find' : `Route from ${finder.routeFrom} to…`, note: noteOf(note), body: rows }

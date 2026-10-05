@@ -373,11 +373,14 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
     need: cells(c.name),
     main: width => [button(`row:${offset + i}`, fit(c.name, width))],
   }))
-  /** A list of entries `limit` long around the marker (`local`: its index in this list), with what is above and below. */
-  const listed = (key: string, entries: Entry[], columns: number, limit: number, local: number): Row[] => {
+  /**
+   * A list of entries `limit` long around the marker (`local`: its index in this list), with what is above and below;
+   * `walk` is its first entry's place in the marker's walk, absent for a list the marker does not walk.
+   */
+  const listed = (key: string, entries: Entry[], columns: number, limit: number, local: number, walk?: number): Row[] => {
     const spec = entrySpec(columns, entries, hues)
     const window = windowOf(entries.length, limit, local)
-    return [...entries.slice(window.start, window.end).map((e, n) => entryRow(`${key}-${window.start + n}`, e, spec, hues)), ...moreRows(`${key}-window`, window, entries.length, columns)]
+    return [...entries.slice(window.start, window.end).map((e, n) => entryRow(`${key}-${window.start + n}`, e, spec, hues)), ...moreRows(`${key}-window`, window, entries.length, columns, walk)]
   }
 
   const policyBlock: Block = {
@@ -392,7 +395,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
             : policy.count === 0
               ? [{ text: '✓ 0', color: STATUS_COLOURS.ok }]
               : [{ text: `▲ ${policy.total}`, color: STATUS_COLOURS.alert }]
-      const body = listed('pol', violationEntries, columns, limit, selected < offset ? selected : -1)
+      const body = listed('pol', violationEntries, columns, limit, selected < offset ? selected : -1, 0)
       if (policy !== null && policy.evaluated && policy.count > violations.length) body.push(dimRow('pol-more', `   +${policy.count - violations.length} not listed`, columns))
       return { key: 'policy', title: 'Policy violations', note: verdict, body, empty: 'none' }
     },
@@ -414,7 +417,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
     grow: { length: deadEntries.length, min: ISSUES_MIN },
     make: (columns, limit) => {
       const deadNote = dead.items.length > 0 && dead.total !== String(dead.items.length) ? `${dead.total} · first ${dead.items.length}` : dead.total
-      const body = listed('dead', deadEntries, columns, limit, selected >= offset ? selected - offset : -1)
+      const body = listed('dead', deadEntries, columns, limit, selected >= offset ? selected - offset : -1, offset)
       return { key: 'dead', title: 'Dead code', note: noteOf(deadNote), body, empty: 'none' }
     },
   }
@@ -435,7 +438,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
         const i = window.start + n
         body.push(tableRow(`hot-${i}`, { name: f.path, boundary: null, values: [f.lines, f.dependents], barValue: f.score, max, path: true, press: `row:${spotOffset + i}`, selected: spotOffset + i === selected }, spec, hues))
       })
-      body.push(...moreRows('hot-window', window, list.length, columns))
+      body.push(...moreRows('hot-window', window, list.length, columns, spotOffset))
       return { key: 'hotspots', title: 'Complexity hotspots', note: noteOf(list.length > 0 ? 'lines × dependents' : ''), body, empty: 'none' }
     },
   }
@@ -459,7 +462,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
         const i = window.start + n
         body.push(tableRow(`budget-${i}`, { name: f.path, boundary: null, values: [f.functions, f.longest], max: 0, path: true, press: `row:${overOffset + i}`, selected: overOffset + i === selected, mark: { text: '▲', color: STATUS_COLOURS.warn } }, spec, hues))
       })
-      body.push(...moreRows('budget-window', window, budget.files.length, columns))
+      body.push(...moreRows('budget-window', window, budget.files.length, columns, overOffset))
       if (budget.total > budget.files.length) body.push(dimRow('budget-more', `   +${budget.total - budget.files.length} not listed`, columns))
       return { key: 'budget', title, note: [{ text: `▲ ${grouped(budget.total)}`, color: STATUS_COLOURS.warn }, { text: ` ${rule}`, dim: true }], body, empty: 'none' }
     },
@@ -501,7 +504,7 @@ function sideSection(prefix: string, side: Side, offset: number, columns: number
     .map((item, n) =>
       tableRow(`${prefix}-${window.start + n}`, { name: item.name, boundary: item.boundary, values: counted ? [item.edges] : [], max, press: `rel:${offset + window.start + n}`, selected: offset + window.start + n === selected }, spec, hues),
     )
-  rows.push(...moreRows(`${prefix}-window`, window, side.items.length, columns))
+  rows.push(...moreRows(`${prefix}-window`, window, side.items.length, columns, offset))
   const count = Number.parseInt(side.count, 10)
   if (count > side.items.length) rows.push(dimRow(`${prefix}-more`, `   +${count - side.items.length} not listed`, columns))
   return section(rows)
@@ -626,7 +629,11 @@ export function hoodBlock(centre: { name: string; boundary: string | null }, use
           }
         })
         const hidden = s.count - shown.length
-        return hidden > 0 ? [...shown, { node: { key: `${s.title}-more`, label: `+${hidden} more`, dim: true }, edge: '' }] : shown
+        // The box presses to the first one it hides that the detail lists, the marker onto it; past the list there is nothing to go to.
+        const next = s.items[window.end]
+        const label = `+${hidden} more`
+        const box = { key: `${s.title}-more`, label, dim: true, ...(next === undefined ? {} : { press: { id: `more:${pressIndex(next.press)}`, label } }) }
+        return hidden > 0 ? [...shown, { node: box, edge: '' }] : shown
       }
       const colour = boundaryColour(centre.boundary, hues)
       const drawn = neighbourhood({ key: 'centre', label: centre.name, ...(colour === undefined ? {} : { color: colour }) }, side(usedBy), side(uses), columns, { usedBy: 'nothing uses it', uses: 'uses nothing' }, 'hood')

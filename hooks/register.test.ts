@@ -3600,6 +3600,30 @@ describe('knossos mod', () => {
     await ui.unmount()
   })
 
+  test("a tile that counts a set opens the tab that lists it, and a cut list's line moves the marker onto what it counts", async ($, on) => {
+    const hubs = Array.from({ length: 40 }, (_, i) => ({ name: `Hub${i}`, canonical_name: `App\\Hub${i}`, kind: 'class', in_degree: 300 - i, out_degree: i, cross_boundary_degree: 0, path: `src/Hub${i}.php`, line: 3 }))
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard({ hubs }) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface, 120)
+      const tiles = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter((k): k is string => typeof k === 'string' && k.startsWith('stat:'))
+      expect(tiles).toContain('stat:cycles')
+      await ui.press({ key: 'stat:cycles' })
+      expect(await ui.find({ key: 'tab:cycles-bg' })).toBeDefined()
+      await ui.press({ key: 'tab:overview' })
+      // Forty hubs on a short pane: the line under the list moves the marker onto the first it hides.
+      await ui.redraw({ ...PANE_PROPS, bodyColumns: 120, scroll: { offset: 0, bodyRows: 24 } })
+      await ui.press({ key: 'tab:hubs' })
+      const more = (await ui.findAll({ type: 'Button' })).map(b => b.key).find((k): k is string => typeof k === 'string' && /^more:\d+$/.test(k))
+      expect(more).toBeDefined()
+      await ui.press({ key: more! })
+      expect(await ui.find({ key: `row:${more!.slice('more:'.length)}-bg` })).toBeDefined()
+      await ui.press({ key: 'tab:overview' })
+      await ui.unmount()
+    }
+  })
+
   test('a changed file opens a detail that names who depends on it, from Changes', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], file: [{ stdout: fileDetailOf('src/Router.php') }], detail: [{ stdout: fullDetailOf('Router') }] })
     await $.session.start(START)

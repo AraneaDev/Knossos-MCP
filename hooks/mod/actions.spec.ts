@@ -140,3 +140,44 @@ describe('the files no test reaches', () => {
     for (const row of ['changes-untested', 'changes-all', 'session-said']) expect(pressOf(row), row).toBeNull()
   })
 })
+
+describe('the line under a cut list', () => {
+  it('moves the marker onto the item it names, and leaves a boundary to start on what it depends on most', async () => {
+    expect(pressOf('more:12')).toEqual({ key: 'more:', rest: '12' })
+    let v: KnossosView = { inspect: null, isBandHidden: false, tab: 'boundaries', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in', target: 'App' }
+    const io = { state: { view: { read: async () => v, update: async (change: (w: KnossosView) => KnossosView) => void (v = change(v)) } } } as unknown as Port
+    await PRESSES.get('more:')!(io, '12', undefined, 'more:12')
+    expect(v).toMatchObject({ selected: 12, target: undefined })
+    await PRESSES.get('more:')!(io, 'x', undefined, 'more:x')
+    expect(v.selected).toBe(12)
+  })
+})
+
+describe('a figure that counts a set', () => {
+  it('has a press for each tile and the Changes warnings, never one a row is keyed by', () => {
+    for (const key of ['cycles', 'dead', 'policy', 'diagnostics', 'components', 'boundaries']) expect(pressOf(`stat:${key}`)).toEqual({ key: 'stat:', rest: key })
+    expect(pressOf('untested-none')).toEqual({ key: 'untested', rest: '' })
+  })
+
+  it('opens the tab that lists it, the marker on its first item', async () => {
+    let v: KnossosView = { inspect: null, isBandHidden: false, tab: 'overview', selected: 4, showKeys: false, filter: 'x', filtering: true, sort: 'in', degree: { from: 3, to: null } }
+    const cell = <T>(value: T) => ({ read: async () => value, update: async (change: (w: T) => T) => void (value = change(value)) })
+    // Two violations listed before the dead code on Issues.
+    const io = {
+      state: { view: { read: async () => v, update: async (change: (w: KnossosView) => KnossosView) => void (v = change(v)) }, dashboard: cell({ status: 'ok', policy: { status: 'evaluated', total: 2, items: [{}, {}] } }) },
+    } as unknown as Port
+    const go = async (key: string) => PRESSES.get('stat:')!(io, key, undefined, `stat:${key}`)
+    await go('cycles')
+    expect(v).toMatchObject({ tab: 'cycles', selected: 0, filtering: false, degree: null })
+    await go('components')
+    expect(v).toMatchObject({ tab: 'hubs', selected: 0 })
+    await go('boundaries')
+    expect(v).toMatchObject({ tab: 'boundaries', selected: 0 })
+    await go('policy')
+    expect(v).toMatchObject({ tab: 'issues', selected: 0 })
+    await go('dead')
+    expect(v).toMatchObject({ tab: 'issues', selected: 2 })
+    await go('nonsense')
+    expect(v.tab).toBe('issues')
+  })
+})

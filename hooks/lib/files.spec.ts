@@ -206,7 +206,7 @@ describe('the drifted files', () => {
     expect(row(rows, 'drift-head')).toBeUndefined()
     // On the Overview the drifted tile carries the press, its count in the accent.
     const overview = paneRows(pane(), 90)
-    const label = row(overview, 'tiles-0-label')!.segments.find(s => s.press)
+    const label = row(overview, 'tiles-0-label')!.segments.find(s => s.press?.id === 'drifted')
     expect(label).toMatchObject({ text: 'drifted', press: { id: 'drifted', label: 'drifted' } })
     expect(row(overview, 'tiles-0-value')!.segments.find(s => s.text === '23')).toMatchObject({ color: 'suggestion', bold: true })
   })

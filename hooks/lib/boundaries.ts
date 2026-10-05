@@ -245,7 +245,7 @@ function perBoundaryRows(input: BoundariesInput, selected: number, columns: numb
       .map((b, n) =>
         tableRow(`bounds-${window.start + n}`, { name: names[window.start + n]!, boundary: b.name, values: perValues(b), max, selected: window.start + n === selected, press: `row:${window.start + n}`, lit: lit.has(`boundary:${b.name}`) }, spec, hues),
       ),
-    ...moreRows('bounds-window', window, input.boundaries.length, columns),
+    ...moreRows('bounds-window', window, input.boundaries.length, columns, 0),
   ]
 }
 

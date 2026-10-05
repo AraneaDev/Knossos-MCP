@@ -599,6 +599,15 @@ describe('changed files no test reaches', () => {
     expect(changesList(tested)).toHaveLength(1)
   })
 
+  it('presses the violations it introduced to the Issues tab, and its empty tests card to the files none reaches', () => {
+    const turn = accumulate(untested(), brief({ changed_files: [], impact: {}, policy: { status: 'evaluated', total: 1, violations: [{ policy_id: 'p', source: 'App\\A', source_kind: 'class', target: 'App\\B', target_kind: 'class' }], truncated: false } as never }))
+    const rows = changesRows(changesInput({ ...turn, tests: {} }, ROOT), 0, 100)
+    expect(press(rows, 'changes-policy')).toBe('stat:policy')
+    expect(press(rows, 'tests-none')).toBe('untested-none')
+    // Where no file's reach is known, there is nothing to list.
+    expect(press(changesRows(changesInput({ ...accumulate(NO_CHANGES, brief()), tests: {} }, ROOT), 0, 100), 'tests-none')).toBeUndefined()
+  })
+
   it('never keys a row as a press is keyed', () => {
     for (const only of [false, true]) {
       const rows = changesRows(changesInput(untested(), ROOT, undefined, null, only), 0, 100)

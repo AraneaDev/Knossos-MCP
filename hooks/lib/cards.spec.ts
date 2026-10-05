@@ -384,3 +384,26 @@ describe('rows of cards of equal height', () => {
     expect(arrange(arrangement, 140, 60).some(r => r.key === 'a-end|b-end')).toBe(true)
   })
 })
+
+describe('the line under a cut list', () => {
+  const ids = (rows: ReturnType<typeof moreRows>) => rows.flatMap(r => r.segments).flatMap(s => (s.press === undefined ? [] : [s.press.id]))
+
+  it('is two presses where the list is walked: the last item above, the first below, by their place in the walk', () => {
+    const rows = moreRows('x-window', { start: 3, end: 8 }, 20, 60, 10)
+    expect(rows.map(r => r.segments.map(s => s.text).join(''))).toEqual(['   3 above ↑ · 12 more ↓'])
+    expect(ids(rows)).toEqual(['more:12', 'more:18'])
+    // A walk that is not a plain offset (a cycle's members each a row) maps each item itself.
+    expect(ids(moreRows('c-window', { start: 2, end: 4 }, 6, 60, i => i * 3))).toEqual(['more:3', 'more:12'])
+    // Never keyed as its row is.
+    expect(ids(rows)).not.toContain('x-window')
+  })
+
+  it('stays text where nothing walks the list, and is nothing when all of it shows', () => {
+    expect(ids(moreRows('t-window', { start: 0, end: 5 }, 9, 60))).toEqual([])
+    expect(moreRows('t-window', { start: 0, end: 9 }, 9, 60, 0)).toEqual([])
+  })
+
+  it('fits its width', () => {
+    for (const width of [8, 12, 20, 40]) for (const r of moreRows('x', { start: 300, end: 320 }, 9000, width, 0)) expect(r.segments.reduce((n, s) => n + [...s.text].length, 0), `${width}`).toBeLessThanOrEqual(width)
+  })
+})

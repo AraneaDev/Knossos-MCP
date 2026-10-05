@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BranchDiff, Dashboard, KnossosView, PaneTab } from '../../types'
-import { paneInput, paneLayout } from './layout'
+import { paneInput, paneLayout, statsOf } from './layout'
 import { rawText } from './__tests__/plain-text'
 import type { Row } from './rows'
 import { tierOf } from './rows'
@@ -100,5 +100,28 @@ describe('cards fill the height without gaps', () => {
         }
       }
     }
+  })
+})
+
+describe('the stat tiles', () => {
+  const stats = (over: Partial<Dashboard>, policy: string | null = null, diagnostics: number | null = null) =>
+    statsOf({ ...d, summary: { components: 120, boundaries: 4, files: 40, languages: [], kinds: [] }, ...over } as Dashboard, ['120 components', '4 boundaries'], policy, diagnostics, false)
+  const press = (list: ReturnType<typeof stats>, key: string) => list.find(s => s.key === key)?.press
+
+  it('press to the list a figure counts, where it has something to list', () => {
+    const list = stats({ cycles: { count: 3, truncated: false, truncation_reasons: [], largest: [] }, dead_code_candidates: 7 }, '2', 5)
+    expect(press(list, 'cycles')).toBe('stat:cycles')
+    expect(press(list, 'dead')).toBe('stat:dead')
+    expect(press(list, 'policy')).toBe('stat:policy')
+    expect(press(list, 'diagnostics')).toBe('stat:diagnostics')
+    expect(press(list, 'components')).toBe('stat:components')
+    expect(press(list, 'boundaries')).toBe('stat:boundaries')
+    // A figure, not a set: nothing to list.
+    expect(press(list, 'degree')).toBeUndefined()
+  })
+
+  it('stay text at zero', () => {
+    const list = stats({ cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] }, dead_code_candidates: 0 }, '0', 0)
+    for (const key of ['cycles', 'dead', 'policy', 'diagnostics']) expect(press(list, key), key).toBeUndefined()
   })
 })

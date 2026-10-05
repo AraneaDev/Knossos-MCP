@@ -511,7 +511,8 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
   // What the changes reach: the dependents, and every boundary they are in, each in its colour.
   rows.push(...reachRows('changes-reach', `${plural(input.files.length, 'file', 'files')} → ${grouped(deps)} dependents`, input.boundaries, columns, hues))
   if (input.violations > 0) {
-    rows.push({ key: 'changes-policy', segments: [{ text: '   ' }, { text: `▲ ${plural(input.violations, 'policy violation', 'policy violations')} introduced`, color: STATUS_COLOURS.alert }] })
+    // The violations are listed on Issues: the press opens it on the first.
+    rows.push({ key: 'changes-policy', segments: [{ text: '   ' }, button('stat:policy', `▲ ${plural(input.violations, 'policy violation', 'policy violations')} introduced`, undefined, { color: STATUS_COLOURS.alert })] })
   }
   // The count is a press that lists only those files; while it does, it says so, and a row offers every file back.
   if (input.untested > 0) {
@@ -532,7 +533,7 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
     const added: Segment[] = [...(tested === 0 ? [] : [{ text: ' ' }, testsCell(f.tests)]), ...(origin === 0 || f.origin === undefined ? [] : [{ text: ' ' }, originCell(f.origin)])]
     return rows.push(added.length === 0 ? line : { ...line, segments: [...line.segments, ...(line.tint === undefined ? added : tinted(added, line.tint))] })
   })
-  rows.push(...moreRows('changes-more', window, listed.length, columns))
+  rows.push(...moreRows('changes-more', window, listed.length, columns, 0))
   return { key: 'changes', title, note: noteOf(note), body: rows }
 }
 
@@ -560,7 +561,10 @@ function testsSection(input: ChangesInput, columns: number, limit: number, hues:
   const count = `${grouped(input.tests.length)}${input.truncated ? '+' : ''}`
   const title = 'Tests that reach these changes'
   if (input.tests.length === 0) {
-    return { key: 'tests', title, body: [{ key: 'tests-none', segments: [{ text: '   ' }, { text: '▲ no test reaches these changes', color: STATUS_COLOURS.warn }] }] }
+    // With some file's reach known, the files none reaches are listed on their own by the press.
+    const said = '▲ no test reaches these changes'
+    const warn: Segment = input.untested > 0 ? button('untested-none', said, undefined, { color: STATUS_COLOURS.warn }) : { text: said, color: STATUS_COLOURS.warn }
+    return { key: 'tests', title, body: [{ key: 'tests-none', segments: [{ text: '   ' }, warn] }] }
   }
   const window = windowOf(input.tests.length, limit)
   const shown = input.tests.slice(0, window.end)

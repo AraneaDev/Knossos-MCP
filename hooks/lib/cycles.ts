@@ -173,7 +173,7 @@ export function cyclesArrangement(input: CyclesInput, tier: Tier, hues: Hues = N
       if (shown === 0) return section([{ key: 'cycles-none', segments: [{ text: '   No dependency cycles.', dim: true }] }])
       const window = windowOf(shown, limit, marked?.index ?? -1)
       const rows = input.cycles.slice(window.start, window.end).map((cycle, n) => cycleLine(cycle, window.start + n, offsets[window.start + n]!, marked?.index === window.start + n, columns, hues))
-      return section([...rows, ...moreRows('cycles-window', window, shown, columns)])
+      return section([...rows, ...moreRows('cycles-window', window, shown, columns, i => offsets[i] ?? 0)])
     },
   }
   if (marked === null || input.cycles[marked.index] === undefined) return { left: [list] }

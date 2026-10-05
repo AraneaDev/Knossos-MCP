@@ -75,6 +75,9 @@ describe('the finder', () => {
     expect(shown).toContain(20)
     expect(Math.abs(shown.indexOf(20) - Math.floor(shown.length / 2))).toBeLessThanOrEqual(1)
     expect(plainText(rows.find(r => r.key === 'found-more')!)).toMatch(/\d+ above ↑ · \d+ more ↓ · type more to narrow/)
+    // Each count a press onto the nearest match it hides.
+    const presses = rows.find(r => r.key === 'found-more')!.segments.flatMap(seg => (seg.press === undefined ? [] : [seg.press.id]))
+    expect(presses).toEqual([`more:${shown[0]! - 1}`, `more:${shown.at(-1)! + 1}`])
     // At the end, the last matches fill the card.
     expect(found(rowsAt(29)).at(-1)).toBe(29)
   })

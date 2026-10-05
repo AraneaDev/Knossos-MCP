@@ -372,16 +372,21 @@ export function statsOf(d: Dashboard, summary: string[], policy: string | null, 
   }
   // From the summary line's own parts, so a figure reads the same in both: `9,008 components`, `7+ boundaries`.
   const counted = (part: string | undefined, label: string, extra: Partial<Stat> = {}): Stat[] => (part === undefined ? [] : [{ key: label, label, value: part.slice(0, part.indexOf(' ')), ...extra }])
+  // A figure that counts a set the pane lists presses to that list (see the `stat:` press); at zero there is nothing to go to.
+  const listing = (key: string, value: string): Pick<Stat, 'press'> => (above(value) ? { press: `stat:${key}` } : {})
   return [
     ...(d.summary === undefined
       ? []
-      : [...counted(summary[0], 'components', { ...moved('components'), ...series(t => t.components) }), ...counted(summary[1], summary[1]?.endsWith('boundary') ? 'boundary' : 'boundaries')]),
-    { key: 'cycles', label: d.cycles.count === 1 && !d.cycles.truncated ? 'cycle' : 'cycles', value: cycles, ...series(t => t.cycles), ...moved('cycles', true), ...(above(cycles) ? { tone: 'warn' as const } : {}) },
+      : [
+          ...counted(summary[0], 'components', { ...moved('components'), ...series(t => t.components), press: 'stat:components' }),
+          ...counted(summary[1], summary[1]?.endsWith('boundary') ? 'boundary' : 'boundaries', { press: 'stat:boundaries' }),
+        ]),
+    { key: 'cycles', label: d.cycles.count === 1 && !d.cycles.truncated ? 'cycle' : 'cycles', value: cycles, ...series(t => t.cycles), ...moved('cycles', true), ...(above(cycles) ? { tone: 'warn' as const } : {}), ...listing('cycles', cycles) },
     ...(maxDegree === null ? [] : [{ key: 'degree', label: 'max degree', value: String(maxDegree), ...series(t => t.max_degree), ...moved('max_degree') }]),
     // The candidates Issues lists; the trend's `dead_code` is the gate's wider count, drawn on the health card under its own name.
-    { key: 'dead', label: 'dead code', value: dead },
-    ...(diagnostics === null ? [] : [{ key: 'diagnostics', label: 'diagnostics', value: grouped(diagnostics), ...series(t => t.diagnostics), ...moved('diagnostics', true), ...(diagnostics > 0 ? { tone: 'warn' as const } : {}) }]),
-    ...(policy === null ? [] : [{ key: 'policy', label: 'policy', value: policy, ...(above(policy) ? { tone: 'alert' as const } : {}) }]),
+    { key: 'dead', label: 'dead code', value: dead, ...listing('dead', dead) },
+    ...(diagnostics === null ? [] : [{ key: 'diagnostics', label: 'diagnostics', value: grouped(diagnostics), ...series(t => t.diagnostics), ...moved('diagnostics', true), ...(diagnostics > 0 ? { tone: 'warn' as const } : {}), ...listing('diagnostics', grouped(diagnostics)) }]),
+    ...(policy === null ? [] : [{ key: 'policy', label: 'policy', value: policy, ...(above(policy) ? { tone: 'alert' as const } : {}), ...listing('policy', policy) }]),
     { key: 'drifted', label: 'drifted', value: grouped(drifted), ...(drifted > 0 ? { tone: 'accent' as const } : {}), ...(drift ? { press: 'drifted' } : {}) },
   ]
 }
@@ -970,7 +975,7 @@ function hubsBlock(input: PaneInput, list: Item[], selected: number, tier: Tier)
       const spec = componentSpec(list, columns, true, input.hues, tier)
       const local = selected < list.length ? selected : -1
       const window = windowOf(list.length, limit, local)
-      return section([...rows, ...componentRows('hub', list, selected, spec, true, input.hues, input.sort, 0, window, columns, input.lit), ...moreRows('hub-window', window, list.length, columns)])
+      return section([...rows, ...componentRows('hub', list, selected, spec, true, input.hues, input.sort, 0, window, columns, input.lit), ...moreRows('hub-window', window, list.length, columns, 0)])
     },
   }
 }
@@ -1051,7 +1056,7 @@ function fileHubsBlock(files: FileHub[], selected: number, offset: number, tier:
         return tableRow(`files-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, path: true, selected: offset + i === selected, press: `row:${offset + i}`, preview, lit: lit.has(`file:${f.path}`) }, spec, hues)
       })
       const said = [shared === null ? '' : `all in ${boundaryLabel(shared, hues)}`, note, 'dependent files'].filter(t => t !== '').join(' · ')
-      return { key: 'files', title: 'Files most depended on', note: noteOf(said), body: [...body, ...moreRows('files-window', window, files.length, columns)] }
+      return { key: 'files', title: 'Files most depended on', note: noteOf(said), body: [...body, ...moreRows('files-window', window, files.length, columns, offset)] }
     },
   }
 }
@@ -1223,7 +1228,14 @@ function peekShown(input: PaneInput, tier: Tier): DetailInput | null {
  */
 function peekRows(peek: DetailInput, width: number, height: number, hues: Hues): Row[] {
   const rows = arrange(detailOf({ ...peek, panel: true }, PANEL, hues, -1), width, height, true, PANEL)
-  return rows.map(row => ({ ...row, key: `peek-${row.key}`, segments: row.segments.map(seg => (seg.press !== undefined && /^(rel|row):\d+$/.test(seg.press.id) ? { ...seg, press: { ...seg.press, id: `peek:${seg.press.id.slice(seg.press.id.indexOf(':') + 1)}` } } : seg)) }))
+  // Its lists' presses open what it lists; the line under a cut one is text, since no marker walks the panel.
+  const pressOf = (seg: Segment): Segment => {
+    if (seg.press === undefined) return seg
+    if (/^(rel|row):\d+$/.test(seg.press.id)) return { ...seg, press: { ...seg.press, id: `peek:${seg.press.id.slice(seg.press.id.indexOf(':') + 1)}` } }
+    if (seg.press.id.startsWith('more:')) return { text: seg.text, dim: true }
+    return seg
+  }
+  return rows.map(row => ({ ...row, key: `peek-${row.key}`, segments: row.segments.map(pressOf) }))
 }
 
 /** The rows the detail beside the tab lists, which its `peek:N` presses open. */

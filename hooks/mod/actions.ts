@@ -509,6 +509,22 @@ async function showAllFiles(io: Port): Promise<void> {
   await io.state.view.update(v => ({ ...v, selected: Math.max(0, at) }))
 }
 
+/** Where each figure that counts a set is listed: its tab, and the place of its first item there (null: the top). */
+const STAT_LISTS: Readonly<Record<string, PaneTab>> = { cycles: 'cycles', components: 'hubs', boundaries: 'boundaries', boundary: 'boundaries', dead: 'issues', policy: 'issues', diagnostics: 'issues' }
+
+/**
+ * A figure that counts a set (an Overview tile, the violations a session
+ * introduced): opens the tab that lists it, the marker on its first item.
+ * On Issues the dead code follows the policy violations in the walk.
+ */
+async function openStat(io: Port, key: string): Promise<void> {
+  if (!Object.hasOwn(STAT_LISTS, key)) return
+  const tab = STAT_LISTS[key]!
+  const d = await io.state.dashboard.read()
+  const selected = key === 'dead' && d?.status === 'ok' ? (d.policy?.items?.length ?? 0) : 0
+  await io.state.view.update((v): KnossosView => ({ ...v, tab, inspect: null, route: null, selected, filtering: false, finding: false, drift: false, target: undefined, degree: null }))
+}
+
 /** What one press does: `rest` is what follows the colon of a prefixed id (`row:3` gives `3`), `id` the whole id. */
 type Press = (io: Port, rest: string, surface: RenderSurface | undefined, id: string) => unknown
 
@@ -564,6 +580,9 @@ export const PRESSES: ReadonlyMap<string, Press> = new Map<string, Press>([
   // The changed files no test reaches: listed alone (`u`, or a press on their count), and every file again.
   ['untested', io => toggleUntested(io)],
   ['untested-all', io => showAllFiles(io)],
+  ['stat:', (io, rest) => openStat(io, rest)],
+  // The line under a cut list: the marker onto the item it names, and the window with it. A boundary marked so starts on what it depends on most.
+  ['more:', viewing((v, rest) => (Number.isInteger(Number(rest)) && rest !== '' && Number(rest) >= 0 ? { ...v, selected: Number(rest), target: undefined } : v))],
   // Back from a route goes to the detail it was picked from; from a detail, to the tab.
   ['back', viewing(v => ((v.route ?? null) !== null ? { ...v, route: null, selected: 0 } : { ...v, inspect: null, selected: v.opened ?? 0 }))],
   ['keys', viewing(v => ({ ...v, showKeys: !v.showKeys }))],
@@ -581,7 +600,7 @@ export const PRESSES: ReadonlyMap<string, Press> = new Map<string, Press>([
 ])
 
 /** Ids that do what another does: a tab's hidden hotkey twin, the drift line's second button, the Cycles moves and folds, and the untested count beside `u`. */
-const SAME_AS: Readonly<Record<string, string>> = { 'tabkey:': 'tab:', drifted: 'drift', 'prev:': 'next:', 'mark:': 'next:', 'fold:': 'unfold:', 'untested-row': 'untested' }
+const SAME_AS: Readonly<Record<string, string>> = { 'tabkey:': 'tab:', drifted: 'drift', 'prev:': 'next:', 'mark:': 'next:', 'fold:': 'unfold:', 'untested-row': 'untested', 'untested-none': 'untested' }
 
 /** Which entry of {@link PRESSES} a press on `id` runs, and what follows the colon; null for an id that does nothing. */
 export function pressOf(id: string): { key: string; rest: string } | null {

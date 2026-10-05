@@ -231,10 +231,25 @@ export function windowOf(length: number, limit: number, selected = -1): { start:
   return { start, end: start + n }
 }
 
-/** The line under a list cut to a window: how many are above and how many more below, or nothing when all show. */
-export function moreRows(key: string, window: { start: number; end: number }, length: number, width: number): Row[] {
-  const parts = [...(window.start > 0 ? [`${window.start} above ↑`] : []), ...(length > window.end ? [`${length - window.end} more ↓`] : [])]
-  return parts.length === 0 ? [] : [dimRow(key, `   ${parts.join(' · ')}`, width)]
+/**
+ * The line under a list cut to a window: how many are above and how many
+ * more below, or nothing when all show. Where the marker walks the list,
+ * `walk` places its items in the walk (an offset, or a function of the
+ * item's index), and each part is a press (`more:N`) that moves the marker
+ * onto the nearest item it counts: the last above, the first below. The
+ * window follows the marker, so the press brings them into view.
+ */
+export function moreRows(key: string, window: { start: number; end: number }, length: number, width: number, walk?: number | ((index: number) => number)): Row[] {
+  const parts = [...(window.start > 0 ? [{ text: `${window.start} above ↑`, item: window.start - 1 }] : []), ...(length > window.end ? [{ text: `${length - window.end} more ↓`, item: window.end }] : [])]
+  if (parts.length === 0) return []
+  if (walk === undefined) return [dimRow(key, `   ${parts.map(p => p.text).join(' · ')}`, width)]
+  const at = (item: number): number => (typeof walk === 'number' ? walk + item : walk(item))
+  const segments: Segment[] = [{ text: '   ' }]
+  parts.forEach((part, i) => {
+    if (i > 0) segments.push({ text: ' · ', dim: true })
+    segments.push({ text: part.text, dim: true, press: { id: `more:${at(part.item)}`, label: part.text } })
+  })
+  return [{ key, segments: clip(segments, width) }]
 }
 
 /**

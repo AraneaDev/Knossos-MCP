@@ -175,7 +175,7 @@ export function churnArrangement(input: ChurnInput, selected: number, tier: Tier
         const i = view.start + n
         body.push(tableRow(`churn-${i}`, { name: f.path, boundary: tier === 'narrow' ? null : f.boundary, values: [f.commits, f.dependents], barValue: f.score, max, path: true, selected: i === selected, press: `row:${i}`, mark: { text: rankOf(i), dim: true } }, spec, hues))
       })
-      body.push(...moreRows('churn-window', view, input.files.length, columns))
+      body.push(...moreRows('churn-window', view, input.files.length, columns, 0))
       return { key: 'churn-list', title: 'Churn hotspots', subtitle: 'commits × dependents', note: noteOf(input.files.length === 0 ? read : `${grouped(input.files.length)} files`), body }
     },
   }

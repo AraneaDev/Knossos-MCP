@@ -138,7 +138,7 @@ function listBlock<T>(key: string, title: string, list: { count: number; items: 
       const local = selected - offset
       const window = windowOf(list.items.length, limit, local >= 0 && local < list.items.length ? local : -1)
       const body = list.items.slice(window.start, window.end).map((item, n) => row(item, window.start + n, columns))
-      body.push(...moreRows(`${key}-window`, window, list.items.length, columns))
+      body.push(...moreRows(`${key}-window`, window, list.items.length, columns, offset))
       if (list.count > list.items.length) body.push(dimRow(`${key}-more`, `   +${grouped(list.count - list.items.length)} not listed`, columns))
       const note: Segment[] = list.count === 0 ? [{ text: '✓ 0', color: STATUS_COLOURS.ok }] : [{ text: `▲ ${grouped(list.count)}`, color: STATUS_COLOURS.warn }, ...extra]
       const section: Section = { key, title, note, body, empty: 'none' }
