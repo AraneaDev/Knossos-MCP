@@ -42,7 +42,7 @@ Nothing in the scan installs dependencies, imports a module or boots a framework
 ![Claude Code with the Knossos pane: /knossos opens it, Hubs, Cycles and Boundaries pass by, the finder opens ResultEnvelope's blast radius, then a one-line edit to hooks/lib/paths.ts, the band summing up what it reaches, and its diff on the Changes tab](docs/images/claude-code/hero.gif)
 
 A Claude Code session: `/knossos` opening the pane, a walk through its
-tabs and a search, then an edit, the note the agent gets about it, and the diff in Changes.
+tabs and a search, then an edit, the band summing up the change, and its diff in Changes.
 
 ## Features
 
@@ -179,7 +179,7 @@ Hubs: the most depended-on components, with the marked one's neighbourhood besid
 
 ![The Cycles tab: a 13-member dependency cycle drawn as a serpentine of boxes with a return edge labelled back to the start, and the list of all cycles below](docs/images/claude-code/cycles.png)
 
-Cycles: each dependency cycle drawn as boxes, with the hop where it crosses a boundary marked.
+Cycles: each dependency cycle drawn as boxes, from its first member back to the start.
 
 ![The Changes tab after a turn edited hooks/lib/paths.ts: one scan from this session, the file with its two dependents and no test reaching it, and its detail with the diff since the session began](docs/images/claude-code/changes-diff.png)
 
