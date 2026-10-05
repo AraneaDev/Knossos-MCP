@@ -9,14 +9,14 @@ export default defineConfig({
         // runner reported "Worker exited unexpectedly"; four still did, beside
         // the rest of a quality run. Two leaves room for it.
         maxWorkers: 2,
-        // That peak was garbage, not a leak: after a forced collection a
-        // fork's heap stays near 35 MB through all of scanner.test.js, but V8
-        // sizes its heap to the host and left the rest uncollected. On a host
-        // with an OOM guard (earlyoom SIGTERMs the largest process below 15%
-        // free; a fork is "node-MainThread", which its --avoid list misses)
-        // one run in five lost a fork that way, as "Worker exited
-        // unexpectedly". Capping old space keeps a fork near its live set:
-        // the heaviest file peaks at 455 MB instead of 770 MB, no slower.
+        // Most of that peak is garbage, not a leak: after a forced collection
+        // a fork's heap stays a few tens of MB through all of scanner.test.js,
+        // but V8 sizes its heap to the host's memory and leaves the rest
+        // uncollected. Anything that stops a fork under memory pressure (the
+        // kernel, or a userspace OOM guard signalling the largest process)
+        // shows up as "Worker exited unexpectedly". Capping old space keeps a
+        // fork near its live set at no cost in speed; measured on one 6 GB
+        // host, the heaviest file's peak fell from about 770 MB to 455 MB.
         execArgv: ["--max-old-space-size=256"],
         globals: false,
         coverage: {
