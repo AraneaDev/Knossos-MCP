@@ -251,6 +251,16 @@ describe("the ES-module main guard", () => {
             'import fs from "node:fs";\nimport url from "node:url";\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === fs.realpathSync(process.argv[1])) run();\n',
         "src/meta-main.mjs":
             "export function run() {}\nif (import.meta.main) run();\n",
+        // The conversions are bound by import, under any local name.
+        "src/aliased.mjs":
+            'import { fileURLToPath as toPath } from "url";\nexport function run() {}\nif (toPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/namespace.mjs":
+            'import * as nodeUrl from "node:url";\nimport * as nodeFs from "fs";\nexport function run() {}\nif (nodeUrl.pathToFileURL(nodeFs.realpathSync(process.argv[1])).href === import.meta.url) run();\n',
+        // `process` imported from its own module is the global under a binding.
+        "src/process-import.mjs":
+            'import process from "node:process";\nimport { fileURLToPath } from "node:url";\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/main.cjs":
+            "function run() {}\nif (require.main === module) run();\n",
     };
     const unguarded = {
         // A URL is never equal to a path, so this guard never fires.
@@ -265,6 +275,25 @@ describe("the ES-module main guard", () => {
             'import { pathToFileURL } from "node:url";\nexport function run() {\n    if (import.meta.url === pathToFileURL(process.argv[1]).href) return 1;\n    return 0;\n}\n',
         "src/self.mjs":
             "export function run() {}\nif (import.meta.url === import.meta.url) run();\n",
+        // A local `process` is not the one node fills in.
+        "src/shadowed-process.mjs":
+            'import { fileURLToPath } from "node:url";\nconst process = { argv: ["node", fileURLToPath(import.meta.url)] };\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        // A method of that name on anything but the url module.
+        "src/foreign-method.mjs":
+            'import * as foo from "./helpers.mjs";\nexport function run() {}\nif (foo.fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/helpers.mjs":
+            "export function fileURLToPath(url) {\n    return url;\n}\n",
+        // The project's own function of that name.
+        "src/own-realpath.mjs":
+            'import { fileURLToPath } from "node:url";\nfunction realpathSync(path) {\n    return path;\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) run();\n',
+        // Not imported at all: node has no global of that name.
+        "src/unbound.mjs":
+            "export function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n",
+        // A local `module` or `require` is not CommonJS's.
+        "src/shadowed-module.cjs":
+            "const module = require.main;\nfunction run() {}\nif (require.main === module) run();\n",
+        "src/shadowed-require.cjs":
+            "function require() {\n    return null;\n}\nfunction run() {}\nif (module === require.main) run();\n",
     };
 
     it("marks each form executable and leaves look-alikes alone", () => {
@@ -281,9 +310,17 @@ describe("the ES-module main guard", () => {
             byOwner.get(owner).nodes.find((node) => node.kind === "module")
                 .attributes.executable;
 
-        for (const owner of Object.keys(guarded))
-            expect([owner, executableOf(owner)]).toEqual([owner, true]);
-        for (const owner of Object.keys(unguarded))
-            expect([owner, executableOf(owner)]).toEqual([owner, false]);
+        const expected = Object.fromEntries([
+            ...Object.keys(guarded).map((owner) => [owner, true]),
+            ...Object.keys(unguarded).map((owner) => [owner, false]),
+        ]);
+        expect(
+            Object.fromEntries(
+                Object.keys(expected).map((owner) => [
+                    owner,
+                    executableOf(owner),
+                ]),
+            ),
+        ).toEqual(expected);
     });
 });

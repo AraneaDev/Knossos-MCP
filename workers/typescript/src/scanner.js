@@ -706,7 +706,7 @@ class TypeScriptLanguageFactCollector {
                 declaration_file: this.sourceFile.isDeclarationFile,
                 executable:
                     startsWithShebang(this.sourceFile.text) ||
-                    hasMainGuard(this.sourceFile) ||
+                    hasMainGuard(this.sourceFile, this.checker) ||
                     isClassicScript(this.sourceFile),
             },
         );
@@ -4675,16 +4675,20 @@ function isImportMetaUrl(expression) {
 // or the ES-module comparison of `import.meta.url` with `process.argv[1]`.
 // This is JavaScript's `__main__` guard, and it says the same thing a shebang
 // does: something outside the graph runs the file, so no inbound edge is owed.
-// A guard nested in a function, or a negated one, says nothing about that.
-function hasMainGuard(sourceFile) {
+// A guard nested in a function, or a negated one, says nothing about that, and
+// neither does one whose names the file binds to something of its own.
+function hasMainGuard(sourceFile, checker) {
     return sourceFile.statements.some(
         (statement) =>
             ts.isIfStatement(statement) &&
-            isMainGuardCondition(unwrapParentheses(statement.expression)),
+            isMainGuardCondition(
+                unwrapParentheses(statement.expression),
+                checker,
+            ),
     );
 }
 
-function isMainGuardCondition(expression) {
+function isMainGuardCondition(expression, checker) {
     if (isImportMetaMain(expression)) return true;
     if (!ts.isBinaryExpression(expression)) return false;
     const operator = expression.operatorToken.kind;
@@ -4695,74 +4699,151 @@ function isMainGuardCondition(expression) {
         return false;
     const left = unwrapParentheses(expression.left);
     const right = unwrapParentheses(expression.right);
+    const isModule = (node) => isUnshadowed(node, "module", checker);
     if (
-        (isRequireMain(left) && isIdentifierNamed(right, "module")) ||
-        (isIdentifierNamed(left, "module") && isRequireMain(right))
+        (isRequireMain(left, checker) && isModule(right)) ||
+        (isModule(left) && isRequireMain(right, checker))
     )
         return true;
     // The ES-module form compares this module's location with the script node
     // was started on, as two URLs or as two paths. A URL never equals a path,
     // so a comparison that mixes them is no guard at all.
-    const self = locationOf(left, isImportMetaUrl);
-    const entry = locationOf(right, isScriptArgument);
+    const isEntry = (node) => isScriptArgument(node, checker);
+    const self = locationOf(left, isImportMetaUrl, checker);
+    const entry = locationOf(right, isEntry, checker);
     if (self !== null && self === entry) return true;
-    const reversedSelf = locationOf(right, isImportMetaUrl);
-    const reversedEntry = locationOf(left, isScriptArgument);
+    const reversedSelf = locationOf(right, isImportMetaUrl, checker);
+    const reversedEntry = locationOf(left, isEntry, checker);
     return reversedSelf !== null && reversedSelf === reversedEntry;
 }
+
+const URL_MODULES = ["url", "node:url"];
+const FS_MODULES = ["fs", "node:fs"];
+const PROCESS_MODULES = ["process", "node:process"];
 
 /**
  * Whether an expression is the location of `isSource`'s value, and in which
  * form: "url" for a file URL, "path" for a file-system path. The conversions
- * `fileURLToPath`, `pathToFileURL(...).href` and `realpathSync` keep the
- * location while changing or normalising its form; anything else loses it.
+ * `fileURLToPath`, `pathToFileURL(...).href` and `realpathSync`, imported from
+ * node's own modules, keep the location while changing or normalising its
+ * form; anything else loses it.
  *
  * @returns {"url" | "path" | null}
  */
-function locationOf(expression, isSource) {
+function locationOf(expression, isSource, checker) {
     const current = unwrapParentheses(expression);
     if (isSource(current)) return isImportMetaUrl(current) ? "url" : "path";
+    const inner = (call) => locationOf(call.arguments[0], isSource, checker);
     if (
         ts.isPropertyAccessExpression(current) &&
         current.name.text === "href"
     ) {
         const call = unwrapParentheses(current.expression);
-        return isCallTo(call, "pathToFileURL") &&
-            locationOf(call.arguments[0], isSource) === "path"
+        return isImportedCall(call, "pathToFileURL", URL_MODULES, checker) &&
+            inner(call) === "path"
             ? "url"
             : null;
     }
-    if (isCallTo(current, "fileURLToPath"))
-        return locationOf(current.arguments[0], isSource) === "url"
-            ? "path"
-            : null;
-    if (isCallTo(current, "realpathSync"))
-        return locationOf(current.arguments[0], isSource) === "path"
-            ? "path"
-            : null;
+    if (isImportedCall(current, "fileURLToPath", URL_MODULES, checker))
+        return inner(current) === "url" ? "path" : null;
+    if (isImportedCall(current, "realpathSync", FS_MODULES, checker))
+        return inner(current) === "path" ? "path" : null;
     return null;
 }
 
-/** A one-argument call to `name`, bare or through a namespace (`url.name`). */
-function isCallTo(expression, name) {
+/**
+ * A one-argument call to the export `name` of one of `modules`: through a
+ * named import under any local name, or as a member of the module's default
+ * or namespace import (`url.fileURLToPath`).
+ */
+function isImportedCall(expression, name, modules, checker) {
     if (!ts.isCallExpression(expression) || expression.arguments.length !== 1)
         return false;
     const callee = unwrapParentheses(expression.expression);
+    if (ts.isIdentifier(callee)) {
+        const binding = importBinding(callee, checker);
+        return binding !== null && modules.includes(binding.module)
+            ? binding.imported === name
+            : false;
+    }
+    if (
+        !ts.isPropertyAccessExpression(callee) ||
+        callee.name.text !== name ||
+        !ts.isIdentifier(callee.expression)
+    )
+        return false;
+    return isModuleObject(callee.expression, modules, checker);
+}
+
+/** An identifier bound to a module's default or namespace import. */
+function isModuleObject(identifier, modules, checker) {
+    const binding = importBinding(identifier, checker);
     return (
-        isIdentifierNamed(callee, name) ||
-        (ts.isPropertyAccessExpression(callee) && callee.name.text === name)
+        binding !== null &&
+        modules.includes(binding.module) &&
+        (binding.imported === "default" || binding.imported === "*")
+    );
+}
+
+/**
+ * The import an identifier is bound to: the module it names and the export
+ * (`"default"`, `"*"` for a namespace, or the export's own name). Null when
+ * the identifier is bound to anything else, or to nothing.
+ *
+ * @returns {{module: string, imported: string} | null}
+ */
+function importBinding(identifier, checker) {
+    const declarations =
+        checker.getSymbolAtLocation(identifier)?.declarations ?? [];
+    if (declarations.length !== 1) return null;
+    const [declaration] = declarations;
+    let imported;
+    let clause;
+    if (ts.isImportSpecifier(declaration)) {
+        imported = (declaration.propertyName ?? declaration.name).text;
+        clause = declaration.parent.parent;
+    } else if (ts.isNamespaceImport(declaration)) {
+        imported = "*";
+        clause = declaration.parent;
+    } else if (ts.isImportClause(declaration)) {
+        imported = "default";
+        clause = declaration;
+    } else return null;
+    const specifier = clause.parent.moduleSpecifier;
+    return ts.isStringLiteral(specifier)
+        ? { module: specifier.text, imported }
+        : null;
+}
+
+/**
+ * Whether `node` is the identifier `name` and the file declares nothing of
+ * that name it could refer to instead: the global, or CommonJS's own binding.
+ */
+function isUnshadowed(node, name, checker) {
+    if (!isIdentifierNamed(node, name)) return false;
+    const sourceFile = node.getSourceFile();
+    return !(checker.getSymbolAtLocation(node)?.declarations ?? []).some(
+        (declaration) =>
+            !ts.isSourceFile(declaration) &&
+            declaration.getSourceFile() === sourceFile,
     );
 }
 
 /** `process.argv[1]`: the path of the script node was started on. */
-function isScriptArgument(expression) {
+function isScriptArgument(expression, checker) {
+    if (
+        !ts.isElementAccessExpression(expression) ||
+        !ts.isNumericLiteral(expression.argumentExpression) ||
+        expression.argumentExpression.text !== "1" ||
+        !ts.isPropertyAccessExpression(expression.expression) ||
+        expression.expression.name.text !== "argv"
+    )
+        return false;
+    const process = expression.expression.expression;
     return (
-        ts.isElementAccessExpression(expression) &&
-        ts.isNumericLiteral(expression.argumentExpression) &&
-        expression.argumentExpression.text === "1" &&
-        ts.isPropertyAccessExpression(expression.expression) &&
-        expression.expression.name.text === "argv" &&
-        isIdentifierNamed(expression.expression.expression, "process")
+        isUnshadowed(process, "process", checker) ||
+        (ts.isIdentifier(process) &&
+            isModuleObject(process, PROCESS_MODULES, checker))
     );
 }
 
@@ -4775,11 +4856,11 @@ function isImportMetaMain(expression) {
     );
 }
 
-function isRequireMain(expression) {
+function isRequireMain(expression, checker) {
     return (
         ts.isPropertyAccessExpression(expression) &&
         expression.name.text === "main" &&
-        isIdentifierNamed(expression.expression, "require")
+        isUnshadowed(expression.expression, "require", checker)
     );
 }
 
