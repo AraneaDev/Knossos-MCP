@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { TABS } from "../../hooks/lib/layout.ts";
 import {
     checkStill,
     keepPartial,
@@ -14,11 +16,40 @@ import {
     STEP_KINDS,
     THIS_SESSION,
     WAIT_BUDGET_MS,
+    FIXTURE,
 } from "./shots.mjs";
 
 const entries = Object.entries(SHOTS);
 
 describe("SHOTS", () => {
+    it("takes a still of every tab past the first two, pressing the key layout.ts gives it", () => {
+        const pressed = new Set(
+            entries.flatMap(([, shot]) =>
+                shot.steps.filter((s) => s.do === "press").map((s) => s.key),
+            ),
+        );
+        for (const tab of TABS.slice(2))
+            expect(pressed, tab.id).toContain(tab.hotkey);
+    });
+    it("shoots the Issues tab by its key, on the over-budget rule the repository's budgets set", () => {
+        const issues = TABS.find((t) => t.id === "issues");
+        const shot = SHOTS.issues;
+        expect(shot.steps).toContainEqual({ do: "press", key: issues.hotkey });
+        const wait = shot.steps.find(
+            (s) => s.do === "wait" && s.fixture === "overBudget",
+        );
+        expect(new RegExp(wait.match).test(FIXTURE.overBudget)).toBe(true);
+        const budgets = JSON.parse(
+            readFileSync(
+                new URL("../../maintainability-budgets.json", import.meta.url),
+                "utf8",
+            ),
+        );
+        expect(FIXTURE.overBudget).toBe(
+            `functions over ${budgets.max_php_function_lines} lines`,
+        );
+        expect(shot.steps.at(-1)).toEqual({ do: "still", name: "issues" });
+    });
     it("gives every shot a terminal size and a theme Claude Code has", () => {
         for (const [, shot] of entries) {
             expect(shot.size).toHaveLength(2);

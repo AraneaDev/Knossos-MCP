@@ -51,6 +51,8 @@ export const FIXTURE = {
     boundaryPair: "tests → core",
     // The label hooks/lib/diagram.ts draws under a cycle once the diagram closes the loop.
     cycleDrawn: "back to the start",
+    // The Issues tab's Over budget rule: max_php_function_lines in maintainability-budgets.json.
+    overBudget: "functions over 205 lines",
     // The small file the hero's turn edits, and the line the edit goes above.
     edited: "hooks/lib/paths.ts",
     editAnchor: "function normalise",
@@ -304,6 +306,10 @@ export const SHOTS = {
         ],
         { size: SIZES.wide, base: true },
     ),
+    issues: pane("issues", [
+        press("5"),
+        wait("over budget", lit(FIXTURE.overBudget), { fixture: "overBudget" }),
+    ]),
     churn: pane("churn", [
         press("8"),
         wait("churn", String.raw`Churn hotspots`),
