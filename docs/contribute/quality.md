@@ -50,9 +50,9 @@ tools/quality full static
 Omitting the argument runs every lane the profile has, which is the local
 default.
 
-The split is by independence and not by language, and coverage is why. A single
-PHPUnit run under pcov produces the PHP, JavaScript and Python figures, the
-latter two from worker subprocesses that run drives. Splitting coverage per
+The split follows independence. Coverage shows why it cannot follow language: a
+single PHPUnit run under pcov produces the PHP figure and, from the worker
+subprocesses that run drives, the JavaScript and Python figures. Splitting it per
 language would measure three suites that never exercise the workers and report
 floors nothing earns.
 
@@ -69,9 +69,8 @@ compare the two scans. `boundary_violations`, `error_diagnostics`,
 The baseline is what CI works out from the event, a pull request's target
 commit or the tip a push replaced. Failing that the lane takes the point the
 branch left the default branch, and failing that `HEAD^`. `KNOSSOS_GATE_BASE_REF`
-names it explicitly. If nothing resolves, the lane stops instead of scanning one
-tree twice, because that would zero both delta budgets and report a pass that
-checked nothing.
+names it explicitly. If nothing resolves, the lane stops. Scanning one tree twice would zero both delta
+budgets and report a pass that checked nothing.
 
 Both trees come from `git archive` and are scanned at the same path. The path
 matters: a project's identity is its root, so a baseline scanned elsewhere
@@ -81,8 +80,7 @@ container's baked source would diff the change against `.dockerignore` along
 with it. One consequence is that `git archive HEAD` is the committed tree, so
 uncommitted work is not gated. That is what CI measures anyway.
 
-Budgets and policies are read from the tree under test rather than from the
-baseline, so a change that needs a limit raised is reviewed as the diff that
+Budgets and policies are read from the tree under test, not the baseline, so a change that needs a limit raised is reviewed as the diff that
 raises it.
 
 The image bakes this source without `.git`, so the lane is handed the checkout
@@ -128,31 +126,29 @@ Fenced code is not prose and is skipped, following the CommonMark fence rules.
 hold the docblock coverage.
 
 External links are fetched only by `php tools/documentation-check.php --external`,
-in the `release` lane. That check asks whether a web server is answering right
-now, which is not a property of the change under review, so it is off on pull
-requests (`KNOSSOS_EXTERNAL_LINKS=0`) and on everywhere else, the push to `main`
-included. Set `KNOSSOS_EXTERNAL_LINKS=0` to skip it locally. The badge hosts
-`img.shields.io` and `mcpobservatory.com` are counted but never fetched. A
-failing check informs on `main` and does not block a change.
+in the `release` lane. A dead link there fails the lane. `tools/quality` runs the
+check whenever `KNOSSOS_EXTERNAL_LINKS` is unset, under `set -e`, so it also fails
+the `quality` check on `main` and a local `tools/quality full`, which is the
+pre-push hook, and blocks the push.
+
+Pull requests set `KNOSSOS_EXTERNAL_LINKS=0`, because whether a web server is
+answering right now is not a property of the change under review. Set it to `0`
+yourself to skip the fetch locally. The badge hosts `img.shields.io` and
+`mcpobservatory.com` are counted but never fetched.
 
 ## The Claude Code mod
 
-The mod has three checks of its own, described in
-[how the mod is built](mod-internals.md#the-tests).
+The mod has three checks of its own, and
+[how the mod is built](mod-internals.md#the-tests) explains each of them. Here is
+where they run:
 
-- `npm run typecheck:mod` runs in `static`: `tsc -p hooks/tsconfig.json && tsc -p
-hooks/tsconfig.spec.json`, so the specs cannot drift from the types they build.
+- `npm run typecheck:mod` runs in `static`.
 - `npm run test:mod` runs in `tests`: the vitest specs under `hooks/lib`,
   `hooks/mod`, `tools/` and `tools/capture`.
 - `claude plugin validate` and `claude plugin test` run in `tests`, against a
-  staging copy that `install-agent-plugin --out` writes, with
-  `hooks/register.test.ts` copied in. The quality image pins the Claude CLI
+  staging copy of the plugin. The quality image pins the Claude CLI
   (`@anthropic-ai/claude-code@2.1.287`). A machine without the `claude` command
-  prints that the checks were not run, rather than passing quietly. The strict
-  type-check of `register.tsx` also needs Claude Code's API declarations, which
-  the CLI writes when a session loads the plugin. It runs where
-  `.claude-plugin/types/claude-code/index.d.ts` exists, or where
-  `KNOSSOS_CLAUDE_CODE_TYPES` names that file, and says so when it did not run.
+  prints that they were not run.
 
 ## Tool inventory
 
@@ -230,17 +226,14 @@ tools/install-hooks
 The commit hook runs the hygiene hooks and `tools/quality fast`. The pre-push hook
 runs `tools/quality full`. Developers without native tools can run the
 container-backed commands before committing, and CI always uses the quality image.
-The script installs the `pre-commit` and `pre-push` hooks only. To check
-commit subjects as you type them as well:
 
-```sh
-pre-commit install --hook-type commit-msg
-```
+The script installs the `pre-commit`, `pre-push` and `commit-msg` hooks. The
+`commit-msg` hook checks each subject with `tools/check-commit-style.sh`.
 
 ## Re-shooting the docs images
 
 The images in the docs and the README GIF come from `tools/capture`, a dev-only
-tool that is not part of any gate and not shipped. It drives a real Claude Code
+tool that sits outside every gate and ships with nothing. It drives a real Claude Code
 session in a terminal, takes the screen and renders it to PNG, and builds the hero
 GIF from the frames.
 

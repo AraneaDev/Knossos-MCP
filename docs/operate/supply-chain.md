@@ -29,7 +29,7 @@ and pull-request validation uses a freshly generated, encrypted ephemeral
 Cosign key to prove the complete signing and verification path without storing
 release credentials. Published releases should replace that local key with the
 project's protected keyless or hardware-backed identity and retain transparency
-log verification. That step does not exist yet: the release workflow runs the
+log verification. The release workflow does not run it: it runs the
 full profile against the released tree and checks that the runtime image reports
 its version and passes `doctor`, but its publish step is switched off until a
 registry is set up. The only image pushed today is the per-commit quality image

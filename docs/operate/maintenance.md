@@ -45,6 +45,6 @@ filename; directory components and overwrites are rejected. Open a backup with K
 The equivalent MCP tools are `remove_project`, `cleanup_stale_scans`, and
 `maintain_database`. The two deletion tools carry destructive annotations and
 require `execute: true` to mutate state. Maintenance takes advisory writer
-leases for every bounded project before checkpoint, optimize, or backup work;
+leases for every bounded project before checkpoint, optimize, vacuum, or backup work;
 an active scan therefore causes a safe busy error instead of concurrent
 maintenance.

@@ -71,9 +71,9 @@ cell looks once the answer lands. The loader then guarantees four things:
 - `debounceMs` makes a run of presses one read. The detail beside the tab uses
   it, so holding `j` is one lookup.
 - An answer lands only while the cell still wants it. A read that finished
-  after the marker moved on is dropped, not drawn.
+  after the marker moved on is dropped.
 
-A new read is one more entry in `LOADERS`, not new plumbing.
+A new read is one more entry in `LOADERS`.
 
 ## The press table
 

@@ -49,7 +49,7 @@ php -d pcov.enabled=1 vendor/bin/infection --no-interaction --no-progress --thre
 Scope it while iterating with `--filter=src/Mcp` (or any path) to keep the
 feedback loop short. To check only what your change touched, run
 `tools/mutation-diff [base-ref] [min-msi]`: it mutates the added and modified
-lines against `origin/main` by default, and holds them to 85% rather than the
+lines against `origin/main` by default, and holds them to 85%, above the
 tree's floor, because new work should be better tested than the historic
 average. Inside the quality image, where there is no git, pass the changed files
 as `KNOSSOS_MUTATION_FILES=src/A.php,src/B.php tools/mutation-diff '' [min-msi]`.
@@ -58,13 +58,12 @@ It is in no profile and no workflow.
 The floor is defined by `minMsi` and `minCoveredMsi` in `infection.json5`, both
 **63%**. It is a ratchet, not a target: raise it whenever tests improve. A
 mutant that escapes while its line is covered is executed by the suite and just
-not asserted against, so the headroom is in assertions, not in coverage.
+not asserted against, so the headroom is in assertions.
 
 The same engine backs Chaos-MCP's `audit_code_resilience` tool, so a green run
 means that tool works against this repository too.
 
-Equivalent mutants must be replaced with behavior-changing mutants rather than
-counted as survivors or excluded. Lowering the floor requires the surviving
+Equivalent mutants must be replaced with behavior-changing mutants. Never count them as survivors or exclude them. Lowering the floor requires the surviving
 mutant report, a risk explanation, and explicit review.
 
 ### Why `failOnWarning` is not optional
@@ -73,8 +72,8 @@ Infection writes a PHPUnit config per mutant and sets `stopOnDefect="true"` in
 it, so the suite halts as soon as a mutant proves itself killed. That is only
 sound while a defect also means a non-zero exit code. A PHP warning is a defect
 for `stopOnDefect`, but under `failOnWarning="false"` it is not a failure, so a
-mutant that makes an early test warn -- `foreach (null)` from a negated
-`is_array()` guard is the usual shape -- stops the run with **exit 0**, and
+mutant that makes an early test warn (`foreach (null)` from a negated
+`is_array()` guard is the usual shape) stops the run with **exit 0**, and
 Infection records it as escaped without ever reaching the test that asserts the
 mutated behaviour.
 
@@ -84,7 +83,7 @@ tests and was reported escaped, while run to completion it fails
 survivors were phantoms of this kind.
 
 Scores are only ever depressed by this, never inflated, which makes it
-expensive rather than dangerous: it sends you off writing tests for mutants
+expensive: it sends you off writing tests for mutants
 the suite already kills. `phpunit.xml` therefore sets `failOnWarning="true"`,
 and `tests/phpunit/FailOnWarningTest.php` keeps it that way. A surviving mutant
 you cannot reproduce by hand is a signal to check this before writing a test

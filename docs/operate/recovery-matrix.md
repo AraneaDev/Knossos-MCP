@@ -27,7 +27,7 @@ prefix are explanatory and may vary by operating system or SQLite version.
 The limits in the `worker_execution` block are per request, not per project: a
 worker request has its own cumulative output-byte budget and its own
 `request_timeout_ms` deadline. A language's files are therefore split across
-several requests rather than sent as one.
+several requests.
 
 The bounds are reported per language, under `worker_execution.scan_batches`,
 because they differ per language and the byte budget can differ per scan:
@@ -38,14 +38,14 @@ because they differ per language and the byte budget can differ per scan:
   (roughly 0.8-1.8 KB) plus a term that scales with how much source the request
   covers. Neither axis alone is sufficient, and neither is both together, since
   how densely a file declares symbols also drives output and is not modelled at
-  all. That unmodelled term is why the budget adapts rather than predicts.
+  all. That unmodelled term is why the budget adapts.
 - `source_bytes_used`: the narrowest budget any of that language's requests ran
   at. Lower than `source_bytes` means at least one batch overflowed and was
   re-split; see below.
 
 The default is 400 files and 4 MB per request. TypeScript uses a much larger
 file cap (2,000), because it rebuilds and re-checks a whole `ts.Program` on every
-request (a cost set by the program, not by how many files the request named), so
+request (a cost set by the program, whatever the files the request named), so
 splitting its work repeats the expensive part. Its byte budget is 3 MB, and so is
 Rust's.
 
@@ -61,8 +61,8 @@ When a scan request fails with a size signal, the budget is halved, that
 language's worker is restarted, and **the failing batch** is re-split and
 retried. The reduction applies only to that batch and its descendants: later
 batches start again at the configured budget, so one pathological directory
-costs a single wasted request rather than pinning the whole language at a
-fraction of its budget for the rest of the scan. This repeats up to
+costs a single wasted request, and the rest of the language keeps its
+budget for the rest of the scan. This repeats up to
 `max_scan_batch_halvings` times (4) per batch, after which the failure falls
 through to the ordinary degrade path below.
 
@@ -81,9 +81,9 @@ size.
 
 ## Degraded scans
 
-A worker that fails or times out costs its own language, not the whole scan.
+A worker that fails or times out costs its own language.
 The remaining languages are still analysed and reconciled, so a dead TypeScript
-worker leaves a usable PHP and Python graph rather than no graph at all.
+worker leaves a usable PHP and Python graph.
 
 - `degraded_languages`: owner keys of scanners that failed during this scan.
   Non-empty means the graph is partial: the listed languages contributed no
@@ -92,7 +92,7 @@ worker leaves a usable PHP and Python graph rather than no graph at all.
 - Every failure is repeated in the envelope's `warnings` as `CODE: message`, so
   a caller reading only the warnings still learns the answer is incomplete.
 - Cancellation is not a degradation. `KNOSSOS_SCAN_CANCELLED` still aborts the
-  entire scan, because stopping is the caller's decision rather than a fault.
+  entire scan, because stopping is the caller's decision and no fault.
 - A tree that changes mid-scan is not a degradation either. Discovery hashes
   every file and the language workers read those same paths again for
   themselves, so a write landing between the two reads leaves graph facts that

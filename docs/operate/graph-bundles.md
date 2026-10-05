@@ -21,7 +21,7 @@ source root.
 
 A bundle is canonical JSON compressed as gzip, format version 2. The
 decompressed structure is described by
-[`graph-bundle-v1.schema.json`](../../schemas/graph-bundle-v1.schema.json).
+[`graph-bundle-v2.schema.json`](../../schemas/graph-bundle-v2.schema.json).
 The manifest records the format and version, redaction mode, canonical payload
 SHA-256, byte and fact counts, and the source scan completion timestamp. Sorted
 tables, recursively sorted object keys, a fixed compression level, and a `created_at` that is the

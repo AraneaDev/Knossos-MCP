@@ -61,7 +61,7 @@ result is on standard output.
 
 | event            | when                                                                 |
 | ---------------- | -------------------------------------------------------------------- |
-| `ready`          | the initial scan is done (or found the graph already current)        |
+| `ready`          | the initial scan is done, or found the graph already current         |
 | `changes`        | a poll found changes and nothing was pending                         |
 | `overflow`       | the queue passed `--max-queue`; the next scan is full                |
 | `scan_started`   | a scan begins, with its mode and the number of changes               |
@@ -95,3 +95,24 @@ you rarely run it by hand. It differs from the plain watcher in a few ways:
   `snapshot`.
 - It prints a `heartbeat` every 15 seconds, and stops with reason `orphaned`
   once the process that started it is gone.
+
+### Shared events
+
+A shared watcher prints these on standard output, the leader's own events from
+the table above included. A process that takes the lead at once starts with
+`ready`, and one that had to wait starts with `following`. `ready`, `leading` and
+`following` carry the process's `pid`.
+
+| event             | who      | when                                                                                                                          |
+| ----------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `refused`         | either   | the project is not scanned or not in an allowed root; its `status` says why. Nothing follows it, not even `stopped`           |
+| `leading`         | leader   | a follower took the lock after the leader before it went away                                                                 |
+| `following`       | follower | another process leads; carries `owner_pid`, `snapshot_id`, `stale` and `same_process`, and is sent again when `stale` changes |
+| `leader_scanning` | follower | the leader started a scan, seen within a poll                                                                                 |
+| `snapshot`        | either   | another writer's scan moved the active snapshot                                                                               |
+| `absorbed`        | leader   | changes another writer already scanned were taken in without a scan                                                           |
+| `heartbeat`       | either   | every 15 seconds, so a reader that waits for a line knows the watcher is still there                                          |
+| `stopped`         | either   | the last event of every run that was not refused; reason `cancelled`, `orphaned`, `poll_limit` or `error`                     |
+
+A follower is `stale` when the leader's own heartbeat is more than 60 seconds
+old: alive, but not polling.

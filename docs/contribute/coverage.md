@@ -8,7 +8,7 @@ tools/quality-container full
 
 Inside the pinned quality image, `tools/coverage` is the shorter coverage-only
 entrypoint. The container wrapper mounts `coverage/` back into the checkout;
-CI uploads that directory as the `coverage-reports` artifact.
+CI uploads that directory as the `quality-reports` artifact.
 
 ## Enforced floors
 
@@ -46,9 +46,8 @@ neglected one:
 Floors may only move upward unless a reviewed risk exception is documented with
 before/after evidence.
 
-One PHPUnit run under pcov produces the PHP figure and, from the worker
-subprocesses it drives, the JavaScript figure and most of the Python one, which
-is why coverage is one lane and not three. The Claude Code mod is covered by its own suites (see
+[Quality gates](quality.md#profiles-and-lanes) explains why coverage is one lane. The
+Claude Code mod is covered by its own suites (see
 [how the mod is built](mod-internals.md#the-tests)) and sits outside these
 gates.
 
