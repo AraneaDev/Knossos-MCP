@@ -110,7 +110,10 @@ final class LaravelRouteFactCollector
             $this->facts->addDiagnostic('LARAVEL_DYNAMIC_ROUTE', 'Dynamic route declaration was skipped.', $evidence);
             return;
         }
-        $this->addRoute($methods, $uri, $this->action($args[$actionIndex]->value ?? null), $modifiers, $evidence);
+        // The second argument of view, redirect and permanentRedirect is a view name or a
+        // URL, never a controller action, so a '@' in it must not read as Class@method.
+        $shortcut = in_array($method, ['view', 'redirect', 'permanentredirect'], true);
+        $this->addRoute($methods, $uri, $shortcut ? [] : $this->action($args[$actionIndex]->value ?? null), $modifiers, $evidence);
     }
 
     /**

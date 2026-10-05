@@ -616,7 +616,11 @@ final class PhpScannerTest extends KnossosTestCase
         }
         sort($routes);
 
-        assertSame(['ANY /here', 'ANY /old', 'GET|HEAD /welcome'], $routes);
+        assertSame(['ANY /here', 'ANY /old', 'ANY /profile', 'GET|HEAD /mail@home', 'GET|HEAD /welcome'], $routes);
+        // A view name or a redirect target is not a controller action, even with an '@' in it.
+        foreach ($contributions[0]->edges as $edge) {
+            assertSame(false, $edge->kind === 'routes_to');
+        }
     }
 
     #[Group('php-scanner')]

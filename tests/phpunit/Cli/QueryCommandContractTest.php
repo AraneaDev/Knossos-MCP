@@ -10,6 +10,7 @@ use Knossos\Cli\CliInputLoader;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Cli\Command\QueryCommand;
 use Knossos\Mcp\ToolCatalog;
+use Knossos\Scan\ProjectScanService;
 use Knossos\Runtime\RuntimeFactory;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
@@ -131,13 +132,48 @@ final class QueryCommandContractTest extends KnossosTestCase
         );
     }
 
-    /** The help and the MCP tool both offer a ranking mode; the CLI must accept it (the service validates the value, as for the tool). */
+    /** The help and the MCP tool both offer a ranking mode: the CLI must accept it, validate it and forward it to the service. */
     #[Group('cli')]
-    public function testSuggestLocationAcceptsARankingMode(): void
+    public function testSuggestLocationForwardsTheRankingModeToTheService(): void
     {
         assertSame(true, in_array('ranking-mode', (new QueryCommand())->allowedOptions('suggest-location'), true));
-        // The mode reaches the service, which looks the project up before it answers.
-        assertSame('Project not found: project', self::errorFrom('suggest-location', ['project', 'add a payment gateway'], ['ranking-mode' => ['semantic_if_available']]));
+
+        $base = sys_get_temp_dir() . '/knossos-stale-ranking-' . bin2hex(random_bytes(6));
+        $root = $base . '/project';
+        $database = $base . '/data/knossos.sqlite';
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
+        $runtime = new RuntimeFactory(self::repositoryRoot());
+        $pdo = $runtime->database($database);
+        $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root)->projectId;
+        unset($pdo);
+
+        try {
+            $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), $runtime, $database);
+            $run = static function (string $mode) use ($context, $projectId): string {
+                ob_start();
+                try {
+                    (new QueryCommand())->run('suggest-location', [$projectId, 'build a billing workflow'], ['json' => ['true'], 'ranking-mode' => [$mode]], $context);
+
+                    return (string) ob_get_contents();
+                } finally {
+                    ob_end_clean();
+                }
+            };
+
+            $semantic = json_decode($run('semantic_if_available'), true, 64, JSON_THROW_ON_ERROR);
+            assertSame('semantic_if_available', $semantic['data']['ranking']['requested_mode']);
+            $default = json_decode($run('deterministic'), true, 64, JSON_THROW_ON_ERROR);
+            assertSame('deterministic', $default['data']['ranking']['requested_mode']);
+
+            try {
+                $run('bogus');
+                self::fail('A bogus ranking mode must be rejected.');
+            } catch (InvalidArgumentException $error) {
+                assertSame('ranking_mode must be deterministic or semantic_if_available.', $error->getMessage());
+            }
+        } finally {
+            $this->removeTempTree($base);
+        }
     }
 
     /** Write a JSON value to a temporary file and return its path. */
