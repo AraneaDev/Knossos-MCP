@@ -100,7 +100,11 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         }
         $length = strlen($line);
         if ($length > $this->maxRequestLineBytes) {
-            throw new WorkerException('WORKER_REQUEST_TOO_LARGE', 'Worker request exceeds the request frame limit.');
+            throw new WorkerException('WORKER_REQUEST_TOO_LARGE', sprintf(
+                'Worker request exceeds the %d-byte request frame limit, so Knossos did not send it. The request '
+                . 'carries what every file in the batch shares, so a smaller batch may still fit.',
+                $this->maxRequestLineBytes,
+            ));
         }
 
         $stdin = $this->process->stdin();
@@ -308,40 +312,26 @@ final class NdjsonRpcChannel implements RpcChannelInterface
      * fact been SIGTERMed by the host's out-of-memory killer, which leaves no
      * message anywhere the scan can see.
      *
-     * The signal is named as coming from outside because it provably did: this
-     * status is read from a process the supervisor still holds, mid-request,
-     * and Knossos only ever signals a worker from close(), after a request
-     * has already failed with a diagnostic of its own. On the host where this
-     * was first seen the sender was earlyoom, which SIGTERMs the process with
-     * the most memory once available memory drops under its threshold.
+     * What the signal says about its sender is decided in {@see WorkerSignal}.
+     * None of them can be Knossos: this status is read from a process the
+     * supervisor still holds, during the active request, and Knossos signals
+     * a worker only from close(), which runs after a request has already
+     * failed with a diagnostic of its own (or on shutdown). On the host where
+     * this was first seen the sender was earlyoom, which SIGTERMs the process
+     * with the most memory once available memory drops under its threshold.
      *
      * @param array{running: bool, signaled: bool, exitcode: int, termsig: int, ...} $status
      */
     private static function exitDescription(array $status): string
     {
         if ($status['signaled'] && $status['termsig'] > 0) {
-            return sprintf(
-                'Scanner worker was killed by signal %d%s before responding, and Knossos did not send it: Knossos stops '
-                . 'a worker only after a request has already failed, and reports that reason instead. A host memory '
-                . 'guard such as earlyoom or systemd-oomd sends SIGTERM to the largest process when memory runs low; '
-                . "the kernel's own OOM killer sends SIGKILL (9).",
-                $status['termsig'],
-                self::signalName($status['termsig']),
-            );
+            return WorkerSignal::describe($status['termsig']);
         }
         if ($status['exitcode'] < 0) {
             return 'Scanner worker exited before responding; its exit status was no longer available to read.';
         }
 
         return sprintf('Scanner worker exited before responding (exit %d).', $status['exitcode']);
-    }
-
-    /** The conventional name of a signal a worker is likely to die of, as " (SIGTERM)", or nothing. */
-    private static function signalName(int $signal): string
-    {
-        $name = [1 => 'SIGHUP', 2 => 'SIGINT', 6 => 'SIGABRT', 9 => 'SIGKILL', 11 => 'SIGSEGV', 15 => 'SIGTERM'][$signal] ?? null;
-
-        return $name === null ? '' : ' (' . $name . ')';
     }
 
     /**

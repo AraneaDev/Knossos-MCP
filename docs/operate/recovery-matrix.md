@@ -69,18 +69,31 @@ through to the ordinary degrade path below.
 Three kinds of failure are retried this way: a size signal
 (`WORKER_OUTPUT_LIMIT`, `WORKER_FRAME_TOO_LARGE`, `WORKER_REQUEST_TOO_LARGE`), a
 TypeScript worker that exited from V8 heap exhaustion on a request that names
-no `tsconfig`, and a worker of any language killed by a signal Knossos did not
-send. The last is what a host memory guard such as earlyoom or systemd-oomd
-does to the largest process when memory runs low, and a smaller request on a
-fresh worker needs less memory at its peak. A crash for any other reason, a
-timeout, or a cancellation is never retried.
+no `tsconfig`, and a worker of any language killed by SIGTERM or SIGKILL, which
+Knossos never sends to a worker that still owes a response. Those two are what
+a host memory guard such as earlyoom or systemd-oomd, or the kernel's OOM
+killer, send to the largest process when memory runs low, and a smaller request
+on a fresh worker needs less memory at its peak. A worker killed by hand with
+`kill` is retried the same way; to stop a scan, cancel it instead. A worker
+that crashed with its own signal (SIGSEGV, SIGABRT, SIGBUS and the like), one
+stopped by SIGHUP or SIGINT, a crash for any other reason, a timeout, or a
+cancellation is never retried.
+
+Each retry halves both the file count and the bytes the batch actually held.
+For `WORKER_FRAME_TOO_LARGE` the files the worker had already answered are not
+the cause, so they go back as one batch and only the rest is split. Those
+splits are not charged against `max_scan_batch_halvings`, because each one
+shrinks the search, which is how a small file with a huge frame is found among
+hundreds of neighbours.
 
 A batch of one file cannot be split any further, so it is never retried. When
-that one file's own answer is what outgrew a size limit, as a generated bundle
-can, the file is left out with a diagnostic naming the limit and the rest of
-the language is kept. Any other failure of a one-file batch degrades the
-language at once. When retries run out, the diagnostic says how many smaller
-batches were tried.
+that one file's own frame or output is what outgrew a limit, as a generated
+bundle can, the file is left out with a diagnostic naming the limit, counted in
+`left_out_files`, and the rest of the language is kept. The left-out result is
+cached against the file's content and the limits that excluded it, so an
+unchanged file stays out without being sent again. Any other failure of a
+one-file batch degrades the language at once. When retries run out, the
+diagnostic says how many retries were made.
 
 Sending a whole project in one request made `max_output_bytes` a project-wide
 ceiling: at roughly 14.9 KB of protocol output per PHP file, a scan of more than

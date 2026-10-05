@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Scanner\Worker\WorkerSignal;
 
 /**
  * Whether a worker failure says the scan batch was too big, rather than that
@@ -35,31 +36,40 @@ final class OversizedBatch
     }
 
     /**
-     * Whether the output or the request outgrew a cap sized for a batch.
+     * Whether a one-file batch failing this way says that one file is too large.
      *
-     * Unlike the other reasons, this one is about the files themselves: a file
-     * whose answer alone outgrows the cap will do so in any batch.
+     * Its frame or its share of the output outgrew a cap, and will in any
+     * batch. A request that was too large does not count: the request is
+     * mostly what every file in the batch shares, so it says nothing about
+     * the file.
      */
-    public static function isSizeLimit(WorkerException $error): bool
+    public static function leavesAFileOut(WorkerException $error): bool
+    {
+        return in_array($error->diagnosticCode, ['WORKER_FRAME_TOO_LARGE', 'WORKER_OUTPUT_LIMIT'], true);
+    }
+
+    /** Whether the output or the request outgrew a cap sized for a batch. */
+    private static function isSizeLimit(WorkerException $error): bool
     {
         return in_array($error->diagnosticCode, self::SIZE_CODES, true);
     }
 
     /**
-     * Whether the worker was killed by a signal Knossos did not send.
+     * Whether the worker was killed the way a host short of memory kills it.
      *
-     * A host memory guard such as earlyoom SIGTERMs the largest process when
+     * A memory guard such as earlyoom SIGTERMs the largest process when
      * memory runs low, and a worker in the middle of a big request is often
      * that process. Nothing in the batch was wrong, so it is worth a fresh
-     * worker and a smaller request, which needs less memory at its peak; for
-     * TypeScript that is the fallback programs a smaller batch no longer
-     * builds, and the garbage a fresh process has not yet accumulated. The
-     * halving bound keeps a host that kills every attempt from being retried
-     * without end.
+     * worker and a smaller request, which needs less memory at its peak. A
+     * crash signal or a deliberate stop is not retried; see
+     * {@see WorkerSignal}. The halving bound keeps a host that kills every
+     * attempt from being retried without end.
      */
     private static function wasKilledFromOutside(WorkerException $error): bool
     {
-        return $error->diagnosticCode === 'WORKER_EXITED' && $error->terminatingSignal !== null;
+        return $error->diagnosticCode === 'WORKER_EXITED'
+            && $error->terminatingSignal !== null
+            && WorkerSignal::isMemoryPressureKill($error->terminatingSignal);
     }
 
     /**

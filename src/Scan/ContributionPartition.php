@@ -23,5 +23,7 @@ final readonly class ContributionPartition
         public array $filesToScan,
         public int $added,
         public int $changed,
+        /** Of the reused files, how many were reused as left out of the graph. */
+        public int $leftOut = 0,
     ) {}
 }

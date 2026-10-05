@@ -703,6 +703,72 @@ final class NdjsonRpcChannelTest extends TestCase
         assertContains('killed by signal 9 (SIGKILL) before responding, and Knossos did not send it', $error->getMessage());
     }
 
+    public function testAWorkerThatCrashedWithASignalIsNotBlamedOnTheHost(): void
+    {
+        // SIGSEGV, SIGABRT, SIGBUS, SIGILL and SIGFPE are raised by the
+        // process itself when it crashes, so pointing at earlyoom would send
+        // the reader the wrong way.
+        foreach ([11 => 'SIGSEGV', 6 => 'SIGABRT', 7 => 'SIGBUS', 4 => 'SIGILL', 8 => 'SIGFPE'] as $signal => $name) {
+            $process = $this->mockProcess();
+            $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 100));
+            $deadline = $channel->beginRequest();
+            $process->running = false;
+            $process->signaled = true;
+            $process->termsig = $signal;
+            ftruncate($process->pipes[1], 0);
+            fclose($process->pipes[1]);
+            $process->pipes[1] = fopen('php://temp', 'r');
+
+            $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+            assertSame(
+                sprintf('Scanner worker crashed with signal %d (%s) before responding.', $signal, $name),
+                $error->getMessage(),
+            );
+            assertSame($signal, $error->terminatingSignal);
+        }
+    }
+
+    public function testAWorkerStoppedByAnInterruptOrHangupSaysWhoCouldHaveSentIt(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 100));
+        $deadline = $channel->beginRequest();
+        $process->running = false;
+        $process->signaled = true;
+        $process->termsig = 1;
+        ftruncate($process->pipes[1], 0);
+        fclose($process->pipes[1]);
+        $process->pipes[1] = fopen('php://temp', 'r');
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame(
+            'Scanner worker was stopped by signal 1 (SIGHUP) before responding, and Knossos did not send it. The worker '
+            . 'runs in its own session with no terminal, so this signal came from a person or a supervisor.',
+            $error->getMessage(),
+        );
+    }
+
+    public function testARequestTooLargeNamesItsLimit(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 256));
+        $channel->beginRequest();
+
+        $error = captureThrows(
+            static fn() => $channel->send(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'scan', 'params' => ['pad' => str_repeat('p', 400)]]),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_REQUEST_TOO_LARGE', $error->diagnosticCode);
+        assertSame(
+            'Worker request exceeds the 256-byte request frame limit, so Knossos did not send it. The request carries what '
+            . 'every file in the batch shares, so a smaller batch may still fit.',
+            $error->getMessage(),
+        );
+    }
+
     public function testAWorkerThatChoseItsExitCodeStillReportsThatCode(): void
     {
         $process = $this->mockProcess();

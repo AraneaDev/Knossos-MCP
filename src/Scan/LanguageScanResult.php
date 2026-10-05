@@ -42,5 +42,10 @@ final readonly class LanguageScanResult
         public array $workerDiagnostics = [],
         public array $batchBudgets = [],
         public array $undiscoveredInputs = [],
+        /**
+         * Files left out of the graph because their own answer outgrew a
+         * size limit, whether found this scan or reused from the cache.
+         */
+        public int $leftOut = 0,
     ) {}
 }

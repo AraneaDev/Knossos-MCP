@@ -48,6 +48,9 @@ final readonly class ScanResultFactory
             'added_files' => $language->added,
             'changed_files' => $language->changed,
             'deleted_files' => $plan->deletedFiles,
+            // Files whose own answer outgrew a size limit: in the graph with a
+            // diagnostic and no facts, and reused as such while unchanged.
+            'left_out_files' => $language->leftOut,
             'scanner_metadata' => $language->scannerMetadata,
             'degraded_languages' => $degraded,
             // Batch bounds are reported per language rather than as one pair of

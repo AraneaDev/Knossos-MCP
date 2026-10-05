@@ -312,6 +312,28 @@ while (($line = fgets(STDIN)) !== false) {
                 sleep(5);
                 exit(0);
             }
+            // A parser crash: the worker kills itself with SIGSEGV on any
+            // request over the threshold, every time.
+            if ($mode === 'per_file_segv' && count($requested) > $threshold) {
+                posix_kill(getmypid(), SIGSEGV);
+                sleep(5);
+                exit(0);
+            }
+            // Answers in request order and fails at the oversized file, so the
+            // files after it are unanswered too and nothing narrows it down
+            // but splitting.
+            if ($mode === 'per_file_frame_too_large_in_order') {
+                foreach ($requested as $relativePath) {
+                    if (str_contains((string) $relativePath, 'Huge')) {
+                        fwrite(STDOUT, str_repeat('x', 150_000));
+                        fflush(STDOUT);
+                        exit(0);
+                    }
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                respond($id, ['count' => count($requested), 'files_scanned' => count($requested)]);
+                continue;
+            }
             // A file whose own contribution is too large for one frame: every
             // other file is answered, then the oversized frame for this one
             // ends the request whatever batch it travels in.

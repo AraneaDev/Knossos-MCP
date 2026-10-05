@@ -30,7 +30,7 @@ final readonly class LanguageScanRunner
     public function run(ScanPlan $plan, CancellationToken $cancellation): LanguageScanResult
     {
         $manifests = $contributions = $cacheEntries = [];
-        $parsed = $unchanged = $added = $changed = 0;
+        $parsed = $unchanged = $added = $changed = $leftOut = 0;
         $scannerMetadata = $stages = $workerDiagnostics = $batchBudgets = [];
         // One for the whole scan: the same file read with different results
         // by two languages fails the scan just as two requests of one do.
@@ -102,11 +102,12 @@ final readonly class LanguageScanRunner
             $unchanged += $outcome['unchanged'];
             $added += $outcome['added'];
             $changed += $outcome['changed'];
+            $leftOut += $outcome['left_out'];
             $scannerMetadata += $outcome['scanner_metadata'];
             $stages[$descriptor->stage] = $outcome['milliseconds'];
         }
 
-        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all());
+        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all(), $leftOut);
     }
 
     /**
@@ -127,6 +128,7 @@ final readonly class LanguageScanRunner
      *     unchanged: int,
      *     added: int,
      *     changed: int,
+     *     left_out: int,
      *     scanner_metadata: array<string, mixed>,
      *     milliseconds: float,
      *     undiscovered_inputs: array<string, string|null>
@@ -143,6 +145,12 @@ final readonly class LanguageScanRunner
         $cancellation->throwIfCancelled();
         $client = $this->pool->client($descriptor, $plan->preparation->executionPolicy);
         $manifest = $client->initialize();
+        // Where a file left out of the graph is cached: see
+        // ContributionCacheService::leftOutConfigurationHash().
+        $leftOutHash = ContributionCacheService::leftOutConfigurationHash(
+            $plan->preparation->configurationHashes[$descriptor->key],
+            $plan->preparation->executionPolicy->limits(),
+        );
         $partition = $this->cache->partition(
             $files,
             $manifest,
@@ -150,6 +158,7 @@ final readonly class LanguageScanRunner
             $plan->cacheByScannerPath,
             $plan->effectiveMode === 'full' || $plan->workerInputsChanged,
             $cancellation,
+            $leftOutHash,
         );
         // Everything a scan request carries except `files`, which each batch
         // supplies for itself.
@@ -199,7 +208,7 @@ final readonly class LanguageScanRunner
         // Files left out because their answer alone outgrew a size cap, each
         // with a contribution saying so. Kept apart from $scanned so they are
         // neither counted as parsed nor cached.
-        $leftOut = $leftOutPaths = [];
+        $leftOut = $leftOutPaths = $leftOutEntries = [];
         // Every path discovery hashed, not only this language's files: a worker
         // may read a file another language claims, or a manifest such as the
         // package.json module resolution reads or the Cargo.toml a crate is
@@ -209,56 +218,99 @@ final readonly class LanguageScanRunner
         // they arrive and handed back for the pre-commit re-read.
         $undiscovered = new UndiscoveredInputs();
         $full = $descriptor->scanBatchSourceBytes;
-        $pending = self::queued(self::batches($partition->filesToScan, $descriptor->scanBatchFiles, $full), $full, 0);
+        $pending = self::queued(self::batches($partition->filesToScan, $descriptor->scanBatchFiles, $full), $full, 0, 0);
         while ($pending !== []) {
             $item = array_shift($pending);
+            // Held aside rather than appended directly: an overflowing
+            // request has already streamed some contributions, and the
+            // retry re-sends those files, so keeping them would double-count
+            // both `parsed` and the reconciled facts. Read after a failure
+            // too, to tell which files the worker had already answered.
+            /** @var list<ScanContribution> $received */
+            $received = [];
             try {
-                // Held aside rather than appended directly: an overflowing
-                // request has already streamed some contributions, and the
-                // retry re-sends those files, so keeping them would double-count
-                // both `parsed` and the reconciled facts.
-                $received = [];
                 $requested = array_map(static fn(object $file): string => $file->relativePath, $item['files']);
                 foreach ($client->scan(['files' => $requested] + $request, $cancellation->isCancelled(...)) as $contribution) {
                     $received[] = $contribution;
                 }
             } catch (WorkerException $error) {
-                // A batch that was too big (see OversizedBatch) is split and
-                // retried. Everything else — a crash, a timeout, and above all a
-                // cancellation — keeps the per-language behaviour it already had:
-                // rethrow, and let run() degrade or propagate it. A single file
-                // cannot be split any further, so retrying it would only burn
-                // the remaining attempts and worker restarts.
+                // A failure a smaller batch can get past (see OversizedBatch)
+                // is retried on a fresh worker; anything else, and above all a
+                // cancellation, is rethrown for run() to degrade or propagate.
                 $retryable = OversizedBatch::signalledBy($descriptor, $error, $request) && !$cancellation->isCancelled();
-                if ($retryable && count($item['files']) === 1 && OversizedBatch::isSizeLimit($error)) {
+                if ($retryable && count($item['files']) === 1 && OversizedBatch::leavesAFileOut($error)) {
                     // That one file's own answer is what outgrew the cap, and it
                     // will do so in any batch. Failing the language for it threw
                     // away every other file's facts; leaving it out keeps them.
-                    $path = $item['files'][0]->relativePath;
-                    $leftOut[] = self::leftOutContribution($manifest->id, $path, $error);
-                    $leftOutPaths[$path] = true;
+                    $file = $item['files'][0];
+                    $contribution = self::leftOutContribution($manifest->id, $file->relativePath, $error);
+                    $leftOut[] = $contribution;
+                    $leftOutPaths[$file->relativePath] = true;
+                    $entry = $this->cache->leftOutEntry($file, $manifest, $leftOutHash, $contribution);
+                    if ($entry !== null) {
+                        $leftOutEntries[] = $entry;
+                    }
                     $client = $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
                     continue;
                 }
-                if (!$retryable
-                    || count($item['files']) <= 1
-                    || $item['halvings'] >= WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS) {
-                    throw self::withRetries($error, $item['halvings']);
+                // A single file cannot be split any further, so retrying it
+                // would only burn worker restarts on the same failure.
+                if (!$retryable || count($item['files']) <= 1) {
+                    throw self::withRetries($error, $item['retries']);
                 }
-                $budget = max(1, intdiv($item['budget'], 2));
-                $sourceBytes = min($sourceBytes, $budget);
                 // The failed request closed its session, so this language needs
                 // a fresh worker before the smaller batches can be sent.
                 $client = $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
+                // Halved from what the batch actually held, not from its
+                // budget: a batch using a tenth of its budget would otherwise
+                // be re-sent whole while counting as a smaller retry. The file
+                // count halves too, so a batch of files with no recorded size
+                // still shrinks.
+                $batchBytes = array_sum(array_map(
+                    static fn(object $file): int => isset($file->size) && is_int($file->size) ? $file->size : 0,
+                    $item['files'],
+                ));
+                $budget = max(1, intdiv($batchBytes > 0 ? min($item['budget'], $batchBytes) : $item['budget'], 2));
+                $files = $item['files'];
+                $tail = [];
+                $halvings = $item['halvings'] + 1;
+                if ($error->diagnosticCode === 'WORKER_FRAME_TOO_LARGE') {
+                    // One file's frame was too large, and it is not one the
+                    // worker already answered: only the rest is searched, and
+                    // the answered files go back as one batch that fits. Each
+                    // step strictly shrinks what is searched, so the search
+                    // ends without the halving bound, which stopped it short
+                    // of a small file among many neighbours.
+                    $answered = [];
+                    foreach ($received as $contribution) {
+                        $answered[$contribution->ownerKey] = true;
+                    }
+                    $files = array_values(array_filter($item['files'], static fn(object $file): bool => !isset($answered[$manifest->id . ':file:' . $file->relativePath])));
+                    $done = array_values(array_filter($item['files'], static fn(object $file): bool => isset($answered[$manifest->id . ':file:' . $file->relativePath])));
+                    if ($files === []) {
+                        // Every file was answered, so the oversized frame was
+                        // not any one file's: fall back to an ordinary halving.
+                        $files = $item['files'];
+                    } else {
+                        $halvings = $item['halvings'];
+                        $tail = $done === [] ? [] : self::queued([$done], $item['budget'], $item['halvings'], $item['retries'] + 1);
+                    }
+                }
+                if ($halvings > WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS) {
+                    throw self::withRetries($error, $item['retries']);
+                }
+                $sourceBytes = min($sourceBytes, $budget);
+                $maxFiles = min($descriptor->scanBatchFiles, intdiv(count($files) + 1, 2));
                 // Only the batch that overflowed is re-split, and only its own
                 // descendants inherit the reduced budget. Carrying the reduction
                 // across the rest of the language would let one pathological
-                // directory pin a whole repository at a fraction of its budget —
+                // directory pin a whole repository at a fraction of its budget,
                 // which for TypeScript means rebuilding the program per request.
                 // The cost of keeping the others at full width is one doomed
                 // request each if they overflow too: a tax, not a cliff.
                 $pending = [
-                    ...self::queued(self::batches($item['files'], $descriptor->scanBatchFiles, $budget), $budget, $item['halvings'] + 1),
+                    ...self::queued(self::batches($files, max(1, $maxFiles), $budget), $budget, $halvings, $item['retries'] + 1),
+                    ...$tail,
                     ...$pending,
                 ];
                 continue;
@@ -291,7 +343,8 @@ final readonly class LanguageScanRunner
         return [
             'manifest' => $manifest,
             'contributions' => [...$partition->cached, ...$recorded['contributions'], ...$leftOut],
-            'cache_entries' => [...$partition->cacheEntries, ...$recorded['cache_entries']],
+            'cache_entries' => [...$partition->cacheEntries, ...$recorded['cache_entries'], ...$leftOutEntries],
+            'left_out' => $partition->leftOut + count($leftOut),
             'parsed' => count($scanned),
             'unchanged' => count($partition->cached),
             'added' => $partition->added,
@@ -364,13 +417,14 @@ final readonly class LanguageScanRunner
      *
      * @param list<list<object>> $batches
      * @param int $budget the source-byte budget these batches were split at
-     * @param int $halvings how many reductions this lineage has already had
-     * @return list<array{files: list<object>, budget: int, halvings: int}>
+     * @param int $halvings how many reductions this lineage was charged against the bound
+     * @param int $retries how many failed requests this lineage has been retried after, charged or not
+     * @return list<array{files: list<object>, budget: int, halvings: int, retries: int}>
      */
-    private static function queued(array $batches, int $budget, int $halvings): array
+    private static function queued(array $batches, int $budget, int $halvings, int $retries): array
     {
         return array_map(
-            static fn(array $files): array => ['files' => $files, 'budget' => $budget, 'halvings' => $halvings],
+            static fn(array $files): array => ['files' => $files, 'budget' => $budget, 'halvings' => $halvings, 'retries' => $retries],
             $batches,
         );
     }
