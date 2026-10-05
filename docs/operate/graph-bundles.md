@@ -19,12 +19,13 @@ source root.
 
 ## Format and determinism
 
-Version 1 is canonical JSON compressed as gzip. The decompressed contract is
-published as [`graph-bundle-v1.schema.json`](../../schemas/graph-bundle-v1.schema.json).
-The manifest records format/schema version, redaction mode, canonical payload
+A bundle is canonical JSON compressed as gzip, format version 2. The
+decompressed structure is described by
+[`graph-bundle-v1.schema.json`](../../schemas/graph-bundle-v1.schema.json).
+The manifest records the format and version, redaction mode, canonical payload
 SHA-256, byte and fact counts, and the source scan completion timestamp. Sorted
-tables, recursively sorted object keys, a fixed compression level, and no
-wall-clock export timestamp make repeated exports byte-for-byte identical.
+tables, recursively sorted object keys, a fixed compression level, and a `created_at` that is the
+source scan's finish time rather than the export time make repeated exports byte-for-byte identical.
 
 The payload contains normalized files, nodes, edges, classifications,
 boundaries/memberships, and diagnostics. Edges are occurrence-level facts:
@@ -47,7 +48,8 @@ Redaction is deterministic so checksums and review diffs remain stable.
 
 Before and during one database transaction, import enforces:
 
-- gzip input at most 10 MB and decompressed JSON at most 50 MB;
+- gzip input at most 10 MB and decompressed JSON at most 8 MB;
+- at most 2,000,000 structural JSON tokens, counted before decoding;
 - at most 200,000 total facts;
 - exact top-level/manifest keys and supported schema/redaction versions;
 - canonical payload checksum and declared byte/fact counts;

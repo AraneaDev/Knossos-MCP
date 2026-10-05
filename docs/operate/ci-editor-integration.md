@@ -8,11 +8,11 @@ scans run with networking disabled.
 
 CLI commands use the following automation contract:
 
-| Code | Meaning                                                                |
-| ---: | ---------------------------------------------------------------------- |
-|  `0` | The command completed and every evaluated gate passed.                 |
-|  `1` | The command completed, but an evaluated health or quality gate failed. |
-|  `2` | Usage, configuration, validation, runtime, or infrastructure error.    |
+| Code | Meaning                                                                                                       |
+| ---: | ------------------------------------------------------------------------------------------------------------- |
+|  `0` | The command completed and every evaluated gate passed.                                                        |
+|  `1` | The command completed, but an evaluated health or quality gate failed (`quality-gate`, `check-architecture`). |
+|  `2` | Usage, configuration, validation, runtime, or infrastructure error.                                           |
 
 Do not treat code `2` as a quality finding. It means the result could not be
 evaluated reliably and the job should fail visibly.
@@ -51,14 +51,14 @@ The examples expect a checked-in `knossos-budgets.json`. Add
 a checked-in policy file. See [architecture quality
 budgets](../concepts/architecture-rules.md#quality-budgets) for both formats.
 
-## One-call alternative
+## One call for a pull request review
 
-The recipes above call `quality_gate` and `changed_files_impact` separately to
-get budget deltas and blast radius for a pull request. `review_diff` composes
+For budget deltas and blast radius on a pull request, `review_diff` composes
 `changed_files_impact`, `check_architecture`, `quality_gate`, and
-`dependency_cycles` into a single result scoped to the changed components, so
-a CI review step or PR comment job can make one call instead of chaining four.
-It takes the same baseline and policy inputs. See [review diff](../concepts/change-review.md#review-diff).
+`dependency_cycles` into a single result scoped to the changed components, so a
+CI review step or PR comment job makes one call instead of chaining four. It
+takes the same baseline and policy inputs. See
+[review diff](../concepts/change-review.md#review-diff).
 
 ## Ready-to-adapt recipes
 

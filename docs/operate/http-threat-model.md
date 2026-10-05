@@ -29,8 +29,8 @@ confused-deputy: an intermediary that routes or rate-limits on the header while
 the server acts on the body would otherwise apply policy to one tool while a
 different one executes.
 
-That mirroring is also a new control available to operators. A reverse proxy in
-front of Knossos can now allow-list read-only tools by `Mcp-Name`, or deny
+That mirroring is also a control for operators. A reverse proxy in front of
+Knossos can allow-list read-only tools by `Mcp-Name`, or deny
 `scan_project` and `remove_project` outright, without parsing request bodies.
 The server's own validation is what makes those header values trustworthy.
 Note the specification's caveat: an intermediary enforcing policy this way
@@ -92,38 +92,52 @@ values rather than broad wildcards.
 
 ## Git subprocesses
 
-`changed_files_impact`, `test_impact`, `review_diff`, and `change_impact` run
-`git` inside the scanned project. Git reads that repository's `.git/config`
-(and, for filters, its `.gitattributes`), either of which can name commands
-Git executes: `core.fsmonitor` during any index refresh, `core.hooksPath`
-for its hook scripts, `diff.external` during diff generation, and a
-`.gitattributes`-routed `filter.<name>.clean`/`.process`/`.smudge` or
-`diff.<name>.textconv` driver while `git diff` reads a changed path.
-`GitProcessRunner` forces the first three off via fixed `-c` overrides, and
-neutralises filter/textconv drivers per repository by first running
-`git config --list --includes --name-only -z` (which refreshes nothing and
-invokes no filter itself, so it runs with only the restricted environment
-below, not the `-c` overrides) and appending a blanking `-c` override for
-every driver name it finds. That query follows `include`/`includeIf`
-directives and, by not restricting itself to `--local`, also sees
-`extensions.worktreeConfig`-enabled per-worktree settings: either can define
-a driver a narrower query would miss, while `git diff` itself still resolves
-them. A driver name containing `=` cannot be expressed as a `-c` override at
-all (Git's own `-c` parser splits on the first `=`), so that case fails
-closed: the command is refused rather than run un-neutralised. A repository
-defining more filter/diff drivers than `GitProcessRunner::MAX_DRIVER_NAMES`
-fails closed the same way, rather than building an argv long enough to make
-`proc_open()` itself fail. Alongside the blanked `clean`/`process`/`smudge`,
-each filter also gets `required=false` forced: `required=true` is how
-Git-LFS's own `git lfs install --local` marks its filter (and how a hostile
-repository could otherwise turn a neutralised filter into a fatal error), and
-without this a blanked-but-required filter fails the whole command rather than
-being skipped. `core.pager` is neutralised separately, by `--no-pager` at each
-call site rather than by an override. The child also runs under an explicit
-environment (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
-`HOME`/`GIT_ASKPASS` pointed at a nonexistent path); the only value carried
-over from the parent is `PATH`, which Git needs to find its helper binaries,
-and which falls back to `/usr/bin:/bin` when the parent has none.
+Every query that reads a project's git state runs `git` inside the scanned
+project: `changed_files_impact`, `test_impact`, `review_diff` and
+`change_impact`, and also churn, branch and session diffs, file context, drift
+detection and `doctor`. All of them go through `GitProcessRunner`.
+
+Git reads that repository's `.git/config` (and, for filters, its
+`.gitattributes`), either of which can name commands Git executes:
+`core.fsmonitor` during any index refresh, `core.hooksPath` for its hook
+scripts, `diff.external` during diff generation, and a `.gitattributes`-routed
+`filter.<name>.clean`/`.process`/`.smudge` or `diff.<name>.textconv` driver while
+`git diff` reads a changed path. The runner closes each of them.
+
+- **Fixed overrides.** `core.fsmonitor=false`, `core.hooksPath=/dev/nonexistent`
+  and `diff.external=` are passed as `-c` options on every call.
+- **Drivers, per repository.** The runner first runs
+  `git config --list --includes --name-only -z`, which refreshes nothing and
+  invokes no filter, so it runs with only the restricted environment below and
+  not the `-c` overrides. For every filter and diff driver name it finds, it
+  appends an override that blanks the driver. The query follows `include` and
+  `includeIf` directives and does not restrict itself to `--local`, so it also
+  sees `extensions.worktreeConfig` settings. Either can define a driver a
+  narrower query would miss, while `git diff` itself still resolves them.
+- **`required=false`.** Each filter also gets `required=false` forced.
+  `required=true` is how Git-LFS's own `git lfs install --local` marks its
+  filter, and how a hostile repository could otherwise turn a neutralised filter
+  into a fatal error. Without this, a blanked but required filter fails the whole
+  command instead of being skipped.
+- **Fail closed.** A driver name containing `=` cannot be expressed as a `-c`
+  override, because Git's own parser splits on the first `=`, so the command is
+  refused rather than run un-neutralised. A repository with more than
+  `GitProcessRunner::MAX_DRIVER_NAMES` (1,000) drivers is refused the same way,
+  rather than building an argv long enough to make `proc_open()` fail.
+- **Pager.** `core.pager` is neutralised by `--no-pager` at each call site, not
+  by an override.
+- **Environment.** The child runs under an explicit environment:
+  `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, and `HOME` and
+  `GIT_ASKPASS` pointed at a nonexistent path. The only value carried over from
+  the parent is `PATH`, which Git needs to find its helper binaries, with
+  `/usr/bin:/bin` as the fallback.
+
+A container's user is usually not the owner of the mounted project, and Git
+refuses a repository another user owns. Git reads `safe.directory` only from the
+system or global config, which the runner never reads, or from the command line.
+So the container wrapper sets `KNOSSOS_GIT_SAFE_DIRECTORY` to the absolute path
+of the project it mounted, and the runner passes it as `-c safe.directory=...`.
+A value that is not one absolute path, `*` included, adds nothing.
 
 This matters whenever a repository directory arrives with its own `.git/`
 rather than from a fresh `clone`: CI artifacts, extracted archives, container

@@ -43,10 +43,11 @@ because they differ per language and the byte budget can differ per scan:
   at. Lower than `source_bytes` means at least one batch overflowed and was
   re-split; see below.
 
-TypeScript uses a much larger file cap (2,000) than the default (400), and a
-3 MB byte budget against the 4 MB default, because it rebuilds and re-checks a
-whole `ts.Program` on every request (a cost set by the program, not by how many
-files the request named), so splitting its work repeats the expensive part.
+The default is 400 files and 4 MB per request. TypeScript uses a much larger
+file cap (2,000), because it rebuilds and re-checks a whole `ts.Program` on every
+request (a cost set by the program, not by how many files the request named), so
+splitting its work repeats the expensive part. Its byte budget is 3 MB, and so is
+Rust's.
 
 ### Adaptive budgets
 
@@ -56,7 +57,7 @@ any fixed budget to be both safe and fast: 1.68x for KaTeX's TypeScript sources,
 files and for code unusually dense in declared symbols. The byte budget is
 therefore set optimistically, and corrected when it is wrong.
 
-When a scan request fails with `WORKER_OUTPUT_LIMIT`, the budget is halved, that
+When a scan request fails with a size signal, the budget is halved, that
 language's worker is restarted, and **the failing batch** is re-split and
 retried. The reduction applies only to that batch and its descendants: later
 batches start again at the configured budget, so one pathological directory
@@ -66,9 +67,11 @@ fraction of its budget for the rest of the scan. This repeats up to
 through to the ordinary degrade path below.
 
 A batch of one file is never retried (there is nothing left to split), so it
-degrades immediately instead of burning the remaining attempts.
-`WORKER_OUTPUT_LIMIT` is the only retryable failure: a crash, a timeout, or a
-cancellation is never retried.
+degrades immediately instead of burning the remaining attempts. Only a failure
+that says the batch was too big is retried: `WORKER_OUTPUT_LIMIT`,
+`WORKER_FRAME_TOO_LARGE`, `WORKER_REQUEST_TOO_LARGE`, and a TypeScript worker
+that exited from V8 heap exhaustion on a request that names no `tsconfig`. A
+crash for any other reason, a timeout, or a cancellation is never retried.
 
 Sending a whole project in one request made `max_output_bytes` a project-wide
 ceiling: at roughly 14.9 KB of protocol output per PHP file, a scan of more than

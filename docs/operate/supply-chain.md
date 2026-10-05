@@ -7,8 +7,8 @@ image as a development environment. Run the reproducible assurance gate with:
 tools/quality-container full
 ```
 
-The full profile builds both images and invokes `tools/supply-chain`. Reports
-are written to `coverage/supply-chain/`:
+The `release` lane of the full profile builds both images and invokes
+`tools/supply-chain`. Reports are written to `coverage/supply-chain/`:
 
 - `runtime.cdx.json` and `quality.cdx.json` are CycloneDX SBOMs.
 - `runtime-vulnerabilities.json` fails the gate for fixed HIGH or CRITICAL
@@ -29,13 +29,17 @@ and pull-request validation uses a freshly generated, encrypted ephemeral
 Cosign key to prove the complete signing and verification path without storing
 release credentials. Published releases should replace that local key with the
 project's protected keyless or hardware-backed identity and retain transparency
-log verification.
+log verification. That step does not exist yet: the release workflow runs the
+full profile against the released tree and checks that the runtime image reports
+its version and passes `doctor`, but its publish step is switched off until a
+registry is set up. The only image pushed today is the per-commit quality image
+that CI's lanes share, which is not a release artifact.
 
 ## Install, upgrade, and rollback lifecycle
 
 `tools/release-lifecycle` creates a new named data volume, runs installation and
 doctor checks, scans a read-only mixed-language fixture, creates an atomic
-backup, repeats the scan as an idempotent upgrade/migration check, restores the
+backup (`pre-upgrade.sqlite`), repeats the scan as an idempotent upgrade/migration check, restores the
 backup, and verifies that architecture queries still succeed. It always removes
 its temporary containers and volumes.
 

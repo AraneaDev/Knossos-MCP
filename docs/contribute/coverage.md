@@ -12,36 +12,45 @@ CI uploads that directory as the `coverage-reports` artifact.
 
 ## Enforced floors
 
-| Runtime                  | Line/statement floor | Branch floor | Current result                |
-| ------------------------ | -------------------- | ------------ | ----------------------------- |
-| PHP core and PHP scanner | 91%                  | n/a          | 91.04% lines                  |
-| TypeScript/JavaScript    | 94.6%                | 79.2%        | 94.68% lines, 79.27% branches |
-| Python scanner           | 96%                  | tracked      | 96% combined report           |
-| Rust scanner             | 90.7%                | n/a          | cargo llvm-cov lines          |
+The floors live in `coverage-budgets.json`, and the number there is the
+number that is enforced.
+
+| Runtime                  | Line floor | Branch floor | Also enforced                       |
+| ------------------------ | ---------: | -----------: | ----------------------------------- |
+| PHP core and PHP scanner |      93.5% |          n/a | nine component floors, see below    |
+| TypeScript/JavaScript    |        90% |        79.2% | 97% functions, 90% statements       |
+| Python scanner           |        90% |      tracked | branch data is in the total         |
+| Rust scanner             |      90.7% |          n/a | `cargo llvm-cov --fail-under-lines` |
 
 PHP uses PCOV, which records executable-line coverage but not branch coverage.
-The JavaScript V8 report therefore carries the explicit ratcheted branch floor;
-Python branch data is collected and included in coverage.py's enforced total.
-Rust is measured by `cargo llvm-cov`, whose line floor comes from
-`coverage-budgets.json`. A well-covered runtime cannot hide another because all
-four gates must pass.
+The JavaScript V8 report therefore carries the explicit ratcheted branch floor,
+and Python branch data is collected and included in coverage.py's enforced
+total. Rust is measured by `cargo llvm-cov`. A well-covered runtime cannot hide
+another, because all four gates must pass.
 
-PHP additionally enforces checked-in component floors from
-`coverage-budgets.json`. The current floors are 87% bundle/Git/watch, 87.5%
-discovery/configuration, 87.7% maintenance/runtime, 90.6% PHP scanner, 92.6%
-query/analysis, 90.6% reconciliation, 90.6% scanner runtime, 92.2% storage, and
-92.1% transport. The TypeScript and Python scanner floors remain independent
-runtime gates. Floors may only move upward unless a reviewed risk exception is
-documented with before/after evidence.
+PHP also enforces a floor per component, so a well-covered area cannot carry a
+neglected one:
 
-Transport briefly ran under a lowered 90.3% floor on 2026-07-20: the MCP
-enrichment work (`ResultEnricher`, `NextStepPlanner`, per-tool verbosity, and
-result metadata) had landed without matching tests, taking the component to
-90.37% (582/644), and the shortfall stayed hidden because an unrelated
-`tools/supply-chain` failure was aborting the `full` profile before
-`tools/coverage` ran. Covering the planner's null-guard branches and the session
-store's malformed-id guard restored it to 92.24% (594/644) the same day, so the
-92.1% floor is back and the exception is closed.
+| component             |  floor |
+| --------------------- | -----: |
+| `bundle-git-watch`    |  88.5% |
+| `discovery-config`    | 95.63% |
+| `maintenance-runtime` | 94.72% |
+| `php-scanner`         | 93.62% |
+| `query-analysis`      | 94.09% |
+| `reconciliation`      | 98.49% |
+| `scanner-runtime`     |    94% |
+| `storage`             | 96.47% |
+| `transport`           | 92.29% |
+
+Floors may only move upward unless a reviewed risk exception is documented with
+before/after evidence.
+
+One PHPUnit run under pcov produces the PHP figure and, from the worker
+subprocesses it drives, the JavaScript figure and most of the Python one, which
+is why coverage is one lane and not three. The Claude Code mod is covered by its own suites (see
+[how the mod is built](mod-internals.md#the-tests)) and sits outside these
+gates.
 
 The only first-party exclusion is `src/Application.php`: it is a constant-only
 CLI composition/dispatch adapter, while its invoked commands and services are

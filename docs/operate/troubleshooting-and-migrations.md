@@ -39,7 +39,7 @@ selects safe incremental work.
 | `KNOSSOS_DISCOVERY_ERROR`       | Root, symlink, ignore, count, or byte limits rejected input.          | Correct the path/configuration; do not expand allowed roots blindly.                                                               |
 | `KNOSSOS_STORAGE_ERROR`         | SQLite is locked, full, unwritable, or corrupt.                       | Free capacity/release the lock, run integrity, and restore an atomic backup if required.                                           |
 | Worker diagnostic prefix        | A scanner crashed, timed out, or violated its protocol/output limits. | Inspect stderr diagnostics and the affected language file; other snapshots remain intact.                                          |
-| MCP `-32002`                    | The client called a tool before initialization completed.             | Fix client lifecycle framing; send `notifications/initialized` first.                                                              |
+| MCP `-32003`                    | The client sent a request before `notifications/initialized`.         | Fix client lifecycle framing; send `notifications/initialized` first.                                                              |
 | Server drops when idle          | The host closed a stdio connection that sat silent between calls.     | None; `serve` pings every 25s. Ensure the client tolerates server `ping` requests.                                                 |
 
 ## Idle stdio connections
@@ -48,7 +48,8 @@ Some MCP hosts close a stdio connection that produces no traffic for around a
 minute, which surfaces as the server disappearing between tool calls rather
 than as an error. `knossos serve` therefore wakes on a 25-second interval and
 emits a JSON-RPC `ping` whenever the connection has been idle, keeping the
-transport warm.
+transport warm. Only protocol revisions that still define `ping` are pinged,
+and a client that has not yet said which revision it speaks is pinged too.
 
 Each ping carries a fresh non-null id (`knossos-keepalive-N`) that the client
 echoes back. Responses that arrive without a matching in-flight request

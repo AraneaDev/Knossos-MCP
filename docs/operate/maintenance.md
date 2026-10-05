@@ -1,8 +1,8 @@
 # Project and database maintenance
 
 Maintenance operations are local, bounded, and explicit. Project removal,
-stale-scan cleanup, checkpoints, optimization, and backups default to a dry run.
-Only the integrity check runs immediately because it is read-only.
+stale-scan cleanup, checkpoints, optimization, vacuum, and backups default to a
+dry run. Only the integrity check runs immediately because it is read-only.
 
 Preview and then remove a persisted project:
 
@@ -25,13 +25,21 @@ Database-wide commands are:
 knossos maintain-database integrity --json
 knossos maintain-database checkpoint --execute --json
 knossos maintain-database optimize --execute --json
+knossos maintain-database vacuum --execute --json
 knossos maintain-database backup --backup-name=before-upgrade.sqlite --execute --json
 ```
 
+`vacuum` rebuilds the file and returns the free pages that deleting a project or
+ageing out a retained snapshot left behind, then truncates the write-ahead log.
+It reports `reclaimed_pages`, `freed_bytes` and `log_truncated`; when a
+concurrent reader blocks the truncation, `log_truncated` is `false` and the file
+has not shrunk yet.
+
 Backups use SQLite `VACUUM INTO`, remove transient writer leases from the copy,
 and are atomically published beneath the database directory's `backups/`
-folder. A backup name must be a plain `.sqlite` filename; directory components
-and overwrites are rejected. Open a backup with Knossos or SQLite and run
+folder. Without `--backup-name` the file is called
+`knossos-<UTC date>-<time>.sqlite`. A backup name must be a plain `.sqlite`
+filename; directory components and overwrites are rejected. Open a backup with Knossos or SQLite and run
 `PRAGMA integrity_check` before relying on it for recovery.
 
 The equivalent MCP tools are `remove_project`, `cleanup_stale_scans`, and
