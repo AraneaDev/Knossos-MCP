@@ -22,6 +22,7 @@
  * - `hold`: keeps the screen as it is for `ms` (in a GIF, copies of the last frame).
  * - `edit`: writes `text` into a file of the worktree, above the first line
  *   holding `before`, as an edit would.
+ * - `roll`: starts the GIF here, once the screen has stopped drawing.
  * - `cut`: ends the GIF's recording; the steps after it only take stills.
  * - `still`: once nothing on screen moves, keeps the screen as `name`.png.
  *
@@ -82,6 +83,7 @@ export const STEP_KINDS = [
     "wait",
     "hold",
     "edit",
+    "roll",
     "cut",
     "still",
 ];
@@ -192,28 +194,29 @@ export const SHOTS = {
         claude: ["--tools", "Read,Edit", "--permission-mode", "acceptEdits"],
         steps: [
             ...ready,
-            hold(500),
+            { do: "roll" },
+            hold(250),
             ...openPane(PANE[160]),
-            hold(1500),
+            hold(1000),
             press("2"),
             press("j"),
             press("j"),
             wait("hub marked", marked(FIXTURE.hub), { fixture: "hub" }),
-            hold(1500),
+            hold(1000),
             press("4"),
             wait("cycle drawn", lit(FIXTURE.cycleDrawn), {
                 fixture: "cycleDrawn",
             }),
-            hold(1500),
+            hold(1000),
             press("3"),
             wait("boundaries", String.raw`Per boundary`),
-            hold(1500),
+            hold(1000),
             ...openHub(60),
             press("End"),
             wait("rings", String.raw`◉ ${lit(FIXTURE.hub)}`, {
                 fixture: "hub",
             }),
-            hold(2000),
+            hold(1500),
             // The prompt gets the keyboard back for the model turn: typed into the pane, its letters would be keys.
             { do: "focus", prompt: true },
             {
@@ -235,7 +238,7 @@ export const SHOTS = {
             }),
             press("o"),
             wait("diff", String.raw`Changed since the session began`),
-            hold(2500),
+            hold(2000),
             { do: "cut" },
             wait("turn over", String.raw`esc to interrupt`, {
                 absent: true,

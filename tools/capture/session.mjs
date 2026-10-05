@@ -477,6 +477,11 @@ export async function createSession({
             projects: { [project]: { hasTrustDialogAccepted: true } },
         }),
     );
+    // No tips under the spinner: a tip is Claude Code's advice, not the session's work.
+    await writeFile(
+        path.join(configDir, "settings.json"),
+        JSON.stringify({ spinnerTipsEnabled: false }),
+    );
     const name = sessionName();
     const session = {
         name,

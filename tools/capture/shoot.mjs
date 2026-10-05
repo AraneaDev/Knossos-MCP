@@ -536,6 +536,11 @@ export async function playShot(session, shot, { worktree, record = false }) {
                 );
                 await settle(session);
                 break;
+            case "roll":
+                // The GIF starts here, on a screen that has stopped drawing.
+                await settle(session);
+                tape.frames.splice(0);
+                break;
             case "cut":
                 tape.stop();
                 break;
@@ -628,6 +633,14 @@ async function writeShot(name, shot, { frames, stills }, { out, view }) {
     await rm(dir, { recursive: true, force: true });
     await mkdir(dir, { recursive: true });
     await mkdir(out, { recursive: true });
+    // The stills first: a GIF refused for its length must not take them with it.
+    for (const [still, { frame, view: at }] of Object.entries(stills)) {
+        const png = path.join(dir, `${still}.png`);
+        await renderPng([framePage(frame, at)], [png], at);
+        await writeFile(path.join(dir, `${still}.ansi`), frame);
+        await copyFile(png, path.join(out, `${still}.png`));
+        process.stdout.write(`${still}: ${path.join(out, `${still}.png`)}\n`);
+    }
     if (shot.gif === true && frames.length > 0) {
         const pngs = frames.map((_, i) => path.join(dir, `${pad(i)}.png`));
         // The frames as text too, to look at or rebuild without shooting again.
@@ -643,13 +656,6 @@ async function writeShot(name, shot, { frames, stills }, { out, view }) {
         process.stdout.write(
             `${name}: ${frames.length} frames (${(ms / 1000).toFixed(1)} s), ${built.bytes} bytes${built.mp4 ? `, ${built.mp4}` : ""}\n`,
         );
-    }
-    for (const [still, { frame, view: at }] of Object.entries(stills)) {
-        const png = path.join(dir, `${still}.png`);
-        await renderPng([framePage(frame, at)], [png], at);
-        await writeFile(path.join(dir, `${still}.ansi`), frame);
-        await copyFile(png, path.join(out, `${still}.png`));
-        process.stdout.write(`${still}: ${path.join(out, `${still}.png`)}\n`);
     }
 }
 
