@@ -189,7 +189,9 @@ final class LanguageScanRunnerTest extends TestCase
     {
         $file = new \stdClass();
         $file->language = $language;
-        $file->relativePath = match ($language) { 'php' => 'src/Foo.php', 'python' => 'src/foo.py', default => 'src/foo.ts' };
+        $file->relativePath = match ($language) {
+            'php' => 'src/Foo.php', 'python' => 'src/foo.py', default => 'src/foo.ts'
+        };
         $file->contentHash = 'hashfoo';
 
         return new ScanPlan(
@@ -926,7 +928,9 @@ final class LanguageScanRunnerTest extends TestCase
         $files = array_fill_keys(array_keys($this->eightBigPhpFiles()), 'php');
         $result = $runner->run($this->planForFiles($files, 100_000), new CancellationToken());
 
-        assertSame([4, 2, 2, 4], $this->recordedBatches());
+        // Nothing was answered, so the first file is tried alone and the rest
+        // behind it at half their bytes, one file each at 100 KB apiece.
+        assertSame([4, 1, 1, 1, 1, 4], $this->recordedBatches());
         assertSame([], $result->workerDiagnostics);
         assertSame(8, $result->parsed);
         // A frame search splits a batch only to find one file, so it is not a
@@ -1136,12 +1140,11 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame(4_000_000, $result->batchBudgets['knossos.typescript']['source_bytes_used']);
     }
 
-    public function testABlindSearchForOneOversizedFrameFitsTheRetryAllowance(): void
+    public function testAnInOrderWorkerHasItsOversizedFileConfirmedInOneRequest(): void
     {
-        // A worker that answers in order and fails at the first file leaves
-        // nothing answered to narrow on, so only splitting finds the file. It
-        // takes five charged splits from 32 files, one more than the halving
-        // bound, which the language's allowance of MAX + 2*ceil(log2 n) covers.
+        // The worker answers in order and fails at the first file, so the
+        // first unanswered file is the one: tried alone, it is confirmed at
+        // once, and the rest goes on in two halves.
         $this->allocateRecordPath();
         $files = ['src/a00Huge.js' => 'typescript'];
         for ($index = 1; $index < 32; ++$index) {
@@ -1154,11 +1157,69 @@ final class LanguageScanRunnerTest extends TestCase
 
         $result = $runner->run($this->planForFiles($files, 1_000), new CancellationToken());
 
-        assertSame([32, 16, 8, 4, 2, 1, 1, 2, 4, 8, 16], $this->recordedBatches());
+        assertSame([32, 1, 15, 15, 1], $this->recordedBatches());
         assertSame([], $result->workerDiagnostics);
         assertSame(31, $result->parsed);
-        assertSame(1, $result->leftOut);
+        assertSame(['src/a00Huge.js'], $result->leftOutPaths);
         assertSame(4_000_000, $result->batchBudgets['knossos.typescript']['source_bytes_used']);
+    }
+
+    public function testABlindSearchForOneOversizedFrameFitsTheRetryAllowance(): void
+    {
+        // This worker fails before answering anything whenever the batch holds
+        // the oversized file, so only splitting finds it: a binary search,
+        // charged split by split, well inside the allowance for 32 files
+        // (4 + 2 * 5 = 14).
+        $this->allocateRecordPath();
+        $files = [];
+        for ($index = 0; $index < 32; ++$index) {
+            $files[$index === 20 ? 'src/f20Huge.js' : sprintf('src/f%02d.ts', $index)] = 'typescript';
+        }
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_frame_too_large_blind', tightCap: true),
+            $this->descriptorFor('typescript', batchSourceBytes: 4_000_000),
+        );
+
+        $result = $runner->run($this->planForFiles($files, 1_000), new CancellationToken());
+
+        assertSame([], $result->workerDiagnostics);
+        assertSame(['src/f20Huge.js'], $result->leftOutPaths);
+        assertSame(31, $result->parsed);
+        assertSame(true, count($this->recordedBatches()) <= 2 * 32 - 1, (string) count($this->recordedBatches()));
+        assertSame(4_000_000, $result->batchBudgets['knossos.typescript']['source_bytes_used']);
+    }
+
+    public function testAFewOversizedFilesAmongHundredsSurviveAnInOrderWorker(): void
+    {
+        // A TypeScript worker answers in request order, so after a failure the
+        // first unanswered file is the one whose frame was too large. Sending
+        // it alone confirms it in one request. Halving instead put it at the
+        // front of a half that then failed before answering anything, a blind
+        // search per file, and six oversized files among 600 spent the
+        // language's whole allowance and degraded it.
+        $this->allocateRecordPath();
+        $files = [];
+        $huge = [];
+        for ($index = 0; $index < 600; ++$index) {
+            $path = $index % 100 === 37 ? sprintf('src/f%03dHuge.js', $index) : sprintf('src/f%03d.ts', $index);
+            $files[$path] = 'typescript';
+            if (str_contains($path, 'Huge')) {
+                $huge[] = $path;
+            }
+        }
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_frame_too_large_in_order', tightCap: true),
+            $this->descriptorFor('typescript', batchSourceBytes: 4_000_000),
+        );
+
+        $result = $runner->run($this->planForFiles($files, 1_000), new CancellationToken());
+
+        assertSame([], $result->workerDiagnostics);
+        assertSame(6, count($huge));
+        assertSame($huge, array_values(array_intersect($huge, $result->leftOutPaths)));
+        assertSame(6, $result->leftOut);
+        assertSame(594, $result->parsed);
+        assertSame(true, count($this->recordedBatches()) <= 2 * 600 - 2, (string) count($this->recordedBatches()));
     }
 
     public function testManyBatchesThatEachOverflowOnceAllFinish(): void
@@ -1186,27 +1247,28 @@ final class LanguageScanRunnerTest extends TestCase
 
     public function testAWorkerThatAnswersOneFileBeforeEachFailureIsNotSearchedForFree(): void
     {
-        // Every other file's answer is too large for one frame, as a line
-        // limit set too low for a project would make it. A split that only
-        // confirms one file is not progress enough to be free, so the search
-        // allowance ends it, inside the cap, and says what is likely wrong.
+        // A broken worker answers one file of every batch and then fails,
+        // whatever the files are. A split that confirms one file is not
+        // progress enough to be free. Such splits grow linearly with the
+        // files, and the allowance only with their logarithm, so on 128 files
+        // the allowance (4 + 2 * 7 = 18) ends it, inside the tree bound, and
+        // says what is likely wrong.
         $this->allocateRecordPath();
         $files = [];
-        for ($index = 0; $index < 16; ++$index) {
-            $files[sprintf('src/s%02d.ts', $index)] = 'typescript';
-            $files[sprintf('src/s%02dHuge.ts', $index)] = 'typescript';
+        for ($index = 0; $index < 128; ++$index) {
+            $files[sprintf('src/s%03d.ts', $index)] = 'typescript';
         }
         $runner = $this->runnerWithWorkerFactory(
-            fn(): ProcessScannerClient => $this->workerClient('per_file_frame_too_large_in_order', tightCap: true),
+            fn(): ProcessScannerClient => $this->workerClient('per_file_frame_too_large_after_one', tightCap: true),
             $this->descriptorFor('typescript', batchSourceBytes: 4_000_000),
         );
 
         $result = $runner->run($this->planForFiles($files, 1_000), new CancellationToken());
 
-        assertSame(true, count($this->recordedBatches()) <= 2 * 32 + 4, (string) count($this->recordedBatches()));
+        assertSame(true, count($this->recordedBatches()) <= 2 * 128 - 1, (string) count($this->recordedBatches()));
         assertSame('WORKER_FRAME_TOO_LARGE', $result->workerDiagnostics[0]['code']);
         $message = $result->workerDiagnostics[0]['message'];
-        assertContains('after 14 frame-search retries, the most a language of 32 files to scan is allowed', $message);
+        assertContains('after 18 frame-search retries, the most a language of 128 files to scan is allowed', $message);
         assertContains('suggests the limit is set too low for this project', $message);
     }
 
@@ -1278,8 +1340,9 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame(1, count($result->workerDiagnostics));
         assertSame('WORKER_FRAME_TOO_LARGE', $result->workerDiagnostics[0]['code']);
         // The allowance for 64 files is 4 + 2 * 6 = 16 charged retries, and a
-        // left-out request is not charged: well under the 127 of a full search.
-        assertSame(true, count($this->recordedBatches()) < 40, (string) count($this->recordedBatches()));
+        // left-out request is not charged: fewer requests than files, against
+        // the 127 of a full search.
+        assertSame(true, count($this->recordedBatches()) < 64, (string) count($this->recordedBatches()));
         assertContains('after 16 frame-search retries', $result->workerDiagnostics[0]['message']);
     }
 

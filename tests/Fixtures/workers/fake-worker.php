@@ -326,6 +326,37 @@ while (($line = fgets(STDIN)) !== false) {
                 fflush(STDOUT);
                 exit(0);
             }
+            // Fails before answering anything whenever the batch holds the
+            // oversized file, so nothing the worker says narrows the search.
+            if ($mode === 'per_file_frame_too_large_blind') {
+                foreach ($requested as $relativePath) {
+                    if (str_contains((string) $relativePath, 'Huge')) {
+                        fwrite(STDOUT, str_repeat('x', 150_000));
+                        fflush(STDOUT);
+                        exit(0);
+                    }
+                }
+                foreach ($requested as $relativePath) {
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                respond($id, ['count' => count($requested), 'files_scanned' => count($requested)]);
+                continue;
+            }
+            // A broken worker: answers the first file of any batch of more
+            // than one, then fails, whatever the files are.
+            if ($mode === 'per_file_frame_too_large_after_one' && count($requested) > 1) {
+                notifyContribution(fileContribution('knossos.fake:file:' . $requested[0], (string) $requested[0]));
+                fwrite(STDOUT, str_repeat('x', 150_000));
+                fflush(STDOUT);
+                exit(0);
+            }
+            if ($mode === 'per_file_frame_too_large_after_one') {
+                foreach ($requested as $relativePath) {
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                respond($id, ['count' => count($requested), 'files_scanned' => count($requested)]);
+                continue;
+            }
             // Answers every file, then writes an oversized frame that names
             // nothing at all: by elimination it belongs to no file.
             if ($mode === 'per_file_frame_too_large_after_all') {

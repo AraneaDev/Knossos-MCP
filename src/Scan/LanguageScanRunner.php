@@ -24,8 +24,10 @@ final readonly class LanguageScanRunner
         private array $descriptors,
         private LanguageWorkerPool $pool,
         private ContributionCacheService $cache,
-        // Overrides ScanBatchQueue::requestCap() for every language; a test seam, since the
-        // cap is reached only by a path every other bound already lets through.
+        // Test-only: overrides ScanBatchQueue::requestCap() for every
+        // language. The cap is provably unreachable within the 2n - b tree
+        // bound, so only a lower one set here can exercise it. Production
+        // never passes it.
         private ?int $maxRequestsPerLanguage = null,
     ) {}
 

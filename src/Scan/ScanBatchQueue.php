@@ -46,7 +46,8 @@ final class ScanBatchQueue
 
     /**
      * @param list<object> $files the files the language must scan
-     * @param ?int $requestCap overrides {@see self::requestCap()}
+     * @param ?int $requestCap test-only: overrides {@see self::requestCap()}, which
+     *        no production path can reach; production always passes null
      */
     public function __construct(
         private readonly array $files,
@@ -104,11 +105,26 @@ final class ScanBatchQueue
      * Search a batch for the file whose answer did not fit one frame.
      *
      * The files the worker already answered are not it, so only the rest is
-     * searched and the answered ones go back as one batch. A split that
-     * confirmed at least as many files as it still suspects at least halves
-     * the search and is free; any other draws on the language's allowance, or
-     * a worker answering one file before each failure would be searched file
-     * by file for nothing.
+     * searched and the answered ones go back as one batch. The first
+     * unanswered file goes first, alone: a worker that answers in request
+     * order, as the TypeScript worker largely does, failed on exactly that
+     * file, so one request confirms it, where halving put it at the front of
+     * a half that failed before answering anything and paid a blind binary
+     * search per oversized file. The rest of the unanswered files are halved
+     * behind it, so a worker that answers in any other order is still
+     * searched in logarithmic steps.
+     *
+     * A split that confirmed at least as many files as it still suspects at
+     * least halves the search and is free; any other draws on the language's
+     * allowance, or a worker answering one file before each failure would be
+     * searched file by file for nothing.
+     *
+     * Termination: every failed batch of k > 1 files is replaced by two or
+     * more non-empty batches that partition it (the probe, the halves of the
+     * rest, the answered files), and a batch of one file is a leaf. A tree
+     * whose every inner node has at least two children has fewer inner nodes
+     * than leaves, so a language of n files in b initial batches sends at
+     * most 2n - b requests, whatever the worker does.
      *
      * @param array{files: list<object>, budget: int, halvings: int, retries: int} $item
      * @param list<ScanContribution> $received what the worker answered before failing
@@ -148,9 +164,11 @@ final class ScanBatchQueue
         }
         // Halved only to isolate the file, so the language's budget is not
         // lowered: none of its batches settled on this one.
+        $probe = array_shift($unanswered);
         $budget = self::halvedBudget($unanswered, $item['budget']);
         $this->pending = [
-            ...self::queued(self::batches($unanswered, $this->halfCount($unanswered), $budget), $budget, $item['halvings'], $item['retries'] + 1),
+            ...self::queued([[$probe]], $item['budget'], $item['halvings'], $item['retries'] + 1),
+            ...($unanswered === [] ? [] : self::queued(self::batches($unanswered, $this->halfCount($unanswered), $budget), $budget, $item['halvings'], $item['retries'] + 1)),
             ...($done === [] ? [] : self::queued([$done], $item['budget'], $item['halvings'], $item['retries'] + 1)),
             ...$this->pending,
         ];
@@ -293,10 +311,14 @@ final class ScanBatchQueue
      * The most requests one language may send in a scan: two per file plus
      * four per initial batch.
      *
-     * Each mechanism that re-sends work is bounded on its own, but together
-     * they are not obviously linear; this makes them so. Two per file covers
-     * a batch split down to single files (2k - 1 requests for k files), and
-     * four per batch covers the ordinary retries each batch may take.
+     * A defensive invariant, not a working limit. Every path through this
+     * queue is a tree of batches in which each failed batch is replaced by
+     * two or more non-empty batches that partition it, so it sends at most
+     * 2n - b requests (see {@see self::searchFrame()}), below this cap. It
+     * can only be reached if a later change breaks that partition rule, and
+     * then it keeps the scan linear and names itself rather than running on.
+     * Provably unreachable as things stand, which is why its test sets a
+     * lower cap through the test-only seam on {@see self::__construct()}.
      */
     public static function requestCap(int $files, int $batches): int
     {

@@ -86,7 +86,9 @@ on.
 
 `WORKER_FRAME_TOO_LARGE` is searched for differently, because it is one file's
 answer that did not fit one frame. The files the worker had already answered are
-not the cause, so they go back as one batch and only the rest is split. A split
+not the cause, so they go back as one batch and only the rest is searched: its
+first file alone, since a worker that answers in order failed on exactly that
+file, then the others in two halves. A split
 that confirmed at least as many files as it still suspects halves the search and
 is free. Every other split draws on a search allowance per language of
 `max_scan_batch_halvings` plus two binary searches over the files it scans (16
