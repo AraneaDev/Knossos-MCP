@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import {
+    lstat,
     mkdir,
     mkdtemp,
     readdir,
@@ -287,6 +288,65 @@ describe("throwawayWorktree", () => {
             ]);
             expect(stdout.trim().split("\n")).toHaveLength(1);
         } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+    // A scan types a call into a package from that package's installed
+    // declarations. A worktree has none, so an object literal handed to a
+    // Node API (`registerHooks({ resolve() {} })`) lost its contract and its
+    // methods read as dead code the checkout's own graph does not report.
+    it("carries the checkout's installed packages, and nothing else it ignores", async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), "tree-"));
+        const repo = path.join(root, "Repo");
+        const env = { ...process.env, ...AUTHOR };
+        await mkdir(path.join(repo, "worker", "node_modules", "pkg"), {
+            recursive: true,
+        });
+        await mkdir(path.join(repo, "node_modules", "@types", "node"), {
+            recursive: true,
+        });
+        await mkdir(path.join(repo, "out"));
+        await run("git", ["init", "-q", repo], { env });
+        await writeFile(
+            path.join(repo, ".gitignore"),
+            "node_modules/\n/out/\n",
+        );
+        await writeFile(path.join(repo, "a.txt"), "a");
+        await writeFile(
+            path.join(repo, "node_modules", "@types", "node", "index.d.ts"),
+            "export {}\n",
+        );
+        await writeFile(
+            path.join(repo, "worker", "node_modules", "pkg", "index.js"),
+            "1\n",
+        );
+        await writeFile(path.join(repo, "out", "shot.png"), "png");
+        await run("git", ["-C", repo, "add", ".gitignore", "a.txt"], { env });
+        await run("git", ["-C", repo, "commit", "-qm", "a"], { env });
+        try {
+            const dir = await throwawayWorktree(repo, {
+                home: path.join(root, "home"),
+            });
+            expect(
+                await readFile(
+                    path.join(dir, "node_modules/@types/node/index.d.ts"),
+                    "utf8",
+                ),
+            ).toBe("export {}\n");
+            expect(
+                await readFile(
+                    path.join(dir, "worker/node_modules/pkg/index.js"),
+                    "utf8",
+                ),
+            ).toBe("1\n");
+            // A real directory, not a link out of the worktree: a scan reads
+            // nothing outside the root it was given.
+            expect(
+                (await lstat(path.join(dir, "node_modules"))).isSymbolicLink(),
+            ).toBe(false);
+            await expect(stat(path.join(dir, "out"))).rejects.toThrow(/ENOENT/);
+        } finally {
+            await runCleanups();
             await rm(root, { recursive: true, force: true });
         }
     });

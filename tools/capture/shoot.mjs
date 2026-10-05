@@ -14,6 +14,7 @@
 import { execFile } from "node:child_process";
 import {
     copyFile,
+    cp,
     mkdir,
     mkdtemp,
     readdir,
@@ -97,7 +98,34 @@ export async function throwawayWorktree(
     });
     await mkdir(home, { recursive: true });
     await runGit(repo, "worktree", "add", "--detach", dir, "HEAD");
+    await copyInstalledPackages(repo, dir, runGit);
     return dir;
+}
+
+/**
+ * Copies each `node_modules` the checkout has installed into the worktree, at
+ * the same place. A scan types a call into a package from that package's
+ * declarations, so without them the stills would show a graph the checkout's
+ * own scan does not have. A copy, not a link: a scan reads nothing outside
+ * the root it was given, and a shot's edit must never reach the checkout.
+ */
+async function copyInstalledPackages(repo, dir, runGit) {
+    const ignored = await runGit(
+        repo,
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+    );
+    for (const entry of ignored.split("\n")) {
+        const relative = entry.replace(/\/$/, "");
+        if (path.basename(relative) !== "node_modules") continue;
+        await cp(path.join(repo, relative), path.join(dir, relative), {
+            recursive: true,
+            verbatimSymlinks: true,
+        });
+    }
 }
 
 /** The branch origin's HEAD names (`origin/main` gives `main`), or main when there is none. */
