@@ -636,8 +636,9 @@ export function hoodBlock(centre: { name: string; boundary: string | null }, use
           }
         })
         const hidden = s.count - shown.length
-        // The box presses to the first one it hides that the detail lists, the marker onto it; past the list there is nothing to go to.
-        const next = s.items[window.end]
+        // The box presses to the nearest one it hides that the detail lists, below the window or else above it, as the
+        // line under a cut list does; past the list there is nothing to go to.
+        const next = s.items[window.end] ?? (window.start > 0 ? s.items[window.start - 1] : undefined)
         const label = `+${hidden} more`
         const box = { key: `${s.title}-more`, label, dim: true, ...(next === undefined ? {} : { press: { id: `more:${pressIndex(next.press)}`, label } }) }
         return hidden > 0 ? [...shown, { node: box, edge: '' }] : shown

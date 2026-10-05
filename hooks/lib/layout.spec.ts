@@ -800,6 +800,24 @@ describe('the detail view', () => {
     expect(plainText(row(rows, 'hood-head')!)).toMatch(/^Dependencies · used by 19 · uses 2 +edges$/)
     expect(textOf(rows)).toMatch(/Notes\n {3}note: Read-only: it never scans\./)
   })
+  it("presses its '+N more' box onto the nearest neighbour it hides, below the window or above it", () => {
+    const items = Array.from({ length: 30 }, (_, i) => ({ name: `user${i}`, canonical_name: `App\\User${i}`, kind: 'class', boundary: 'core', edges: 1 }))
+    const answer = detailAnswer({ used_by: { count: 30, truncated: false, names: [], items } })
+    const box = (selected: number): string | undefined => {
+      const input = { ...paneInput(full(), brief(), FETCHED, IDLE, view({ inspect: shown, selected }), 0, true, detailInput(shown, done(answer))), selected }
+      const segments = paneRows(input, 140, 30).flatMap(r => r.segments)
+      return segments.find(seg => seg.text.includes('more') && seg.press !== undefined)?.press?.id
+    }
+    // The marker at the top: the box counts what is below, and goes to the first of it.
+    expect(box(0)).toMatch(/^more:\d+$/)
+    const below = Number(box(0)!.slice(5))
+    expect(below).toBeGreaterThan(0)
+    // The marker on the last: the hidden ones are above, and the box goes to the nearest of them.
+    const above = box(29)
+    expect(above).toMatch(/^more:\d+$/)
+    expect(Number(above!.slice(5))).toBeLessThan(29)
+  })
+
   it('stacks what uses it above it and what it uses below it on a narrow pane, and lists them below fifty columns', () => {
     const raw = paneRows(detailPane(), 60).map(rawText).join('\n')
     expect(raw.indexOf('DashboardServiceTest::')).toBeLessThan(raw.indexOf('│ DashboardService '))
