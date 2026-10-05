@@ -150,7 +150,7 @@ final readonly class BoundaryMatrix
                 break;
             }
         }
-        $top = $this->rankedTop(count($held) === 1 || $cutoff === array_key_last($held) ? $pairs : array_filter($pairs, static fn(int $count): bool => $count >= $cutoff), $limit);
+        $top = $this->rankedTop($cutoff === array_key_last($held) ? $pairs : array_filter($pairs, static fn(int $count): bool => $count >= $cutoff), $limit);
         if (count($top) < $limit && count($top) < count($pairs)) {
             // A candidate's component was gone, so the pairs below the cutoff may be needed.
             $top = $this->rankedTop($pairs, $limit);
