@@ -411,7 +411,7 @@ export async function settleBaseline(io: Port): Promise<void> {
     if (kept.snapshot !== null) await io.state.sessionStart.update(() => kept.snapshot)
     await io.state.sessionBegan.update(() => kept.startedAt)
     mod.baselineOf = id
-    return
+    return rereadDiff(io)
   }
   // Asked once per session: a head read later would name a commit made during it.
   if (!mod.headAsked) {
@@ -419,6 +419,18 @@ export async function settleBaseline(io: Port): Promise<void> {
     await recordHead(io)
   }
   await saveBaseline(io)
+  await rereadDiff(io)
+}
+
+/**
+ * The diff of the file the detail still shows, read against the baseline
+ * just settled: a session that followed a /clear or a resume dropped the
+ * last one with its commit, and nothing else asks again until the graph
+ * changes, so the card would say it is reading the change for good.
+ */
+async function rereadDiff(io: Port): Promise<void> {
+  const shown = (await io.state.view.read()).inspect
+  if (shown !== null) await requestDiff(io, shown)
 }
 
 /** Stores the session's baseline as it stands, under its id; a store that refuses is no failure. */

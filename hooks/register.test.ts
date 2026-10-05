@@ -4526,6 +4526,49 @@ describe('the live watcher', () => {
     await ui.unmount()
   })
 
+  test('a hunk opened in the diff folds again once the diff is read at a new snapshot', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }, { stdout: paneDashboard({ snapshot_id: 's2' }) }, { stdout: paneDashboard({ snapshot_id: 's3' }) }], watch: [[READY]], ledger: [{ stdout: LEDGER }], head: [{ stdout: HEAD }], diff: [{ stdout: FULL_DIFF }, { stdout: FULL_DIFF }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+    await w.clock.advance(100)
+    const ui = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 120, scroll: { offset: 0, bodyRows: 60 } } })
+    await ui.press({ key: 'tab:changes' })
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    await ui.press({ key: 'diff-more:0' })
+    expect(await ui.find({ key: 'diff-more:0' })).toBeUndefined()
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's3', parsed_files: 1 })
+    await w.clock.advance(100)
+    await w.clock.settle()
+    expect(w.diffRuns()).toHaveLength(2)
+    // The same file, read again: folded as a diff first shows.
+    expect(await ui.find({ key: 'diff-more:0' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a /clear drops how far the diff was opened', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }, { stdout: paneDashboard({ snapshot_id: 's2' }) }], watch: [[READY], [READY]], ledger: [{ stdout: LEDGER }], head: [{ stdout: HEAD }, { stdout: HEAD }], diff: [{ stdout: FULL_DIFF }, { stdout: FULL_DIFF }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+    await w.clock.advance(100)
+    const ui = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 120, scroll: { offset: 0, bodyRows: 60 } } })
+    await ui.press({ key: 'tab:changes' })
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    await ui.press({ key: 'diff-more:0' })
+    expect(await ui.find({ key: 'diff-more:0' })).toBeUndefined()
+    await $.session.end({ reason: 'clear', sessionId: 'session-1', resume: { id: 'session-1' } } as never)
+    w.switchSession('session-2')
+    await w.clock.settle()
+    // The detail still on show reads its diff again for the new session, against the same commit and
+    // snapshot, so only the /clear can have folded it; until then it says it is reading the change.
+    expect(w.diffRuns()).toHaveLength(2)
+    expect(await ui.find({ key: 'diff-more:0' })).toBeDefined()
+    await ui.unmount()
+  })
+
   test('after a /clear the commit the new session begins at is read again', async ($, on) => {
     const w = world(on, { watch: [[READY], [READY]], head: [{ stdout: HEAD }] })
     await $.session.start(START)
