@@ -234,8 +234,9 @@ labels of the other figures that count a list are buttons too, each opening the
 tab that lists them with the marker on the first item: `components` opens Hubs,
 `boundaries` opens Boundaries, `cycles` opens Cycles, and `policy`,
 `diagnostics` and `dead code` open Issues on their first violation, diagnostic
-or candidate. When Issues lists none of what the figure counts, the tab opens
-at its top. At zero there is nothing to list, and the label is plain. `max
+or candidate. When Issues lists none of what the figure counts (a policy total
+whose violations are all `+N not listed`, say), the tab opens at its top with
+the marker on its first row, whichever kind that is. At zero there is nothing to list, and the label is plain. `max
 degree` is a single figure, so it is always plain.
 
 **This session**: the session's scans as a row of dots, how many files it
@@ -392,7 +393,8 @@ Issues gathers what needs fixing, one card each, in the order a pane this wide s
 - **Policy violations**: each declared policy violation, with the offending
   file and line.
 - **Diagnostics**: the scan's errors and warnings. The marker walks them:
-  `o` opens a diagnostic's file and `e` opens it at its line.
+  `o` opens a diagnostic's file and `e` opens it at its line. A diagnostic
+  about no file only takes the marker: `o` and `e` do nothing on it.
 - **Over budget**: files with a PHP function longer than the
   `max_php_function_lines` budget in `maintainability-budgets.json`, with how
   many functions are over and the longest. Its note names the rule
