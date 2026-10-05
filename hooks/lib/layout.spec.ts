@@ -633,10 +633,12 @@ describe('the issues tab', () => {
     expect(dead(30)).not.toContain('.php')
     expect(dead(30)).toContain('FactCollector::')
   })
-  it('walks violations, dead code, the hotspots and the files over budget, each row pressable by its index', () => {
-    const input = fullInput({ tab: 'issues', selected: 1 })
+  it('walks violations, diagnostics, dead code, the hotspots and the files over budget, each row pressable by its index', () => {
+    const input = fullInput({ tab: 'issues', selected: 3 })
     expect(listFor(input).map(i => i.canonical)).toEqual([
       'Knossos\\Query\\ArchitectureQueryService::fileMetrics',
+      'workers/typescript/src/scanner.ts',
+      'workers/python/bin/worker.py',
       'KnossosPhpScanner\\FactCollector::beforeTraverse',
       'Knossos\\Support\\helper',
       'workers/typescript/src/scanner.js',
@@ -645,7 +647,7 @@ describe('the issues tab', () => {
     ])
     const rows = paneRows(input, 90)
     expect(plainText(row(rows, 'dead-0')!)).toMatch(/^›/)
-    expect(row(rows, 'dead-1')!.segments.find(s => s.press)?.press?.id).toBe('row:2')
+    expect(row(rows, 'dead-1')!.segments.find(s => s.press)?.press?.id).toBe('row:4')
     expect(row(rows, 'pol-0')!.segments.find(s => s.press)?.press?.id).toBe('row:0')
   })
   it('counts violations, errors and warnings into the tab label', () => {
@@ -663,8 +665,25 @@ describe('the issues tab', () => {
     expect(old).toMatch(/Diagnostics +not reported/)
     const undeclared = full({ policy: { status: 'not_evaluated', total: 0, truncated: false, truncation_reasons: [], items: [] } })
     expect(textOf(paneRows(fullInput({ tab: 'issues' }, undeclared), 60))).toMatch(/Policy violations +no policies declared/)
-    expect(issuesList(issuesInput(undeclared))).toHaveLength(5)
+    expect(issuesList(issuesInput(undeclared))).toHaveLength(7)
   })
+  it('walks the diagnostics after the violations: each a press that opens its file at its line', () => {
+    const issues = issuesInput(full())
+    const walk = issuesList(issues)
+    const violations = issues.policy?.items.length ?? 0
+    expect(walk.slice(violations, violations + 2)).toEqual([
+      { name: 'scanner.ts:14', canonical: 'workers/typescript/src/scanner.ts', loc: { path: '/work/Knossos-MCP/workers/typescript/src/scanner.ts', line: 14 }, file: true },
+      { name: 'worker.py:3', canonical: 'workers/python/bin/worker.py', loc: { path: '/work/Knossos-MCP/workers/python/bin/worker.py', line: 3 }, file: true },
+    ])
+    // The dead code follows them in the walk, and each row presses its own place in it.
+    expect(walk[violations + 2]?.name).toBe(issues.deadCode.items[0]?.name)
+    const rows = paneRows(fullInput({ tab: 'issues', selected: violations }, full()), 90, 60)
+    const press = (key: string) => rows.find(r => r.key.split('|').some(k => k === key))?.segments.find(seg => seg.press !== undefined && /^row:/.test(seg.press.id))?.press?.id
+    expect(press('diag-0')).toBe(`row:${violations}`)
+    expect(press('diag-1')).toBe(`row:${violations + 1}`)
+    expect(press('dead-0')).toBe(`row:${violations + 2}`)
+  })
+
   it('reads a policy total cut short as a floor', () => {
     const cut = full({ policy: { status: 'evaluated', total: 100, truncated: true, truncation_reasons: ['time_limit'], items: [] } })
     expect(textOf(paneRows(fullInput({ tab: 'issues' }, cut), 60))).toContain('▲ 100+')
@@ -845,9 +864,9 @@ describe('tables packed to the left', () => {
     const rows = paneRows(fullInput({ tab: 'issues' }), 90)
     expect(row(rows, 'dead-0')!.segments.find(seg => seg.link)?.link).toEqual({ path: '/work/Knossos-MCP/workers/php/src/FactCollector.php', line: 108 })
     // A hotspot or a file over budget is a row: it opens as the file's detail, and `e` opens it at its longest function.
-    expect(row(rows, 'hot-0')!.segments.find(seg => seg.press)?.press).toEqual({ id: 'row:3', label: 'workers/typescript/src/scanner.js' })
+    expect(row(rows, 'hot-0')!.segments.find(seg => seg.press)?.press).toEqual({ id: 'row:5', label: 'workers/typescript/src/scanner.js' })
     const listed = listFor(fullInput({ tab: 'issues' }))
-    expect(listed.slice(3).map(i => [i.canonical, i.file, i.loc?.line])).toEqual([
+    expect(listed.slice(5).map(i => [i.canonical, i.file, i.loc?.line])).toEqual([
       ['workers/typescript/src/scanner.js', true, null],
       ['src/Discovery/ProjectDiscoverer.php', true, null],
       ['src/Scan/ProjectScanService.php', true, 88],

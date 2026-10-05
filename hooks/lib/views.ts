@@ -79,7 +79,8 @@ export type Jump = { tab: PaneTab; degree?: { from: number; to: number | null };
 
 export type ViolationLine = { source: Openable & { boundary: string | null }; target: string; targetBoundary: string | null; place: string }
 export type DeadLine = Openable & { boundary: string | null; place: string; testOnly: boolean }
-export type DiagnosticLine = { severity: string; text: string; place: string; loc: Loc | null }
+/** A diagnostic as Issues lists it; `path` null for one about no file (the project's own setup). */
+export type DiagnosticLine = { severity: string; text: string; path: string | null; place: string; loc: Loc | null }
 
 export type IssuesInput = {
   /** Null when the knossos that answered sends no policy section. */
@@ -187,7 +188,7 @@ export function issuesInput(d: Dashboard): IssuesInput {
             errors: diagnostics.errors,
             warnings: diagnostics.warnings,
             infos: diagnostics.infos,
-            items: diagnostics.items.map(x => ({ severity: x.severity, text: `${x.code} ${x.message}`, place: placeOf(x.path, x.line), loc: locIn(root, x.path, x.line) })),
+            items: diagnostics.items.map(x => ({ severity: x.severity, text: `${x.code} ${x.message}`, path: x.path, place: placeOf(x.path, x.line), loc: locIn(root, x.path, x.line) })),
           },
     deadCode: {
       total: countLabel(d.dead_code_candidates, d.dead_code_truncated),
@@ -225,6 +226,8 @@ export function issuesList(issues: IssuesInput): Openable[] {
   const file = (path: string, loc: Loc | null): Openable => ({ name: path, canonical: path, loc, file: true })
   return [
     ...(issues.policy?.items ?? []).map(v => v.source),
+    // A diagnostic opens its file, and `e` goes to its line; one about no file is only marked.
+    ...(issues.diagnostics?.items ?? []).map((x): Openable => (x.path === null ? { name: x.text, canonical: x.text, inert: true } : { name: x.place, canonical: x.path, loc: x.loc, file: true })),
     ...issues.deadCode.items,
     ...issues.hotspots.map(f => file(f.path, f.loc)),
     ...(issues.budget?.files ?? []).map(f => file(f.path, f.loc)),
@@ -355,15 +358,18 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
     },
   }))
   const d = issues.diagnostics
-  const diagEntries: Entry[] = (d?.items ?? []).map(x => ({
+  // The walk: the violations, the diagnostics, the dead code, the hotspots, the files over budget.
+  const diagOffset = violations.length
+  const diagEntries: Entry[] = (d?.items ?? []).map((x, i) => ({
+    selected: diagOffset + i === selected,
     mark: x.severity === 'error' ? { text: '✗', color: STATUS_COLOURS.alert } : { text: '▲', color: STATUS_COLOURS.warn },
     place: x.place,
     loc: x.loc,
     need: cells(x.text),
-    main: width => [{ text: fit(x.text, width) }],
+    main: width => [button(`row:${diagOffset + i}`, fit(x.text, width))],
   }))
   const dead = issues.deadCode
-  const offset = violations.length
+  const offset = diagOffset + diagEntries.length
   const deadEntries: Entry[] = dead.items.map((c, i) => ({
     selected: offset + i === selected,
     mark: c.testOnly ? { text: '◇', dim: true } : undefined,
@@ -395,7 +401,7 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
             : policy.count === 0
               ? [{ text: '✓ 0', color: STATUS_COLOURS.ok }]
               : [{ text: `▲ ${policy.total}`, color: STATUS_COLOURS.alert }]
-      const body = listed('pol', violationEntries, columns, limit, selected < offset ? selected : -1, 0)
+      const body = listed('pol', violationEntries, columns, limit, selected < diagOffset ? selected : -1, 0)
       if (policy !== null && policy.evaluated && policy.count > violations.length) body.push(dimRow('pol-more', `   +${policy.count - violations.length} not listed`, columns))
       return { key: 'policy', title: 'Policy violations', note: verdict, body, empty: 'none' }
     },
@@ -408,7 +414,8 @@ export function issuesArrangement(issues: IssuesInput, selected: number, tier: T
         d === null
           ? 'not reported'
           : [plural(d.errors, 'error', 'errors'), plural(d.warnings, 'warning', 'warnings'), ...(d.infos > 0 ? [plural(d.infos, 'note', 'notes')] : [])].join(' · ')
-      const body = listed('diag', diagEntries, columns, limit, -1)
+      const local = selected - diagOffset
+      const body = listed('diag', diagEntries, columns, limit, local >= 0 && local < diagEntries.length ? local : -1, diagOffset)
       return { key: 'diag', title: 'Diagnostics', note: noteOf(counts), body, empty: 'none' }
     },
   }

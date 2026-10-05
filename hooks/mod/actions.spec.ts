@@ -162,10 +162,9 @@ describe('a figure that counts a set', () => {
   it('opens the tab that lists it, the marker on its first item', async () => {
     let v: KnossosView = { inspect: null, isBandHidden: false, tab: 'overview', selected: 4, showKeys: false, filter: 'x', filtering: true, sort: 'in', degree: { from: 3, to: null } }
     const cell = <T>(value: T) => ({ read: async () => value, update: async (change: (w: T) => T) => void (value = change(value)) })
-    // Two violations listed before the dead code on Issues.
-    const io = {
-      state: { view: { read: async () => v, update: async (change: (w: KnossosView) => KnossosView) => void (v = change(v)) }, dashboard: cell({ status: 'ok', policy: { status: 'evaluated', total: 2, items: [{}, {}] } }) },
-    } as unknown as Port
+    // Two violations, then three diagnostics, then the dead code, in the walk on Issues.
+    const dashboard = cell<Record<string, unknown>>({ status: 'ok', policy: { status: 'evaluated', total: 2, items: [{}, {}] }, diagnostics: { items: [{}, {}, {}] }, dead_code: [{}] })
+    const io = { state: { view: { read: async () => v, update: async (change: (w: KnossosView) => KnossosView) => void (v = change(v)) }, dashboard } } as unknown as Port
     const go = async (key: string) => PRESSES.get('stat:')!(io, key, undefined, `stat:${key}`)
     await go('cycles')
     expect(v).toMatchObject({ tab: 'cycles', selected: 0, filtering: false, degree: null })
@@ -175,8 +174,16 @@ describe('a figure that counts a set', () => {
     expect(v).toMatchObject({ tab: 'boundaries', selected: 0 })
     await go('policy')
     expect(v).toMatchObject({ tab: 'issues', selected: 0 })
-    await go('dead')
+    await go('diagnostics')
     expect(v).toMatchObject({ tab: 'issues', selected: 2 })
+    await go('dead')
+    expect(v).toMatchObject({ tab: 'issues', selected: 5 })
+    // A count with nothing listed under it: the tab opens at its top.
+    await dashboard.update(d => ({ ...d, dead_code: [], diagnostics: { items: [] } }))
+    await go('dead')
+    expect(v).toMatchObject({ tab: 'issues', selected: 0 })
+    await go('diagnostics')
+    expect(v).toMatchObject({ tab: 'issues', selected: 0 })
     await go('nonsense')
     expect(v.tab).toBe('issues')
   })

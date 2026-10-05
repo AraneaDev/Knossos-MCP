@@ -515,13 +515,18 @@ const STAT_LISTS: Readonly<Record<string, PaneTab>> = { cycles: 'cycles', compon
 /**
  * A figure that counts a set (an Overview tile, the violations a session
  * introduced): opens the tab that lists it, the marker on its first item.
- * On Issues the dead code follows the policy violations in the walk.
+ * On Issues the diagnostics follow the policy violations in the walk, and
+ * the dead code follows them.
  */
 async function openStat(io: Port, key: string): Promise<void> {
   if (!Object.hasOwn(STAT_LISTS, key)) return
   const tab = STAT_LISTS[key]!
   const d = await io.state.dashboard.read()
-  const selected = key === 'dead' && d?.status === 'ok' ? (d.policy?.items?.length ?? 0) : 0
+  // The Issues walk: the violations, then the diagnostics, then the dead code. A count with nothing listed under it opens the tab at its top.
+  const violations = d?.status === 'ok' ? (d.policy?.items?.length ?? 0) : 0
+  const diagnostics = d?.status === 'ok' ? (d.diagnostics?.items?.length ?? 0) : 0
+  const dead = d?.status === 'ok' ? (d.dead_code?.length ?? 0) : 0
+  const selected = key === 'diagnostics' ? (diagnostics > 0 ? violations : 0) : key === 'dead' ? (dead > 0 ? violations + diagnostics : 0) : 0
   await io.state.view.update((v): KnossosView => ({ ...v, tab, inspect: null, route: null, selected, filtering: false, finding: false, drift: false, target: undefined, degree: null }))
 }
 
