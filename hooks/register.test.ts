@@ -3532,6 +3532,74 @@ describe('knossos mod', () => {
     }
   })
 
+  test('the count of files no test reaches lists only them, the marker on the first; again, or show all files, lists every file', async ($, on) => {
+    const turn = brief({
+      changed_files: ['src/Router.php', 'src/Kernel.php'],
+      impact: {
+        'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'Http', tests: 2 },
+        'src/Kernel.php': { path: 'src/Kernel.php', dependent_files: 3, boundaries: ['Core'], boundary: 'Core', tests: 0 },
+      },
+      tests: [{ path: 'tests/Http/RouterTest.php', distance: 1 }],
+    })
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], brief: [{ stdout: turn }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const listed = async (ui: Awaited<ReturnType<typeof mountPane>>) =>
+      (await ui.findAll({})).filter(e => typeof e.key === 'string' && /^change-\d+$/.test(e.key)).map(e => drawn(e.text ?? ''))
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface, 120)
+      await ui.press({ key: 'tab:changes' })
+      expect(await listed(ui)).toHaveLength(2)
+      expect((await ui.find({ key: 'untested-row' }))?.type).toBe('Button')
+      await ui.press({ key: 'untested-row' })
+      // Only the file none reaches, marked, and the count says the list is narrowed.
+      const only = await listed(ui)
+      expect(only).toHaveLength(1)
+      expect(only[0]).toMatch(/Kernel\.php/)
+      expect(await ui.find({ key: 'row:0-bg' })).toBeDefined()
+      expect(drawn((await ui.find({ key: 'pane' }))?.text ?? '')).toMatch(/▲ 1 file no test reaches · showing only these/)
+      // The footer's `u` says what a press does now.
+      expect((await ui.find({ key: 'untested' }))?.props).toMatchObject({ hotkey: 'u', label: 'all files' })
+      // Again, every file, the marker still on the file it was on.
+      await ui.press({ key: 'untested-row' })
+      expect(await listed(ui)).toHaveLength(2)
+      expect(drawn((await ui.find({ key: 'change-1' }))?.text ?? '')).toMatch(/Kernel\.php/)
+      expect(await ui.find({ key: 'row:1-bg' })).toBeDefined()
+      // `u` narrows it, and the row the narrowing adds widens it again.
+      await ui.press({ key: 'untested' })
+      expect(await listed(ui)).toHaveLength(1)
+      await ui.press({ key: 'untested-all' })
+      expect(await listed(ui)).toHaveLength(2)
+      // From the Overview's session card the count opens Changes narrowed.
+      await ui.press({ key: 'tab:overview' })
+      await ui.press({ key: 'untested-row' })
+      expect(await listed(ui)).toHaveLength(1)
+      expect(await ui.find({ key: 'tab:changes-bg' })).toBeDefined()
+      // Within the bounds the engine sets every tree, at the sizes the pane is drawn.
+      for (const [bodyColumns, bodyRows] of [[60, 30], [120, 40], [200, 60]] as const) {
+        await ui.redraw({ ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows } })
+        const size = treeSize(await ui.drawn())
+        expect(size.chars, `${bodyColumns}`).toBeLessThan(72_000)
+        expect(size.nodes, `${bodyColumns}`).toBeLessThan(10_000)
+        expect(size.depth, `${bodyColumns}`).toBeLessThan(16)
+      }
+      await ui.press({ key: 'untested-all' })
+      await ui.unmount()
+    }
+    // A /clear lists every file again.
+    const ui = await mountPane($, 'terminal', 120)
+    await ui.press({ key: 'tab:changes' })
+    await ui.press({ key: 'untested-row' })
+    await $.session.end({ reason: 'clear', sessionId: 'session-1', resume: { id: 'session-1' } } as never)
+    w.switchSession('session-2')
+    await w.clock.settle()
+    expect(drawn((await ui.find({ key: 'pane' }))?.text ?? '')).not.toMatch(/showing only these/)
+    await ui.unmount()
+  })
+
   test('a changed file opens a detail that names who depends on it, from Changes', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], file: [{ stdout: fileDetailOf('src/Router.php') }], detail: [{ stdout: fullDetailOf('Router') }] })
     await $.session.start(START)

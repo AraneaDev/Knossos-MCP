@@ -77,6 +77,8 @@ const sessionRev = atom({ plugin: 'knossos', key: 'sessionRev' } as const, null 
 const fileDiff = atom({ plugin: 'knossos', key: 'fileDiff' } as const, null as DiffState | null)
 /** How far the detail's diff is opened (its hunks shown whole, the first hunk shown), for the diff it was opened on. */
 const diffFold = atom({ plugin: 'knossos', key: 'diffFold' } as const, null as DiffFold | null)
+/** Whether the Changes list holds only the changed files no test reaches: the press on that count, and `u`. */
+const untestedOnly = atom({ plugin: 'knossos', key: 'untestedOnly' } as const, false as boolean)
 /** Where the checkout stands (commit and branch), for the header; null until read, and without git. */
 const gitHead = atom({ plugin: 'knossos', key: 'gitHead' } as const, null as GitHead)
 /** The Boundaries tab's marked heat map cell spelled out, as last read. */
@@ -154,6 +156,7 @@ function portOf($: EngineInterface): Port {
       sessionRev: { read: () => read($, sessionRev), update: change => update($, sessionRev, change) },
       fileDiff: { read: () => read($, fileDiff), update: change => update($, fileDiff, change) },
       diffFold: { read: () => read($, diffFold), update: change => update($, diffFold, change) },
+      untestedOnly: { read: () => read($, untestedOnly), update: change => update($, untestedOnly, change) },
       gitHead: { read: () => read($, gitHead), update: change => update($, gitHead, change) },
       couplings: { read: () => read($, couplings), update: change => update($, couplings, change) },
       feedback: { read: () => read($, feedback), update: change => update($, feedback, change) },

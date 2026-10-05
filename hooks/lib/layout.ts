@@ -266,6 +266,8 @@ export type PaneExtras = {
   route?: RouteState | null
   /** A note being added on the detail. */
   note?: NoteState | null
+  /** Whether the Changes list holds only the files no test reaches. */
+  untestedOnly?: boolean
 }
 
 /**
@@ -440,7 +442,7 @@ export function paneInput(
   const summary = summaryParts(d, items.length)
   const issues = issuesInput(d)
   const hues = huesOf(d)
-  const changes = changesInput(session, d.project_root, hues, sessionRoot)
+  const changes = changesInput(session, d.project_root, hues, sessionRoot, extras.untestedOnly === true)
   const drift = driftInput(d)
   const boundaries = boundariesInput(d)
   const turn = brief?.status === 'ok' && brief.policy.status === 'evaluated' ? String(brief.policy.total) : null
@@ -821,6 +823,7 @@ const KEY_HELP: [string, string][] = [
   ['q', 'ask Claude about the marked row: your press sends the prompt'],
   ['t', "on Overview and Changes: copy the command for the tests that reach this session's changes"],
   ['d', 'list the files drifted since the snapshot, or hide them'],
+  ['u', 'on Overview and Changes: list only the changed files no test reaches, or every file again'],
   ['l', "on Boundaries: move the marked cell to the next boundary the marked one depends on, and spell it out"],
   ['f', 'find any component or file by the letters of its name; Enter opens the first match, x closes the finder'],
   ['p', "in a component's detail: pick another component in the finder and draw the route between them"],
@@ -880,6 +883,7 @@ export function footerRows(input: PaneInput, columns: number, hasList: boolean, 
   if (onTab && input.tab === 'boundaries' && input.boundaries !== null && markedCell(input.boundaries, input.selected, input.target) !== null) actions.push(button('target', 'next cell', 'l'))
   // On Overview `t` stands beside the tests it copies, in "This session".
   if (onTab && input.tab === 'changes' && input.changes.command !== null) actions.push(button('tests', 'copy test command', 't'))
+  if (onTab && (input.tab === 'changes' || input.tab === 'overview') && input.changes.untested > 0) actions.push(button('untested', input.tab === 'changes' && input.changes.untestedOnly ? 'all files' : 'untested', 'u'))
   if (input.detail === null && input.drift !== null) actions.push(button('drift', input.driftOpen ? 'hide drifted' : 'drifted files', 'd'))
   if (onTab && input.tab === 'hubs') {
     actions.push(button('filter', 'narrow', 'n'), button('sort', `sort: ${input.sort}`, 's'))

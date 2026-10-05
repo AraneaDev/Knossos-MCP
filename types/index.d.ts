@@ -681,6 +681,8 @@ declare module 'claude-code' {
       fileDiff: DiffState | null
       /** How far the detail's diff is opened: its hunks shown whole, and the first one shown. */
       diffFold: DiffFold | null
+      /** Whether the Changes list holds only the changed files no test reaches. */
+      untestedOnly: boolean
       /** Where the checkout stands now, for the header; null until read, and when there is no git. */
       gitHead: GitHead
       /** The heat map cell spelled out on the Boundaries tab, as last read. */

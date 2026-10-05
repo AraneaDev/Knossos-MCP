@@ -486,6 +486,29 @@ async function pageDiff(io: Port, from: number): Promise<void> {
   await foldDiff(io, fold => ({ ...fold, from }))
 }
 
+/**
+ * The count of changed files no test reaches, or `u`: on Changes it lists
+ * only those files, the marker on the first, and pressed again lists every
+ * file; anywhere else (the Overview's session card) it opens Changes with
+ * the list narrowed so.
+ */
+async function toggleUntested(io: Port): Promise<void> {
+  const v = await io.state.view.read()
+  const onChanges = v.tab === 'changes' && v.inspect === null && (v.route ?? null) === null && v.finding !== true
+  if (onChanges && (await io.state.untestedOnly.read())) return showAllFiles(io)
+  await io.state.untestedOnly.update(() => true)
+  await io.state.view.update((w): KnossosView => ({ ...w, tab: 'changes', inspect: null, route: null, selected: 0, filtering: false, finding: false, drift: false, target: undefined, degree: null }))
+}
+
+/** Every changed file listed again, the marker kept on the file it was on. */
+async function showAllFiles(io: Port): Promise<void> {
+  if (!(await io.state.untestedOnly.read())) return
+  const marked = (await currentList(io))[(await io.state.view.read()).selected]?.canonical
+  await io.state.untestedOnly.update(() => false)
+  const at = marked === undefined ? -1 : (await currentList(io)).findIndex(item => item.canonical === marked)
+  await io.state.view.update(v => ({ ...v, selected: Math.max(0, at) }))
+}
+
 /** What one press does: `rest` is what follows the colon of a prefixed id (`row:3` gives `3`), `id` the whole id. */
 type Press = (io: Port, rest: string, surface: RenderSurface | undefined, id: string) => unknown
 
@@ -538,6 +561,9 @@ export const PRESSES: ReadonlyMap<string, Press> = new Map<string, Press>([
   ['diff-more:', (io, rest) => openHunk(io, Number(rest))],
   ['diff-from:', (io, rest) => pageDiff(io, Number(rest))],
   ['diff-open', io => openRow(io)],
+  // The changed files no test reaches: listed alone (`u`, or a press on their count), and every file again.
+  ['untested', io => toggleUntested(io)],
+  ['untested-all', io => showAllFiles(io)],
   // Back from a route goes to the detail it was picked from; from a detail, to the tab.
   ['back', viewing(v => ((v.route ?? null) !== null ? { ...v, route: null, selected: 0 } : { ...v, inspect: null, selected: v.opened ?? 0 }))],
   ['keys', viewing(v => ({ ...v, showKeys: !v.showKeys }))],
@@ -554,8 +580,8 @@ export const PRESSES: ReadonlyMap<string, Press> = new Map<string, Press>([
   ['allow-no', io => io.state.allow.update((a): AllowState => (a.phase === 'confirming' ? { phase: 'idle', root: null, reason: null } : a))],
 ])
 
-/** Ids that do what another does: a tab's hidden hotkey twin, the drift line's second button, and the Cycles moves and folds. */
-const SAME_AS: Readonly<Record<string, string>> = { 'tabkey:': 'tab:', drifted: 'drift', 'prev:': 'next:', 'mark:': 'next:', 'fold:': 'unfold:' }
+/** Ids that do what another does: a tab's hidden hotkey twin, the drift line's second button, the Cycles moves and folds, and the untested count beside `u`. */
+const SAME_AS: Readonly<Record<string, string>> = { 'tabkey:': 'tab:', drifted: 'drift', 'prev:': 'next:', 'mark:': 'next:', 'fold:': 'unfold:', 'untested-row': 'untested' }
 
 /** Which entry of {@link PRESSES} a press on `id` runs, and what follows the colon; null for an id that does nothing. */
 export function pressOf(id: string): { key: string; rest: string } | null {

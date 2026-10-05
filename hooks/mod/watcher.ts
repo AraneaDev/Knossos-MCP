@@ -10,12 +10,13 @@ import type { JobState } from '../lib/band'
 import { parseRescan, parseSessionLedger, parseTurnBrief, rescanReason } from '../lib/envelopes'
 import type { TurnBrief } from '../lib/envelopes'
 import { ledgerFlashKeys } from '../lib/flash'
+import { changesInput } from '../lib/changes'
 import { accumulate, cdFor } from '../lib/layout'
 import { isWatching, LIVE_OFF, liveAfter, snapshotOf, watchLines } from '../lib/live'
 import { SingleFlight } from '../lib/scheduler'
 import { deliverNote, turnEndNote } from './agent'
 import { refreshDashboard } from './loaders'
-import { disable, keepScan, light, sleep, wrapper } from './port'
+import { disable, keepScan, light, shownChanges, sleep, wrapper } from './port'
 import type { Port } from './port'
 import { exclusively, mod } from './state'
 
@@ -60,6 +61,19 @@ async function loadLedger(io: Port): Promise<void> {
   if ((await io.state.sessionStart.read()) !== since) return
   await light(io, ledgerFlashKeys(await io.state.sessionLedger.read(), parsed), await io.clock.now())
   await io.state.sessionLedger.update(() => parsed)
+  await settleUntested(io)
+}
+
+/**
+ * The Changes list narrowed to the files no test reaches goes back to every
+ * file once none is left, so a later file none reaches does not narrow it
+ * again unasked.
+ */
+async function settleUntested(io: Port): Promise<void> {
+  if (!(await io.state.untestedOnly.read())) return
+  const d = await io.state.dashboard.read()
+  const root = d?.status === 'ok' ? (d.project_root ?? null) : null
+  if (changesInput(await shownChanges(io, root), root).untested === 0) await io.state.untestedOnly.update(() => false)
 }
 
 /** Stores what a turn brief says, by its status; resolves true when it is a fresh `ok`. */
@@ -81,7 +95,10 @@ async function settleBrief(io: Port, parsed: TurnBrief | null, now: number): Pro
     return false
   }
   await io.state.brief.update(() => parsed)
-  if (parsed.status === 'ok') await io.state.changes.update(c => accumulate(c, parsed))
+  if (parsed.status === 'ok') {
+    await io.state.changes.update(c => accumulate(c, parsed))
+    await settleUntested(io)
+  }
   await io.state.job.update((): JobState => ({ phase: 'idle', lastAttemptAt: now }))
   return parsed.status === 'ok'
 }

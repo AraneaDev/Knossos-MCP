@@ -51,6 +51,7 @@ export async function currentInput(io: Port, terminal: boolean): Promise<PaneInp
     rings: await io.state.rings.read(),
     route: await io.state.route.read(),
     note: await io.state.note.read(),
+    untestedOnly: await io.state.untestedOnly.read(),
   }
   // The marked row's detail beside the tab: only while the pane is drawn wide.
   const peeked = mod.paneWide ? await io.state.peek.read() : null

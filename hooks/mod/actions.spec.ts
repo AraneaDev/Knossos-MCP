@@ -131,3 +131,12 @@ describe('opening the diff further', () => {
     expect((await fold())?.from).toBe(5)
   })
 })
+
+describe('the files no test reaches', () => {
+  it('has a press for `u` and its count, and one for every file again, none keyed as a row is', () => {
+    expect(pressOf('untested')).toEqual({ key: 'untested', rest: '' })
+    expect(pressOf('untested-row')).toEqual({ key: 'untested', rest: '' })
+    expect(pressOf('untested-all')).toEqual({ key: 'untested-all', rest: '' })
+    for (const row of ['changes-untested', 'changes-all', 'session-said']) expect(pressOf(row), row).toBeNull()
+  })
+})

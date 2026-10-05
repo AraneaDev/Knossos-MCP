@@ -18,7 +18,7 @@ const churnOk = JSON.stringify({ status: 'ok', files: [] })
  * subcommand from `answers` and records every run.
  */
 function fakePort(initial: Record<string, unknown>, answers: Record<string, string> = {}) {
-  const blank = { brief: null, dashboard: null, view: view(), detail: null, refresh: { fetchedAt: null, failed: false }, rescan: { phase: 'idle', reason: null }, allow: { phase: 'idle', root: null, reason: null }, theme: 'dark', changes: NO_CHANGES, sessionRoot: null, live: LIVE_OFF, sessionLedger: null, sessionStart: null, sessionBegan: null, sessionEdits: [], sessionScans: [], sessionRev: null, fileDiff: null, diffFold: null, gitHead: null, couplings: null, feedback: null, search: { query: '', for: null, phase: 'idle', answer: null }, peek: null, branch: null, flash: null, churn: null, rings: null, route: null, note: null }
+  const blank = { brief: null, dashboard: null, view: view(), detail: null, refresh: { fetchedAt: null, failed: false }, rescan: { phase: 'idle', reason: null }, allow: { phase: 'idle', root: null, reason: null }, theme: 'dark', changes: NO_CHANGES, sessionRoot: null, live: LIVE_OFF, sessionLedger: null, sessionStart: null, sessionBegan: null, sessionEdits: [], sessionScans: [], sessionRev: null, fileDiff: null, diffFold: null, untestedOnly: false, gitHead: null, couplings: null, feedback: null, search: { query: '', for: null, phase: 'idle', answer: null }, peek: null, branch: null, flash: null, churn: null, rings: null, route: null, note: null }
   const values = new Map<string, unknown>(Object.entries({ ...blank, ...initial }))
   const timers: { at: number; run: () => void; cancelled: boolean }[] = []
   const runs: string[][] = []

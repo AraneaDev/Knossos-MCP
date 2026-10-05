@@ -482,15 +482,17 @@ export function sessionBlock(changes: ChangesInput, look: LookAt | null, selecte
       const timeline = timelineRow(changes, columns)
       if (timeline !== null) body.push(timeline)
       const dependents = changes.files.reduce((n, f) => n + f.dependents, 0)
+      // A warning about files no test reaches is a press that lists only them on Changes, when the reach of some is known.
+      const warned = (text: string): Segment => (changes.untested > 0 ? button('untested-row', text, undefined, { color: STATUS_COLOURS.warn }) : { text, color: STATUS_COLOURS.warn })
       const plus = changes.truncated ? '+' : ''
       const tests = look?.tests ?? changes.tests.length
       // Each figure a group, so a narrow card wraps between them rather than cutting one.
       const said: Segment[][] = [
         [{ text: `${grouped(changes.files.length)}${plus}`, color: HEADING }, { text: ` ${changes.files.length === 1 ? 'file' : 'files'} ·`, dim: true }],
         [{ text: grouped(dependents), color: HEADING }, { text: ` ${dependents === 1 ? 'dependent' : 'dependents'} ·`, dim: true }],
-        tests === 0 ? [{ text: '▲ no test reaches them', color: STATUS_COLOURS.warn }] : [{ text: grouped(tests), color: HEADING }, { text: ` ${tests === 1 ? 'test reaches' : 'tests reach'} them`, dim: true }],
+        tests === 0 ? [warned('▲ no test reaches them')] : [{ text: grouped(tests), color: HEADING }, { text: ` ${tests === 1 ? 'test reaches' : 'tests reach'} them`, dim: true }],
         // Of them, the files no test reaches at all: what a change leaves unchecked.
-        ...(tests > 0 && changes.untested > 0 ? [[{ text: '· ', dim: true }, { text: `▲ ${untestedText(changes.untested)}`, color: STATUS_COLOURS.warn }]] : []),
+        ...(tests > 0 && changes.untested > 0 ? [[{ text: '· ', dim: true }, warned(`▲ ${untestedText(changes.untested)}`)]] : []),
       ]
       body.push(...wrapGroups('session-said', said, columns, 1, 3))
       const open: Segment[] = [{ text: '  ' }, button('row:0', 'Changes'), { text: '  every file, its dependents and its tests', dim: true }]

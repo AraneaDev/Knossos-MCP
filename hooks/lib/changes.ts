@@ -15,6 +15,7 @@ import type { Hues } from './palette'
 import {
   baseName,
   blank,
+  button,
   cells,
   chip,
   clip,
@@ -327,6 +328,8 @@ export type ChangesInput = {
   violations: number
   /** The files still there that no test reaches, as far as that is known. */
   untested: number
+  /** Whether the list holds only the files no test reaches: asked for, and there are some. */
+  untestedOnly: boolean
   truncated: boolean
   /** Whether the files are every change since the session began (from the scan ledger), each with its origin. */
   sinceStart: boolean
@@ -343,7 +346,7 @@ export type ChangesInput = {
  * The Changes tab's view of the session's changes; `root` places the files on
  * disk, and the command changes to it when `sessionRoot` is elsewhere.
  */
-export function changesInput(changes: SessionChanges, root: string | null, hues: Hues = NO_HUES, sessionRoot: string | null = null): ChangesInput {
+export function changesInput(changes: SessionChanges, root: string | null, hues: Hues = NO_HUES, sessionRoot: string | null = null, untestedOnly = false): ChangesInput {
   const files = Object.entries(changes.files)
     .map(([path, f]) => ({
       path,
@@ -361,6 +364,7 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
     .sort((a, b) => a.distance - b.distance || a.path.localeCompare(b.path))
   const reached = [...new Set(Object.values(changes.files).flatMap(f => f.boundaries))]
   const rank = rankIn(hues)
+  const untested = files.filter(isUntested).length
   return {
     turns: changes.turns,
     files,
@@ -368,7 +372,9 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
     command: testCommand(tests.map(t => t.path), changes.js_runners, cdFor(root, sessionRoot)),
     boundaries: reached.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)),
     violations: changes.violations.length,
-    untested: files.filter(f => f.tests === 0).length,
+    untested,
+    // With none left to show, the list is every file again.
+    untestedOnly: untestedOnly && untested > 0,
     truncated: changes.truncated,
     sinceStart: changes.origins !== undefined,
     fallback: changes.fallback ?? null,
@@ -414,8 +420,14 @@ const TIMELINE_DOT = '●'
 
 /** The files the Changes tab walks: each opens as a file's detail (who depends on it), and `e` opens it in the editor. */
 export function changesList(input: ChangesInput): Openable[] {
-  return input.files.map(f => ({ name: f.path, canonical: f.path, loc: f.loc, file: true, changed: true }))
+  return listedFiles(input).map(f => ({ name: f.path, canonical: f.path, loc: f.loc, file: true, changed: true }))
 }
+
+/** A file still there that no test reaches: what the count above the list counts. */
+const isUntested = (f: TouchedFile): boolean => f.tests === 0
+
+/** The files the Changes list shows, in its order: every one, or only those no test reaches. */
+export const listedFiles = (input: ChangesInput): TouchedFile[] => (input.untestedOnly ? input.files.filter(isUntested) : input.files)
 
 /** What the Overview's session card reads: the touched file with the most dependents, how many tests reach the changes, and their command. */
 export type LookAt = { file: TouchedFile | null; tests: number; command: string | null; plus: boolean }
@@ -463,7 +475,7 @@ const TESTS_MIN = 3
  * files.
  */
 export function changesArrangement(input: ChangesInput, selected: number, tier: Tier, hues: Hues = NO_HUES, lit: ReadonlySet<string> = new Set()): Arrangement {
-  const files: Block = { key: 'changes', grow: { length: input.files.length, min: FILES_MIN }, make: (columns, limit) => filesSection(input, selected, columns, limit, tier, hues, lit) }
+  const files: Block = { key: 'changes', grow: { length: listedFiles(input).length, min: FILES_MIN }, make: (columns, limit) => filesSection(input, selected, columns, limit, tier, hues, lit) }
   if (input.files.length === 0) return { left: [files] }
   const tests: Block = { key: 'tests', grow: { length: input.tests.length, min: TESTS_MIN }, make: (columns, limit) => testsSection(input, columns, limit, hues) }
   // Wide, the two side by side on the grid, equally tall.
@@ -501,20 +513,26 @@ function filesSection(input: ChangesInput, selected: number, columns: number, li
   if (input.violations > 0) {
     rows.push({ key: 'changes-policy', segments: [{ text: '   ' }, { text: `▲ ${plural(input.violations, 'policy violation', 'policy violations')} introduced`, color: STATUS_COLOURS.alert }] })
   }
-  if (input.untested > 0) rows.push({ key: 'changes-untested', segments: [{ text: '   ' }, { text: `▲ ${untestedText(input.untested)}`, color: STATUS_COLOURS.warn }] })
+  // The count is a press that lists only those files; while it does, it says so, and a row offers every file back.
+  if (input.untested > 0) {
+    const count: Segment[] = [button('untested-row', `▲ ${untestedText(input.untested)}`, undefined, { color: STATUS_COLOURS.warn })]
+    rows.push(...wrapGroups('changes-untested', input.untestedOnly ? [count, [{ text: '· showing only these', dim: true }]] : [count], columns, 1, 3))
+    if (input.untestedOnly) rows.push({ key: 'changes-all', segments: [{ text: '   ' }, button('untested-all', 'show all files', undefined, { dim: true })] })
+  }
   const head = tableHead('changes-cols', spec, { name: 'file', boundary: 'boundary', numbers: ['deps'] })
   rows.push({
     ...head,
     segments: [...head.segments, ...(tested === 0 ? [] : [{ text: ` ${padStart('tests', TESTS_WIDTH)}`, dim: true }]), ...(origin === 0 ? [] : [{ text: ` ${padEnd('from', ORIGIN_WIDTH)}`, dim: true }])],
   })
-  const window = windowOf(input.files.length, limit, selected)
-  input.files.slice(window.start, window.end).forEach((f, n) => {
+  const listed = listedFiles(input)
+  const window = windowOf(listed.length, limit, selected)
+  listed.slice(window.start, window.end).forEach((f, n) => {
     const i = window.start + n
     const line = tableRow(`change-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, selected: i === selected, mark: statusMark(f.status), path: true, press: `row:${i}`, lit: lit.has(`change:${f.path}`) }, spec, hues)
     const added: Segment[] = [...(tested === 0 ? [] : [{ text: ' ' }, testsCell(f.tests)]), ...(origin === 0 || f.origin === undefined ? [] : [{ text: ' ' }, originCell(f.origin)])]
     return rows.push(added.length === 0 ? line : { ...line, segments: [...line.segments, ...(line.tint === undefined ? added : tinted(added, line.tint))] })
   })
-  rows.push(...moreRows('changes-more', window, input.files.length, columns))
+  rows.push(...moreRows('changes-more', window, listed.length, columns))
   return { key: 'changes', title, note: noteOf(note), body: rows }
 }
 

@@ -570,6 +570,43 @@ describe('changed files no test reaches', () => {
     expect(plainText(row(rows, 'change-0')!)).toMatch(/Router\.php .* 3$/)
   })
 
+  const press = (rows: Row[], key: string): string | undefined => row(rows, key)?.segments.find(s => s.press !== undefined)?.press?.id
+
+  it('presses the count to list only the files none reaches, says so, and offers every file back', () => {
+    const all = changesInput(untested(), ROOT)
+    expect(all.untestedOnly).toBe(false)
+    expect(press(changesRows(all, 0, 100), 'changes-untested')).toBe('untested-row')
+    expect(row(changesRows(all, 0, 100), 'changes-all')).toBeUndefined()
+    const only = changesInput(untested(), ROOT, undefined, null, true)
+    expect(only.untestedOnly).toBe(true)
+    expect(changesList(only).map(f => f.name)).toEqual(['src/Core/Kernel.php', 'src/Config.php'])
+    for (const columns of WIDTHS) {
+      const rows = changesRows(only, 0, columns)
+      for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
+      expect(textOf(rows).replace(/\s+/g, ' '), `${columns}`).toContain('▲ 2 files no test reaches · showing only these')
+      expect(press(rows, 'changes-all'), `${columns}`).toBe('untested-all')
+      expect(rows.filter(r => /^change-\d+$/.test(r.key)).map(plainText).join('\n'), `${columns}`).not.toMatch(/Router|Unknown/)
+    }
+    // The first listed is the first untested file, and its press opens it.
+    expect(press(changesRows(only, 0, 100), 'change-0')).toBe('row:0')
+    expect(plainText(row(changesRows(only, 0, 100), 'change-0')!)).toMatch(/Kernel\.php/)
+  })
+
+  it('lists every file again once no file is left that no test reaches', () => {
+    const tested = changesInput(accumulate(NO_CHANGES, brief()), ROOT, undefined, null, true)
+    expect(tested.untested).toBe(0)
+    expect(tested.untestedOnly).toBe(false)
+    expect(changesList(tested)).toHaveLength(1)
+  })
+
+  it('never keys a row as a press is keyed', () => {
+    for (const only of [false, true]) {
+      const rows = changesRows(changesInput(untested(), ROOT, undefined, null, only), 0, 100)
+      const keys = new Set(rows.map(r => r.key))
+      for (const seg of rows.flatMap(r => r.segments)) if (seg.press !== undefined) expect(keys.has(seg.press.id), seg.press.id).toBe(false)
+    }
+  })
+
   it('names the count on the session card of the Overview', () => {
     const d = { status: 'ok', path: ROOT, project_root: ROOT, project_id: 'p1', snapshot_id: 's1', freshness: { state: 'fresh', age_seconds: 1, drift_files: 0 }, hubs: [], hubs_truncated: false, hubs_truncation_reasons: [], hotspots: [], dead_code_candidates: 0, dead_code_truncated: false, cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] }, trend: [], fan_in: [], fan_in_truncated: false } as Dashboard
     const view: KnossosView = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }

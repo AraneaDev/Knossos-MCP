@@ -256,6 +256,11 @@ describe('the overview cards', () => {
     const untested = changesInput({ ...session, tests: {} }, ROOT, hues)
     const warned = rowsOf(sessionBlock(untested, lookAtOf(untested), -1), 100).flatMap(r => r.segments).find(s => s.text.startsWith('▲'))
     expect(warned).toMatchObject({ text: '▲ no test reaches them', color: 'warning' })
+    // Where no file's reach is known there is no list to go to; where some file none reaches, it is a press that lists them.
+    expect(warned?.press).toBeUndefined()
+    const none = changesInput({ ...session, tests: {}, files: Object.fromEntries(Object.entries(session.files).map(([p, f]) => [p, { ...f, tests: 0 }])) }, ROOT, hues)
+    const pressed = rowsOf(sessionBlock(none, lookAtOf(none), -1), 100).flatMap(r => r.segments).find(s => s.text.startsWith('▲'))
+    expect(pressed).toMatchObject({ text: '▲ no test reaches them', color: 'warning', press: { id: 'untested-row' } })
   })
 })
 
