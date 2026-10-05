@@ -4671,7 +4671,8 @@ function isImportMetaUrl(expression) {
 }
 
 // Whether a file-scope `if` runs its body only when the file is the program
-// entered: `import.meta.main` (Bun, Deno) or CommonJS `require.main === module`.
+// entered: `import.meta.main` (Bun, Deno), CommonJS `require.main === module`,
+// or the ES-module comparison of `import.meta.url` with `process.argv[1]`.
 // This is JavaScript's `__main__` guard, and it says the same thing a shebang
 // does: something outside the graph runs the file, so no inbound edge is owed.
 // A guard nested in a function, or a negated one, says nothing about that.
@@ -4694,9 +4695,74 @@ function isMainGuardCondition(expression) {
         return false;
     const left = unwrapParentheses(expression.left);
     const right = unwrapParentheses(expression.right);
-    return (
+    if (
         (isRequireMain(left) && isIdentifierNamed(right, "module")) ||
         (isIdentifierNamed(left, "module") && isRequireMain(right))
+    )
+        return true;
+    // The ES-module form compares this module's location with the script node
+    // was started on, as two URLs or as two paths. A URL never equals a path,
+    // so a comparison that mixes them is no guard at all.
+    const self = locationOf(left, isImportMetaUrl);
+    const entry = locationOf(right, isScriptArgument);
+    if (self !== null && self === entry) return true;
+    const reversedSelf = locationOf(right, isImportMetaUrl);
+    const reversedEntry = locationOf(left, isScriptArgument);
+    return reversedSelf !== null && reversedSelf === reversedEntry;
+}
+
+/**
+ * Whether an expression is the location of `isSource`'s value, and in which
+ * form: "url" for a file URL, "path" for a file-system path. The conversions
+ * `fileURLToPath`, `pathToFileURL(...).href` and `realpathSync` keep the
+ * location while changing or normalising its form; anything else loses it.
+ *
+ * @returns {"url" | "path" | null}
+ */
+function locationOf(expression, isSource) {
+    const current = unwrapParentheses(expression);
+    if (isSource(current)) return isImportMetaUrl(current) ? "url" : "path";
+    if (
+        ts.isPropertyAccessExpression(current) &&
+        current.name.text === "href"
+    ) {
+        const call = unwrapParentheses(current.expression);
+        return isCallTo(call, "pathToFileURL") &&
+            locationOf(call.arguments[0], isSource) === "path"
+            ? "url"
+            : null;
+    }
+    if (isCallTo(current, "fileURLToPath"))
+        return locationOf(current.arguments[0], isSource) === "url"
+            ? "path"
+            : null;
+    if (isCallTo(current, "realpathSync"))
+        return locationOf(current.arguments[0], isSource) === "path"
+            ? "path"
+            : null;
+    return null;
+}
+
+/** A one-argument call to `name`, bare or through a namespace (`url.name`). */
+function isCallTo(expression, name) {
+    if (!ts.isCallExpression(expression) || expression.arguments.length !== 1)
+        return false;
+    const callee = unwrapParentheses(expression.expression);
+    return (
+        isIdentifierNamed(callee, name) ||
+        (ts.isPropertyAccessExpression(callee) && callee.name.text === name)
+    );
+}
+
+/** `process.argv[1]`: the path of the script node was started on. */
+function isScriptArgument(expression) {
+    return (
+        ts.isElementAccessExpression(expression) &&
+        ts.isNumericLiteral(expression.argumentExpression) &&
+        expression.argumentExpression.text === "1" &&
+        ts.isPropertyAccessExpression(expression.expression) &&
+        expression.expression.name.text === "argv" &&
+        isIdentifierNamed(expression.expression.expression, "process")
     );
 }
 

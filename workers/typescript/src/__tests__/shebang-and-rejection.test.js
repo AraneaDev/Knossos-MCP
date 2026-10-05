@@ -230,3 +230,60 @@ describe("the executable module attribute", () => {
         expect(executableOf("src/helper.js")).toBe(false);
     });
 });
+
+// An ES module has no `require.main`, so a CLI written as one compares its own
+// URL or path with the script node was started on. Without a shebang that
+// comparison is the only sign the file is entered by a shell, and a module that
+// carried neither was reported as reached only by its tests.
+describe("the ES-module main guard", () => {
+    const guarded = {
+        "src/url.mjs":
+            'import { pathToFileURL } from "node:url";\nexport function run() {}\nif (import.meta.url === pathToFileURL(process.argv[1]).href) run();\n',
+        "src/url-reversed.mjs":
+            'import { pathToFileURL } from "node:url";\nexport function run() {}\nif (pathToFileURL(process.argv[1]).href == import.meta.url) {\n    run();\n}\n',
+        "src/path.mjs":
+            'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/path-reversed.mjs":
+            'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (process.argv[1] === fileURLToPath(import.meta.url)) run();\n',
+        "src/realpath-url.mjs":
+            'import { realpathSync } from "node:fs";\nimport { pathToFileURL } from "node:url";\nexport function run() {}\nif (import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) run();\n',
+        "src/realpath-path.mjs":
+            'import fs from "node:fs";\nimport url from "node:url";\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === fs.realpathSync(process.argv[1])) run();\n',
+        "src/meta-main.mjs":
+            "export function run() {}\nif (import.meta.main) run();\n",
+    };
+    const unguarded = {
+        // A URL is never equal to a path, so this guard never fires.
+        "src/mixed.mjs":
+            "export function run() {}\nif (import.meta.url === process.argv[1]) run();\n",
+        // argv[2] is the first argument, not the script.
+        "src/argument.mjs":
+            'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[2]) run();\n',
+        "src/negated.mjs":
+            'import { pathToFileURL } from "node:url";\nexport function run() {}\nif (import.meta.url !== pathToFileURL(process.argv[1]).href) run();\n',
+        "src/nested.mjs":
+            'import { pathToFileURL } from "node:url";\nexport function run() {\n    if (import.meta.url === pathToFileURL(process.argv[1]).href) return 1;\n    return 0;\n}\n',
+        "src/self.mjs":
+            "export function run() {}\nif (import.meta.url === import.meta.url) run();\n",
+    };
+
+    it("marks each form executable and leaves look-alikes alone", () => {
+        const root = fixture({
+            "package.json": '{"name":"esm-main-guard","type":"module"}',
+            ...guarded,
+            ...unguarded,
+        });
+        const { byOwner } = scanned(root, [
+            ...Object.keys(guarded),
+            ...Object.keys(unguarded),
+        ]);
+        const executableOf = (owner) =>
+            byOwner.get(owner).nodes.find((node) => node.kind === "module")
+                .attributes.executable;
+
+        for (const owner of Object.keys(guarded))
+            expect([owner, executableOf(owner)]).toEqual([owner, true]);
+        for (const owner of Object.keys(unguarded))
+            expect([owner, executableOf(owner)]).toEqual([owner, false]);
+    });
+});
