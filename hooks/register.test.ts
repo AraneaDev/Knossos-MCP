@@ -4354,6 +4354,75 @@ describe('the live watcher', () => {
     expect(w.logs.filter(l => l.text.includes('too large to draw'))).toEqual([])
   })
 
+  test('a full-size diff opens a hunk on its more-lines press and pages on its more-changes press, within the bounds the engine sets every tree', { timeoutMs: 120_000 }, async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: LEDGER }], head: [{ stdout: HEAD }], diff: [{ stdout: FULL_DIFF }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+    await w.clock.advance(100)
+    const ui = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 120, scroll: { offset: 0, bodyRows: 60 } } })
+    // A hunk's element, by where FULL_DIFF starts it: hunk h at line h * 100 + 1.
+    const hunk = async (h: number) => (await ui.findAll({ type: 'Code' })).map(c => c.props.source as string).find(source => source.startsWith(`@@ -${h * 100 + 1},`))
+    const lines = async (h: number) => (await hunk(h))?.split('\n').length
+    const within = async (at: string) => {
+      const size = treeSize(await ui.drawn())
+      expect(size.nodes, at).toBeLessThan(10_000)
+      expect(size.depth, at).toBeLessThan(16)
+      expect(size.chars, at).toBeLessThan(72_000)
+    }
+    await ui.press({ key: 'tab:changes' })
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    // Folded at 40 lines, under it a press, never keyed as its row is.
+    expect(await lines(0)).toBe(41)
+    expect((await ui.find({ key: 'diff-more:0' }))?.type).toBe('Button')
+    expect(await ui.find({ key: 'diff-more-0' })).toBeDefined()
+    await ui.press({ key: 'diff-more:0' })
+    // Opened as far as the element takes: the rest is the file's to show, and the tree stays within its bounds.
+    expect(await lines(0)).toBeGreaterThan(41)
+    expect(await ui.find({ key: 'diff-more:0' })).toBeUndefined()
+    expect((await ui.find({ key: 'diff-more-0' }))?.text).toMatch(/too long to draw here, e opens the file/)
+    await within('opened')
+    // The hunks past the page: a press that shows them, and one back.
+    const next = (await ui.findAll({ type: 'Button' })).map(b => b.key).find(k => k?.startsWith('diff-from:'))
+    expect(next).toMatch(/^diff-from:[1-9]\d*$/)
+    await ui.press({ key: next! })
+    expect(await hunk(Number(next!.slice('diff-from:'.length)))).toBeDefined()
+    expect(await hunk(0)).toBeUndefined()
+    expect(await ui.find({ key: 'diff-from:0' })).toBeDefined()
+    await within('paged')
+    // Opened anew, the detail shows its diff closed.
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    expect(await lines(0)).toBe(41)
+    expect(await ui.find({ key: 'diff-more:0' })).toBeDefined()
+    await ui.unmount()
+    expect(w.logs.filter(l => l.text.includes('too large to draw'))).toEqual([])
+  })
+
+  test('wide, the diff beside Changes ends in a press that opens the full detail, where the diff is the engine\'s own', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: LEDGER }], head: [{ stdout: HEAD }], diff: [{ stdout: ROUTER_DIFF }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+    await w.clock.advance(100)
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 200, scroll: { offset: 0, bodyRows: 40 } } })
+      await ui.press({ key: 'tab:changes' })
+      await w.clock.advance(500)
+      await w.clock.settle()
+      // Beside the list the diff is text, with no element of its own.
+      expect(await ui.find({ type: 'Code' })).toBeUndefined()
+      expect((await ui.find({ key: 'diff-open' }))?.props.label).toBe('open the full diff')
+      await ui.press({ key: 'diff-open' })
+      await w.clock.settle()
+      expect((await ui.find({ type: 'Code' }))?.props.source).toMatch(/^@@ -3,3 \+3,4 @@/)
+      await ui.press({ key: 'back' })
+      await ui.unmount()
+    }
+  })
+
   test('a pane too large to draw at its fewest rows draws one line saying so, and logs it once', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
     await $.session.start(START)

@@ -3,7 +3,8 @@
  * and the flows behind it (the finder, a note on a component, a route
  * between two, allowing a refused root, the editor and the clipboard).
  */
-import type { AllowState, Inspected, KnossosView, NoteState, PaneTab, RescanState, SearchState } from '../../types'
+import type { AllowState, DiffFold, Inspected, KnossosView, NoteState, PaneTab, RescanState, SearchState } from '../../types'
+import { diffPage, diffView } from '../lib/diff'
 import { parseAllowRoot, parseAnnotate, parseGraphSearch } from '../lib/envelopes'
 import { askPrompt, editTarget, locOf, locText, nextTarget, noGraphOf, peekList, refusedRoot, SCAN_PROMPT, SORTS, subjectOf, TABS } from '../lib/layout'
 import type { Loc } from '../lib/layout'
@@ -448,6 +449,43 @@ async function unfoldCycle(io: Port, id: string): Promise<void> {
   await io.state.view.update(v => ({ ...v, unfolded: [...new Set([...(v.unfolded ?? []), cycle!])], selected: row! }))
 }
 
+/**
+ * A press on the detail's diff: `change` given how far it is opened now,
+ * for the diff on show. Opened on another diff (another file, commit or
+ * snapshot), it starts closed. Nothing without a diff that has landed.
+ */
+async function foldDiff(io: Port, change: (fold: DiffFold) => DiffFold): Promise<void> {
+  const shown = (await io.state.view.read()).inspect
+  const state = await io.state.fileDiff.read()
+  if (shown === null || shown.file !== true || state === null || state.name !== shown.name || state.phase !== 'done') return
+  const fresh: DiffFold = { name: state.name, rev: state.rev, snapshot: state.snapshot, open: [], from: 0 }
+  await io.state.diffFold.update(f => change(f !== null && f.name === fresh.name && f.rev === fresh.rev && f.snapshot === fresh.snapshot ? f : fresh))
+}
+
+/**
+ * "N more lines" under a folded hunk: the hunk shows whole. Opened, it may
+ * no longer fit the page after the hunks before it; the page then starts
+ * at it, so the press never hides what it opened.
+ */
+async function openHunk(io: Port, index: number): Promise<void> {
+  if (!Number.isInteger(index) || index < 0) return
+  const shown = (await io.state.view.read()).inspect
+  const state = await io.state.fileDiff.read()
+  const rev = await io.state.sessionRev.read()
+  await foldDiff(io, fold => {
+    const opened: DiffFold = { ...fold, open: fold.open.includes(index) ? fold.open : [...fold.open, index] }
+    const view = shown === null ? null : diffView(shown, state, rev, opened)
+    if (view?.phase !== 'diff' || index >= view.hunks.length) return fold
+    return diffPage(view).drawn.some(d => d.index === index) ? opened : { ...opened, from: index }
+  })
+}
+
+/** "N more changes" or "N earlier changes": the page starts at the hunk named. */
+async function pageDiff(io: Port, from: number): Promise<void> {
+  if (!Number.isInteger(from) || from < 0) return
+  await foldDiff(io, fold => ({ ...fold, from }))
+}
+
 /** What one press does: `rest` is what follows the colon of a prefixed id (`row:3` gives `3`), `id` the whole id. */
 type Press = (io: Port, rest: string, surface: RenderSurface | undefined, id: string) => unknown
 
@@ -496,6 +534,10 @@ export const PRESSES: ReadonlyMap<string, Press> = new Map<string, Press>([
   ['open', io => openRow(io)],
   ['edit', (io, _, surface) => openEditTarget(io, surface)],
   ['tests', (io, _, surface) => copyTestCommand(io, surface)],
+  // The detail's diff: a folded hunk shown whole, the page of hunks moved, and from the panel beside a tab the full detail.
+  ['diff-more:', (io, rest) => openHunk(io, Number(rest))],
+  ['diff-from:', (io, rest) => pageDiff(io, Number(rest))],
+  ['diff-open', io => openRow(io)],
   // Back from a route goes to the detail it was picked from; from a detail, to the tab.
   ['back', viewing(v => ((v.route ?? null) !== null ? { ...v, route: null, selected: 0 } : { ...v, inspect: null, selected: v.opened ?? 0 }))],
   ['keys', viewing(v => ({ ...v, showKeys: !v.showKeys }))],

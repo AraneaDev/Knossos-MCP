@@ -241,6 +241,7 @@ export async function endSession(io: Port, reason: string, sessionId: string): P
   // Its diffs are taken against the commit it begins at.
   await io.state.sessionRev.update(() => null)
   await io.state.fileDiff.update(() => null)
+  await io.state.diffFold.update(() => null)
   // The session that ended keeps its baseline; the one that follows reads its own back (a resume) or records one.
   mod.endedSession = sessionId
   mod.baselineOf = null

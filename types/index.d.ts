@@ -492,6 +492,12 @@ export type Feedback = { text: string; tone: 'ok' | 'alert'; until: number }
 /** The diff the file detail shows: of `name` against `rev` at `snapshot`, loading until it lands (null: nothing answered). */
 export type DiffState = { name: string; rev: string; snapshot: string | null; phase: 'loading' | 'done'; diff: SessionDiff | null }
 
+/**
+ * How far the file detail's diff is opened, for the diff of `name` against `rev` at `snapshot`: the
+ * hunks shown whole (`open`, by index) and the first hunk shown (`from`). A diff read again starts closed.
+ */
+export type DiffFold = { name: string; rev: string; snapshot: string | null; open: number[]; from: number }
+
 /** The pane's tabs, in their hotkey order (1 to 8). */
 export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues' | 'changes' | 'branch' | 'churn'
 
@@ -673,6 +679,8 @@ declare module 'claude-code' {
       sessionRev: SessionRev | null
       /** The change since the session began of the file the detail shows. */
       fileDiff: DiffState | null
+      /** How far the detail's diff is opened: its hunks shown whole, and the first one shown. */
+      diffFold: DiffFold | null
       /** Where the checkout stands now, for the header; null until read, and when there is no git. */
       gitHead: GitHead
       /** The heat map cell spelled out on the Boundaries tab, as last read. */

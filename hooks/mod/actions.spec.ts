@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { KnossosView } from '../../types'
+import type { DiffFold, KnossosView } from '../../types'
 import { TABS } from '../lib/layout'
 import { PRESSES, pressOf } from './actions'
 import type { Port } from './port'
@@ -66,5 +66,68 @@ describe('opening a field', () => {
     expect(focused).toEqual([{ requestId: PANE, key: fieldKey(id) }])
     expect(fieldKey(id)).not.toBe(id)
     expect(pressOf(fieldKey(id))).toBeNull()
+  })
+})
+
+describe('opening the diff further', () => {
+  const REV = '0123456789abcdef0123456789abcdef01234567'
+  const SHOWN = { name: 'src/Router.php', label: 'src/Router.php', file: true, changed: true }
+  /** As much as session-diff sends: 14 hunks of 70 lines, each line as long as a hunk keeps. */
+  const FULL = `${Array.from({ length: 14 }, (_, h) => `@@ -${h * 100 + 1},0 +${h * 100 + 1},70 @@\n${Array.from({ length: 70 }, (_, i) => `+${`h${h} line ${i} `.padEnd(199, 'x')}`).join('\n')}`).join('\n')}\n`
+  const answer = { status: 'ok', file: SHOWN.name, kind: 'changed', from: null, to: null, binary: false, diff: FULL, lines: 994, truncated: false }
+
+  /** A port holding the detail of a changed file, its diff read for snapshot `s1`, and the fold given. */
+  function port(fold: DiffFold | null) {
+    const cell = <T>(value: T) => ({ read: async () => value, update: async (change: (v: T) => T) => void (value = change(value)) })
+    const diffFold = cell(fold)
+    const io = {
+      state: {
+        view: cell({ inspect: SHOWN, isBandHidden: false, tab: 'changes', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' } as KnossosView),
+        fileDiff: cell({ name: SHOWN.name, rev: REV, snapshot: 's1', phase: 'done', diff: answer }),
+        sessionRev: cell({ status: 'ok', rev: REV }),
+        diffFold,
+      },
+    } as unknown as Port
+    return { io, fold: () => diffFold.read() }
+  }
+  const press = (io: Port, id: string) => PRESSES.get(pressOf(id)!.key)!(io, pressOf(id)!.rest, undefined, id)
+
+  it('has a press for a hunk\'s more lines, for the hunks past or before a page, and for the full diff, none keyed as a row is', () => {
+    expect(pressOf('diff-more:3')).toEqual({ key: 'diff-more:', rest: '3' })
+    expect(pressOf('diff-from:12')).toEqual({ key: 'diff-from:', rest: '12' })
+    expect(pressOf('diff-open')).toEqual({ key: 'diff-open', rest: '' })
+    // The rows they stand on are keyed with a dash, so a Button is never keyed as a row's Box.
+    for (const row of ['diff-more-3', 'diff-hunks-more', 'diff-hunks-before', 'diff-full']) expect(pressOf(row), row).toBeNull()
+  })
+
+  it('opens the pressed hunk for the diff on show, keeping what was opened before', async () => {
+    const { io, fold } = port(null)
+    await press(io, 'diff-more:0')
+    expect(await fold()).toEqual({ name: SHOWN.name, rev: REV, snapshot: 's1', open: [0], from: 0 })
+    await press(io, 'diff-more:1')
+    expect((await fold())?.open).toEqual([0, 1])
+  })
+
+  it('starts over when what it held was opened on another diff', async () => {
+    const { io, fold } = port({ name: SHOWN.name, rev: REV, snapshot: 's0', open: [4, 5], from: 3 })
+    await press(io, 'diff-more:0')
+    expect(await fold()).toEqual({ name: SHOWN.name, rev: REV, snapshot: 's1', open: [0], from: 0 })
+  })
+
+  it('moves the page to a hunk that, opened, no longer fits after the ones before it', async () => {
+    const { io, fold } = port(null)
+    // Folded, the first three fill the page; the third opened outweighs what is left.
+    await press(io, 'diff-more:2')
+    expect(await fold()).toMatchObject({ open: [2], from: 2 })
+  })
+
+  it('shows the hunks from the one pressed, and does nothing without a diff on show', async () => {
+    const { io, fold } = port(null)
+    await press(io, 'diff-from:5')
+    expect(await fold()).toEqual({ name: SHOWN.name, rev: REV, snapshot: 's1', open: [], from: 5 })
+    await io.state.fileDiff.update(() => null)
+    await press(io, 'diff-from:7')
+    await press(io, 'diff-more:7')
+    expect((await fold())?.from).toBe(5)
   })
 })

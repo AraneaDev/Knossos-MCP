@@ -38,7 +38,8 @@ export async function currentInput(io: Port, terminal: boolean): Promise<PaneInp
   const v = await io.state.view.read()
   const stored = await io.state.detail.read()
   const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
-  if (shown !== null && v.inspect !== null) shown.diff = diffView(v.inspect, await io.state.fileDiff.read(), await io.state.sessionRev.read())
+  // The full detail opens its diff as far as the person pressed; the panel beside a tab draws it closed.
+  if (shown !== null && v.inspect !== null) shown.diff = diffView(v.inspect, await io.state.fileDiff.read(), await io.state.sessionRev.read(), await io.state.diffFold.read())
   const extras = {
     git: await io.state.gitHead.read(),
     feedback: await io.state.feedback.read(),

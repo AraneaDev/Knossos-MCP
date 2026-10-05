@@ -11,8 +11,8 @@
  * that carries `code` is drawn as one such element; every other row is text,
  * cut to the columns it has.
  */
-import type { DiffState, Inspected, SessionDiff, SessionRev } from '../../types'
-import { dimRow, fit, pathText, plural, wrapWords } from './rows'
+import type { DiffFold, DiffState, Inspected, SessionDiff, SessionRev } from '../../types'
+import { button, dimRow, fit, pathText, plural, wrapWords } from './rows'
 import type { Row, Segment } from './rows'
 import type { Block, Section } from './cards'
 
@@ -39,7 +39,7 @@ export type Hunk = { oldStart: number; newStart: number; heading: string; lines:
 export type DiffView =
   | { phase: 'loading' }
   | { phase: 'message'; text: string }
-  | { phase: 'diff'; path: string; added: number; removed: number; hunks: Hunk[]; renamed: string | null; truncated: boolean }
+  | { phase: 'diff'; path: string; added: number; removed: number; hunks: Hunk[]; renamed: string | null; truncated: boolean; open?: number[]; from?: number }
 
 /** Every control character but the tab, which the element refuses: a carriage return goes, the rest show as a replacement mark. */
 // eslint-disable-next-line no-control-regex -- finding control characters is what it is for
@@ -96,12 +96,15 @@ export function folded(hunk: Hunk, max = HUNK_LINES): { shown: string[]; more: n
  * commit the session began at (not read, or no git), or without an answer,
  * it says so in place of a diff.
  */
-export function diffView(shown: Inspected, state: DiffState | null, rev: SessionRev | null): DiffView | null {
+export function diffView(shown: Inspected, state: DiffState | null, rev: SessionRev | null, fold: DiffFold | null = null): DiffView | null {
   if (shown.file !== true || shown.changed !== true) return null
   if (rev === null) return { phase: 'message', text: "No diff: the commit this session began at was not recorded (no git answered when it started)." }
   if (rev.status === 'no-git') return { phase: 'message', text: 'No diff: the project is not in a git repository, or had no commit when the session began.' }
   if (state === null || state.name !== shown.name || state.rev !== rev.rev || state.phase === 'loading') return { phase: 'loading' }
-  return viewOf(shown.name, state.diff)
+  const view = viewOf(shown.name, state.diff)
+  // Opened further only for the diff it was opened on: another file, commit or snapshot starts closed.
+  if (view.phase !== 'diff' || fold === null || fold.name !== state.name || fold.rev !== state.rev || fold.snapshot !== state.snapshot) return view
+  return { ...view, open: fold.open, from: fold.from }
 }
 
 /** The view of one `session-diff` answer. */
@@ -129,9 +132,11 @@ function viewOf(path: string, answer: SessionDiff | null): DiffView {
 
 /**
  * The change's card: the lines added and removed in its note, a rename when
- * it was one, then each hunk as a diff element (long ones folded with how
- * many lines are left out), how many hunks are not shown, and a note when
- * the diff was cut. The text rows fit `columns`.
+ * it was one, then a page of hunks as diff elements (see {@link diffPage}):
+ * a long one folded under a press that shows it whole, the hunks before and
+ * after the page each a press that shows them, and a note when the diff was
+ * cut. `asText` draws a few short hunks as text for a panel, ending in a
+ * press that opens the full detail. The text rows fit `columns`.
  */
 export function diffSection(view: DiffView, columns: number, asText = false): Section {
   const title = 'Changed since the session began'
@@ -147,27 +152,83 @@ export function diffSection(view: DiffView, columns: number, asText = false): Se
   ]
   const rows: Row[] = []
   if (view.renamed !== null) rows.push(dimRow('diff-renamed', `   ${pathText(view.renamed, Math.max(1, columns - 3))}`, columns))
-  // The hunks drawn, within their count and, as diff elements, within DIFF_TEXT_MAX together.
-  let spent = 0
-  let drawn = 0
-  for (const [i, hunk] of view.hunks.slice(0, asText ? TEXT_HUNKS : HUNKS_SHOWN).entries()) {
-    const { shown, more } = folded(hunk, asText ? TEXT_LINES : HUNK_LINES)
-    if (asText) rows.push(...hunkRows(`diff-hunk-${i}`, hunk, shown, columns))
-    else {
-      const source = hunkSource(hunk, shown)
-      // Weighed as the engine weighs the tree, serialized: a quote or a backslash counts twice, a control byte six times.
-      const weight = JSON.stringify(source).length
-      if (spent + weight > DIFF_TEXT_MAX) break
-      spent += weight
-      rows.push({ key: `diff-hunk-${i}`, segments: [], code: { source, path: view.path } })
+  if (asText) {
+    const shown = view.hunks.slice(0, TEXT_HUNKS)
+    for (const [i, hunk] of shown.entries()) {
+      const { shown: lines, more } = folded(hunk, TEXT_LINES)
+      rows.push(...hunkRows(`diff-hunk-${i}`, hunk, lines, columns))
+      if (more > 0) rows.push(dimRow(`diff-more-${i}`, `   ${plural(more, 'more line', 'more lines')}`, columns))
     }
-    drawn++
-    if (more > 0) rows.push(dimRow(`diff-more-${i}`, `   ${plural(more, 'more line', 'more lines')}`, columns))
+    const hidden = view.hunks.length - shown.length
+    if (hidden > 0) rows.push(dimRow('diff-hunks-more', `   ${plural(hidden, 'more change', 'more changes')} further down the file`, columns))
+  } else {
+    const page = diffPage(view)
+    if (page.start > 0) rows.push(pressRow('diff-hunks-before', `diff-from:${page.before}`, plural(page.start, 'earlier change', 'earlier changes'), columns))
+    for (const drawn of page.drawn) {
+      const i = drawn.index
+      rows.push({ key: `diff-hunk-${i}`, segments: [], code: { source: drawn.source, path: view.path } })
+      // Folded: a press opens it. Cut by the element's own limit: only the file shows the rest.
+      if (drawn.cut > 0) rows.push(dimRow(`diff-more-${i}`, `   ${plural(drawn.cut + drawn.more, 'more line', 'more lines')}: too long to draw here, e opens the file`, columns))
+      else if (drawn.more > 0) rows.push(pressRow(`diff-more-${i}`, `diff-more:${i}`, plural(drawn.more, 'more line', 'more lines'), columns))
+    }
+    const hidden = view.hunks.length - page.end
+    if (hidden > 0) rows.push(pressRow('diff-hunks-more', `diff-from:${page.end}`, `${plural(hidden, 'more change', 'more changes')} further down the file`, columns))
   }
-  const hidden = view.hunks.length - drawn
-  if (hidden > 0) rows.push(dimRow('diff-hunks-more', `   ${plural(hidden, 'more change', 'more changes')} further down the file`, columns))
   if (view.truncated) rows.push(dimRow('diff-cut', '   The diff is cut here: open the file to see the rest.', columns))
+  // Beside a tab the diff is a few lines of text: its full detail draws it across the pane.
+  if (asText) rows.push(pressRow('diff-full', 'diff-open', 'open the full diff', columns))
   return { key: 'diff', title, note: counts, body: rows }
+}
+
+/**
+ * A dim row of one press, indented as the diff's other rows are. Its press
+ * id holds a colon or names an action, and no row of the diff is keyed so:
+ * a Button is never keyed as a row's Box is.
+ */
+function pressRow(key: string, id: string, label: string, columns: number): Row {
+  const room = Math.max(1, columns - 3)
+  return { key, segments: [{ text: '   ' }, button(id, fit(label, room), undefined, { dim: true })] }
+}
+
+/** One hunk as a page draws it: its element's text, the lines folded away, and those the element's limit cut. */
+export type DrawnHunk = { index: number; source: string; more: number; cut: number }
+
+/** The hunk at `index` as drawn: whole when opened, else folded; at most what the element takes either way. */
+function drawnHunk(view: Extract<DiffView, { phase: 'diff' }>, index: number): DrawnHunk {
+  const hunk = view.hunks[index]!
+  const whole = (view.open ?? []).includes(index)
+  const { shown, more } = whole ? { shown: hunk.lines, more: 0 } : folded(hunk)
+  const source = hunkSource(hunk, shown)
+  return { index, source, more, cut: shown.length - (source.split('\n').length - 1) }
+}
+
+/** A hunk's weight as the engine weighs the tree, serialized: a quote or a backslash counts twice, a control byte six times. */
+const weightOf = (drawn: DrawnHunk): number => JSON.stringify(drawn.source).length
+
+/**
+ * The hunks the detail draws from the first shown (`from`): at most
+ * {@link HUNKS_SHOWN}, and within {@link DIFF_TEXT_MAX} together; `end` is
+ * the first not drawn. `before` is where the page before this one starts:
+ * as far back as one page holds.
+ */
+export function diffPage(view: Extract<DiffView, { phase: 'diff' }>): { start: number; end: number; before: number; drawn: DrawnHunk[] } {
+  const start = Math.min(Math.max(0, view.from ?? 0), Math.max(0, view.hunks.length - 1))
+  const drawn: DrawnHunk[] = []
+  let spent = 0
+  for (let i = start; i < view.hunks.length && drawn.length < HUNKS_SHOWN; i++) {
+    const hunk = drawnHunk(view, i)
+    if (spent + weightOf(hunk) > DIFF_TEXT_MAX) break
+    spent += weightOf(hunk)
+    drawn.push(hunk)
+  }
+  let before = start
+  for (let back = 0; before > 0 && start - before < HUNKS_SHOWN; ) {
+    const weight = weightOf(drawnHunk(view, before - 1))
+    if (back + weight > DIFF_TEXT_MAX) break
+    back += weight
+    before--
+  }
+  return { start, end: start + drawn.length, before, drawn }
 }
 
 /** Hunks and lines per hunk a text diff shows: it stands in a panel beside a list, where room is short. */

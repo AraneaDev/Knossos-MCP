@@ -7,7 +7,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AllowState, BranchState, ChurnState, CouplingState, DetailState, DiffState, Feedback, GitHead, Inspected, KnossosView, LiveState, NoteState, RefreshState, RescanState, RingsState, RouteState, SearchState, SessionChanges, SessionRev } from '../types'
+import type { AllowState, BranchState, ChurnState, CouplingState, DetailState, DiffFold, DiffState, Feedback, GitHead, Inspected, KnossosView, LiveState, NoteState, RefreshState, RescanState, RingsState, RouteState, SearchState, SessionChanges, SessionRev } from '../types'
 import { begin, counts, finish } from './lib/activity'
 import { committedSince } from './lib/agent'
 import type { JobState } from './lib/band'
@@ -75,6 +75,8 @@ const sessionScans = atom({ plugin: 'knossos', key: 'sessionScans' } as const, [
 const sessionRev = atom({ plugin: 'knossos', key: 'sessionRev' } as const, null as SessionRev | null)
 /** The change since the session began of the file the detail shows, as last read. */
 const fileDiff = atom({ plugin: 'knossos', key: 'fileDiff' } as const, null as DiffState | null)
+/** How far the detail's diff is opened (its hunks shown whole, the first hunk shown), for the diff it was opened on. */
+const diffFold = atom({ plugin: 'knossos', key: 'diffFold' } as const, null as DiffFold | null)
 /** Where the checkout stands (commit and branch), for the header; null until read, and without git. */
 const gitHead = atom({ plugin: 'knossos', key: 'gitHead' } as const, null as GitHead)
 /** The Boundaries tab's marked heat map cell spelled out, as last read. */
@@ -151,6 +153,7 @@ function portOf($: EngineInterface): Port {
       sessionScans: { read: () => read($, sessionScans), update: change => update($, sessionScans, change) },
       sessionRev: { read: () => read($, sessionRev), update: change => update($, sessionRev, change) },
       fileDiff: { read: () => read($, fileDiff), update: change => update($, fileDiff, change) },
+      diffFold: { read: () => read($, diffFold), update: change => update($, diffFold, change) },
       gitHead: { read: () => read($, gitHead), update: change => update($, gitHead, change) },
       couplings: { read: () => read($, couplings), update: change => update($, couplings, change) },
       feedback: { read: () => read($, feedback), update: change => update($, feedback, change) },

@@ -103,6 +103,8 @@ async function loadDashboard(io: Port): Promise<void> {
 export async function showComponent(io: Port, shown: Inspected): Promise<void> {
   // The detail's marker starts on its first row; the tab's is kept for `b` to put back.
   await io.state.view.update(v => ({ ...v, inspect: shown, selected: 0, opened: v.inspect === null ? v.selected : v.opened, route: null, picking: null }))
+  // A detail opened anew shows its diff closed, even the same file's: what was opened is for the look that opened it.
+  await io.state.diffFold.update(() => null)
   await requestDetail(io, shown)
 }
 

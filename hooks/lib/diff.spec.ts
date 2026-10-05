@@ -195,6 +195,76 @@ describe('a change drawn in a panel', () => {
   })
 })
 
+describe('a change opened further', () => {
+  /** `n` hunks of `lines` added lines each, every line `width` characters. */
+  const hunks = (n: number, lines: number, width = 20): string =>
+    `${Array.from({ length: n }, (_, h) => `@@ -${h * 100 + 1},0 +${h * 100 + 1},${lines} @@\n${Array.from({ length: lines }, (_, i) => `+${`h${h} line ${i} `.padEnd(width - 1, 'x')}`).join('\n')}`).join('\n')}\n`
+  const opened = (diff: string, open: number[], from = 0): DiffView => diffView(SHOWN, done(answer({ diff })), { status: 'ok', rev: REV }, { name: SHOWN.name, rev: REV, snapshot: 's1', open, from })!
+  const press = (rows: Row[], key: string): string | undefined => rows.find(r => r.key === key)?.segments.find(s => s.press !== undefined)?.press?.id
+
+  it('"N more lines" is a press that opens that hunk, and the opened hunk shows every line', () => {
+    const diff = long(HUNK_LINES + 7)
+    expect(press(diffRows(viewOf(answer({ diff })), 80), 'diff-more-0')).toBe('diff-more:0')
+    const rows = diffRows(opened(diff, [0]), 80)
+    expect(rows.find(r => r.key === 'diff-hunk-0')?.code?.source.split('\n')).toHaveLength(HUNK_LINES + 7 + 1)
+    expect(rows.find(r => r.key === 'diff-more-0')).toBeUndefined()
+  })
+
+  it('"N more changes" is a press that shows the next hunks, and the hunks before them are a press back', () => {
+    const diff = hunks(HUNKS_SHOWN + 5, 2)
+    expect(press(diffRows(viewOf(answer({ diff })), 80), 'diff-hunks-more')).toBe(`diff-from:${HUNKS_SHOWN}`)
+    const next = diffRows(opened(diff, [], HUNKS_SHOWN), 80)
+    expect(next.filter(r => r.code !== undefined).map(r => r.key)).toEqual(Array.from({ length: 5 }, (_, i) => `diff-hunk-${HUNKS_SHOWN + i}`))
+    expect(next.find(r => r.key === 'diff-hunks-more')).toBeUndefined()
+    expect(text(next.find(r => r.key === 'diff-hunks-before')!).trim()).toBe(`${HUNKS_SHOWN} earlier changes`)
+    expect(press(next, 'diff-hunks-before')).toBe('diff-from:0')
+  })
+
+  it('opens a hunk only as far as the element and DIFF_TEXT_MAX take, and past them says to open the file', () => {
+    // As much as session-diff sends: 14 hunks of 70 lines, each as long as a hunk keeps.
+    const diff = hunks(14, 70, LINE_MAX)
+    for (const open of [[0], [0, 1, 2], Array.from({ length: 14 }, (_, i) => i)]) {
+      const rows = diffRows(opened(diff, open), 200)
+      const drawn = rows.filter(r => r.code !== undefined)
+      expect(drawn.reduce((sum, r) => sum + JSON.stringify(r.code?.source ?? '').length, 0)).toBeLessThanOrEqual(DIFF_TEXT_MAX)
+      // The first hunk is cut by the element's own limit: the rest is the file's to show.
+      expect(text(rows.find(r => r.key === 'diff-more-0')!)).toMatch(/^\s*\d+ more lines: too long to draw here, e opens the file$/)
+      expect(press(rows, 'diff-more-0')).toBeUndefined()
+      expect(press(rows, 'diff-hunks-more')).toBe(`diff-from:${drawn.length}`)
+    }
+  })
+
+  it('pages back as far as one page holds', () => {
+    const diff = hunks(14, 70, LINE_MAX)
+    const first = diffRows(opened(diff, []), 200).filter(r => r.code !== undefined).length
+    const second = diffRows(opened(diff, [], first), 200)
+    expect(press(second, 'diff-hunks-before')).toBe('diff-from:0')
+  })
+
+  it('forgets what was opened for another file, another commit or another snapshot', () => {
+    const diff = long(HUNK_LINES + 7)
+    for (const other of [{ name: 'src/Other.php' }, { rev: 'f'.repeat(40) }, { snapshot: 's2' }]) {
+      const view = diffView(SHOWN, done(answer({ diff })), { status: 'ok', rev: REV }, { name: SHOWN.name, rev: REV, snapshot: 's1', open: [0], from: 0, ...other })!
+      expect(press(diffRows(view, 80), 'diff-more-0'), JSON.stringify(other)).toBe('diff-more:0')
+    }
+  })
+
+  it('in a panel ends in a press that opens the full diff, and draws no press that opens a hunk', () => {
+    const section = diffSection(viewOf(answer({ diff: hunks(6, 20) })), 50, true)
+    expect(press(section.body, 'diff-full')).toBe('diff-open')
+    expect(text(section.body.find(r => r.key === 'diff-full')!).trim()).toBe('open the full diff')
+    expect(section.body.filter(r => r.key !== 'diff-full').flatMap(r => r.segments).filter(s => s.press !== undefined)).toEqual([])
+  })
+
+  it('never keys a row as a press is keyed', () => {
+    const diff = hunks(HUNKS_SHOWN + 5, HUNK_LINES + 3)
+    for (const rows of [diffRows(viewOf(answer({ diff })), 80), diffRows(opened(diff, [1], 2), 80), diffSection(viewOf(answer({ diff })), 50, true).body]) {
+      const keys = new Set(rows.map(r => r.key))
+      for (const s of rows.flatMap(r => r.segments)) if (s.press !== undefined) expect(keys.has(s.press.id), s.press.id).toBe(false)
+    }
+  })
+})
+
 describe('the full detail of a long change', () => {
   const dashboard = {
     status: 'ok',
