@@ -32,11 +32,13 @@
  * Defaults: --out=.superpowers/sdd/2026-10-02-claude-code-mod/preview, the
  * repository as the project.
  *
- * `--readme` draws the README's screenshots instead: a few views at one
- * width, each in a terminal window frame (a title bar, rounded corners, a
- * soft shadow on a transparent margin) at twice the size for sharp text, to
- * docs/images/claude-code-mod/, shrunk to a 256-colour palette when python3
- * with Pillow is there. They show only real files in real states: the Last
+ * `--readme` draws framed screenshots instead (the README's, before it
+ * showed real Claude Code captures): a few views at one width, each in a
+ * terminal window frame (a title bar, rounded corners, a soft shadow on a
+ * transparent margin) at twice the size for sharp text, to
+ * .superpowers/pane-preview/readme/ (git-ignored), shrunk to a 256-colour
+ * palette when python3 with Pillow is there. No `--out` may point into
+ * docs/images/claude-code/: those are the real captures (tools/capture). They show only real files in real states: the Last
  * turn is a sample turn over real files (the README says so); Changes is
  * what the scan ledger says changed since `--since` (a snapshot the ledger
  * reaches back to), as `knossos session-changes` reads it, with the files
@@ -92,7 +94,12 @@ const changesLib = await import(join(REPO, 'hooks/lib/changes.ts'))
 const diffLib = await import(join(REPO, 'hooks/lib/diff.ts'))
 
 const README = 'readme' in args
-const OUT = resolve(args.out ?? join(REPO, README ? 'docs/images/claude-code-mod' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
+const OUT = resolve(args.out ?? join(REPO, README ? '.superpowers/pane-preview/readme' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
+const CAPTURES = join(REPO, 'docs/images/claude-code')
+if (OUT === CAPTURES || OUT.startsWith(CAPTURES + '/')) {
+  console.error(`pane-preview: refusing to write to ${OUT}: docs/images/claude-code holds the real Claude Code captures (tools/capture/shoot.mjs)`)
+  process.exit(2)
+}
 const PROJECT = resolve(args.project ?? REPO)
 const DATA_DIR = resolve(args['data-dir'])
 const COLUMNS = (args.columns ?? '60,100,140,200').split(',').map(Number)

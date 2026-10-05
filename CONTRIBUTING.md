@@ -67,11 +67,11 @@ sqlite3 -readonly ~/.knossos/knossos.sqlite ".backup $D/knossos.sqlite"
 cp ~/.knossos/roots.json "$D/"
 KNOSSOS_DATA_DIR="$D" knossos scan .    # optional: a fresh snapshot of the copy
 node tools/pane-preview.mjs --data-dir="$D"             # every view, 60 and 100 columns, dark and light
-node tools/pane-preview.mjs --readme --data-dir="$D"    # the README screenshots
+node tools/pane-preview.mjs --readme --data-dir="$D"    # framed preview screenshots
 rm -r "$D"
 ```
 
-`--readme` rewrites `docs/images/claude-code-mod/`: framed screenshots at 100 columns, drawn
+`--readme` writes `.superpowers/pane-preview/readme/` (git-ignored): framed screenshots at 100 columns, drawn
 at twice their size and shrunk to a 256-colour palette when `python3` with Pillow is
 available. Their "Last turn" and "Changes" figures come from a sample turn over real files.
 
