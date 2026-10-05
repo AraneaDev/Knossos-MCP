@@ -67,7 +67,9 @@ final class BundleSchemaAgreementTest extends KnossosTestCase
                 ->execute(['diag-schema', $scan->projectId, $scanId, 'warning', 'SCHEMA_PROBE', 'A diagnostic for the schema test.', 3, 4, 'owner:probe']);
             $bundle = json_decode((string) gzdecode((new GraphBundleService($pdo))->export($scan->projectId)), true, 128, JSON_THROW_ON_ERROR);
         } finally {
-            @unlink($database);
+            foreach (['', '-wal', '-shm', '-journal'] as $suffix) {
+                @unlink($database . $suffix);
+            }
         }
         $schema = self::schema();
 

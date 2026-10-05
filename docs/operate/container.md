@@ -32,7 +32,7 @@ needs dependency installation or network access.
 
 An agent cannot infer that mapping, so ask the server: `server_info` reports the
 roots it can actually reach and sets `containerised: true`, and a rejected path
-says so explicitly, so the host path does not just look wrong. A
+says so explicitly, which tells you the host path is the cause. A
 root that was configured on the host and is not mounted shows up under
 `unreachable_roots` instead of failing only when a scan is attempted.
 
@@ -145,8 +145,8 @@ docker run --rm \
   `knossos:dev`).
 
 The emitted hook script mounts the project directory at the **same path**
-inside the container as outside it, and never at a fixed internal path such
-as `/workspace`. The reason is practical. Projects are keyed by
+inside the container as outside it. A fixed internal path such
+as `/workspace` would break the lookup, as follows. Projects are keyed by
 `root_realpath`, the resolved filesystem path recorded at scan time. A
 session that starts in `/home/me/project` but is scanned inside the
 container as `/workspace` would record `/workspace` as the root; the next

@@ -150,8 +150,11 @@ other writer can scan between the read of the snapshot a scan starts from and
 the scan, so each entry's starting snapshot is the one it really started from.
 
 **An entry** keeps the snapshot it started from, the one it produced, each
-changed file's content hash before it, and, for up to 20 changed files
-(`LedgeredScanner::MAX_CHECKED`), the policy violations each held before it.
+changed file's content hash before it, and the policy violations each changed
+file held before it. Those baselines are kept only when the project declares
+policies, the tree can be read and at most 20 files changed
+(`LedgeredScanner::MAX_CHECKED`); otherwise `LedgeredScanner::baselines` returns
+null and the entry has none.
 Read in order from a turn's starting snapshot, the first entry that changed a
 file says what that file was before the turn. That keeps the brief's changed,
 added and deleted files and its before-and-after policy check the turn's own,
@@ -178,7 +181,7 @@ it was cut. No chain passes through it.
 **When the policy goes unevaluated.** When the ledger cannot account for every
 scan since the turn began (one was not recorded, or is older than a span's
 5,000 keys reach), or the chain passes a cut entry, the turn brief still names
-the files but reports the policy as `not_evaluated` rather than guess. The
+the files but reports the policy as `not_evaluated`. The
 model's note then has no policy part (see
 [notes for the model](../claude-code/agent-notes.md#how-the-policy-part-is-worked-out)).
 
