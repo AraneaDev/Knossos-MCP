@@ -5,4 +5,7 @@ if ! command -v pre-commit >/dev/null 2>&1; then
     echo "pre-commit 4.6.0 is required; use the quality image or install the pinned version." >&2
     exit 1
 fi
-pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push
+# Every type .pre-commit-config.yaml lists in default_install_hook_types, and
+# tests/shell/install-hooks.sh keeps the two in step: a type left out here is a
+# hook the config defines and nothing runs.
+pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push --hook-type commit-msg

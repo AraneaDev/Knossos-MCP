@@ -54,7 +54,7 @@ final class QueryCommand implements CliCommand
             'dependency-cycles' => ['db', 'json', 'edge-kind', 'min-confidence', 'limit', 'max-nodes', 'max-edges', 'timeout-ms', 'include-self-loops'],
             'architecture-health' => ['db', 'json', 'edge-kind', 'min-confidence', 'limit', 'max-nodes', 'max-edges', 'timeout-ms', 'include-external', 'include-tests', 'candidate-confidence', 'candidate-offset', 'candidate-timeout'],
             'check-architecture' => ['db', 'json', 'policies', 'min-confidence', 'limit', 'max-edges', 'timeout-ms'],
-            'suggest-location' => ['db', 'json', 'limit', 'max-members', 'max-edges', 'timeout-ms'],
+            'suggest-location' => ['db', 'json', 'limit', 'max-members', 'max-edges', 'timeout-ms', 'ranking-mode'],
             'change-impact' => ['db', 'json', 'since-days', 'max-commits', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
             'changed-files-impact' => ['db', 'json', 'working-tree', 'base-ref', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
             'test-impact' => ['db', 'json', 'working-tree', 'base-ref', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
@@ -313,7 +313,7 @@ final class QueryCommand implements CliCommand
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos suggest-location <project-id> <feature-description> [options]');
         $description = $p[1] ?? throw new InvalidArgumentException('A feature description is required.');
-        $result = $this->queries($c)->suggestLocation($project, $description, $c->options->integer($o, 'limit', 5, 1, 20), $c->options->integer($o, 'max-members', 20_000, 1, 50_000), $c->options->integer($o, 'max-edges', 100_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
+        $result = $this->queries($c)->suggestLocation($project, $description, $c->options->integer($o, 'limit', 5, 1, 20), $c->options->integer($o, 'max-members', 20_000, 1, 50_000), $c->options->integer($o, 'max-edges', 100_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), $c->options->single($o, 'ranking-mode') ?? 'deterministic');
         return $this->result($result, $o, $c);
     }
 

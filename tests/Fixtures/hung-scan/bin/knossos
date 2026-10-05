@@ -1,0 +1,20 @@
+<?php
+
+declare(strict_types=1);
+
+// A `knossos scan` that never finishes: it ignores the request to stop, starts a
+// process of its own in its group, writes that process's id where its database
+// would be, and sleeps.
+// The tests that run this skip where ext-pcntl is missing; the guard keeps the fixture from dying on the call.
+if (function_exists('pcntl_signal')) {
+    pcntl_signal(SIGINT, SIG_IGN);
+}
+$database = '';
+foreach ($argv as $argument) {
+    if (str_starts_with($argument, '--db=')) {
+        $database = substr($argument, 5);
+    }
+}
+$child = trim((string) shell_exec('sleep 60 > /dev/null 2>&1 & echo $!'));
+file_put_contents($database, $child);
+sleep(60);

@@ -52,7 +52,13 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         ?int $maxRequestLineBytes = null,
     ) {
         $this->maxRequestLineBytes = $maxRequestLineBytes ?? max($limits->maxLineBytes, $limits->maxOutputBytes);
+        $this->requestLimitSource = $maxRequestLineBytes === null
+            ? ' (the larger of worker_execution.max_line_bytes and worker_execution.max_output_bytes)'
+            : '';
     }
+
+    /** Where the request frame limit comes from, for its diagnostic, or nothing when it was set directly. */
+    private readonly string $requestLimitSource;
 
     /** {@inheritDoc} */
     public function beginRequest(): int
@@ -100,7 +106,11 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         }
         $length = strlen($line);
         if ($length > $this->maxRequestLineBytes) {
-            throw new WorkerException('WORKER_REQUEST_TOO_LARGE', 'Worker request exceeds the request frame limit.');
+            throw new WorkerException('WORKER_REQUEST_TOO_LARGE', sprintf(
+                'Worker request exceeds the %d-byte request frame limit%s, so Knossos did not send it.',
+                $this->maxRequestLineBytes,
+                $this->requestLimitSource,
+            ));
         }
 
         $stdin = $this->process->stdin();
@@ -222,7 +232,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             if ($pending > $this->limits->maxLineBytes) {
                 // Longer than any part may be, so this frame is output.
                 $this->chargeOutput($pending);
-                throw new WorkerException('WORKER_FRAME_TOO_LARGE', 'Worker frame exceeds the line limit.');
+                throw $this->frameTooLarge(substr($this->stdoutBuffer, $this->stdoutOffset, self::FRAME_HEAD_BYTES));
             }
 
             // Only the request's own deadline is renewed: a caller's shorter
@@ -285,13 +295,60 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             // extractMessage() above), so the old stdoutBuffer==='' guard is
             // intentionally dropped.
             $status = $this->process->status();
+            // A worker can write a whole oversized frame and exit before it is
+            // read. That is still a frame too large, which splitting can act
+            // on, so the top of the loop reports it rather than the exit.
+            if (strlen($this->stdoutBuffer) - $this->stdoutOffset > $this->limits->maxLineBytes) {
+                continue;
+            }
             if (!$status['running'] && feof($stdout)) {
                 throw new WorkerException(
                     'WORKER_EXITED',
                     $this->withStderr(self::exitDescription($status)),
+                    terminatingSignal: $status['signaled'] && $status['termsig'] > 0 ? $status['termsig'] : null,
                 );
             }
         }
+    }
+
+    /** How much of an oversized frame is read to tell what it is. */
+    private const FRAME_HEAD_BYTES = 1024;
+
+    /**
+     * The failure for a frame over the line limit, saying what the frame was.
+     *
+     * Only the head is looked at, up to its `params`, so a key inside a file's
+     * facts can never be mistaken for the frame's own. A contribution is the
+     * only frame a file owns; a response (`result` or `error`) or any other
+     * notification belongs to the request, and leaving a file out over it
+     * would cache an innocent file as too large. When the head says neither,
+     * both are left unknown and the caller falls back to searching the batch.
+     */
+    private function frameTooLarge(string $head): WorkerException
+    {
+        $paramsAt = strpos($head, '"params"');
+        $envelope = $paramsAt === false ? $head : substr($head, 0, $paramsAt);
+        $isAFilesAnswer = $description = null;
+        // The value is decoded as JSON, so an escaped slash ("scan\/...", as
+        // json_encode writes it by default) reads as the method it names.
+        if (preg_match('/"method"\s*:\s*("(?:[^"\\\\]|\\\\.)*")/', $envelope, $match) === 1
+            && is_string($method = json_decode($match[1]))) {
+            $isAFilesAnswer = $method === Protocol::NOTIFICATION_CONTRIBUTION;
+            $description = $isAFilesAnswer ? null : sprintf('it was a %s notification', $method);
+        } elseif (preg_match('/"id"\s*:/', $envelope) === 1 && preg_match('/"(?:result|error)"\s*:/', $envelope) === 1) {
+            $isAFilesAnswer = false;
+            $description = "it was the worker's response to the request";
+        }
+
+        return new WorkerException(
+            'WORKER_FRAME_TOO_LARGE',
+            sprintf(
+                'Worker frame exceeds the %d-byte line limit (worker_execution.max_line_bytes), so Knossos stopped the worker.',
+                $this->limits->maxLineBytes,
+            ),
+            frameIsAFilesAnswer: $isAFilesAnswer,
+            frameDescription: $description,
+        );
     }
 
     /**
@@ -304,28 +361,26 @@ final class NdjsonRpcChannel implements RpcChannelInterface
      * fact been SIGTERMed by the host's out-of-memory killer, which leaves no
      * message anywhere the scan can see.
      *
+     * What the signal says about its sender is decided in {@see WorkerSignal}.
+     * None of them can be Knossos: this status is read from a process the
+     * supervisor still holds, during the active request, and Knossos signals
+     * a worker only from close(), which runs after a request has already
+     * failed with a diagnostic of its own (or on shutdown). On the host where
+     * this was first seen the sender was earlyoom, which SIGTERMs the process
+     * with the most memory once available memory drops under its threshold.
+     *
      * @param array{running: bool, signaled: bool, exitcode: int, termsig: int, ...} $status
      */
     private static function exitDescription(array $status): string
     {
         if ($status['signaled'] && $status['termsig'] > 0) {
-            return sprintf(
-                'Scanner worker was killed by signal %d before responding. Nothing in the worker chose this, so look '
-                . 'outside it: an out-of-memory killer or a supervisor stopping the process.',
-                $status['termsig'],
-            );
+            return WorkerSignal::describe($status['termsig']);
         }
         if ($status['exitcode'] < 0) {
             return 'Scanner worker exited before responding; its exit status was no longer available to read.';
         }
 
         return sprintf('Scanner worker exited before responding (exit %d).', $status['exitcode']);
-    }
-
-    /** {@inheritDoc} */
-    public function stderr(): string
-    {
-        return $this->stderrBuffer;
     }
 
     /**
@@ -364,7 +419,10 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         // without bound.
         $this->sendBufferedBytes += strlen($chunk);
         if ($this->sendBufferedBytes > $this->limits->maxLineBytes + self::READ_CHUNK_BYTES) {
-            throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
+            throw new WorkerException('WORKER_OUTPUT_LIMIT', sprintf(
+                'Worker wrote more than one %d-byte frame before reading its whole request, so Knossos stopped the worker.',
+                $this->limits->maxLineBytes,
+            ));
         }
 
         return false;
@@ -412,9 +470,16 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             $this->stdoutBuffer = '';
             $this->stdoutOffset = 0;
         }
-        if ($line === '' || strlen($line) > $this->limits->maxLineBytes) {
+        if ($line === '') {
+            $this->chargeOutput(1);
+            throw new WorkerException('WORKER_FRAME_INVALID', 'Worker emitted an empty frame.');
+        }
+        if (strlen($line) > $this->limits->maxLineBytes) {
+            // Over the limit by less than one read, a frame arrives with its
+            // newline and is taken whole here rather than caught growing
+            // above. It is the same failure, and splitting can act on it.
             $this->chargeOutput(strlen($line) + 1);
-            throw new WorkerException('WORKER_FRAME_INVALID', 'Worker emitted an empty or oversized frame.');
+            throw $this->frameTooLarge(substr($line, 0, self::FRAME_HEAD_BYTES));
         }
 
         try {
@@ -465,7 +530,10 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     {
         $this->outputBytes += $bytes;
         if ($this->outputBytes > $this->limits->maxOutputBytes) {
-            throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
+            throw new WorkerException('WORKER_OUTPUT_LIMIT', sprintf(
+                'Worker output exceeds the %d-byte request limit (worker_execution.max_output_bytes), so Knossos stopped the worker.',
+                $this->limits->maxOutputBytes,
+            ));
         }
     }
 

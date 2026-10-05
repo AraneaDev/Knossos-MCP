@@ -91,7 +91,13 @@ final readonly class LanguageDescriptor
                 // worker dies and the scan commits a graph with that whole
                 // language missing. A cap is not an allocation, so a small
                 // project pays nothing for the headroom.
-                ['node', '--max-old-space-size=2048', $installationRoot . '/workers/typescript/bin/worker.js'],
+                //
+                // --expose-gc lets the worker collect each program it releases
+                // before building the next. Without it a request over many
+                // tsconfigs left the released programs resident under that
+                // headroom: 1.7 GB of RSS for under 0.5 GB live, enough for a
+                // host memory guard to SIGTERM the worker.
+                ['node', '--max-old-space-size=2048', '--expose-gc', $installationRoot . '/workers/typescript/bin/worker.js'],
                 'scanner_typescript',
                 scanBatchFiles: 2_000,
                 scanBatchSourceBytes: 3_000_000,

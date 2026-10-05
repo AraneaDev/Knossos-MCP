@@ -1,0 +1,92 @@
+import { describe, expect, it } from 'vitest'
+import { bandModel, formatAge } from './band'
+import type { TurnBrief } from './envelopes'
+
+const ok = (over: Partial<TurnBrief> = {}): TurnBrief => ({
+  status: 'ok', project_root: '/r', project_id: 'p', snapshot_id: 's', scanned_at: 1_000, scan_ms: 5, reason: null,
+  roots_file: null, refused_root: null, path: '/r',
+  changed_files: ['a.php'], added_files: [], deleted_files: [],
+  impact: { 'a.php': { path: 'a.php', dependent_files: 37, boundaries: ['Core', 'Http'] } },
+  tests: [{ path: 't/A.php', distance: 1 }],
+  policy: { status: 'evaluated', total: 0, violations: [], truncated: false }, ...over,
+})
+const idle = { phase: 'idle' as const, lastAttemptAt: 1_000_000 }
+
+describe('formatAge', () => {
+  it('seconds', () => expect(formatAge(12_000)).toBe('12s'))
+  it('minutes', () => expect(formatAge(14 * 60_000)).toBe('14m'))
+  it('hours', () => expect(formatAge(3 * 3_600_000)).toBe('3h'))
+})
+
+describe('bandModel', () => {
+  it('summarises a clean turn with its age', () => {
+    expect(bandModel(ok(), idle, 1_000_000 + 12_000)).toEqual({
+      tone: 'normal',
+      text: 'knossos · 1 file → 37 dependents · 1 test · as of 12s ago · reaching Core, Http',
+      showDetails: true,
+    })
+  })
+  it('is red with violations', () => {
+    const m = bandModel(ok({ policy: { status: 'evaluated', total: 2, violations: [], truncated: false } }), idle, 1_012_000)
+    expect(m?.tone).toBe('alert')
+    expect(m?.text).toContain('2 policy violations')
+  })
+  it('says scanning and keeps the old figures', () => {
+    const m = bandModel(ok(), { phase: 'scanning', lastAttemptAt: 1_000_000 }, 1_005_000)
+    expect(m?.text).toBe('knossos · scanning… · last: 1 file → 37 dependents · 1 test · as of 5s ago · reaching Core, Http')
+  })
+  it('says the scan failed and how old the figures are', () => {
+    const m = bandModel(ok(), { phase: 'failed', lastAttemptAt: 1_000_000 + 14 * 60_000 }, 1_000_000 + 14 * 60_000)
+    expect(m?.tone).toBe('warn')
+    expect(m?.text).toContain('scan failed, figures from 14m ago')
+  })
+  it('names the boundaries reached by their short labels, most dependents first, counting past two, after the age', () => {
+    const impact = {
+      'a.php': { path: 'a.php', dependent_files: 5, boundaries: ['composer:acme/app (+node:web)', 'tests'] },
+      'b.php': { path: 'b.php', dependent_files: 40, boundaries: ['tests', 'core', 'module:hooks (+typescript:hooks/tsconfig.json)'] },
+    }
+    const m = bandModel(ok({ changed_files: ['a.php', 'b.php'], impact }), idle, 1_012_000)
+    expect(m?.text).toBe('knossos · 2 files → 45 dependents · 1 test · as of 12s ago · reaching tests, core +2')
+  })
+  it('names only declared boundaries when the project declares some', () => {
+    const impact = { 'a.php': { path: 'a.php', dependent_files: 9, boundaries: ['namespace:App', 'composer:acme/app (+node:web)', 'core'] } }
+    const m = bandModel(ok({ impact }), idle, 1_012_000, new Set(['core', 'http']))
+    expect(m?.text).toBe('knossos · 1 file → 9 dependents · 1 test · as of 12s ago · reaching core')
+    expect(bandModel(ok({ impact }), idle, 1_012_000, new Set(['http']))?.text).toBe('knossos · 1 file → 9 dependents · 1 test · as of 12s ago')
+  })
+  it('puts violations before tests, so a narrow band keeps them', () => {
+    const m = bandModel(ok({ policy: { status: 'evaluated', total: 1, violations: [], truncated: false } }), idle, 1_012_000)
+    expect(m?.text).toBe('knossos · 1 file → 37 dependents · 1 policy violation · 1 test · as of 12s ago · reaching Core, Http')
+  })
+  it('lists deletions', () => {
+    const m = bandModel(ok({ changed_files: [], impact: {}, deleted_files: ['gone.php'] }), idle, 1_000_000)
+    expect(m?.text).toContain('1 deleted')
+  })
+  it('names the refused root in a line that fits, and copies the allow-root command whole', () => {
+    const m = bandModel(ok({ status: 'not-allowed', path: '/work/r x/' }), idle, 1_000_000)
+    expect(m?.text).toBe('knossos · not allowed: r x')
+    expect(m?.copy).toBe("knossos allow-root '/work/r x/' --execute")
+    // Its details open the pane, which offers to allow the root.
+    expect(m?.showDetails).toBe(true)
+  })
+  it('names the roots file the brief read and the root it refused', () => {
+    const m = bandModel(
+      ok({ status: 'not-allowed', path: '/r/src', roots_file: "/data/it's/roots.json", refused_root: '/r' }),
+      idle,
+      1_000_000,
+    )
+    expect(m?.text).toBe('knossos · not allowed: r')
+    expect(m?.copy).toBe("KNOSSOS_ROOTS_FILE='/data/it'\\''s/roots.json' knossos allow-root '/r' --execute")
+  })
+  it('says the first scan failed', () =>
+    expect(bandModel(null, { phase: 'failed', lastAttemptAt: 1 }, 2)).toEqual({ tone: 'warn', text: 'knossos · scan failed', showDetails: false }))
+  it('shows a scan-failed brief with its reason', () =>
+    expect(bandModel(ok({ status: 'scan-failed', reason: 'boom' }), idle, 1_000_000)).toEqual({ tone: 'warn', text: 'knossos · scan failed: boom', showDetails: false }))
+  it('shows a scan-failed brief without a reason', () =>
+    expect(bandModel(ok({ status: 'scan-failed', reason: null }), idle, 1_000_000)?.text).toBe('knossos · scan failed'))
+  it('omits the age when the scan time is unknown', () =>
+    expect(bandModel(ok({ scanned_at: null }), idle, 1_000_000)?.text).toBe('knossos · 1 file → 37 dependents · 1 test · reaching Core, Http'))
+  it('draws nothing before the first brief', () => expect(bandModel(null, idle, 0)).toBeNull())
+  it('draws nothing after a turn that changed nothing', () =>
+    expect(bandModel(ok({ changed_files: [], impact: {}, tests: [] }), idle, 1_000_000)).toBeNull())
+})

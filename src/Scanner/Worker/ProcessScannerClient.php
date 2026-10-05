@@ -68,12 +68,6 @@ final class ProcessScannerClient implements ScannerClient
     {
         $this->session->shutdown();
     }
-    /** Whatever the worker wrote to stderr, surfaced in diagnostics. */
-
-    public function stderr(): string
-    {
-        return $this->session->stderr();
-    }
 
     /**
      * The most recent scan reply, retained for diagnostics after a failure.

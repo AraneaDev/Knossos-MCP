@@ -19,9 +19,11 @@ final readonly class LanguageScanResult
      * @param array<string, array{files: int, source_bytes: int, source_bytes_used: int}> $batchBudgets
      *        The scan-request bounds each language ran under, keyed by owner
      *        (`knossos.php`) to match $workerDiagnostics and $scannerMetadata.
-     *        `source_bytes_used` is the narrowest budget any of that language's
-     *        requests ran at, so a value below `source_bytes` means a batch
-     *        overflowed the worker's output cap and was re-split.
+     *        `source_bytes_used` is the narrowest budget an ordinary retry of
+     *        that language settled on, so a value below `source_bytes` means a
+     *        batch outgrew the worker's output cap or memory and was re-split.
+     *        Splits made only to find the one file behind an oversized frame
+     *        do not lower it: no batch of the language settled on them.
      * @param array<string, string|null> $undiscoveredInputs
      *        What the kept languages' workers read of files discovery never
      *        hashed, path to SHA-256 hex or null for a failed read, for
@@ -42,5 +44,12 @@ final readonly class LanguageScanResult
         public array $workerDiagnostics = [],
         public array $batchBudgets = [],
         public array $undiscoveredInputs = [],
+        /**
+         * Files left out of the graph because their own answer outgrew a
+         * size limit, whether found this scan or reused from the cache.
+         */
+        public int $leftOut = 0,
+        /** @var list<string> the paths of those files, in the order they were found */
+        public array $leftOutPaths = [],
     ) {}
 }

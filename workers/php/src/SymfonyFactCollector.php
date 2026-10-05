@@ -36,6 +36,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
     public function __construct(private readonly string $relativePath) {}
 
     /** Dispatch a node to the class or method handler. */
+    #[\Override]
     public function enterNode(Node $node): ?int
     {
         if ($node instanceof Stmt\ClassLike) {
@@ -47,6 +48,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
     }
 
     /** Pop the enclosing-class scope so attribution stays correct. */
+    #[\Override]
     public function leaveNode(Node $node): ?int
     {
         if ($node instanceof Stmt\ClassLike) {

@@ -78,7 +78,6 @@ final class WatchScanAttemptTest extends TestCase
 
         // outcome + is*() predicates
         assertSame(WatchScanAttempt::SUCCESS, $attempt->outcome);
-        assertSame(true, $attempt->isSuccess());
         assertSame(false, $attempt->isCancelled());
         assertSame(false, $attempt->isRetryable());
         assertSame(false, $attempt->isTerminal());

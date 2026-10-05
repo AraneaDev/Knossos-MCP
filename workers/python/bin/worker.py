@@ -1484,6 +1484,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
         # Structural protocols this file declares: a call through one may
         # reach any class with the member, declared or not.
         self.protocols: set[str] = set()
+        # Classes deriving from the standard library's AST visitor, whose
+        # `visit_<Node>` hooks it dispatches to by name.
+        self.ast_visitors: set[str] = set()
         self.serves_app = False
         self.module_id = ref("module", self.module)
         self.facts = PythonFactAccumulator(relative)
@@ -1618,6 +1621,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 self.facts.add_edge("extends", local_id, target, base)
         if any(is_protocol_base(base) for base in node.bases):
             self.protocols.add(canonical)
+        if any(self.is_ast_visitor_base(base) for base in node.bases):
+            self.ast_visitors.add(canonical)
         self.class_methods[canonical] = frozenset(
             item.name for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         )
@@ -1654,6 +1659,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
             self.loaded_by_path and not self.containers and not node.name.startswith("_")
         ):
             attributes["runtime_invoked"] = True
+        if kind == "method" and self.overrides_supertype_member(node.name, parent_canonical, decorators):
+            attributes["overrides"] = True
         self.facts.add_node(local_id, kind, canonical, node.name, node, attributes)
         self.facts.add_edge("contains", parent_id, local_id, node)
         self.fastapi.enrich_function(node, local_id, canonical, fastapi_routes)
@@ -1676,6 +1683,38 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.local_variable_types.pop()
         self.local_function_scopes.pop()
         self.containers.pop()
+
+    def is_ast_visitor_base(self, base: ast.expr) -> bool:
+        """Whether a base names the standard library's ``ast.NodeVisitor`` or ``ast.NodeTransformer``."""
+        name = dotted(base)
+        target = self.resolve_name(name, "class") if name else None
+        if target is None or self.index.module_file("ast") is not None:
+            return False
+        return target.split(":", 2)[-1] in {"ast.NodeVisitor", "ast.NodeTransformer"}
+
+    def overrides_supertype_member(self, name: str, owner: str, decorators: list[str]) -> bool:
+        """Whether a method fulfils a supertype's member, by the source's word or by dispatch.
+
+        ``@override`` from ``typing`` or ``typing_extensions`` is the source
+        saying so. An AST visitor's ``visit``, ``generic_visit`` and
+        ``visit_<Node>`` hooks are called by ``NodeVisitor.visit`` through
+        ``getattr``, so no call names them. A same-named decorator from
+        anywhere else says nothing.
+        """
+        if owner in self.ast_visitors and (name in {"visit", "generic_visit"} or name.startswith("visit_")):
+            return True
+        typing_modules = {"typing", "typing_extensions"}
+        imported = {f"{module}.override" for module in typing_modules}
+        for decorator in decorators:
+            head, _, member = decorator.rpartition(".")
+            if member != "override":
+                continue
+            if head:
+                if (self.aliases.get(head) or "").removeprefix("py:module:") in typing_modules:
+                    return True
+            elif (self.aliases.get("override") or "").split(":", 2)[-1] in imported:
+                return True
+        return False
 
     def registered_by_object(self, decorators: list[str]) -> bool:
         """Whether a decorator hands the function to an object that calls it.

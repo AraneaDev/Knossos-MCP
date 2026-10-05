@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Knossos MCP installer.
+# Knossos installer.
 #
 # Verifies runtimes, ensures worker dependencies, seeds an initial scan so the
 # server can answer queries immediately, and registers the Knossos stdio MCP
@@ -36,7 +36,7 @@ SEED_SCAN="${KNOSSOS_SEED_SCAN:-1}"
 
 log() { printf '  %s\n' "$1"; }
 
-echo "Knossos MCP installer"
+echo "Knossos installer"
 echo "  root:       $ROOT"
 echo "  server:     $NAME (scope: $SCOPE)"
 echo "  grants:     $ALLOW_ROOT"

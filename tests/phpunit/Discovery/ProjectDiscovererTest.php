@@ -1708,8 +1708,8 @@ TOML);
      * Vitest loads its setup file before every test and nothing imports it, so
      * it read as dead code while running on every single test invocation.
      *
-     * The value may be a bare string or an array of them; YCI writes the array
-     * form, and a reader that only understood one would miss the other.
+     * The value may be a bare string or an array of them; projects use the array
+     * form too, and a reader that only understood one would miss the other.
      */
     public function testDiscoverReadsFilesATestRunnerConfigLoads(): void
     {

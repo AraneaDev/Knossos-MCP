@@ -76,7 +76,7 @@ jobs:
 
       - name: Build pinned quality image
         if: ${{ steps.release.outputs.release_created }}
-        run: docker build --target quality -t knossos-mcp:quality .
+        run: docker build --target quality -t knossos:quality .
 
       # The same versioned profile that gates every PR, re-run against the
       # released tree: lint, static analysis, tests, coverage floors, mutation
@@ -88,14 +88,14 @@ jobs:
             -e KNOSSOS_GATE_REPO=/workspace \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD:/workspace:ro" \
-            knossos-mcp:quality full
+            knossos:quality full
 
       - name: Verify the released runtime image reports its version
         if: ${{ steps.release.outputs.release_created }}
         run: |
-          docker build --target runtime -t knossos-mcp:release .
-          docker run --rm knossos-mcp:release version --json
-          docker run --rm knossos-mcp:release doctor --json
+          docker build --target runtime -t knossos:release .
+          docker run --rm knossos:release version --json
+          docker run --rm knossos:release doctor --json
 
       # Pre-release: no container registry yet. Intentionally dormant. To go
       # public: remove `if: false` and add registry auth (OIDC or a token).

@@ -208,7 +208,7 @@ final class DirtyPathCaptureTest extends KnossosTestCase
         self::assertNull(DirtyPathSet::decode('not json'), 'A value that no longer parses says nothing about the tree.');
         self::assertNull(DirtyPathSet::decode('{"paths":["a.php"]}'), 'Completeness is never assumed when it was not recorded.');
         self::assertNull(DirtyPathSet::decode('{"paths":[17],"complete":true}'), 'A path that is not a string is a corrupt record, not a path.');
-        self::assertSame([], DirtyPathSet::decode(DirtyPathSet::clean()->encode())?->paths, 'A recorded clean tree is an answer, and the one case that is not null.');
+        self::assertSame([], DirtyPathSet::decode(DirtyPathSet::of([])->encode())?->paths, 'A recorded clean tree is an answer, and the one case that is not null.');
     }
 
     /** A runner answering with fixed output, standing in for a git binary CI does not have. */

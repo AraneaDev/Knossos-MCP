@@ -28,7 +28,7 @@ interface ScannerClient
     public function scan(array $request): iterable;
 
     /**
-     * Request cooperative cancellation of an in-flight worker operation.
+     * Send an advisory cancel for an in-flight scan request. A worker busy inside the scan cannot read it, so the host ends the process.
      *
      * @param int|string $requestId Widened to match the id the session sends
      * verbatim: an int scan id must not be stringified, or a type-strict worker

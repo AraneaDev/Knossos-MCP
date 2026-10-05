@@ -62,6 +62,24 @@ final class ProcessGitProviderTest extends KnossosTestCase
         );
     }
 
+    public function testChangesRejectsABaseRefEndingInALineBreakBeforeGitRuns(): void
+    {
+        $runner = new class implements GitProcessRunnerInterface {
+            public int $calls = 0;
+
+            public function run(array $command, int $timeoutMs, string $operation): string
+            {
+                ++$this->calls;
+
+                return str_repeat('a', 40);
+            }
+        };
+        $provider = new ProcessGitWorkingTreeProvider(runner: $runner);
+        $error = captureThrows(fn() => $provider->changes($this->existingDir, "main\n", 10, 100), RuntimeException::class);
+        assertSame('base_ref contains unsupported characters.', $error->getMessage());
+        assertSame(0, $runner->calls);
+    }
+
     public function testChangesRejectsBaseRefThatDoesNotResolve(): void
     {
         $mock = $this->mockRunner('not-a-commit-hash');

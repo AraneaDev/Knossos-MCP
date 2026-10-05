@@ -15,7 +15,7 @@ RUN cargo build --release --locked
 FROM php:8.5-cli-trixie@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS runtime
 
 # x-release-please-start-version
-LABEL org.opencontainers.image.title="Knossos MCP" \
+LABEL org.opencontainers.image.title="Knossos" \
       org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
       org.opencontainers.image.version="0.17.5"
 # x-release-please-end
@@ -99,11 +99,14 @@ COPY schemas ./schemas
 # run from, reading the manifest, the hook scripts and the skill as templates,
 # so an image without them ships a command that cannot do its job. The quality
 # stage shellchecks the hook scripts as well, and cannot see a file the image
-# does not carry. Keep this list in step with PluginCommand's MANIFEST and
-# COPIES, and with the scripts it reads by name.
+# does not carry. `types` is the mod's API declaration, which the plugin
+# materialises and the quality stage's type-check reads. Keep this list in step
+# with PluginCommand's DIRECTORIES, MANIFEST and COPIES, and with the scripts it
+# reads by name.
 COPY .claude-plugin ./.claude-plugin
 COPY hooks ./hooks
 COPY skills ./skills
+COPY types ./types
 RUN chmod 0755 \
     /opt/knossos/bin/knossos \
     /opt/knossos/workers/php/bin/worker \
@@ -160,6 +163,7 @@ RUN apt-get update \
     && cd / \
     && rm -rf /tmp/pcov /tmp/pcov.tar.gz /tmp/pcov.sha256 \
     && docker-php-ext-enable pcov \
+    && docker-php-ext-install pcntl \
     && python3 -m pip install --break-system-packages --no-cache-dir \
         coverage==7.14.3 mypy==2.3.0 pre-commit==4.6.0 pytest==8.4.2 ruff==0.15.12 \
     && curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
@@ -208,6 +212,21 @@ RUN npm ci --ignore-scripts --no-audit --no-fund
 # with dev dependencies so the vitest suite can run in this stage.
 RUN npm --prefix workers/typescript ci --ignore-scripts --no-audit --no-fund
 COPY workers/typescript/vitest.config.js ./workers/typescript/
+# The mod's vitest suite (`npm run test:mod`) reads this at the root.
+COPY vitest.config.mjs ./
+
+# The Claude Code CLI runs `claude plugin validate` and `claude plugin test` for
+# the mod in tools/quality's tests lane. It needs no authentication for either.
+# The version is pinned, and the pin moves together with the mod's API types
+# (types/index.d.ts and the engine declarations the type-check reads), on
+# purpose: an unpinned install would let a CLI release change what the gate
+# checks without any commit here saying so. The package ships a stub and puts
+# the native binary in place from its postinstall script, which this stage's
+# npm 12 does not run for a dependency on its own, so it is run explicitly.
+# Without it `claude` exits with "native binary not installed".
+RUN npm install --global @anthropic-ai/claude-code@2.1.287 --no-audit --no-fund \
+    && node /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs \
+    && claude --version
 
 # The quality profile runs cargo fmt, clippy, the crate's tests, and llvm-cov, so
 # this stage needs the toolchain the runtime stage deliberately does not ship.
@@ -255,9 +274,14 @@ RUN composer install \
     --optimize-autoloader
 
 COPY .editorconfig .hadolint.yaml .trivyignore .php-cs-fixer.dist.php .prettierignore .markdownlint-cli2.jsonc ./
+# DockerIgnoreTest holds .dockerignore to every directory .gitignore anchors at
+# the root, and CI runs it in this image, so both files have to be here for the
+# check to run at all. Only this stage copies them: the runtime image ships
+# exactly what it did before.
+COPY .gitignore .dockerignore ./
 COPY eslint.config.js phpstan.neon pyproject.toml .pre-commit-config.yaml .coveragerc ./
 COPY phpunit.xml infection.json5 ./
-COPY README.md CONTRIBUTING.md LICENSE ./
+COPY README.md CONTRIBUTING.md CHANGELOG.md LICENSE ./
 COPY version.txt release-please-config.json .release-please-manifest.json ./
 COPY coverage-budgets.json ./
 COPY maintainability-budgets.json ./
@@ -268,6 +292,7 @@ COPY knossos.json ./
 COPY Dockerfile ./
 COPY docker-compose.yml .env.example ./
 COPY docs ./docs
+COPY plugins ./plugins
 COPY benchmarks ./benchmarks
 COPY tests ./tests
 COPY workers/python/tests ./workers/python/tests

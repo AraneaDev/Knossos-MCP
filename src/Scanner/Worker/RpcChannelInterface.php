@@ -41,7 +41,4 @@ interface RpcChannelInterface
      * @return array<string, mixed>
      */
     public function readMessage(int $deadline, ?callable $cancelled = null): array;
-
-    /** Accumulated stderr content from the worker process. */
-    public function stderr(): string;
 }

@@ -88,6 +88,67 @@ final class GitProcessRunnerHardeningTest extends TestCase
     }
 
     /**
+     * A containerised run names the mounted project as safe: the project is
+     * the host user's, the container's user is another, and git refuses a
+     * repository another user owns. The name reaches git as a `-c` setting,
+     * the one place git honours it besides the system and global files this
+     * runner never reads; nothing else does, and an unset one adds nothing.
+     */
+    public function testANamedSafeDirectoryReachesGitAsAConfigSetting(): void
+    {
+        $dir = sys_get_temp_dir() . '/knossos-git-hardening-safe-' . bin2hex(random_bytes(8));
+        mkdir($dir, 0o700, true);
+        $fakeGit = $dir . '/git';
+        file_put_contents($fakeGit, "#!/bin/sh\nfor a in \"\$@\"; do printf '%s\\037' \"\$a\"; done\n");
+        chmod($fakeGit, 0o700);
+        try {
+            putenv('KNOSSOS_GIT_SAFE_DIRECTORY=/work/project');
+            $argv = explode("\037", rtrim((new GitProcessRunner())->run([$fakeGit, 'status'], 5000, 'safe probe'), "\037"));
+            self::assertSame(['-c', 'safe.directory=/work/project'], array_slice($argv, -3, 2));
+            // Only an absolute path is a directory to trust.
+            putenv('KNOSSOS_GIT_SAFE_DIRECTORY=*');
+            self::assertNotContains('safe.directory=*', explode("\037", (new GitProcessRunner())->run([$fakeGit, 'status'], 5000, 'safe probe')));
+            // Nor is a path with a line break after it: one absolute path means nothing follows it.
+            putenv("KNOSSOS_GIT_SAFE_DIRECTORY=/work/project\n");
+            self::assertSame([], array_values(array_filter(
+                explode("\037", (new GitProcessRunner())->run([$fakeGit, 'status'], 5000, 'safe probe')),
+                static fn(string $arg): bool => str_starts_with($arg, 'safe.directory='),
+            )));
+        } finally {
+            putenv('KNOSSOS_GIT_SAFE_DIRECTORY');
+            self::runQuiet(['rm', '-rf', $dir]);
+        }
+    }
+
+    /** A repository another user owns is read once it is named safe, and refused otherwise. */
+    public function testARepositoryAnotherUserOwnsIsReadOnlyWhenNamedSafe(): void
+    {
+        $git = self::locateGit();
+        if ($git === null || !function_exists('posix_getuid') || posix_getuid() !== 0) {
+            self::markTestSkipped('Needs git and root, to hand the repository to another user.');
+        }
+        $root = sys_get_temp_dir() . '/knossos-git-hardening-owner-' . bin2hex(random_bytes(8));
+        mkdir($root, 0o755, true);
+        try {
+            self::runQuiet([$git, 'init', '--quiet', $root]);
+            self::runQuiet([$git, '-C', $root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '--quiet', '--allow-empty', '-m', 'first']);
+            self::runQuiet(['chown', '-R', '65534:65534', $root]);
+            $head = [$git, '-C', $root, 'rev-parse', 'HEAD'];
+            try {
+                (new GitProcessRunner())->run($head, 5000, 'owner probe');
+                self::fail('git read a repository another user owns without being told it is safe.');
+            } catch (\RuntimeException) {
+                // Expected: dubious ownership.
+            }
+            putenv('KNOSSOS_GIT_SAFE_DIRECTORY=' . $root);
+            self::assertSame(40, strlen(trim((new GitProcessRunner())->run($head, 5000, 'owner probe'))));
+        } finally {
+            putenv('KNOSSOS_GIT_SAFE_DIRECTORY');
+            self::runQuiet(['rm', '-rf', $root]);
+        }
+    }
+
+    /**
      * A repository that plants core.fsmonitor must not execute it. Skipped
      * where git is unavailable (the quality container is gitless).
      */

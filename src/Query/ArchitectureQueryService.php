@@ -129,8 +129,23 @@ final readonly class ArchitectureQueryService
         return $this->catalogQueries->snapshotDiff($projectId, $fromSnapshot, $toSnapshot, $maxChanges);
     }
 
-    /** @param array<string, mixed> $budgets @param list<array<string, mixed>> $policies */
-    /** {@see ProjectCatalogQueryService::qualityGate()} */
+    /**
+     * {@see ProjectCatalogQueryService::branchComparison()}
+     *
+     * @param list<array<string, mixed>> $policies
+     * @return array<string, mixed>
+     */
+    public function branchComparison(string $projectId, string $baseSnapshot, array $policies, int $limit = 8): array
+    {
+        return $this->catalogQueries->branchComparison($projectId, $baseSnapshot, $policies, $limit);
+    }
+
+    /**
+     * {@see ProjectCatalogQueryService::qualityGate()}
+     *
+     * @param array<string, mixed> $budgets
+     * @param list<array<string, mixed>> $policies
+     */
     public function qualityGate(
         string $projectId,
         string $baselineSnapshot,
@@ -165,8 +180,11 @@ final readonly class ArchitectureQueryService
         return $this->componentQueries->inspectComponent($projectId, $component, $maxRelationships, $maxChildren, $minConfidence);
     }
 
-    /** @param list<string> $edgeKinds */
-    /** {@see ComponentQueryService::listUsages()} */
+    /**
+     * {@see ComponentQueryService::listUsages()}
+     *
+     * @param list<string> $edgeKinds
+     */
     public function listUsages(string $projectId, string $symbol, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 100): ResultEnvelope
     {
         return $this->componentQueries->listUsages($projectId, $symbol, $edgeKinds, $minConfidence, $limit);
@@ -191,8 +209,11 @@ final readonly class ArchitectureQueryService
         return $this->fileMetricsQueries->fileMetrics($projectId, $pathContains, $language, $sortBy, $order, $limit, $offset);
     }
 
-    /** @param list<string> $edgeKinds */
-    /** {@see GraphTopologyQueryService::dependencyCycles()} */
+    /**
+     * {@see GraphTopologyQueryService::dependencyCycles()}
+     *
+     * @param list<string> $edgeKinds
+     */
     public function dependencyCycles(
         string $projectId,
         array $edgeKinds = [],
@@ -206,8 +227,11 @@ final readonly class ArchitectureQueryService
         return $this->topologyQueries->dependencyCycles($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeSelfLoops);
     }
 
-    /** @param list<string> $edgeKinds */
-    /** {@see GraphTopologyQueryService::architectureHealth()} */
+    /**
+     * {@see GraphTopologyQueryService::architectureHealth()}
+     *
+     * @param list<string> $edgeKinds
+     */
     public function architectureHealth(
         string $projectId,
         array $edgeKinds = [],
@@ -225,8 +249,12 @@ final readonly class ArchitectureQueryService
         return $this->topologyQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests, $candidateConfidence, $candidateOffset, $candidateTimeoutMs);
     }
 
-    /** @param list<array<string, mixed>> $policies */
-    /** {@see ArchitecturePolicyQueryService::checkArchitecture()} */
+    /**
+     * {@see ArchitecturePolicyQueryService::checkArchitecture()}
+     *
+     * @param list<array<string, mixed>> $policies
+     * @param list<string> $sourceFiles
+     */
     public function checkArchitecture(
         string $projectId,
         array $policies,
@@ -234,8 +262,9 @@ final readonly class ArchitectureQueryService
         int $limit = 100,
         int $maxEdges = ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES,
         int $timeoutMs = 1000,
+        array $sourceFiles = [],
     ): ResultEnvelope {
-        return $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs);
+        return $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs, $sourceFiles);
     }
 
     /** {@see LocationSuggestionService::suggestLocation()} */
@@ -251,8 +280,11 @@ final readonly class ArchitectureQueryService
         return $this->locationQueries->suggestLocation($projectId, $featureDescription, $limit, $maxMembers, $maxEdges, $timeoutMs, $rankingMode);
     }
 
-    /** @param list<string> $edgeKinds */
-    /** {@see ChangeImpactQueryService::changeImpact()} */
+    /**
+     * {@see ChangeImpactQueryService::changeImpact()}
+     *
+     * @param list<string> $edgeKinds
+     */
     public function changeImpact(
         string $projectId,
         string $symbol,
@@ -267,8 +299,12 @@ final readonly class ArchitectureQueryService
         return $this->changeQueries->changeImpact($projectId, $symbol, $sinceDays, $maxCommits, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
-    /** @param list<string> $files @param list<string> $edgeKinds */
-    /** {@see ChangeImpactQueryService::changedFilesImpact()} */
+    /**
+     * {@see ChangeImpactQueryService::changedFilesImpact()}
+     *
+     * @param list<string> $files
+     * @param list<string> $edgeKinds
+     */
     public function changedFilesImpact(
         string $projectId,
         array $files = [],
@@ -283,8 +319,12 @@ final readonly class ArchitectureQueryService
         return $this->changeQueries->changedFilesImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
-    /** @param list<string> $files @param list<string> $edgeKinds */
-    /** {@see ChangeImpactQueryService::testImpact()} */
+    /**
+     * {@see ChangeImpactQueryService::testImpact()}
+     *
+     * @param list<string> $files
+     * @param list<string> $edgeKinds
+     */
     public function testImpact(
         string $projectId,
         array $files = [],
@@ -300,11 +340,12 @@ final readonly class ArchitectureQueryService
     }
 
     /**
+     * {@see ReviewDiffService::reviewDiff()}
+     *
      * @param list<string> $files
      * @param list<array<string, mixed>>|null $policies
      * @param array<string, int>|null $budgets
      */
-    /** {@see ReviewDiffService::reviewDiff()} */
     public function reviewDiff(
         string $projectId,
         ?string $baseRef = null,
@@ -320,8 +361,11 @@ final readonly class ArchitectureQueryService
         return $this->reviewQueries->reviewDiff($projectId, $baseRef, $files, $policies, $budgets, $baselineSnapshot, $maxDepth, $limit, $minConfidence, $timeoutMs);
     }
 
-    /** @param list<string> $files */
-    /** {@see ArchitectureContextService::architectureContext()} */
+    /**
+     * {@see ArchitectureContextService::architectureContext()}
+     *
+     * @param list<string> $files
+     */
     public function architectureContext(
         string $projectId,
         string $taskDescription = '',
@@ -333,8 +377,11 @@ final readonly class ArchitectureQueryService
         return $this->contextQueries->architectureContext($projectId, $taskDescription, $files, $maxChars, $timeoutMs, $includeSource);
     }
 
-    /** @param list<string> $edgeKinds */
-    /** {@see DiagramExportService::exportDiagram()} */
+    /**
+     * {@see DiagramExportService::exportDiagram()}
+     *
+     * @param list<string> $edgeKinds
+     */
     public function exportDiagram(
         string $projectId,
         string $format = 'mermaid',
@@ -348,8 +395,11 @@ final readonly class ArchitectureQueryService
         return $this->diagramQueries->exportDiagram($projectId, $format, $boundary, $edgeKinds, $minConfidence, $direction, $maxNodes, $maxEdges);
     }
 
-    /** @param list<string> $edgeKinds */
-    /** {@see GraphTopologyQueryService::explainFlow()} */
+    /**
+     * {@see GraphTopologyQueryService::explainFlow()}
+     *
+     * @param list<string> $edgeKinds
+     */
     public function explainFlow(
         string $projectId,
         string $from,
@@ -363,8 +413,11 @@ final readonly class ArchitectureQueryService
         return $this->topologyQueries->explainFlow($projectId, $from, $to, $maxDepth, $maxPaths, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
-    /** @param list<string> $edgeKinds */
-    /** {@see GraphTopologyQueryService::impactAnalysis()} */
+    /**
+     * {@see GraphTopologyQueryService::impactAnalysis()}
+     *
+     * @param list<string> $edgeKinds
+     */
     public function impactAnalysis(
         string $projectId,
         string $symbol,
@@ -389,8 +442,14 @@ final readonly class ArchitectureQueryService
         return $this->briefQueries->exportAgentBrief($projectId, $maxChars);
     }
 
-    /** @param list<string> $kinds @param list<string> $roles @param list<string> $boundaryIds @param list<string> $confidences */
-    /** {@see ComponentQueryService::searchArchitecture()} */
+    /**
+     * {@see ComponentQueryService::searchArchitecture()}
+     *
+     * @param list<string> $kinds
+     * @param list<string> $roles
+     * @param list<string> $boundaryIds
+     * @param list<string> $confidences
+     */
     public function searchArchitecture(
         string $projectId,
         string $query,

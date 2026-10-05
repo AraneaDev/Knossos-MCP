@@ -10,6 +10,7 @@ use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scanner\Protocol\{Diagnostic, Evidence, Protocol, ScanContribution, ScannerManifest};
 use Knossos\Scanner\Worker\ContributionDecoder;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Scanner\Worker\WorkerLimits;
 use Throwable;
 
 /**
@@ -22,18 +23,43 @@ use Throwable;
 final readonly class ContributionCacheService
 {
     /**
+     * The cache key a left-out file is stored under: the language's
+     * configuration plus the size limits that left it out.
+     *
+     * A file whose answer outgrew a limit outgrows it again while its bytes,
+     * the configuration and those limits stay the same, so re-sending it only
+     * pays the batch splitting again to reach the same result. Any change to
+     * them makes the key miss and the file is scanned afresh. The timeout is
+     * left out of the key because it has nothing to do with size.
+     */
+    public static function leftOutConfigurationHash(string $configurationHash, WorkerLimits $limits): string
+    {
+        return 'left-out:' . hash('sha256', implode("\0", [$configurationHash, $limits->maxLineBytes, $limits->maxOutputBytes]));
+    }
+
+    /**
      * Split the discovered files into reusable and must-scan sets.
      *
      * @param list<object> $files
      * @param array<string, array<string, mixed>> $cache
+     * @param ?string $leftOutConfigurationHash see {@see self::leftOutConfigurationHash()}; a row
+     *        stored under it is reused too, and counted as left out
      */
-    public function partition(array $files, ScannerManifest $manifest, string $configurationHash, array $cache, bool $force, ?CancellationToken $cancellation = null): ContributionPartition
-    {
+    public function partition(
+        array $files,
+        ScannerManifest $manifest,
+        string $configurationHash,
+        array $cache,
+        bool $force,
+        ?CancellationToken $cancellation = null,
+        ?string $leftOutConfigurationHash = null,
+    ): ContributionPartition {
         $cached = [];
         $entries = [];
         $scan = [];
         $added = 0;
         $changed = 0;
+        $leftOutPaths = [];
         $sinceLastPoll = 0;
         foreach ($files as $file) {
             // Once per 256 files. A counter that restarts, rather than a
@@ -43,10 +69,13 @@ final readonly class ContributionCacheService
                 $cancellation->throwIfCancelled();
             }
             $row = $cache[$manifest->id . "\0" . $file->relativePath] ?? null;
+            $wasLeftOut = $leftOutConfigurationHash !== null
+                && $row !== null
+                && $row['configuration_hash'] === $leftOutConfigurationHash;
             $valid = !$force && $row !== null
                 && $row['content_hash'] === $file->contentHash
                 && $row['scanner_version'] === $manifest->version
-                && $row['configuration_hash'] === $configurationHash;
+                && ($row['configuration_hash'] === $configurationHash || $wasLeftOut);
             if ($valid) {
                 try {
                     $payload = json_decode($row['payload_json'], true, 512, JSON_THROW_ON_ERROR);
@@ -55,7 +84,10 @@ final readonly class ContributionCacheService
                     }
                     $contribution = ContributionDecoder::decode($payload);
                     $cached[] = $contribution;
-                    $entries[] = $this->entry($file, $manifest, $configurationHash, $contribution);
+                    $entries[] = $this->entry($file, $manifest, (string) $row['configuration_hash'], $contribution);
+                    if ($wasLeftOut) {
+                        $leftOutPaths[] = $file->relativePath;
+                    }
                     continue;
                 } catch (Throwable) {
                     // Corrupt derived cache is safely rebuilt from source.
@@ -64,7 +96,20 @@ final readonly class ContributionCacheService
             $scan[] = $file;
             $row === null ? ++$added : ++$changed;
         }
-        return new ContributionPartition($cached, $entries, $scan, $added, $changed);
+        return new ContributionPartition($cached, $entries, $scan, $added, $changed, $leftOutPaths);
+    }
+
+    /**
+     * The cache entry for a file left out of the graph, or null when its bytes
+     * no longer match what discovery hashed and the next scan must look again.
+     */
+    public function leftOutEntry(object $file, ScannerManifest $manifest, string $leftOutConfigurationHash, ScanContribution $contribution): ?ContributionCacheEntry
+    {
+        if (!$this->contentStillMatchesDiscovery($file)) {
+            return null;
+        }
+
+        return $this->entry($file, $manifest, $leftOutConfigurationHash, $contribution);
     }
 
     /**

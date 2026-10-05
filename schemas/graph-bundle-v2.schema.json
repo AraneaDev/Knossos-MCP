@@ -1,0 +1,377 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knossos.local/schemas/graph-bundle-v2.schema.json",
+  "title": "Knossos portable graph bundle v2 (decompressed)",
+  "description": "The decompressed JSON of a bundle: gzip input is capped at 10,000,000 bytes, this JSON at 8,000,000 bytes and 200,000 facts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest", "payload"],
+  "properties": {
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "version",
+        "redaction",
+        "checksum",
+        "uncompressed_bytes",
+        "fact_count",
+        "created_at"
+      ],
+      "properties": {
+        "format": {
+          "const": "knossos.graph.bundle"
+        },
+        "version": {
+          "const": 2
+        },
+        "redaction": {
+          "enum": ["none", "paths", "strict"]
+        },
+        "checksum": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "uncompressed_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8000000
+        },
+        "fact_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200000
+        },
+        "created_at": {
+          "type": ["string", "null"],
+          "description": "The finish time of the exported scan, not the export time."
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_name",
+        "scan",
+        "files",
+        "nodes",
+        "edges",
+        "classifications",
+        "boundaries",
+        "memberships",
+        "diagnostics"
+      ],
+      "properties": {
+        "project_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scanner_set_hash", "finished_at"],
+          "properties": {
+            "scanner_set_hash": {
+              "type": "string"
+            },
+            "finished_at": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "relative_path",
+              "content_hash",
+              "size",
+              "line_count",
+              "language",
+              "scanner_version"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "content_hash": {
+                "type": "string"
+              },
+              "size": {
+                "type": "integer"
+              },
+              "line_count": {
+                "type": "integer"
+              },
+              "language": {
+                "type": "string"
+              },
+              "scanner_version": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "language",
+              "kind",
+              "canonical_name",
+              "display_name",
+              "parent_id",
+              "file_id",
+              "start_line",
+              "end_line",
+              "origin",
+              "confidence",
+              "attributes_json",
+              "owner_key"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "language": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "canonical_name": {
+                "type": "string"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "parent_id": {
+                "type": ["string", "null"]
+              },
+              "file_id": {
+                "type": ["string", "null"]
+              },
+              "start_line": {
+                "type": ["integer", "null"]
+              },
+              "end_line": {
+                "type": ["integer", "null"]
+              },
+              "origin": {
+                "type": "string"
+              },
+              "confidence": {
+                "type": "string"
+              },
+              "attributes_json": {
+                "type": "string"
+              },
+              "owner_key": {
+                "type": ["string", "null"]
+              }
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "kind",
+              "source_id",
+              "target_id",
+              "file_id",
+              "start_line",
+              "end_line",
+              "origin",
+              "confidence",
+              "attributes_json",
+              "owner_key"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "source_id": {
+                "type": "string"
+              },
+              "target_id": {
+                "type": "string"
+              },
+              "file_id": {
+                "type": ["string", "null"]
+              },
+              "start_line": {
+                "type": ["integer", "null"]
+              },
+              "end_line": {
+                "type": ["integer", "null"]
+              },
+              "origin": {
+                "type": "string"
+              },
+              "confidence": {
+                "type": "string"
+              },
+              "attributes_json": {
+                "type": "string"
+              },
+              "owner_key": {
+                "type": ["string", "null"]
+              }
+            }
+          },
+          "description": "Occurrence-level edges; repeated source/target/kind relations have distinct evidence-backed IDs."
+        },
+        "classifications": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "node_id",
+              "role",
+              "origin",
+              "confidence",
+              "rule_id",
+              "file_id",
+              "start_line",
+              "end_line",
+              "attributes_json"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "node_id": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "confidence": {
+                "type": "string"
+              },
+              "rule_id": {
+                "type": "string"
+              },
+              "file_id": {
+                "type": ["string", "null"]
+              },
+              "start_line": {
+                "type": ["integer", "null"]
+              },
+              "end_line": {
+                "type": ["integer", "null"]
+              },
+              "attributes_json": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "boundaries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name", "matcher_json", "source"],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "matcher_json": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "memberships": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["boundary_id", "node_id"],
+            "properties": {
+              "boundary_id": {
+                "type": "string"
+              },
+              "node_id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "file_id",
+              "severity",
+              "code",
+              "message",
+              "start_line",
+              "end_line",
+              "owner_key"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "file_id": {
+                "type": ["string", "null"]
+              },
+              "severity": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "start_line": {
+                "type": ["integer", "null"]
+              },
+              "end_line": {
+                "type": ["integer", "null"]
+              },
+              "owner_key": {
+                "type": ["string", "null"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

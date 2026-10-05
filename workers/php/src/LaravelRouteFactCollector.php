@@ -18,7 +18,7 @@ use PhpParser\Node\Name;
  */
 final class LaravelRouteFactCollector
 {
-    private const ROUTE_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'view', 'redirect', 'resource', 'apiresource'];
+    private const ROUTE_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'view', 'redirect', 'permanentredirect', 'resource', 'apiresource'];
 
     /**
      * The actions a resource route registers, in Laravel's order: the verbs,
@@ -100,14 +100,20 @@ final class LaravelRouteFactCollector
         $methods = $method === 'match'
             ? LaravelFactStore::strings($args[0]->value ?? null)
             : [strtoupper($method)];
-        if ($method === 'any') {
+        if ($method === 'any' || $method === 'redirect' || $method === 'permanentredirect') {
             $methods = ['ANY'];
+        } elseif ($method === 'view') {
+            // Laravel registers Route::view as GET|HEAD.
+            $methods = ['GET', 'HEAD'];
         }
         if ($methods === []) {
             $this->facts->addDiagnostic('LARAVEL_DYNAMIC_ROUTE', 'Dynamic route declaration was skipped.', $evidence);
             return;
         }
-        $this->addRoute($methods, $uri, $this->action($args[$actionIndex]->value ?? null), $modifiers, $evidence);
+        // The second argument of view, redirect and permanentRedirect is a view name or a
+        // URL, never a controller action, so a '@' in it must not read as Class@method.
+        $shortcut = in_array($method, ['view', 'redirect', 'permanentredirect'], true);
+        $this->addRoute($methods, $uri, $shortcut ? [] : $this->action($args[$actionIndex]->value ?? null), $modifiers, $evidence);
     }
 
     /**

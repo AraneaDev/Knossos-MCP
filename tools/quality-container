@@ -7,7 +7,7 @@ profile="${1:-fast}"
 # is what a local run wants.
 lane="${2:-all}"
 mkdir -p coverage
-docker build --target quality -t knossos-mcp:quality .
+docker build --target quality -t knossos:quality .
 # The checkout is mounted read-only so the `gate` lane can reach the history:
 # the image bakes this source without .git (see .dockerignore), and that lane
 # measures the change against the commit it forked from. Read-only because the
@@ -17,4 +17,4 @@ docker run --rm -e KNOSSOS_QUALITY_CONTAINER=1 \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$PWD:/workspace:ro" \
     -v "$PWD/coverage:/opt/knossos/coverage" \
-    knossos-mcp:quality "$profile" "$lane"
+    knossos:quality "$profile" "$lane"

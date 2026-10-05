@@ -126,6 +126,7 @@ final readonly class WalkDriftOracle implements DriftOracle
         }
         $changed = 0;
         $deleted = 0;
+        $named = [];
         $directories = [];
         foreach ($tracked as $relativePath => $contentHash) {
             $absolute = $root . '/' . $relativePath;
@@ -137,24 +138,25 @@ final readonly class WalkDriftOracle implements DriftOracle
             // same tick). Both cases require reading the file, so the mtime
             // buys nothing as a prefilter; it only tells us the file is still
             // there.
-            if (@filemtime($absolute) === false) {
+            if (@filemtime($absolute) === false || ($hash = @hash_file('sha256', $absolute)) === false) {
                 ++$deleted;
-                continue;
-            }
-            $hash = @hash_file('sha256', $absolute);
-            if ($hash === false) {
-                ++$deleted;
+                $named = DriftCounts::name($named, (string) $relativePath, 'deleted');
                 continue;
             }
             if ($hash !== $contentHash) {
                 ++$changed;
+                $named = DriftCounts::name($named, (string) $relativePath, 'changed');
             }
             $directories[dirname($absolute)][basename($absolute)] = true;
         }
 
         $additions = $this->addedSince($directories, $finishedAt, $this->paths ?? ScannedPaths::forProject($this->pdo, $projectId), $root);
 
-        return new DriftCounts($changed, $additions['added'], $deleted, $additions['truncated']);
+        foreach ($additions['paths'] as $path) {
+            $named = DriftCounts::name($named, $path, 'added');
+        }
+
+        return new DriftCounts($changed, $additions['added'], $deleted, $additions['truncated'], $named);
     }
 
     /**
@@ -206,18 +208,19 @@ final readonly class WalkDriftOracle implements DriftOracle
      *
      * @param array<string, array<string, true>> $directories directory => tracked basenames within it
      * @param ?string $finishedAt when the active scan finished
-     * @return array{added: int, truncated: bool}
+     * @return array{added: int, truncated: bool, paths: list<string>} `paths` names the first additions, at most {@see DriftCounts::NAMED}
      */
     private function addedSince(array $directories, ?string $finishedAt, TrackedPathPredicate $scanned, string $root): array
     {
         if ($finishedAt === null) {
-            return ['added' => 0, 'truncated' => false];
+            return ['added' => 0, 'truncated' => false, 'paths' => []];
         }
         $scannedAt = strtotime($finishedAt);
         if ($scannedAt === false) {
-            return ['added' => 0, 'truncated' => false];
+            return ['added' => 0, 'truncated' => false, 'paths' => []];
         }
         $added = 0;
+        $paths = [];
         foreach ($directories as $directory => $tracked) {
             $mtime = @filemtime($directory);
             // Inclusive: equal means "within the same second as the scan
@@ -261,6 +264,9 @@ final readonly class WalkDriftOracle implements DriftOracle
                     // for good.
                     if ($createdAt !== false && $createdAt >= $scannedAt) {
                         ++$added;
+                        if (count($paths) < DriftCounts::NAMED) {
+                            $paths[] = $relative;
+                        }
                     }
                     // Enough drift to report; what the rest of the tree
                     // holds cannot change whether this graph is stale. It can
@@ -268,7 +274,7 @@ final readonly class WalkDriftOracle implements DriftOracle
                     // the number is a floor rather than left to read it as a
                     // count.
                     if ($added >= self::MAX_ADDITIONS_COUNTED) {
-                        return ['added' => $added, 'truncated' => true];
+                        return ['added' => $added, 'truncated' => true, 'paths' => $paths];
                     }
                 }
             } finally {
@@ -276,6 +282,6 @@ final readonly class WalkDriftOracle implements DriftOracle
             }
         }
 
-        return ['added' => $added, 'truncated' => false];
+        return ['added' => $added, 'truncated' => false, 'paths' => $paths];
     }
 }

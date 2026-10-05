@@ -7,9 +7,13 @@ namespace Knossos\Cli\Command;
 use InvalidArgumentException;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
-use Knossos\Scan\ProjectScanService;
+use Knossos\Query\LedgeredScanner;
 
-/** `scan`: build or refresh a project's graph, honouring interrupt signals. */
+/**
+ * `scan`: build or refresh a project's graph, honouring interrupt signals.
+ * A scan of an existing project is recorded in the scan ledger, so a turn
+ * brief whose edits it took in can still report them.
+ */
 final class ScanCommand implements CliCommand
 {
     /** {@inheritDoc} */
@@ -28,7 +32,7 @@ final class ScanCommand implements CliCommand
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         $root = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos scan <path> [--name=NAME] [--db=PATH] [--json]');
-        $result = (new ProjectScanService($context->database(), $context->installationRoot(), [$root]))->scan(
+        $result = LedgeredScanner::local($context->database(), $context->installationRoot(), [$root])->scan(
             $root,
             $context->options->single($options, 'name'),
             isset($options['max-files']) ? $context->options->integer($options, 'max-files', 100_000, 1, 100_000) : null,

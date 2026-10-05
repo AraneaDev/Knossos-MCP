@@ -4,8 +4,59 @@
   "version": "0.0.0",
   "description": "Orients each session on the repository's architecture, and says when to ask the graph instead of grepping.",
   "author": { "name": "AraneaDev", "url": "https://github.com/AraneaDev" },
-  "homepage": "https://github.com/AraneaDev/Knossos-MCP",
-  "repository": "https://github.com/AraneaDev/Knossos-MCP",
+  "homepage": "https://github.com/AraneaDev/knossos",
+  "repository": "https://github.com/AraneaDev/knossos",
   "license": "MIT",
-  "keywords": ["architecture", "mcp", "orientation", "hooks", "context"]
+  "keywords": ["architecture", "mcp", "orientation", "hooks", "context"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "description": "Show the Knossos band and notes.",
+      "default": true
+    },
+    "fanInThreshold": {
+      "type": "number",
+      "title": "Fan-in threshold",
+      "description": "Dependent files at which a Read or an edit gets a note.",
+      "default": 20
+    },
+    "agentNotes": {
+      "type": "boolean",
+      "title": "Notes for the model",
+      "description": "Tell the model a file's dependents, boundary and rules when it reads one, and the tests to run after a turn.",
+      "default": true
+    },
+    "enforcePolicies": {
+      "type": "boolean",
+      "title": "Enforce policies",
+      "description": "Tell the model about boundary-policy violations after a turn.",
+      "default": true
+    },
+    "openPaneOnStart": {
+      "type": "boolean",
+      "title": "Open pane on start",
+      "description": "Open the architecture pane when a session starts.",
+      "default": false
+    },
+    "watch": {
+      "type": "boolean",
+      "title": "Live watcher",
+      "description": "Keep the graph current while you work: rescan an allowed, scanned project as its files change (one watcher per project, shared by your sessions).",
+      "default": true
+    },
+    "notifications": {
+      "type": "boolean",
+      "title": "Notifications",
+      "description": "Say with a toast when a scan brings a new dependency cycle or policy violation, once each.",
+      "default": true
+    },
+    "watchPollMs": {
+      "type": "number",
+      "title": "Watcher poll interval (ms)",
+      "description": "How often the live watcher checks the project for changes, 250 to 60000 milliseconds.",
+      "default": 1000
+    }
+  }
 }

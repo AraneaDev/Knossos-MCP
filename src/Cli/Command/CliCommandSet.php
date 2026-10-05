@@ -36,6 +36,8 @@ final readonly class CliCommandSet
             new BundleCommand(),
             new QueryCommand(),
             new SessionCommand(),
+            new BriefCommand(),
+            new SessionDiffCommand(),
             new RootsCommand(),
             new PluginCommand($version),
             new MaintenanceCommand(),

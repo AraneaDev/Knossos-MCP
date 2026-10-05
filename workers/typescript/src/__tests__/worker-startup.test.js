@@ -25,10 +25,10 @@ function ask(requests) {
             path.dirname(fileURLToPath(import.meta.url)),
             "support/record-typescript-load.mjs",
         );
-        const marker = path.join(
-            fs.mkdtempSync(path.join(os.tmpdir(), "knossos-ts-load-")),
-            "loaded",
+        const directory = fs.mkdtempSync(
+            path.join(os.tmpdir(), "knossos-ts-load-"),
         );
+        const marker = path.join(directory, "loaded");
         const child = spawn(process.execPath, ["--import", hook, workerPath], {
             stdio: ["pipe", "pipe", "pipe"],
             env: { ...process.env, KNOSSOS_TS_LOAD_MARKER: marker },
@@ -43,6 +43,8 @@ function ask(requests) {
         });
         child.on("error", reject);
         child.on("close", () => {
+            const loadedCompiler = fs.existsSync(marker);
+            fs.rmSync(directory, { recursive: true, force: true });
             const responses = out
                 .split("\n")
                 .filter((line) => line.trim() !== "")
@@ -50,7 +52,7 @@ function ask(requests) {
             resolve({
                 responses,
                 stderr: err,
-                loadedCompiler: fs.existsSync(marker),
+                loadedCompiler,
             });
         });
         for (const request of requests) {

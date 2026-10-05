@@ -53,6 +53,6 @@ final readonly class GitHeadResolver
         // Only a sha may be stored, and only at the two lengths git emits:
         // SHA-1 and SHA-256. Anything else would later be handed to `git diff`
         // as a revision, where it would fail on every probe.
-        return preg_match('/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/', $output) === 1 ? $output : null;
+        return preg_match('/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/D', $output) === 1 ? $output : null;
     }
 }

@@ -1,4 +1,4 @@
-# Contributing to Knossos MCP
+# Contributing to Knossos
 
 ## Development Setup
 
@@ -18,10 +18,10 @@ with `ext-json`, `ext-pdo`, and `ext-pdo_sqlite`, Node.js 22 or newer, Python
 ### Setup
 
 ```bash
-git clone https://github.com/AraneaDev/Knossos-MCP.git
-cd Knossos-MCP
-docker build -t knossos-mcp:dev .
-docker run --rm knossos-mcp:dev doctor --json
+git clone https://github.com/AraneaDev/knossos.git
+cd knossos
+docker build -t knossos:dev .
+docker run --rm knossos:dev doctor --json
 ```
 
 ## The `tools/quality-container` Pipeline
@@ -40,7 +40,7 @@ tools/quality-container full    # what CI runs
 | `fast`  | Dependency validation, PHP/JS/Markdown/Python linting, PHP-CS-Fixer, PHPStan, formatting, repository hygiene, generated-reference and documentation checks, maintainability budgets, and the full PHPUnit test suite                                          |
 | `full`  | Everything in `fast`, plus security audits, external documentation-link checks, MCP Inspector tool listing, runtime image build and `doctor`, release lifecycle, supply-chain assurance (SBOM, CVE gates, signed provenance), benchmarks, and coverage floors |
 
-`full` is the gate. See [quality gates](docs/development/quality.md) for what
+`full` is the gate. See [quality gates](docs/contribute/quality.md) for what
 each stage asserts and how to read its report.
 
 ### Install the Git hooks
@@ -48,6 +48,32 @@ each stage asserts and how to read its report.
 ```bash
 tools/install-hooks
 ```
+
+### Previewing the Claude Code pane
+
+`tools/pane-preview.mjs` draws the [Claude Code mod](docs/claude-code/pane.md)'s
+pane as PNGs, the way a terminal shows it, so a layout change can be judged without a live
+session. It lays the pane out with the mod's own functions over this repository's graph. It
+needs Node.js with TypeScript type stripping (22.18 or newer), `rsvg-convert`, and the
+DejaVu Sans and DejaVu Sans Mono fonts. It is never installed with the plugin and never runs
+in the quality gate.
+
+The dashboard it reads writes trend cache rows, so it only runs against a copy of the
+database, named with `--data-dir`:
+
+```bash
+D=$(mktemp -d)
+sqlite3 -readonly ~/.knossos/knossos.sqlite ".backup $D/knossos.sqlite"
+cp ~/.knossos/roots.json "$D/"
+KNOSSOS_DATA_DIR="$D" knossos scan .    # optional: a fresh snapshot of the copy
+node tools/pane-preview.mjs --data-dir="$D"             # every view, 60 and 100 columns, dark and light
+node tools/pane-preview.mjs --readme --data-dir="$D"    # framed preview screenshots
+rm -r "$D"
+```
+
+`--readme` writes `.superpowers/pane-preview/readme/` (git-ignored): framed screenshots at 100 columns, drawn
+at twice their size and shrunk to a 256-colour palette when `python3` with Pillow is
+available. Their "Last turn" and "Changes" figures come from a sample turn over real files.
 
 ## Test Suite Invariants
 

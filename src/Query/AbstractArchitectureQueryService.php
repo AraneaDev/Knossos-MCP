@@ -23,7 +23,8 @@ abstract readonly class AbstractArchitectureQueryService
         'routes_to', 'calls', 'dispatches', 'handles', 'listens_to', 'constructs',
         'injects', 'binds', 'observes', 'depends_on', 'imports', 'uses_middleware',
     ];
-    protected const IMPACT_EDGE_KINDS = [
+    /** The relationships that count as one component depending on another: what a policy check and the boundary matrix walk. */
+    public const IMPACT_EDGE_KINDS = [
         'routes_to', 'calls', 'dispatches', 'handles', 'listens_to', 'constructs', 'injects',
         'binds', 'observes', 'depends_on', 'imports', 'uses_middleware', 'references',
         'extends', 'implements', 'returns', 'exports', 're_exports', 'uses_trait',
@@ -122,7 +123,7 @@ abstract readonly class AbstractArchitectureQueryService
         if (trim($query) === '') {
             throw new InvalidArgumentException('Flow endpoint must not be empty.');
         }
-        if (preg_match('/^(symbol|route)_[a-f0-9]{64}$/', $query)) {
+        if (preg_match('/^(symbol|route)_[a-f0-9]{64}$/D', $query)) {
             $statement = $this->pdo->prepare('SELECT id, kind, canonical_name, display_name, confidence FROM nodes WHERE project_id = :project AND id = :id');
             $statement->execute(['project' => $projectId, 'id' => $query]);
             $row = $statement->fetch();

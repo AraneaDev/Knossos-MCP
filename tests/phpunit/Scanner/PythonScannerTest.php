@@ -1609,6 +1609,93 @@ PYTHON);
         ], $invoked);
     }
 
+    /**
+     * A method fulfilling a supertype's member is marked `overrides` when the
+     * source says so (`@override`, from `typing` or `typing_extensions`), or
+     * when the standard library dispatches to it by name: `ast.NodeVisitor`
+     * calls `visit_<Node>` and `generic_visit` through `getattr`, so no call
+     * names them. A method that only shares the prefix on any other class, or
+     * a decorator of the same name from elsewhere, says nothing.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerMarksMethodsThatOverrideASupertypesMember(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-overrides-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/visitors.py' => implode("\n", [
+                'import ast',
+                'import typing',
+                'from ast import NodeTransformer',
+                'from typing_extensions import override',
+                'from app.local import override as unrelated',
+                '',
+                'class Collector(ast.NodeVisitor):',
+                '    def visit_Call(self, node):',
+                '        self.generic_visit(node)',
+                '    def generic_visit(self, node):',
+                '        return node',
+                '    def helper(self):',
+                '        return 1',
+                '',
+                'class Rewriter(NodeTransformer):',
+                '    def visit_Name(self, node):',
+                '        return node',
+                '',
+                'class Plain:',
+                '    def visit_Call(self, node):',
+                '        return node',
+                '    @override',
+                '    def run(self):',
+                '        return 1',
+                '    @typing.override',
+                '    def stop(self):',
+                '        return 1',
+                '    @unrelated',
+                '    def pause(self):',
+                '        return 1',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/visitors.py']]), false);
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $overrides = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'method') {
+                    $overrides[$node->canonicalName] = $node->attributes['overrides'] ?? false;
+                }
+            }
+        }
+        ksort($overrides);
+
+        self::assertSame([
+            'app.visitors.Collector::generic_visit' => true,
+            'app.visitors.Collector::helper' => false,
+            'app.visitors.Collector::visit_Call' => true,
+            'app.visitors.Plain::pause' => false,
+            'app.visitors.Plain::run' => true,
+            'app.visitors.Plain::stop' => true,
+            'app.visitors.Plain::visit_Call' => false,
+            'app.visitors.Rewriter::visit_Name' => true,
+        ], $overrides);
+    }
+
     #[Group('python-scanner')]
     public function testAFunctionReadOffItsModuleAsAValueIsReferenced(): void
     {

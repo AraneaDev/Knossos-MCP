@@ -24,8 +24,8 @@ use PHPUnit\Framework\Attributes\Group;
  */
 final class ToolCatalogPolicyTest extends KnossosTestCase
 {
-    /** Tools that change state: everything else must be read-only. */
-    private const WRITE_TOOLS = ['annotate_component', 'cleanup_stale_scans', 'maintain_database', 'remove_project', 'scan_project'];
+    /** Tools that change state: everything else must be read-only. `architecture_trends` caches each snapshot's figures. */
+    private const WRITE_TOOLS = ['annotate_component', 'architecture_trends', 'cleanup_stale_scans', 'maintain_database', 'remove_project', 'scan_project'];
 
     /** Tools that delete data, which a client must confirm before running. */
     private const DESTRUCTIVE_TOOLS = ['cleanup_stale_scans', 'remove_project'];
@@ -185,6 +185,18 @@ final class ToolCatalogPolicyTest extends KnossosTestCase
         if (isset($schema['items']) && is_array($schema['items'])) {
             self::assertStrict($schema['items'], $path . '[]');
         }
+    }
+
+    /**
+     * A tool that writes, even only cache rows, says so: a client that reads
+     * the description to judge a call must not take it for a pure read.
+     */
+    #[Group('mcp')]
+    public function testTheTrendsToolSaysItWritesCacheRows(): void
+    {
+        $description = self::definitions()['architecture_trends']['description'];
+
+        assertSame(1, preg_match('/\bcaches?\b.*\bdatabase\b/i', $description), $description);
     }
 
     /** @return array<string, array<string, mixed>> every tool definition keyed by name */

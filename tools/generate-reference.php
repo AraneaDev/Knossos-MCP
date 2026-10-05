@@ -64,7 +64,7 @@ foreach ($tools->definitions() as $definition) {
 }
 $mcp = rtrim($mcp) . "\n";
 
-$api = "# Language API reference\n\nThis file is generated from enforced PHP interface docblocks and the isolated TypeScript and Python worker surfaces.\n\n## PHP extension interfaces\n\n";
+$api = "# Language API reference\n\nThis file is generated from enforced PHP interface docblocks and the isolated PHP, TypeScript, Python and Rust worker surfaces.\n\n## PHP extension interfaces\n\n";
 $interfaces = [];
 foreach (glob($root . '/src/*/*.php') ?: [] as $path) {
     $source = (string) file_get_contents($path);
@@ -106,9 +106,20 @@ foreach ([
     preg_match($pattern, $javascript, $documentation);
     $api .= sprintf("| TypeScript | `%s` | %s |\n", $symbol, documentationSummary($documentation[1] ?? ''));
 }
+$php = (string) file_get_contents($root . '/workers/php/src/WorkerServer.php') . (string) file_get_contents($root . '/workers/php/src/PhpScanner.php');
+foreach (['run' => 'WorkerServer.run', 'scan' => 'PhpScanner.scan'] as $function => $symbol) {
+    preg_match('/\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*public function ' . $function . '\s*\(/', $php, $documentation);
+    $api .= sprintf("| PHP | `%s` | %s |\n", $symbol, documentationSummary($documentation[1] ?? ''));
+}
+$rust = (string) file_get_contents($root . '/workers/rust/src/server.rs');
+foreach (['run', 'handle'] as $function) {
+    preg_match('/((?:^\/\/\/[^\n]*\n)+)pub fn ' . $function . '\b/m', $rust, $documentation);
+    $summary = trim(preg_replace('/^\/\/\/ ?/m', '', $documentation[1] ?? '') ?? '');
+    $api .= sprintf("| Rust | `server::%s` | %s |\n", $function, rtrim(strtok($summary, "\n") ?: 'Missing documentation', '.'));
+}
 foreach (['PythonAstFactCollector' => 'class', 'scan' => 'def', 'handle' => 'def'] as $symbol => $kind) {
     preg_match('/^' . $kind . '\s+' . $symbol . '\b[^\n]*:\n\s+"""([^"\n]+)"""/m', $python, $documentation);
-    $api .= sprintf("| Python | `%s` | %s |\n", $symbol, $documentation[1] ?? 'Missing documentation');
+    $api .= sprintf("| Python | `%s` | %s |\n", $symbol, rtrim($documentation[1] ?? 'Missing documentation', '.'));
 }
 $api = rtrim($api) . "\n";
 

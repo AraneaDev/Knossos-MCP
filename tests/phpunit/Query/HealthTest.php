@@ -40,6 +40,24 @@ final class HealthTest extends KnossosTestCase
         assertSame(1, $health->data['hubs'][0]['metrics']['cross_boundary_degree']);
     }
 
+    /** The in-degree histogram counts every component the ranking could hold, one nothing depends on included. */
+    #[Group('health')]
+    public function testTheInDegreeHistogramCountsEveryRankableComponentOnce(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $health = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $buckets = $health['in_degree_histogram'];
+
+        assertSame([0, 1, 6, 21, 101], array_column($buckets, 'from'));
+        assertSame([0, 5, 20, 100, null], array_column($buckets, 'to'));
+        $ranked = array_column(array_column($health['hubs'], 'metrics'), 'in_degree');
+        $reportable = (int) $pdo->query("SELECT COUNT(*) FROM nodes WHERE kind NOT LIKE 'external\\_%' ESCAPE '\\'")->fetchColumn();
+        assertSame($reportable, array_sum(array_column($buckets, 'components')));
+        assertSame(count(array_filter($ranked, static fn(int $in): bool => $in >= 1 && $in <= 5)), $buckets[1]['components']);
+    }
+
     #[Group('health')]
     public function testArchitectureHealthRanksStructuralSignalsAndLabelsDeadCodeUncertainty(): void
     {

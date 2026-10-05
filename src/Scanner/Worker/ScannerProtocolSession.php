@@ -240,12 +240,6 @@ final class ScannerProtocolSession
         $this->manifest = null;
     }
 
-    /** Whatever the worker wrote to stderr, surfaced in diagnostics rather than discarded. */
-    public function stderr(): string
-    {
-        return $this->channel->stderr();
-    }
-
     /**
      * The most recent scan reply, retained for diagnostics.
      *

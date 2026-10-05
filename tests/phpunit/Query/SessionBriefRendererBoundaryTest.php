@@ -23,7 +23,7 @@ use ReflectionClassConstant;
  */
 final class SessionBriefRendererBoundaryTest extends KnossosTestCase
 {
-    private const POINTER = 'Ask before grepping for structure: the `knossos` skill.';
+    private const POINTER = 'Ask before grepping for structure: the `knossos:graph` skill.';
 
     /** @return iterable<string, array{int|null, string}> */
     public static function ages(): iterable

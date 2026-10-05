@@ -14,6 +14,7 @@ use Knossos\Scanner\Protocol\{Confidence, Evidence, NodeFact, Origin};
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Scanner\Worker\WorkerLimits;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -370,5 +371,20 @@ final class ContributionCacheServiceTest extends TestCase
             fn() => (new ContributionCacheService())->entriesForScanned([$first, $bad], [$file], $this->hashingManifest(), 'cfg'),
             ScanSnapshotChangedException::class,
         );
+    }
+
+    public function testALeftOutFileIsKeyedOnTheLimitsThatExcludedIt(): void
+    {
+        $base = ContributionCacheService::leftOutConfigurationHash('cfg', new WorkerLimits());
+
+        assertSame($base, ContributionCacheService::leftOutConfigurationHash('cfg', new WorkerLimits()));
+        // Never the plain hash, so a file left out is never mistaken for one scanned.
+        assertSame(false, $base === 'cfg');
+        // A raised frame or output limit, or a changed configuration, scans it afresh.
+        assertSame(false, $base === ContributionCacheService::leftOutConfigurationHash('cfg', new WorkerLimits(maxLineBytes: 4_000_000)));
+        assertSame(false, $base === ContributionCacheService::leftOutConfigurationHash('cfg', new WorkerLimits(maxOutputBytes: 40_000_000)));
+        assertSame(false, $base === ContributionCacheService::leftOutConfigurationHash('cfg2', new WorkerLimits()));
+        // The timeout has nothing to do with size, so it does not invalidate.
+        assertSame($base, ContributionCacheService::leftOutConfigurationHash('cfg', new WorkerLimits(requestTimeoutMs: 60_000)));
     }
 }

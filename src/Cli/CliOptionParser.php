@@ -14,6 +14,9 @@ use InvalidArgumentException;
  */
 final class CliOptionParser
 {
+    /** The allowlist of a command that validates its own options and reports a failure its own way. */
+    public const ANY = '*';
+
     /**
      * Split argv into positionals and options, rejecting anything outside the allow-list.
      *
@@ -48,12 +51,16 @@ final class CliOptionParser
     /**
      * Rejects any option name not present in the command's allowlist so typos
      * apply an explicit error rather than silently falling back to defaults.
+     * An allowlist of {@see self::ANY} leaves the check to the command itself.
      *
      * @param array<string, list<string>> $options
      * @param list<string> $allowed
      */
     public function validate(array $options, array $allowed): void
     {
+        if ($allowed === [self::ANY]) {
+            return;
+        }
         foreach (array_keys($options) as $name) {
             if (!in_array($name, $allowed, true)) {
                 throw new InvalidArgumentException(sprintf('Unknown option: --%s', $name));

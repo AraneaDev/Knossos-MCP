@@ -103,6 +103,30 @@ final class DocumentationTest extends KnossosTestCase
      * The fixture below is deliberately BROKEN: it must be skipped because it is
      * ignored, not because its link happens to resolve.
      */
+    /** A docblock describes the declaration after it: one followed by another describes nothing, and the docs generator reads only the last. */
+    #[Group('cli')]
+    public function testNoDocblockIsLeftWithoutTheDeclarationItDescribes(): void
+    {
+        $orphans = [];
+        $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(self::repositoryRoot() . '/src', \FilesystemIterator::SKIP_DOTS));
+        foreach ($files as $file) {
+            if (!str_ends_with((string) $file, '.php')) {
+                continue;
+            }
+            $previous = null;
+            foreach (token_get_all((string) file_get_contents((string) $file)) as $token) {
+                if (is_array($token) && $token[0] === T_WHITESPACE) {
+                    continue;
+                }
+                if ($previous === T_DOC_COMMENT && is_array($token) && $token[0] === T_DOC_COMMENT) {
+                    $orphans[] = substr((string) $file, strlen(self::repositoryRoot()) + 1) . ':' . $token[2];
+                }
+                $previous = is_array($token) ? $token[0] : null;
+            }
+        }
+        self::assertSame([], $orphans);
+    }
+
     #[Group('documentation')]
     public function testDocumentationLinkCheckSkipsGitIgnoredFiles(): void
     {
@@ -140,6 +164,179 @@ final class DocumentationTest extends KnossosTestCase
                 @rmdir($parent);
             }
         }
+    }
+
+    /**
+     * Run the link checker against a throwaway tree.
+     *
+     * Every documentation root the checker reads is made, empty, unless `$without`
+     * names it, since a missing root is itself a failure.
+     *
+     * @param array<string, string> $files path relative to the tree => contents
+     * @param list<string> $without documentation roots to leave out of the tree
+     * @return array{0: int, 1: string, 2: string}
+     */
+    private function checkDocumentationTree(array $files, array $without = []): array
+    {
+        $tree = sys_get_temp_dir() . '/knossos-doc-check-' . bin2hex(random_bytes(6));
+        try {
+            foreach (array_diff(['docs', 'skills', 'plugins'], $without) as $directory) {
+                if (!is_dir($tree . '/' . $directory) && !mkdir($tree . '/' . $directory, 0o777, true) && !is_dir($tree . '/' . $directory)) {
+                    throw new RuntimeException('Unable to create ' . $tree . '/' . $directory);
+                }
+            }
+            foreach ($files as $relative => $contents) {
+                $path = $tree . '/' . $relative;
+                if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0o777, true) && !is_dir(dirname($path))) {
+                    throw new RuntimeException('Unable to create ' . dirname($path));
+                }
+                file_put_contents($path, $contents);
+            }
+
+            return $this->runFixtureCommandOutput([PHP_BINARY, self::repositoryRoot() . '/tools/documentation-check.php', '--root=' . $tree]);
+        } finally {
+            $this->removeTree($tree);
+        }
+    }
+
+    private function removeTree(string $path): void
+    {
+        if (is_link($path) || is_file($path)) {
+            @unlink($path);
+
+            return;
+        }
+        if (!is_dir($path)) {
+            return;
+        }
+        foreach (scandir($path) ?: [] as $entry) {
+            if ($entry !== '.' && $entry !== '..') {
+                $this->removeTree($path . '/' . $entry);
+            }
+        }
+        @rmdir($path);
+    }
+
+    #[Group('documentation')]
+    public function testLinkCheckRejectsAnAnchorTheTargetPageDoesNotHave(): void
+    {
+        [$exit, , $errors] = $this->checkDocumentationTree([
+            'README.md' => "# Home\n",
+            'docs/a.md' => "[x](page.md#missing-heading)\n",
+            'docs/page.md' => "# Page\n\n## Sentence case heading\n",
+        ]);
+
+        assertSame(1, $exit);
+        assertContains('missing anchor page.md#missing-heading', $errors);
+    }
+
+    #[Group('documentation')]
+    public function testLinkCheckAcceptsGithubSlugsIncludingDuplicatesAndSamePageAnchors(): void
+    {
+        [$exit, $output, $errors] = $this->checkDocumentationTree([
+            'README.md' => "# Home\n",
+            'docs/a.md' => "[a](page.md#sentence-case-heading) [b](page.md#sentence-case-heading-1) [c](page.md#whats-new-in-v20) [d](#local-part)\n\n## Local part\n",
+            'docs/page.md' => "# Page\n\n## Sentence case heading\n\n## Sentence case heading\n\n## What's `new` in [v2.0](https://example.com)?\n\n```sh\n# not a heading\n```\n",
+        ]);
+
+        self::assertSame('', $errors);
+        assertSame(0, $exit);
+        assertContains('Documentation links passed:', $output);
+    }
+
+    #[Group('documentation')]
+    public function testLinkCheckIgnoresAHashCommentInsideAFencedBlockWhenCollectingHeadings(): void
+    {
+        [$exit, , $errors] = $this->checkDocumentationTree([
+            'README.md' => "# Home\n",
+            'docs/a.md' => "[x](page.md#not-a-heading)\n",
+            'docs/page.md' => "# Page\n\n```sh\n# not a heading\n```\n",
+        ]);
+
+        assertSame(1, $exit);
+        assertContains('missing anchor page.md#not-a-heading', $errors);
+    }
+
+    #[Group('documentation')]
+    public function testLinkCheckRejectsAMissingImageTarget(): void
+    {
+        [$exit, , $errors] = $this->checkDocumentationTree([
+            'README.md' => "# Home\n\n![x](img/none.png)\n",
+        ]);
+
+        assertSame(1, $exit);
+        assertContains('missing link target img/none.png', $errors);
+    }
+
+    #[Group('documentation')]
+    public function testLinkCheckCoversContributingSkillsAndPlugins(): void
+    {
+        foreach (['CONTRIBUTING.md', 'skills/graph/SKILL.md', 'plugins/knossos/skills/knossos/SKILL.md'] as $file) {
+            [$exit, , $errors] = $this->checkDocumentationTree([
+                'README.md' => "# Home\n",
+                $file => "[gone](docs/gone.md)\n",
+            ]);
+
+            assertSame(1, $exit, $file);
+            assertContains($file . ': missing link target docs/gone.md', $errors);
+        }
+    }
+
+    /**
+     * A documentation root the tree lacks fails the check by name. Skipping it
+     * quietly let CI pass with plugins/ never checked, because the quality image
+     * did not copy it.
+     */
+    #[Group('documentation')]
+    public function testLinkCheckFailsOnAMissingDocumentationRoot(): void
+    {
+        foreach (['docs', 'skills', 'plugins'] as $root) {
+            [$exit, , $errors] = $this->checkDocumentationTree(['README.md' => "# Home\n"], [$root]);
+
+            assertSame(1, $exit, $root);
+            assertContains('missing documentation root ' . $root . '/', $errors);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}> page body => whether `[bad](nope.md)` must be reported
+     */
+    public static function fenceCases(): array
+    {
+        return [
+            'inline triple backticks in prose' => ["```code``` is a thing\n[bad](nope.md)\n\n```x``` again\n", true],
+            'tilde fence hides a link' => ["~~~\n[bad](nope.md)\n~~~\n", false],
+            'indented fence hides a link' => ["- item\n\n   ```sh\n   [bad](nope.md)\n   ```\n", false],
+            'four backticks contain three' => ["````md\n```\n[bad](nope.md)\n```\n````\n", false],
+            'unclosed fence runs to the end' => ["```\n[bad](nope.md)\n", false],
+            'link after a closed fence is checked' => ["```\nx\n```\n[bad](nope.md)\n", true],
+            'a shorter closer does not end the fence' => ["````\n```\n[bad](nope.md)\n````\n[bad](nope.md)\n", true],
+        ];
+    }
+
+    #[Group('documentation')]
+    #[\PHPUnit\Framework\Attributes\DataProvider('fenceCases')]
+    public function testLinkCheckFollowsCommonMarkFences(string $body, bool $reported): void
+    {
+        [$exit, , $errors] = $this->checkDocumentationTree(['README.md' => "# Home\n\n" . $body]);
+
+        assertSame($reported ? 1 : 0, $exit, $errors);
+        if ($reported) {
+            assertContains('missing link target nope.md', $errors);
+        }
+    }
+
+    #[Group('documentation')]
+    public function testHeadingsInsideALongerFenceAreNotAnchors(): void
+    {
+        [$exit, , $errors] = $this->checkDocumentationTree([
+            'README.md' => "# Home\n\n[a](page.md#fake) [b](page.md#real)\n",
+            'page.md' => "# Page\n\n````md\n```\n## Fake\n```\n## Fake\n````\n\n## Real\n",
+        ]);
+
+        assertSame(1, $exit);
+        assertContains('missing anchor page.md#fake', $errors);
+        self::assertStringNotContainsString('page.md#real', $errors);
     }
 
     /**

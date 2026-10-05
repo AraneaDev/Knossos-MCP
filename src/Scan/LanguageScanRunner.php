@@ -5,8 +5,9 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Knossos\Discovery\ProjectUnit;
+use Knossos\Scanner\Protocol\ScanContribution;
+use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Scanner\Worker\WorkerException;
-use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 use Throwable;
 
 /**
@@ -23,6 +24,11 @@ final readonly class LanguageScanRunner
         private array $descriptors,
         private LanguageWorkerPool $pool,
         private ContributionCacheService $cache,
+        // Test-only: overrides ScanBatchQueue::requestCap() for every
+        // language. The cap is provably unreachable within the 2n - b tree
+        // bound, so only a lower one set here can exercise it. Production
+        // never passes it.
+        private ?int $maxRequestsPerLanguage = null,
     ) {}
 
     /** Run each language's worker over the files it claims, degrading a failure to a diagnostic. */
@@ -30,6 +36,7 @@ final readonly class LanguageScanRunner
     {
         $manifests = $contributions = $cacheEntries = [];
         $parsed = $unchanged = $added = $changed = 0;
+        $leftOutPaths = [];
         $scannerMetadata = $stages = $workerDiagnostics = $batchBudgets = [];
         // One for the whole scan: the same file read with different results
         // by two languages fails the scan just as two requests of one do.
@@ -51,9 +58,11 @@ final readonly class LanguageScanRunner
             if ($files === []) {
                 continue;
             }
-            // Read back by reference below: the narrowest budget any request in
-            // this language ran at. Lower than the configured value means a
-            // batch overflowed the worker's output cap and was re-split.
+            // Read back by reference below: the narrowest budget an ordinary
+            // retry in this language settled on. Lower than the configured
+            // value means a batch outgrew the worker's output cap or memory
+            // and was re-split; a search for one oversized frame does not
+            // count, since no batch of the language settled on it.
             $sourceBytes = $descriptor->scanBatchSourceBytes;
             try {
                 $outcome = $this->runLanguage($descriptor, $files, $plan, $cancellation, $sourceBytes);
@@ -101,11 +110,12 @@ final readonly class LanguageScanRunner
             $unchanged += $outcome['unchanged'];
             $added += $outcome['added'];
             $changed += $outcome['changed'];
+            array_push($leftOutPaths, ...$outcome['left_out_paths']);
             $scannerMetadata += $outcome['scanner_metadata'];
             $stages[$descriptor->stage] = $outcome['milliseconds'];
         }
 
-        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all());
+        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all(), count($leftOutPaths), $leftOutPaths);
     }
 
     /**
@@ -126,6 +136,7 @@ final readonly class LanguageScanRunner
      *     unchanged: int,
      *     added: int,
      *     changed: int,
+     *     left_out_paths: list<string>,
      *     scanner_metadata: array<string, mixed>,
      *     milliseconds: float,
      *     undiscovered_inputs: array<string, string|null>
@@ -142,6 +153,12 @@ final readonly class LanguageScanRunner
         $cancellation->throwIfCancelled();
         $client = $this->pool->client($descriptor, $plan->preparation->executionPolicy);
         $manifest = $client->initialize();
+        // Where a file left out of the graph is cached: see
+        // ContributionCacheService::leftOutConfigurationHash().
+        $leftOutHash = ContributionCacheService::leftOutConfigurationHash(
+            $plan->preparation->configurationHashes[$descriptor->key],
+            $plan->preparation->executionPolicy->limits(),
+        );
         $partition = $this->cache->partition(
             $files,
             $manifest,
@@ -149,9 +166,95 @@ final readonly class LanguageScanRunner
             $plan->cacheByScannerPath,
             $plan->effectiveMode === 'full' || $plan->workerInputsChanged,
             $cancellation,
+            $leftOutHash,
         );
-        // Everything a scan request carries except `files`, which each batch
-        // supplies for itself.
+        $request = self::scanRequest($descriptor, $plan, $files);
+        // One request per batch: ScannerProtocolSession::scan() calls
+        // beginRequest() per invocation, which resets both the cumulative
+        // output-byte counter and the deadline. Sending the whole project in
+        // one request made a 20 MB cap and a 30 s budget apply to the project
+        // rather than to a batch, so a full scan of a mid-sized codebase failed
+        // on limits sized for a batch.
+        $scanned = $metadata = [];
+        $leftOut = new LeftOutFiles($this->cache, $manifest, $leftOutHash);
+        // Every path discovery hashed, not only this language's files: a worker
+        // may read a file another language claims, or a manifest such as the
+        // package.json module resolution reads or the Cargo.toml a crate is
+        // named by, and that read is checked all the same.
+        $discoveredByPath = $plan->preparation->discovery->hashedPaths();
+        // Reads of anything else, checked across this language's requests as
+        // they arrive and handed back for the pre-commit re-read.
+        $undiscovered = new UndiscoveredInputs();
+        $queue = new ScanBatchQueue($partition->filesToScan, $descriptor, $sourceBytes, $this->maxRequestsPerLanguage);
+        while (($item = $queue->next()) !== null) {
+            // Held aside rather than appended directly: an overflowing
+            // request has already streamed some contributions, and the
+            // retry re-sends those files, so keeping them would double-count
+            // both `parsed` and the reconciled facts. Read after a failure
+            // too, to tell which files the worker had already answered.
+            /** @var list<ScanContribution> $received */
+            $received = [];
+            try {
+                $requested = array_map(static fn(object $file): string => $file->relativePath, $item['files']);
+                foreach ($client->scan(['files' => $requested] + $request, $cancellation->isCancelled(...)) as $contribution) {
+                    $received[] = $contribution;
+                }
+            } catch (WorkerException $error) {
+                $client = $this->afterFailure($queue, $leftOut, $item, $error, $received, $descriptor, $plan, $request, $cancellation, $manifest->id);
+                continue;
+            }
+            $batchResult = $client->lastScanResult();
+            // Before this batch's contributions are kept: facts resolved against
+            // another file's bytes must match what discovery hashed for it too.
+            $undiscovered->add(ScanInputHashes::verify($batchResult, $manifest, $discoveredByPath));
+            // Evidence for this check only, not a statistic: kept out of the
+            // scanner metadata a scan report carries.
+            unset($batchResult['input_hashes']);
+            foreach ($received as $contribution) {
+                $scanned[] = $contribution;
+            }
+            $metadata = self::mergeScanResult($metadata, $batchResult);
+            // Inside the loop so a cancelled scan stops at the next batch
+            // boundary instead of running the language to completion.
+            $cancellation->throwIfCancelled();
+        }
+        self::assertNotEveryFileLeftOut(count($files), count($partition->leftOutPaths) + count($leftOut->paths()));
+        $recorded = $this->cache->entriesForScanned(
+            $scanned,
+            array_values(array_filter(
+                $partition->filesToScan,
+                static fn(object $file): bool => !$leftOut->has($file->relativePath),
+            )),
+            $manifest,
+            $plan->preparation->configurationHashes[$descriptor->key],
+        );
+
+        return [
+            'manifest' => $manifest,
+            'contributions' => [...$partition->cached, ...$recorded['contributions'], ...$leftOut->contributions()],
+            'cache_entries' => [...$partition->cacheEntries, ...$recorded['cache_entries'], ...$leftOut->cacheEntries()],
+            'left_out_paths' => [...$partition->leftOutPaths, ...$leftOut->paths()],
+            'parsed' => count($scanned),
+            // A left-out file is counted only as left out, on the scan that
+            // found it (where it is not parsed) and on every reuse after it.
+            'unchanged' => count($partition->cached) - count($partition->leftOutPaths),
+            'added' => $partition->added,
+            'changed' => $partition->changed,
+            'scanner_metadata' => $partition->filesToScan === [] ? [] : [$manifest->id => $metadata],
+            'milliseconds' => self::elapsedMilliseconds($started),
+            'undiscovered_inputs' => $undiscovered->all(),
+        ];
+    }
+
+    /**
+     * Everything a scan request carries except `files`, which each batch
+     * supplies for itself.
+     *
+     * @param list<object> $files
+     * @return array<string, mixed>
+     */
+    private static function scanRequest(LanguageDescriptor $descriptor, ScanPlan $plan, array $files): array
+    {
         $request = [
             'root' => $plan->preparation->discovery->rootRealpath,
             'limits' => ['max_files' => $plan->preparation->maxFiles, 'max_file_bytes' => $plan->preparation->maxFileBytes],
@@ -175,6 +278,10 @@ final readonly class LanguageScanRunner
             if ($packages !== []) {
                 $request['package_directories'] = $packages;
             }
+            $declarations = self::declarationFiles($files);
+            if ($declarations !== []) {
+                $request['declaration_files'] = $declarations;
+            }
         } elseif ($descriptor->key === 'python') {
             $request['frameworks'] = $plan->preparation->pythonFrameworks;
         } elseif ($descriptor->key === 'rust') {
@@ -184,173 +291,84 @@ final readonly class LanguageScanRunner
                 array_filter($plan->preparation->discovery->units, static fn($unit): bool => $unit->kind === 'cargo'),
             ));
         }
-        // One request per batch: ScannerProtocolSession::scan() calls
-        // beginRequest() per invocation, which resets both the cumulative
-        // output-byte counter and the deadline. Sending the whole project in
-        // one request made a 20 MB cap and a 30 s budget apply to the project
-        // rather than to a batch, so a full scan of a mid-sized codebase failed
-        // on limits sized for a batch.
-        $scanned = $metadata = [];
-        // Every path discovery hashed, not only this language's files: a worker
-        // may read a file another language claims, or a manifest such as the
-        // package.json module resolution reads or the Cargo.toml a crate is
-        // named by, and that read is checked all the same.
-        $discoveredByPath = $plan->preparation->discovery->hashedPaths();
-        // Reads of anything else, checked across this language's requests as
-        // they arrive and handed back for the pre-commit re-read.
-        $undiscovered = new UndiscoveredInputs();
-        $full = $descriptor->scanBatchSourceBytes;
-        $pending = self::queued(self::batches($partition->filesToScan, $descriptor->scanBatchFiles, $full), $full, 0);
-        while ($pending !== []) {
-            $item = array_shift($pending);
-            try {
-                // Held aside rather than appended directly: an overflowing
-                // request has already streamed some contributions, and the
-                // retry re-sends those files, so keeping them would double-count
-                // both `parsed` and the reconciled facts.
-                $received = [];
-                $requested = array_map(static fn(object $file): string => $file->relativePath, $item['files']);
-                foreach ($client->scan(['files' => $requested] + $request, $cancellation->isCancelled(...)) as $contribution) {
-                    $received[] = $contribution;
-                }
-            } catch (WorkerException $error) {
-                // A batch that was too big (see OversizedBatch) is split and
-                // retried. Everything else — a crash, a timeout, and above all a
-                // cancellation — keeps the per-language behaviour it already had:
-                // rethrow, and let run() degrade or propagate it. A single file
-                // cannot be split any further, so retrying it would only burn
-                // the remaining attempts and worker restarts.
-                if (!OversizedBatch::signalledBy($descriptor, $error, $request)
-                    || count($item['files']) <= 1
-                    || $item['halvings'] >= WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS
-                    || $cancellation->isCancelled()) {
-                    throw $error;
-                }
-                $budget = max(1, intdiv($item['budget'], 2));
-                $sourceBytes = min($sourceBytes, $budget);
-                // The failed request closed its session, so this language needs
-                // a fresh worker before the smaller batches can be sent.
-                $client = $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
-                // Only the batch that overflowed is re-split, and only its own
-                // descendants inherit the reduced budget. Carrying the reduction
-                // across the rest of the language would let one pathological
-                // directory pin a whole repository at a fraction of its budget —
-                // which for TypeScript means rebuilding the program per request.
-                // The cost of keeping the others at full width is one doomed
-                // request each if they overflow too: a tax, not a cliff.
-                $pending = [
-                    ...self::queued(self::batches($item['files'], $descriptor->scanBatchFiles, $budget), $budget, $item['halvings'] + 1),
-                    ...$pending,
-                ];
-                continue;
-            }
-            $batchResult = $client->lastScanResult();
-            // Before this batch's contributions are kept: facts resolved against
-            // another file's bytes must match what discovery hashed for it too.
-            $undiscovered->add(ScanInputHashes::verify($batchResult, $manifest, $discoveredByPath));
-            // Evidence for this check only, not a statistic: kept out of the
-            // scanner metadata a scan report carries.
-            unset($batchResult['input_hashes']);
-            foreach ($received as $contribution) {
-                $scanned[] = $contribution;
-            }
-            $metadata = self::mergeScanResult($metadata, $batchResult);
-            // Inside the loop so a cancelled scan stops at the next batch
-            // boundary instead of running the language to completion.
-            $cancellation->throwIfCancelled();
-        }
-        $recorded = $this->cache->entriesForScanned(
-            $scanned,
-            $partition->filesToScan,
-            $manifest,
-            $plan->preparation->configurationHashes[$descriptor->key],
-        );
 
-        return [
-            'manifest' => $manifest,
-            'contributions' => [...$partition->cached, ...$recorded['contributions']],
-            'cache_entries' => [...$partition->cacheEntries, ...$recorded['cache_entries']],
-            'parsed' => count($scanned),
-            'unchanged' => count($partition->cached),
-            'added' => $partition->added,
-            'changed' => $partition->changed,
-            'scanner_metadata' => $partition->filesToScan === [] ? [] : [$manifest->id => $metadata],
-            'milliseconds' => self::elapsedMilliseconds($started),
-            'undiscovered_inputs' => $undiscovered->all(),
-        ];
+        return $request;
     }
 
     /**
-     * Split the files a language must scan into scan requests.
+     * Decide what a failed batch costs, and return the client to carry on with.
      *
-     * Bounded on two axes because protocol output has two known terms. A fixed
-     * cost per file — around 800 B to 1.8 KB — dominates on a project of many
-     * tiny files, which is why the file count is capped; the rest scales with
-     * how much source the request covers, which is why the cumulative byte
-     * total is capped too. Neither alone is sufficient: generated 130-byte
-     * files expand 15x where the real sources they imitate expand under 2x.
+     * A failure a smaller batch can get past (see OversizedBatch) is retried
+     * on a fresh worker; anything else, and above all a cancellation, is
+     * rethrown for run() to degrade or propagate. A file whose own answer
+     * outgrew a size limit is left out, since it would in any batch, and
+     * failing the language for it threw away every other file's facts.
      *
-     * Both terms together are still only a lower bound. They predict real
-     * corpora within a few percent but cannot explain a corpus dense in
-     * declared symbols: 400 TypeScript files of 1.9 MB emitted 29.6 MB, where
-     * the per-file term accounts for 2.5% and the source term would need a
-     * coefficient of ~15x against a measured 1.85x. Symbol density is simply
-     * not modelled here, and no cheap pre-scan measurement of it exists. That
-     * is why the byte budget adapts on WORKER_OUTPUT_LIMIT rather than trying
-     * to predict: these bounds make the common case one request, and the retry
-     * covers the case they cannot see coming.
-     *
-     * Returns the file objects rather than their paths so a batch the worker
-     * rejected as too large can be re-split at a smaller budget.
-     *
-     * A file bigger than the whole byte budget still gets a request of its own
-     * rather than an empty one; nothing smaller can be sent.
-     *
-     * @param list<object> $files
-     * @return list<list<object>>
+     * @param array{files: list<object>, budget: int, halvings: int, retries: int} $item
+     * @param list<ScanContribution> $received what the worker answered before failing
+     * @param array<string, mixed> $request
      */
-    private static function batches(array $files, int $maxFiles, int $maxSourceBytes): array
-    {
-        $batches = [];
-        $current = [];
-        $bytes = 0;
-        foreach ($files as $file) {
-            // Test fixtures and any non-DiscoveredFile input carry no size; a
-            // missing size only relaxes the byte axis, never the count axis.
-            $size = isset($file->size) && is_int($file->size) ? $file->size : 0;
-            if ($current !== [] && (count($current) >= $maxFiles || $bytes + $size > $maxSourceBytes)) {
-                $batches[] = $current;
-                $current = [];
-                $bytes = 0;
+    private function afterFailure(
+        ScanBatchQueue $queue,
+        LeftOutFiles $leftOut,
+        array $item,
+        WorkerException $error,
+        array $received,
+        LanguageDescriptor $descriptor,
+        ScanPlan $plan,
+        array $request,
+        CancellationToken $cancellation,
+        string $scannerId,
+    ): ProcessScannerClient {
+        $queue->failed($error);
+        if ($error->diagnosticCode === 'WORKER_FRAME_TOO_LARGE') {
+            $file = $queue->searchFrame($item, $error, $received, $scannerId);
+            if ($cancellation->isCancelled()) {
+                throw $error;
             }
-            $current[] = $file;
-            $bytes += $size;
-        }
-        if ($current !== []) {
-            $batches[] = $current;
-        }
+            if ($file !== null) {
+                $leftOut->add($file, $error);
+            }
 
-        return $batches;
+            return $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
+        }
+        $retryable = OversizedBatch::signalledBy($descriptor, $error, $request) && !$cancellation->isCancelled();
+        if ($retryable && count($item['files']) === 1 && OversizedBatch::leavesAFileOut($error)) {
+            $leftOut->add($item['files'][0], $error);
+
+            return $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
+        }
+        // A single file cannot be split any further, so retrying it would
+        // only burn worker restarts on the same failure.
+        if (!$retryable || count($item['files']) <= 1) {
+            throw ScanBatchQueue::givenUp($item, $error);
+        }
+        $queue->retry($item, $error);
+
+        // The failed request closed its session, so this language needs a
+        // fresh worker before the smaller batches can be sent.
+        return $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
     }
 
     /**
-     * Wrap batches as queue items carrying the budget they were split at.
+     * Fail a language whose every file (two or more) was left out.
      *
-     * The budget travels with the batch rather than with the language so a
-     * reduction stays scoped to the work that provoked it: a batch's own
-     * descendants inherit it, the rest of the language does not.
-     *
-     * @param list<list<object>> $batches
-     * @param int $budget the source-byte budget these batches were split at
-     * @param int $halvings how many reductions this lineage has already had
-     * @return list<array{files: list<object>, budget: int, halvings: int}>
+     * That is not that many oversized files: it is a limit set too low or a
+     * broken worker, and a language with no facts at all must read as failed
+     * rather than as a quiet success.
      */
-    private static function queued(array $batches, int $budget, int $halvings): array
+    private static function assertNotEveryFileLeftOut(int $files, int $leftOut): void
     {
-        return array_map(
-            static fn(array $files): array => ['files' => $files, 'budget' => $budget, 'halvings' => $halvings],
-            $batches,
-        );
+        if ($files < 2 || $leftOut !== $files) {
+            return;
+        }
+
+        throw new WorkerException('WORKER_EVERY_FILE_LEFT_OUT', sprintf(
+            'Every one of the %1$d files was left out because its own answer outgrew a size limit. That points to '
+            . 'a limit set too low or a broken worker rather than %1$d oversized files, so the language is reported '
+            . 'as failed.',
+            $files,
+        ));
     }
 
     /**
@@ -435,6 +453,33 @@ final readonly class LanguageScanRunner
         sort($directories, SORT_STRING);
 
         return $directories;
+    }
+
+    /**
+     * Every declaration file (`.d.ts`, `.d.mts`, `.d.cts`) among the
+     * language's files, sorted, whether or not this scan reads it again.
+     *
+     * An ambient `declare module 'x'` satisfies `import … from 'x'` only when
+     * its file is in the importer's program. A tsconfig's program lists its
+     * own declarations, but a file no tsconfig includes is read in a program of
+     * the files requested with it, and an incremental scan of the importer
+     * alone, or a batch that split the two, left the declaration out.
+     *
+     * @param list<object> $files
+     * @return list<string>
+     */
+    private static function declarationFiles(array $files): array
+    {
+        $declarations = [];
+        foreach ($files as $file) {
+            $path = (string) $file->relativePath;
+            if (preg_match('/\.d\.[cm]?ts$/', $path) === 1) {
+                $declarations[] = $path;
+            }
+        }
+        sort($declarations, SORT_STRING);
+
+        return array_values(array_unique($declarations));
     }
 
     /**

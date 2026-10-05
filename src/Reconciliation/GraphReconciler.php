@@ -437,7 +437,8 @@ final readonly class GraphReconciler
                     }
                     continue;
                 }
-                $returned = str_contains($edge->targetReference, ':method_of_return:');
+                $returned = str_contains($edge->targetReference, ':method_of_return:')
+                    || str_contains($edge->targetReference, ':method_of_property:');
                 // A scanner marks an edge speculative when it knows the
                 // receiver's type but not whether that type declares the member
                 // (it may be a trait's or a base's): kept only when it resolves.
@@ -503,12 +504,13 @@ final readonly class GraphReconciler
 
     /**
      * The member a method reference names (`<lang>:method:Owner::member`,
-     * `<lang>:method_of_return:callee::member`), or null for any other and for
+     * `<lang>:method_of_return:callee::member`,
+     * `<lang>:method_of_property:Type::$property::member`), or null for any other and for
      * one whose owner or member is empty.
      */
     private static function calledMemberName(string $reference): ?string
     {
-        if (!str_contains($reference, ':method:') && !str_contains($reference, ':method_of_return:')) {
+        if (!str_contains($reference, ':method:') && !str_contains($reference, ':method_of_return:') && !str_contains($reference, ':method_of_property:')) {
             return null;
         }
         [, , $target] = array_pad(explode(':', $reference, 3), 3, '');
@@ -650,7 +652,9 @@ final readonly class GraphReconciler
     }
 
     /**
-     * Every method's declared return type, from the `returns` edges the scanners report.
+     * Every method's declared return type, from the `returns` edges the
+     * scanners report, and every property's declared type, from the
+     * `references` edge a property's declaration carries.
      *
      * @param list<ScanContribution> $contributions @return array<string, string>
      */
@@ -659,7 +663,8 @@ final readonly class GraphReconciler
         $types = [];
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
-                if ($edge->kind === 'returns') {
+                if ($edge->kind === 'returns'
+                    || ($edge->kind === 'references' && str_contains($edge->sourceReference, ':property:'))) {
                     // First declaration wins, matching how a duplicate node is
                     // resolved; a method has one declared return type anyway.
                     $types[$edge->sourceReference] ??= $edge->targetReference;
@@ -706,6 +711,9 @@ final readonly class GraphReconciler
     private function returnedMemberReference(string $reference, array $returnTypes, array $inheritanceSources): ?string
     {
         $parts = explode(':', $reference, 3);
+        if (count($parts) === 3 && $parts[1] === 'method_of_property') {
+            return $this->propertyMemberReference($parts[0], $parts[2], $returnTypes, $inheritanceSources);
+        }
         if (count($parts) !== 3 || $parts[1] !== 'method_of_return') {
             return null;
         }
@@ -821,9 +829,49 @@ final readonly class GraphReconciler
     }
 
     /**
-     * @param array<string, string> $fileIds
-     * @return array{0: string, 1: array<string, mixed>}
+     * Turn "the member `m` of what `Type`'s property `$a`, then that value's
+     * property `$b`, holds" into a plain member reference.
+     *
+     * `$context->options->flag()` reaches its receiver through a property
+     * declared in another file, often as a promoted constructor parameter, so
+     * a scanner reading one file cannot name it. It names the path instead
+     * (`Type::$a::$b::m`), and each step is looked up here among every file's
+     * declared property types, through the type's traits and parents. Returns
+     * null when a step names a property no declaration types, which drops the
+     * edge.
+     *
+     * @param array<string, string> $declaredTypes
+     * @param array<string, list<string>> $inheritanceSources
      */
+    private function propertyMemberReference(string $language, string $path, array $declaredTypes, array $inheritanceSources): ?string
+    {
+        $segments = explode('::', $path);
+        $member = array_pop($segments);
+        $type = array_shift($segments);
+        if ($type === null || $type === '' || $member === '' || $segments === []) {
+            return null;
+        }
+        foreach ($segments as $property) {
+            if (!str_starts_with($property, '$') || $property === '$') {
+                return null;
+            }
+            $declared = $declaredTypes[$language . ':property:' . $type . '::' . $property]
+                ?? $this->throughComposition(
+                    $language,
+                    $type,
+                    $inheritanceSources,
+                    static fn(string $declaringType): ?string => $declaredTypes[$language . ':property:' . $declaringType . '::' . $property] ?? null,
+                );
+            $declaredParts = $declared === null ? [] : explode(':', $declared, 3);
+            if (count($declaredParts) !== 3 || $declaredParts[2] === '') {
+                return null;
+            }
+            $type = $declaredParts[2];
+        }
+
+        return $language . ':method:' . $type . '::' . $member;
+    }
+
     /**
      * Resolve a type reference whose kind segment disagrees with the kind the
      * declaration was emitted under, by retrying the lookup against the other
@@ -1193,7 +1241,6 @@ final readonly class GraphReconciler
         );
     }
 
-    /** @param array<string, string> $versions */
     /**
      * The file rows this scan wrote, indexed for node attachment.
      *

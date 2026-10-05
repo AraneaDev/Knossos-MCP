@@ -1,0 +1,628 @@
+import { describe, expect, it } from 'vitest'
+import type { Dashboard, KnossosView, SessionChanges, SessionLedger, TurnBrief } from '../../types'
+import { accumulate, APPROXIMATE_START, cdFor, changesInput, changesList, FILE_CAP, fromLedger, ledgerChanges, lookAtOf, NO_CHANGES, ownTimeline, scanKey, stamp, testCommand, testsRan, timelineRow } from './changes'
+import { changesRows } from './__tests__/tabs'
+import { editTarget, paneInput } from './layout'
+import { paneRows } from './__tests__/pane'
+import { findRow, plainText } from './__tests__/plain-text'
+import { fileHref, linkMarkdown, locOf, rowWidth } from './rows'
+import type { Row } from './rows'
+
+const WIDTHS = [40, 60, 80, 100, 130, 140, 200] as const
+const ROOT = '/work/app'
+
+const brief = (over: Partial<TurnBrief> = {}): TurnBrief => ({
+  status: 'ok',
+  project_root: ROOT,
+  project_id: 'p1',
+  snapshot_id: 's1',
+  scanned_at: 0,
+  scan_ms: 5,
+  reason: null,
+  roots_file: null,
+  refused_root: null,
+  path: ROOT,
+  changed_files: ['src/Router.php'],
+  added_files: [],
+  deleted_files: [],
+  impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http', 'Core'], boundary: 'Http' } },
+  tests: [{ path: 'tests/Http/RouterTest.php', distance: 2 }],
+  policy: { status: 'evaluated', total: 0, violations: [], truncated: false },
+  ...over,
+})
+
+const textOf = (rows: Row[]) => rows.map(plainText).join('\n')
+const row = findRow
+
+/** Two turns: the router edited twice, a kernel added, a helper deleted. */
+function session(): SessionChanges {
+  const first = accumulate(NO_CHANGES, brief())
+  return accumulate(
+    first,
+    brief({
+      changed_files: ['src/Router.php'],
+      added_files: ['src/Core/Kernel.php'],
+      deleted_files: ['src/Helper.php'],
+      impact: {
+        'src/Router.php': { path: 'src/Router.php', dependent_files: 42, boundaries: ['Http'], boundary: 'Http' },
+        'src/Core/Kernel.php': { path: 'src/Core/Kernel.php', dependent_files: 3, boundaries: ['Core'], boundary: 'Core' },
+      },
+      tests: [
+        { path: 'tests/Http/RouterTest.php', distance: 1 },
+        { path: 'tests/Core/KernelTest.php', distance: 3 },
+      ],
+      policy: {
+        status: 'evaluated',
+        total: 1,
+        truncated: false,
+        violations: [{ policy_id: 'p', source: 'App\\Core\\Kernel', target: 'App\\Http\\Router', source_boundaries: [], target_boundaries: [] }],
+      },
+    }),
+  )
+}
+
+describe('accumulate', () => {
+  it('adds up the files, keeps each at its latest dependents, and each test at its nearest distance', () => {
+    const s = session()
+    expect(s.turns).toBe(2)
+    expect(s.files).toEqual({
+      'src/Router.php': { status: 'changed', dependents: 42, boundaries: ['Http'], boundary: 'Http' },
+      'src/Core/Kernel.php': { status: 'added', dependents: 3, boundaries: ['Core'], boundary: 'Core' },
+      'src/Helper.php': { status: 'deleted', dependents: 0, boundaries: [], boundary: null },
+    })
+    expect(s.tests).toEqual({ 'tests/Http/RouterTest.php': 1, 'tests/Core/KernelTest.php': 3 })
+    expect(s.violations).toEqual(['App\\Core\\Kernel → App\\Http\\Router'])
+    expect(s.violation_snapshots).toEqual({ 'App\\Core\\Kernel → App\\Http\\Router': 's1' })
+    // A later brief reporting it again moves it to its own snapshot; one without a snapshot leaves it.
+    const again = accumulate(s, brief({ snapshot_id: 's4', policy: { status: 'evaluated', total: 1, truncated: false, violations: [{ policy_id: 'p', source: 'App\\Core\\Kernel', target: 'App\\Http\\Router', source_boundaries: [], target_boundaries: [] }] } }))
+    expect(again.violation_snapshots).toEqual({ 'App\\Core\\Kernel → App\\Http\\Router': 's4' })
+    expect(accumulate(again, brief({ snapshot_id: null })).violation_snapshots).toEqual({ 'App\\Core\\Kernel → App\\Http\\Router': 's4' })
+    expect(s.truncated).toBe(false)
+  })
+  it('keeps an added file added while it is edited, and a deleted one deleted until it is written again', () => {
+    const added = accumulate(NO_CHANGES, brief({ changed_files: [], added_files: ['a.php'], impact: {} }))
+    expect(accumulate(added, brief({ changed_files: ['a.php'], impact: {} })).files['a.php']?.status).toBe('added')
+    const deleted = accumulate(added, brief({ changed_files: [], deleted_files: ['a.php'], impact: {} }))
+    expect(deleted.files['a.php']?.status).toBe('deleted')
+    expect(accumulate(deleted, brief({ changed_files: [], added_files: ['a.php'], impact: {} })).files['a.php']?.status).toBe('changed')
+  })
+  it('counts a violation once however many turns report it', () => {
+    const s = session()
+    const again = accumulate(s, brief({ policy: { status: 'evaluated', total: 1, truncated: false, violations: [{ policy_id: 'p', source: 'App\\Core\\Kernel', target: 'App\\Http\\Router', source_boundaries: [], target_boundaries: [] }] } }))
+    expect(again.violations).toHaveLength(1)
+  })
+  it("keeps each script's runner from its brief, so the Changes tab runs a Jest project with Jest", () => {
+    const jest = accumulate(NO_CHANGES, brief({ tests: [{ path: 'src/a.test.js', distance: 1, js_runner: 'jest' }, { path: 'src/b.test.js', distance: 2, js_runner: null }] }))
+    expect(jest.js_runners).toEqual({ 'src/a.test.js': 'jest', 'src/b.test.js': null })
+    expect(changesInput(jest, ROOT).command).toBe('npx jest src/a.test.js')
+    // A later brief that no longer names the runner keeps the one it had.
+    expect(accumulate(jest, brief({ tests: [{ path: 'src/a.test.js', distance: 1 }] })).js_runners?.['src/a.test.js']).toBe('jest')
+  })
+  it('ignores a brief that is not ok', () => {
+    expect(accumulate(NO_CHANGES, brief({ status: 'scan-failed' }))).toBe(NO_CHANGES)
+  })
+  it('stops growing at its cap and says so', () => {
+    const many = Array.from({ length: FILE_CAP + 3 }, (_, i) => `src/F${i}.php`)
+    const s = accumulate(NO_CHANGES, brief({ changed_files: many, impact: {} }))
+    expect(Object.keys(s.files)).toHaveLength(FILE_CAP)
+    expect(s.truncated).toBe(true)
+    expect(lookAtOf(changesInput(s, ROOT))?.plus).toBe(true)
+  })
+  it('says the list is cut when a brief could not search every file for tests', () => {
+    expect(accumulate(NO_CHANGES, brief({ tests_truncated: true })).truncated).toBe(true)
+    expect(accumulate(NO_CHANGES, brief({ tests_truncated: false })).truncated).toBe(false)
+  })
+})
+
+describe('testCommand', () => {
+  it('runs one PHPUnit test by its file and several by a filter over their classes', () => {
+    expect(testCommand(['tests/Http/RouterTest.php'])).toBe('vendor/bin/phpunit tests/Http/RouterTest.php')
+    expect(testCommand(['tests/Http/RouterTest.php', 'tests/Core/KernelTest.php'])).toBe("vendor/bin/phpunit --filter '(RouterTest|KernelTest)'")
+  })
+  it('leaves out a PHP file that is no test class, such as a helper', () => {
+    expect(testCommand(['tests/Support/Assertions.php'])).toBeNull()
+  })
+  it('picks the runner from each path and joins several', () => {
+    expect(testCommand(['hooks/lib/band.spec.ts', 'web/app.test.tsx'], { 'hooks/lib/band.spec.ts': 'vitest', 'web/app.test.tsx': 'vitest' })).toBe(
+      'npx vitest run hooks/lib/band.spec.ts web/app.test.tsx',
+    )
+    expect(testCommand(['tests/test_scan.py', 'pkg/walk_test.py'])).toBe('python -m pytest tests/test_scan.py pkg/walk_test.py')
+    expect(testCommand(['internal/scan/walk_test.go', 'internal/scan/read_test.go', 'main_test.go'])).toBe('go test ./internal/scan .')
+    expect(testCommand(['workers/rust/tests/scan.rs'])).toBe('cargo test')
+    expect(testCommand(['tests/ATest.php', 'a.spec.ts'], { 'a.spec.ts': 'vitest' })).toBe('vendor/bin/phpunit tests/ATest.php && npx vitest run a.spec.ts')
+  })
+  it("runs a script with the runner the project's package.json names, and leaves out one whose runner is unknown", () => {
+    expect(testCommand(['src/a.test.js', 'web/b.spec.ts'], { 'src/a.test.js': 'jest', 'web/b.spec.ts': 'vitest' })).toBe('npx vitest run web/b.spec.ts && npx jest src/a.test.js')
+    expect(testCommand(['src/a.test.js'])).toBeNull()
+    expect(testCommand(['src/a.test.js', 'tests/ATest.php'], { 'src/a.test.js': null })).toBe('vendor/bin/phpunit tests/ATest.php')
+  })
+  it('changes to the project root first when the session sits elsewhere', () => {
+    expect(cdFor('/work/app', '/work/app/packages/web')).toBe('/work/app')
+    expect(cdFor('/work/app', '/work/app/')).toBeNull()
+    expect(cdFor('/work/app', null)).toBeNull()
+    expect(cdFor(null, '/work')).toBeNull()
+    expect(testCommand(['tests/ATest.php'], {}, "/work/my app")).toBe("cd '/work/my app' && vendor/bin/phpunit tests/ATest.php")
+    expect(changesInput(session(), ROOT, undefined, `${ROOT}/packages/web`).command).toBe(`cd ${ROOT} && vendor/bin/phpunit --filter '(RouterTest|KernelTest)'`)
+    expect(changesInput(session(), ROOT, undefined, ROOT).command).toBe("vendor/bin/phpunit --filter '(RouterTest|KernelTest)'")
+  })
+  it('quotes a path a shell would split', () => {
+    expect(testCommand(["tests/it's here/a.spec.ts"], { "tests/it's here/a.spec.ts": 'vitest' })).toBe(`npx vitest run 'tests/it'\\''s here/a.spec.ts'`)
+  })
+  it('is null when no path names a runner', () => {
+    expect(testCommand([])).toBeNull()
+    expect(testCommand(['docs/readme.md'])).toBeNull()
+  })
+})
+
+describe('own boundary', () => {
+  it("labels each file with the boundary it sits in, never its dependents'", () => {
+    const c = changesInput(
+      accumulate(
+        NO_CHANGES,
+        brief({
+          changed_files: ['bin/router.php', 'src/Core/Kernel.php'],
+          impact: {
+            'bin/router.php': { path: 'bin/router.php', dependent_files: 9, boundaries: ['tests', 'Core'], boundary: null },
+            'src/Core/Kernel.php': { path: 'src/Core/Kernel.php', dependent_files: 3, boundaries: ['tests'], boundary: 'Core' },
+          },
+        }),
+      ),
+      ROOT,
+      new Map([['tests', 'blue'], ['Core', 'purple']]),
+    )
+    expect(c.files.map(f => [f.path, f.boundary])).toEqual([
+      ['bin/router.php', null],
+      ['src/Core/Kernel.php', 'Core'],
+    ])
+    // Where the changes reach is still the dependents' boundaries.
+    expect(c.boundaries).toEqual(['tests', 'Core'])
+    const rows = changesRows(c, 0, 90)
+    expect(plainText(row(rows, 'change-0')!)).not.toContain('tests')
+    expect(plainText(row(rows, 'change-1')!)).toMatch(/src\/Core\/Kernel\.php +■ Core/)
+  })
+  it('reads an older knossos without the field as unassigned', () => {
+    const old = accumulate(NO_CHANGES, brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 4, boundaries: ['Http'] } } }))
+    expect(changesInput(old, ROOT).files[0]?.boundary).toBeNull()
+  })
+})
+
+describe('changesInput and changesList', () => {
+  it('lists the most depended on first, places files on disk except deleted ones, and the nearest tests first', () => {
+    const c = changesInput(session(), ROOT)
+    expect(c.files.map(f => [f.path, f.status, f.dependents])).toEqual([
+      ['src/Router.php', 'changed', 42],
+      ['src/Core/Kernel.php', 'added', 3],
+      ['src/Helper.php', 'deleted', 0],
+    ])
+    expect(c.files[0]?.loc).toEqual({ path: '/work/app/src/Router.php', line: null })
+    expect(c.files[2]?.loc).toBeNull()
+    expect(c.tests.map(t => t.path)).toEqual(['tests/Http/RouterTest.php', 'tests/Core/KernelTest.php'])
+    expect(c.boundaries).toEqual(['Core', 'Http'])
+    expect(c.violations).toBe(1)
+    expect(changesList(c).map(o => [o.canonical, o.file])).toEqual([
+      ['src/Router.php', true],
+      ['src/Core/Kernel.php', true],
+      ['src/Helper.php', true],
+    ])
+  })
+})
+
+describe('changesRows', () => {
+  it('says what will show before anything changed', () => {
+    expect(textOf(changesRows(changesInput(NO_CHANGES, ROOT), 0, 60))).toMatch(/Changes this session\n {3}Nothing yet. The files Claude edits show here/)
+  })
+  it('draws files with their marks, each pressable to its detail, the tests, and the command', () => {
+    const rows = changesRows(changesInput(session(), ROOT), 1, 90)
+    const text = textOf(rows)
+    expect(text).toMatch(/Changes this session +2 turns/)
+    expect(text).toContain('3 files → 45 dependents reaching ■ Core ■ Http')
+    expect(text).toContain('▲ 1 policy violation introduced')
+    expect(plainText(row(rows, 'change-1')!)).toMatch(/^›\+ src\/Core\/Kernel\.php +■ Core +━/)
+    expect(plainText(row(rows, 'change-2')!)).toMatch(/^ − src\/Helper\.php/)
+    // A file opens as its detail, by the same index the marker walks; `e` opens it in the editor.
+    expect(row(rows, 'change-0')!.segments.find(s => s.press)?.press).toEqual({ id: 'row:0', label: 'src/Router.php' })
+    expect(row(rows, 'change-2')!.segments.find(s => s.press)?.press?.id).toBe('row:2')
+    expect(text).toMatch(/Tests that reach these changes · 2 +nearest first/)
+    expect(text).toContain("$ vendor/bin/phpunit --filter '(RouterTest|KernelTest)'")
+  })
+  it('names fewer boundaries on a narrow pane rather than leave the count on a line of its own', () => {
+    const many = { ...changesInput(session(), ROOT), boundaries: ['tests', 'core', 'php-worker', 'tooling', 'hooks', 'types'] }
+    for (const columns of [56, 60, 90]) {
+      const reach = changesRows(many, 0, columns).filter(r => r.key.startsWith('changes-reach'))
+      expect(reach, `${columns}`).toHaveLength(1)
+      expect(plainText(reach[0]!), `${columns}`).toMatch(/\+\d more$/)
+    }
+    expect(plainText(changesRows(many, 0, 90).find(r => r.key.startsWith('changes-reach'))!)).toContain('reaching ■ tests ■ core ■ php-worker +3 more')
+  })
+  it('warns when no test reaches the changes', () => {
+    const none = accumulate(NO_CHANGES, brief({ tests: [] }))
+    expect(textOf(changesRows(changesInput(none, ROOT), 0, 60))).toContain('▲ no test reaches these changes')
+  })
+  it('never draws wider than the columns', () => {
+    const long = accumulate(
+      session(),
+      brief({
+        changed_files: ['src/a/rather/deeply/nested/directory/with/a/VeryLongControllerName.php'],
+        impact: { 'src/a/rather/deeply/nested/directory/with/a/VeryLongControllerName.php': { path: 'x', dependent_files: 12_345, boundaries: ['module:hooks (+typescript:hooks/tsconfig.json)'] } },
+        tests: [{ path: 'tests/a/rather/deeply/nested/directory/with/a/VeryLongControllerNameTest.php', distance: 1 }],
+      }),
+    )
+    for (const columns of WIDTHS) {
+      for (const r of changesRows(changesInput(long, ROOT), 0, columns)) expect(rowWidth(r), `${columns} ${r.key}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
+    }
+  })
+})
+
+describe('look at now', () => {
+  it('points at the riskiest file still there, and counts the tests that reach the changes', () => {
+    const look = lookAtOf(changesInput(session(), ROOT))!
+    expect(look.file?.path).toBe('src/Router.php')
+    expect(look.tests).toBe(2)
+    expect(look.command).not.toBeNull()
+    expect(lookAtOf(changesInput(NO_CHANGES, ROOT))).toBeNull()
+  })
+  it('sums the session up on the Overview, under the tiles: the way to Changes first, marked, and t beside it', () => {
+    const d = { ...dash(), project_root: ROOT } as Dashboard
+    const v: KnossosView = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
+    const pane = paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, v, 0, true, null, null, session())
+    // The way to Changes has no file of its own: `e` opens nothing there.
+    expect(editTarget(pane)).toBeNull()
+    for (const columns of WIDTHS) {
+      const rows = paneRows(pane, columns)
+      const at = (key: string) => rows.findIndex(r => r.key.split('|').includes(key))
+      expect(at('session-head')).toBeGreaterThanOrEqual(0)
+      // Under the stat tiles (the band, or its line when narrow).
+      expect(at(columns < 80 ? 'tiles-line' : 'tiles-top')).toBeLessThan(at('session-head'))
+      const open = rows.find(r => r.key.split('|').includes('session-open'))!
+      expect(open.tint).toBe('userMessageBackground')
+      expect(open.segments.find(s => s.press?.id === 'row:0')?.text).toBe('Changes')
+      expect(rows.flatMap(r => r.segments).some(s => s.press?.id === 'tests' && s.press.hotkey === 't'), `${columns}`).toBe(true)
+      const said = rows.filter(r => r.key.split('|').some(k => k.startsWith('session-said'))).map(r => plainText(r).trim()).join(' ')
+      expect(said, `${columns}`).toContain('3 files · 45 dependents · 2 tests reach them')
+      for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
+    }
+    // The tab carries how many files were touched.
+    expect(plainText(paneRows(pane, 90).find(r => r.key === 'tabs')!)).toContain(' Changes³ ')
+  })
+})
+
+describe('file links', () => {
+  it('round-trips a place through its file: URL, spaces and all', () => {
+    const loc = { path: '/work/my app/src/A#1.php', line: 12 }
+    expect(fileHref(loc)).toBe('file:///work/my%20app/src/A%231.php#L12')
+    expect(locOf(fileHref(loc))).toEqual(loc)
+    expect(locOf(fileHref({ path: '/a/b.ts', line: null }))).toEqual({ path: '/a/b.ts', line: null })
+    expect(locOf('https://example.com/a')).toBeNull()
+    expect(locOf('file://relative/x')).toBeNull()
+  })
+  it('escapes what markdown would read in the label', () => {
+    expect(linkMarkdown('my_file*.php:3', { path: '/a/my_file*.php', line: 3 })).toBe('[my\\_file\\*\\.php:3](file:///a/my_file%2A.php#L3)')
+  })
+  it('encodes every character that would end or break a link target, an unbalanced ) among them', () => {
+    const loc = { path: "/work/a)b/(c)/it's!.php", line: 4 }
+    expect(fileHref(loc)).toBe('file:///work/a%29b/%28c%29/it%27s%21.php#L4')
+    expect(locOf(fileHref(loc))).toEqual(loc)
+    const target = /\]\((.*)\)$/.exec(linkMarkdown('x', loc))?.[1] ?? ''
+    expect(target).not.toMatch(/[()\s<>]/)
+  })
+})
+
+function dash(): Dashboard {
+  return {
+    status: 'ok',
+    path: ROOT,
+    project_root: ROOT,
+    project_id: 'p1',
+    snapshot_id: 's1',
+    freshness: { state: 'fresh', age_seconds: 1, drift_files: 0 },
+    hubs: [{ name: 'Router', canonical_name: 'App\\Http\\Router', kind: 'class', boundary: 'Http', in_degree: 41, out_degree: 3, cross_boundary_degree: 2 }],
+    hubs_truncated: false,
+    hubs_truncation_reasons: [],
+    hotspots: [],
+    dead_code_candidates: 0,
+    dead_code_truncated: false,
+    cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] },
+    trend: [],
+    fan_in: [],
+    fan_in_truncated: false,
+  }
+}
+
+describe('testsRan', () => {
+  it('counts a test as run by a command that names it, its directory, or no test at all', () => {
+    expect(testsRan('tests/Http/RouterTest.php', ['vendor/bin/phpunit --filter RouterTest'])).toBe(true)
+    expect(testsRan('tests/Http/RouterTest.php', ['vendor/bin/phpunit tests/Http'])).toBe(true)
+    expect(testsRan('tests/Http/RouterTest.php', ['COMPOSER_ALLOW_SUPERUSER=1 vendor/bin/phpunit'])).toBe(true)
+    expect(testsRan('tests/Http/RouterTest.php', ['composer test'])).toBe(true)
+    expect(testsRan('tests/Http/RouterTest.php', ['vendor/bin/phpunit --filter KernelTest'])).toBe(false)
+    expect(testsRan('tests/Http/RouterTest.php', ['vendor/bin/phpunit tests/Cli'])).toBe(false)
+    expect(testsRan('tests/Http/RouterTest.php', ['npx vitest run'])).toBe(false)
+    expect(testsRan('hooks/lib/changes.spec.ts', ['npm run test:mod'])).toBe(true)
+    expect(testsRan('hooks/lib/changes.spec.ts', ['npx vitest run hooks/lib/changes.spec.ts'])).toBe(true)
+    expect(testsRan('hooks/lib/changes.spec.ts', ['npx vitest run hooks/lib/layout.spec.ts'])).toBe(false)
+    expect(testsRan('tests/test_x.py', ['python -m pytest -k other'])).toBe(false)
+    expect(testsRan('pkg/a/x_test.go', ['go test ./...'])).toBe(true)
+    expect(testsRan('src/lib.rs', ['cargo test'])).toBe(true)
+    expect(testsRan('docs/readme.md', ['vendor/bin/phpunit'])).toBe(false)
+  })
+})
+
+describe('the changes since the session began, from the scan ledger', () => {
+  const ledger: SessionLedger = {
+    status: 'ok',
+    since: 's0',
+    snapshot_id: 's9',
+    complete: true,
+    files: {
+      'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'Http' },
+      'src/Config/app.php': { status: 'added', dependents: 0, boundaries: [], boundary: null },
+      'src/Old.php': { status: 'deleted', dependents: 0, boundaries: [], boundary: null },
+    },
+    files_truncated: false,
+    tests: [{ path: 'tests/Http/RouterTest.php', distance: 1 }],
+    tests_truncated: false,
+  }
+  const changes = fromLedger(ledger, session(), new Set(['src/Router.php']))
+
+  it("labels each file by where its change came from, and keeps the turns' own violations", () => {
+    expect(changes.origins).toEqual({ 'src/Router.php': 'session', 'src/Config/app.php': 'outside', 'src/Old.php': 'outside' })
+    expect(changes.violations).toEqual(session().violations)
+    // And which brief's graph reported each: what tells a policy check too old to have seen it.
+    expect(changes.violation_snapshots).toEqual({ 'App\\Core\\Kernel → App\\Http\\Router': 's1' })
+    expect(changes.tests).toEqual({ 'tests/Http/RouterTest.php': 1 })
+    expect(fromLedger({ ...ledger, files_truncated: true }, NO_CHANGES, new Set()).truncated).toBe(true)
+  })
+
+  it("calls a file the session's when any scan that changed it took in the session's work, whatever wrote it", () => {
+    const scanned: SessionLedger = {
+      ...ledger,
+      files: {
+        'src/Router.php': { ...ledger.files['src/Router.php']!, scans: ['s1', 's4'] },
+        'src/Config/app.php': { ...ledger.files['src/Config/app.php']!, scans: ['s2'] },
+        'src/Old.php': { ...ledger.files['src/Old.php']! },
+      },
+    }
+    expect(fromLedger(scanned, NO_CHANGES, new Set(), new Set(['s4'])).origins).toEqual({ 'src/Router.php': 'session', 'src/Config/app.php': 'outside', 'src/Old.php': 'outside' })
+    // An older knossos names no scans: only the edit tools decide.
+    expect(fromLedger(scanned, NO_CHANGES, new Set(['src/Old.php']), new Set(['s2'])).origins).toEqual({ 'src/Router.php': 'outside', 'src/Config/app.php': 'session', 'src/Old.php': 'session' })
+  })
+
+  it('draws the origin of every file at every width, within the width', () => {
+    for (const columns of WIDTHS) {
+      const rows = changesRows(changesInput(changes, ROOT), 0, columns)
+      for (const r of rows) expect(rowWidth(r), `${columns}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
+      const text = textOf(rows)
+      // The narrowest top edge has no room for the note.
+      if (columns >= 60) expect(text).toContain('since it began')
+      for (const key of ['change-0', 'change-1', 'change-2']) expect(plainText(row(rows, key)!)).toMatch(/(this session|outside) *$/)
+      expect(plainText(row(rows, 'change-0')!)).toMatch(/this session *$/)
+    }
+  })
+
+  it('says why only the turns are listed when it falls back, and what an empty ledger means', () => {
+    const fallback = changesRows(changesInput({ ...session(), fallback: 'No live watcher: only what this session\'s turns reported.' }, ROOT), 0, 60)
+    expect(textOf(fallback)).toContain('No live watcher')
+    expect(textOf(fallback)).toContain('2 turns')
+    const empty = changesRows(changesInput(fromLedger({ ...ledger, files: {}, tests: [] }, NO_CHANGES, new Set()), ROOT), 0, 60)
+    expect(textOf(empty)).toContain('Nothing changed in this project since this session began.')
+  })
+
+  it("matches a merged scan, which the ledger names by its key, to the session's own", () => {
+    const own = `scan_${'ab12'.repeat(16)}`
+    const merged: SessionLedger = { ...ledger, files: { 'src/Router.php': { ...ledger.files['src/Router.php']!, scans: [scanKey(own)] } }, scans: [{ snapshot_id: scanKey(own), at: 1, files: 1, merged: 40 }] }
+    expect(scanKey(own)).toBe('scan_ab12ab12ab12')
+    const changes = fromLedger(merged, NO_CHANGES, new Set(), new Set([own]))
+    expect(changes.origins).toEqual({ 'src/Router.php': 'session' })
+    expect(changes.timeline).toEqual([{ snapshot: scanKey(own), origin: 'session' }])
+    expect(fromLedger(merged, NO_CHANGES, new Set(), new Set([`scan_${'cd34'.repeat(16)}`])).origins).toEqual({ 'src/Router.php': 'outside' })
+  })
+})
+
+describe('a ledger that does not reach back to the session start', () => {
+  const ledger: SessionLedger = {
+    status: 'ok',
+    since: 's0',
+    snapshot_id: 's9',
+    complete: false,
+    files: { 'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'Http' } },
+    files_truncated: false,
+    tests: [],
+    tests_truncated: false,
+    reached: { snapshot_id: 's5', at: 1_791_100_000 },
+  }
+  const began = 1_791_000_000_000
+
+  it('says so with when the session began, and lists every change since the oldest point it still holds, with its date', () => {
+    const shown = ledgerChanges(ledger, session(), new Set(), [], began)
+    expect(Object.keys(shown.files)).toEqual(['src/Router.php'])
+    expect(shown.fallback).toBe(`The scan record does not reach back to when this session began (${stamp(began)}). It lists every change since ${stamp(1_791_100_000_000)}, the oldest point it still holds.`)
+    expect(shown.since).toBe(`since ${stamp(1_791_100_000_000)}`)
+    expect(stamp(began)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+    for (const columns of WIDTHS) {
+      const rows = changesRows(changesInput(shown, ROOT), 0, columns)
+      for (const r of rows) expect(rowWidth(r), `${columns}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
+      expect(textOf(rows).replace(/\s+/g, ' ')).toContain('does not reach back')
+      if (columns >= 60) expect(textOf(rows)).not.toContain('since it began')
+    }
+    const empty = changesRows(changesInput(ledgerChanges({ ...ledger, files: {} }, NO_CHANGES, new Set(), [], began), ROOT), 0, 100)
+    expect(textOf(empty)).toContain(`Nothing changed in this project since ${stamp(1_791_100_000_000)}.`)
+  })
+
+  it("with no point to reach (an older knossos), falls back to the turns' own and says so, with the date when known", () => {
+    const older = ledgerChanges({ ...ledger, reached: undefined, files: {} }, session(), new Set(), ['s3'], began)
+    expect(older.fallback).toBe(`The scan record does not reach back to when this session began (${stamp(began)}), so only what its turns reported is listed.`)
+    expect(older.files).toEqual(session().files)
+    expect(older.timeline).toEqual(ownTimeline(['s3']))
+    expect(ledgerChanges({ ...ledger, reached: null }, session(), new Set(), [], null).fallback).toBe("The scan record does not reach back to when this session began, so only what its turns reported is listed.")
+  })
+
+  it('says a start among merged scans is approximate, and nothing for a whole one', () => {
+    const whole = { ...ledger, complete: true, reached: null }
+    expect(ledgerChanges({ ...whole, start_approximate: true }, NO_CHANGES, new Set(), [], began).fallback).toBe(APPROXIMATE_START)
+    const exact = ledgerChanges(whole, NO_CHANGES, new Set(), [], began)
+    expect(exact.fallback).toBeUndefined()
+    expect(exact.since).toBeUndefined()
+  })
+})
+
+describe("the session's scans as a timeline", () => {
+  const timeline = (origins: string) => [...origins].map(o => ({ origin: o === 's' ? ('session' as const) : ('outside' as const) }))
+
+  it('draws a dot a scan, oldest first, this session in the accent and outside dim, then the counts', () => {
+    const r = timelineRow({ timeline: timeline('ssoss'), earlier: false }, 60)!
+    expect(plainText(r)).toBe('   scans ●●●●●  4 this session · 1 outside')
+    const dots = r.segments.filter(s => s.text.includes('●'))
+    expect(dots.map(s => [s.text, s.color ?? (s.dim ? 'dim' : '')])).toEqual([
+      ['●●', 'suggestion'],
+      ['●', 'dim'],
+      ['●●', 'suggestion'],
+    ])
+    // Only the session's own: no outside count.
+    expect(plainText(timelineRow({ timeline: timeline('sss'), earlier: false }, 60)!)).toBe('   scans ●●●  3 this session')
+    expect(timelineRow({ timeline: [], earlier: false }, 60)).toBeNull()
+  })
+
+  it('keeps its newest scans behind a … when it is longer than the row, or older ones were left out', () => {
+    for (const columns of WIDTHS) {
+      const r = timelineRow({ timeline: timeline('s'.repeat(120)), earlier: false }, columns)!
+      expect(rowWidth(r), `${columns}`).toBeLessThanOrEqual(columns)
+      if (columns < 160) expect(plainText(r), `${columns}`).toContain('…●')
+      else expect(plainText(r), `${columns}`).toContain(`scans ${'●'.repeat(120)}  120 this session`)
+    }
+    expect(plainText(timelineRow({ timeline: timeline('so'), earlier: true }, 80)!)).toBe('   scans …●●  1 this session · 1 outside')
+  })
+
+  it('stands above the file list, from the ledger with each scan by whose changes it took in, else from the session\'s own', () => {
+    const ledger: SessionLedger = {
+      status: 'ok',
+      since: 's0',
+      snapshot_id: 's3',
+      complete: true,
+      files: { 'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'Http', scans: ['s1'] } },
+      files_truncated: false,
+      tests: [],
+      tests_truncated: false,
+      scans: [
+        { snapshot_id: 's1', at: 10, files: 1 },
+        { snapshot_id: 's2', at: 20, files: 3 },
+        { snapshot_id: 's3', at: 30, files: 1 },
+      ],
+      scans_truncated: true,
+    }
+    const changes = fromLedger(ledger, NO_CHANGES, new Set(), new Set(['s1', 's3']))
+    expect(changes.timeline).toEqual([
+      { snapshot: 's1', origin: 'session' },
+      { snapshot: 's2', origin: 'outside' },
+      { snapshot: 's3', origin: 'session' },
+    ])
+    expect(changes.timeline_truncated).toBe(true)
+    const rows = changesRows(changesInput(changes, ROOT), 0, 100)
+    const at = (key: string) => rows.findIndex(r => r.key.split('|').includes(key))
+    expect(at('changes-timeline')).toBeGreaterThan(at('changes-head'))
+    expect(at('changes-timeline')).toBeLessThan(at('change-0'))
+    expect(ownTimeline(['a', 'b'])).toEqual([
+      { snapshot: 'a', origin: 'session' },
+      { snapshot: 'b', origin: 'session' },
+    ])
+    // An older knossos names no scans: no timeline.
+    expect(fromLedger({ ...ledger, scans: undefined }, NO_CHANGES, new Set()).timeline).toEqual([])
+  })
+})
+
+describe('changed files no test reaches', () => {
+  /** A session whose router is reached by three tests and whose kernel and config by none; one file's reach is not known. */
+  const untested = (): SessionChanges =>
+    accumulate(
+      NO_CHANGES,
+      brief({
+        changed_files: ['src/Router.php', 'src/Core/Kernel.php', 'src/Config.php', 'src/Unknown.php'],
+        impact: {
+          'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'Http', tests: 3 },
+          'src/Core/Kernel.php': { path: 'src/Core/Kernel.php', dependent_files: 9, boundaries: ['Core'], boundary: 'Core', tests: 0 },
+          'src/Config.php': { path: 'src/Config.php', dependent_files: 2, boundaries: [], boundary: null, tests: 0 },
+          'src/Unknown.php': { path: 'src/Unknown.php', dependent_files: 1, boundaries: [], boundary: null },
+        },
+      }),
+    )
+
+  it('keeps each file count from the latest brief that knew it, and counts the files none reaches', () => {
+    const later = accumulate(untested(), brief({ changed_files: ['src/Core/Kernel.php'], impact: { 'src/Core/Kernel.php': { path: 'src/Core/Kernel.php', dependent_files: 9, boundaries: ['Core'], boundary: 'Core' } } }))
+    expect(later.files['src/Core/Kernel.php']?.tests).toBe(0)
+    const input = changesInput(untested(), ROOT)
+    expect(input.untested).toBe(2)
+    expect(input.files.find(f => f.path === 'src/Unknown.php')?.tests).toBeNull()
+    // A deleted file is reached by nothing, and says nothing about tests.
+    const gone = accumulate(untested(), brief({ changed_files: [], deleted_files: ['src/Config.php'], impact: {} }))
+    expect(changesInput(gone, ROOT).untested).toBe(1)
+  })
+
+  it('marks them in the Changes tab, with a count above the table, at every width', () => {
+    const input = changesInput(untested(), ROOT)
+    for (const columns of WIDTHS) {
+      const rows = changesRows(input, 0, columns)
+      for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
+      expect(textOf(rows), `${columns}`).toContain('▲ 2 files no test reaches')
+    }
+    const rows = changesRows(input, 0, 100)
+    expect(plainText(row(rows, 'changes-cols')!)).toMatch(/deps +tests$/)
+    expect(plainText(row(rows, 'change-1')!)).toMatch(/Kernel\.php .* ▲ none$/)
+    expect(row(rows, 'change-1')!.segments.find(s => s.text.includes('▲ none'))?.color).toBe('warning')
+    expect(plainText(row(rows, 'change-0')!)).toMatch(/Router\.php .* 3$/)
+  })
+
+  const press = (rows: Row[], key: string): string | undefined => row(rows, key)?.segments.find(s => s.press !== undefined)?.press?.id
+
+  it('presses the count to list only the files none reaches, says so, and offers every file back', () => {
+    const all = changesInput(untested(), ROOT)
+    expect(all.untestedOnly).toBe(false)
+    expect(press(changesRows(all, 0, 100), 'changes-untested')).toBe('untested-row')
+    expect(row(changesRows(all, 0, 100), 'changes-all')).toBeUndefined()
+    const only = changesInput(untested(), ROOT, undefined, null, true)
+    expect(only.untestedOnly).toBe(true)
+    expect(changesList(only).map(f => f.name)).toEqual(['src/Core/Kernel.php', 'src/Config.php'])
+    for (const columns of WIDTHS) {
+      const rows = changesRows(only, 0, columns)
+      for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
+      expect(textOf(rows).replace(/\s+/g, ' '), `${columns}`).toContain('▲ 2 files no test reaches · showing only these')
+      expect(press(rows, 'changes-all'), `${columns}`).toBe('untested-all')
+      expect(rows.filter(r => /^change-\d+$/.test(r.key)).map(plainText).join('\n'), `${columns}`).not.toMatch(/Router|Unknown/)
+    }
+    // The first listed is the first untested file, and its press opens it.
+    expect(press(changesRows(only, 0, 100), 'change-0')).toBe('row:0')
+    expect(plainText(row(changesRows(only, 0, 100), 'change-0')!)).toMatch(/Kernel\.php/)
+  })
+
+  it('lists every file again once no file is left that no test reaches', () => {
+    const tested = changesInput(accumulate(NO_CHANGES, brief()), ROOT, undefined, null, true)
+    expect(tested.untested).toBe(0)
+    expect(tested.untestedOnly).toBe(false)
+    expect(changesList(tested)).toHaveLength(1)
+  })
+
+  it('presses the violations it introduced to the Issues tab, and its empty tests card to the files none reaches', () => {
+    const turn = accumulate(untested(), brief({ changed_files: [], impact: {}, policy: { status: 'evaluated', total: 1, violations: [{ policy_id: 'p', source: 'App\\A', source_kind: 'class', target: 'App\\B', target_kind: 'class' }], truncated: false } as never }))
+    const rows = changesRows(changesInput({ ...turn, tests: {} }, ROOT), 0, 100)
+    expect(press(rows, 'changes-policy')).toBe('stat:policy')
+    expect(press(rows, 'tests-none')).toBe('untested-none')
+    // Where no file's reach is known, there is nothing to list.
+    expect(press(changesRows(changesInput({ ...accumulate(NO_CHANGES, brief()), tests: {} }, ROOT), 0, 100), 'tests-none')).toBeUndefined()
+  })
+
+  it('never keys a row as a press is keyed', () => {
+    for (const only of [false, true]) {
+      const rows = changesRows(changesInput(untested(), ROOT, undefined, null, only), 0, 100)
+      const keys = new Set(rows.map(r => r.key))
+      for (const seg of rows.flatMap(r => r.segments)) if (seg.press !== undefined) expect(keys.has(seg.press.id), seg.press.id).toBe(false)
+    }
+  })
+
+  it('names the count on the session card of the Overview', () => {
+    const d = { status: 'ok', path: ROOT, project_root: ROOT, project_id: 'p1', snapshot_id: 's1', freshness: { state: 'fresh', age_seconds: 1, drift_files: 0 }, hubs: [], hubs_truncated: false, hubs_truncation_reasons: [], hotspots: [], dead_code_candidates: 0, dead_code_truncated: false, cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] }, trend: [], fan_in: [], fan_in_truncated: false } as Dashboard
+    const view: KnossosView = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
+    const session = { ...untested(), tests: { 'tests/RouterTest.php': 1 } }
+    for (const columns of WIDTHS) {
+      const text = textOf(paneRows(paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, view, 0, true, null, null, session), columns, 60))
+      expect(text.replace(/\s+/g, ' '), `${columns}`).toContain('▲ 2 files no test reaches')
+    }
+  })
+})

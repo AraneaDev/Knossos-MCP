@@ -22,7 +22,7 @@
         "type=bind,source=${workspaceFolder},target=/workspace,readonly",
         "--mount",
         "type=volume,source=knossos-editor-data,target=/data",
-        "knossos-mcp:dev",
+        "knossos:dev",
         "scan",
         "/workspace",
         "--json"

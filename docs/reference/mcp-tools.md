@@ -102,7 +102,7 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `architecture_trends`
 
-See how architecture metrics moved over recent scans. Use for release notes or to spot slow structural drift.
+See how architecture metrics moved over recent scans. Use for release notes or to spot slow structural drift. Caches each retained snapshot's figures in the graph database, so a repeat call skips decoding its archive.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -149,7 +149,7 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `list_usages`
 
-List every usage site of a symbol with file:line evidence: one row per occurrence. Use instead of grepping for callers; unlike impact_analysis this shows the exact call sites, not the transitive set.
+List every usage site of a symbol with file:line evidence: one row per occurrence. Use instead of grepping for callers; where impact_analysis gives the transitive set, this gives the exact call sites.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -349,7 +349,7 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `change_impact`
 
-Blend static blast radius with recent Git churn to prioritize review. Use when you want risk-ranked impact, not just a reachable-set list.
+Blend static blast radius with recent Git churn to prioritize review. Use when you want impact ranked by risk, beyond the plain reachable set.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -391,7 +391,7 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `test_impact`
 
-Map a change set to the test files that statically exercise it, ranked by distance. Use to run the relevant tests first in an edit-test loop; the list is a lower bound, not a substitute for the full suite.
+Map a change set to the test files that statically exercise it, ranked by distance. Use to run the relevant tests first in an edit-test loop; the list is a lower bound, so the full suite still has to run.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |

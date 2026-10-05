@@ -146,6 +146,21 @@ final class ClassificationFactTest extends TestCase
         );
     }
 
+    public function testRoleEndingInALineBreakThrows(): void
+    {
+        assertThrows(
+            fn(): ClassificationFact => new ClassificationFact(
+                nodeReference: 'php:class:Foo',
+                role: "application.service\n",
+                ruleId: 'rule-foo',
+                origin: Origin::Derived,
+                confidence: Confidence::Probable,
+                evidence: new Evidence('src/Foo.php', 1, 5),
+            ),
+            InvalidArgumentException::class,
+        );
+    }
+
     public function testRoleWithUnderscoreAndDotAndDashIsAccepted(): void
     {
         $fact = new ClassificationFact(

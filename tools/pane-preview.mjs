@@ -1,0 +1,999 @@
+#!/usr/bin/env node
+/**
+ * Dev-only: draws the Knossos pane as PNGs, the way a terminal would show it,
+ * so the look can be judged without a live Claude Code session.
+ *
+ * Never installed with the plugin (the installer copies a fixed list of
+ * files from hooks/) and never run by the quality gate. It needs Node with
+ * TypeScript type stripping (22.18+) and `rsvg-convert` with a monospace font
+ * (DejaVu Sans Mono).
+ *
+ * It lays the pane out with the mod's own pure functions (hooks/lib) over
+ * this repository's real dashboard, read through the mod's wrapper, and draws
+ * every tab plus a component's detail at 60, 100, 140 and 200 columns (the
+ * narrow, medium and wide layouts) and, for the pane's views, at a short and
+ * a tall height, in Claude Code's dark and light themes. A mark in the left
+ * margin shows where the pane's body ends at that height. Rows the terminal
+ * draws as a `Raster` are drawn from the packed cells exactly as the engine
+ * would receive them.
+ *
+ * Not read-only. `dashboard` and `component-detail` never scan, but the
+ * dashboard writes trend cache rows (`snapshot_metrics`) and brings an older
+ * schema up to date. So the data dir is never defaulted: `--data-dir` is
+ * required, and should hold a copy of the database made for the preview,
+ * deleted after it.
+ *
+ * Usage:
+ *   node tools/pane-preview.mjs --data-dir=<dir> [--out=<dir>] [--project=<dir>]
+ *                               [--dashboard=<file.json>] [--columns=60,100,140,200] [--heights=24,60]
+ *                               [--themes=dark,light] [--only=<view,...>]
+ *   node tools/pane-preview.mjs --readme --data-dir=<dir> --since=<snapshot> --session-rev=<git rev> [--out=<dir>]
+ *
+ * Defaults: --out=.superpowers/sdd/2026-10-02-claude-code-mod/preview, the
+ * repository as the project.
+ *
+ * `--readme` draws framed screenshots instead (the README's, before it
+ * showed real Claude Code captures): a few views at one width, each in a
+ * terminal window frame (a title bar, rounded corners, a soft shadow on a
+ * transparent margin) at twice the size for sharp text, to
+ * .superpowers/pane-preview/readme/ (git-ignored), shrunk to a 256-colour
+ * palette when python3 with Pillow is there. No `--out` may point into
+ * docs/images/claude-code/: those are the real captures (tools/capture). They show only real files in real states: the Last
+ * turn is a sample turn over real files (the README says so); Changes is
+ * what the scan ledger says changed since `--since` (a snapshot the ledger
+ * reaches back to), as `knossos session-changes` reads it, with the files
+ * changed in git since `--session-rev` marked as this session's (that
+ * choice is the sample the README names); and the header says what the
+ * graph's freshness says, as no watcher runs while it draws.
+ */
+import { Buffer } from 'node:buffer'
+import { spawnSync } from 'node:child_process'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
+import { basename as baseName, dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const args = Object.fromEntries(
+  process.argv.slice(2).map(a => {
+    const [k, ...v] = a.replace(/^--/, '').split('=')
+    return [k, v.join('=')]
+  }),
+)
+// Checked before anything loads or runs: the dashboard writes to the database it reads.
+if (typeof args['data-dir'] !== 'string' || args['data-dir'] === '') {
+  console.error('pane-preview: --data-dir=<dir> is required (a copy of the database: the dashboard writes trend cache rows to it)')
+  process.exit(2)
+}
+
+// The README draws real changes only: it needs the snapshot to read them since, and what counts as the session's.
+if ('readme' in args && (!args.since || !args['session-rev'])) {
+  console.error('pane-preview: --readme needs --since=<snapshot> and --session-rev=<git rev>: its Changes tab shows real changes from the scan ledger')
+  process.exit(2)
+}
+
+// The mod's modules import each other without an extension, as the engine's bundler resolves them.
+const { registerHooks } = await import('node:module')
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    try {
+      return nextResolve(specifier, context)
+    } catch (error) {
+      if (/^\.\.?\//.test(specifier) && !/\.[a-z]+$/.test(specifier)) return nextResolve(`${specifier}.ts`, context)
+      throw error
+    }
+  },
+})
+
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+const MAX_LINKS = 40
+
+/**
+ * Where `path` really lands, symlinks followed one entry at a time with
+ * lstat: a link is read (relative to its own dir) and the walk starts again
+ * from its target, so a dangling link to a dir not made yet is followed as
+ * mkdir would follow it. Past MAX_LINKS links (a loop) it throws.
+ */
+function realTarget(path, links = 0) {
+  const parts = resolve(path).split('/').filter(part => part !== '')
+  let at = '/'
+  for (const [i, part] of parts.entries()) {
+    const next = join(at, part)
+    let stat
+    try {
+      stat = lstatSync(next)
+    } catch {
+      // Nothing there: what follows is made as it is named.
+      return join(next, ...parts.slice(i + 1))
+    }
+    if (stat.isSymbolicLink()) {
+      if (links >= MAX_LINKS) throw new Error(`more than ${MAX_LINKS} symlinks (a loop?) resolving ${path}`)
+      return realTarget(join(resolve(at, readlinkSync(next)), ...parts.slice(i + 1)), links + 1)
+    }
+    at = next
+  }
+  return at
+}
+
+const CAPTURES_MESSAGE = 'docs/images/claude-code holds the real Claude Code captures (tools/capture/shoot.mjs)'
+
+/**
+ * Makes the output directory and returns its real path, the one every file
+ * is written under. The OS resolves `out` (symlinks, `..` after a link) as
+ * mkdir does; a result in the real captures is refused, after the dirs this
+ * call made are removed again, deepest first and only while empty.
+ * `realTarget` is only an early message for a link it can follow; this is
+ * the check that counts.
+ */
+function claimOut(out) {
+  const refuse = why => {
+    console.error(`pane-preview: refusing to write to ${why}: ${CAPTURES_MESSAGE}`)
+    process.exit(2)
+  }
+  const captures = realpathSync.native(join(REPO, 'docs/images/claude-code'))
+  try {
+    const early = realTarget(out)
+    if (early === captures || early.startsWith(captures + '/')) refuse(early)
+  } catch (error) {
+    refuse(`${out} (${error.message})`)
+  }
+  // The dirs mkdir will make, as `out` names them: no lexical clean-up, so `..` keeps its meaning after a link.
+  const made = []
+  for (let dir = out; !existsSync(dir) && dirname(dir) !== dir; dir = dirname(dir)) made.push(dir)
+  try {
+    mkdirSync(out, { recursive: true })
+  } catch (error) {
+    refuse(`${out} (${error.message})`)
+  }
+  // The OS realpath(3): the JS realpathSync drops `..` against the path as written before it reads a link.
+  const real = realpathSync.native(out)
+  if (real === captures || real.startsWith(captures + '/')) {
+    for (const dir of made) {
+      try {
+        rmdirSync(dir)
+      } catch {
+        // Not empty, or gone: left as it is.
+      }
+    }
+    refuse(real)
+  }
+  return real
+}
+
+// Never the real captures, through a symlink or not; claimed before anything is drawn.
+const REAL_OUT = claimOut(
+  args.out === undefined
+    ? join(REPO, 'readme' in args ? '.superpowers/pane-preview/readme' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview')
+    : isAbsolute(args.out) ? args.out : `${process.cwd()}/${args.out}`,
+)
+const layout = await import(join(REPO, 'hooks/lib/layout.ts'))
+const envelopes = await import(join(REPO, 'hooks/lib/envelopes.ts'))
+const raster = await import(join(REPO, 'hooks/lib/raster.ts'))
+const rows = await import(join(REPO, 'hooks/lib/rows.ts'))
+const band = await import(join(REPO, 'hooks/lib/band.ts'))
+const palette = await import(join(REPO, 'hooks/lib/palette.ts'))
+const changesLib = await import(join(REPO, 'hooks/lib/changes.ts'))
+const diffLib = await import(join(REPO, 'hooks/lib/diff.ts'))
+
+const README = 'readme' in args
+// Every file goes under the real directory claimOut checked, never under the path as given.
+const OUT = REAL_OUT
+const PROJECT = resolve(args.project ?? REPO)
+const DATA_DIR = resolve(args['data-dir'])
+const COLUMNS = (args.columns ?? '60,100,140,200').split(',').map(Number)
+/** The pane heights a sized view is drawn at: a short pane (lists at their minimum) and a tall one. */
+const HEIGHTS = (args.heights ?? '24,60').split(',').map(Number)
+const THEME_NAMES = (args.themes ?? 'dark,light').split(',')
+
+/** Claude Code 2.1.288's dark and light themes, as `#rrggbb` (from the binary's theme objects). */
+const THEMES = {
+  dark: {
+    autoAccept: '#af87ff', autoAcceptShimmer: '#d0b4ff', skill: '#af87ff', bashBorder: '#fd5db1',
+    claude: '#d77757', claudeShimmer: '#eb9f7f', claudeBlue_FOR_SYSTEM_SPINNER: '#93a5ff',
+    claudeBlueShimmer_FOR_SYSTEM_SPINNER: '#b1c3ff', permission: '#b1b9f9', permissionShimmer: '#cfd7ff',
+    planMode: '#48968c', ide: '#4782c8', promptBorder: '#888888', promptBorderShimmer: '#a6a6a6', text: '#ffffff',
+    inverseText: '#000000', inactive: '#999999', inactiveShimmer: '#c1c1c1', subtle: '#505050',
+    suggestion: '#b1b9f9', remember: '#b1b9f9', background: '#00cccc', success: '#4eba65', error: '#ff6b80',
+    warning: '#ffc107', merged: '#af87ff', warningShimmer: '#ffdf39', diffAdded: '#225c2b',
+    diffRemoved: '#7a2936', diffAddedDimmed: '#47584a', diffRemovedDimmed: '#69484d', diffAddedWord: '#38a660',
+    diffRemovedWord: '#b3596b', red_FOR_SUBAGENTS_ONLY: '#dc2626', blue_FOR_SUBAGENTS_ONLY: '#6a9bcc',
+    green_FOR_SUBAGENTS_ONLY: '#16a34a', yellow_FOR_SUBAGENTS_ONLY: '#ca8a04',
+    purple_FOR_SUBAGENTS_ONLY: '#827dbd', orange_FOR_SUBAGENTS_ONLY: '#d97757',
+    pink_FOR_SUBAGENTS_ONLY: '#c46686', cyan_FOR_SUBAGENTS_ONLY: '#0891b2', professionalBlue: '#6a9bcc',
+    chromeYellow: '#fbbc04', clawd_body: '#d77757', clawd_background: '#000000', userMessageBackground: '#373737',
+    userMessageBackgroundHover: '#464646', composerSidebarBackground: '#262626', selectionBg: '#264f78',
+    bashMessageBackgroundColor: '#413c41', memoryBackgroundColor: '#374146', rate_limit_fill: '#b1b9f9',
+    rate_limit_empty: '#505370', fastMode: '#ff7814', fastModeShimmer: '#ffa546', effortUltra: '#af87ff',
+    briefLabelYou: '#7ab4e8', briefLabelClaude: '#d77757', rainbow_red: '#eb5f57', rainbow_orange: '#f58b57',
+    rainbow_yellow: '#fac35f', rainbow_green: '#91c882', rainbow_blue: '#82aadc', rainbow_indigo: '#9b82c8',
+    rainbow_violet: '#c882b4', rainbow_red_shimmer: '#fa9b93', rainbow_orange_shimmer: '#ffb989',
+    rainbow_yellow_shimmer: '#ffe19b', rainbow_green_shimmer: '#b9e6b4', rainbow_blue_shimmer: '#b4cdf0',
+    rainbow_indigo_shimmer: '#c3b4e6', rainbow_violet_shimmer: '#e6b4d2',
+  },
+  light: {
+    autoAccept: '#8700ff', autoAcceptShimmer: '#d0b4ff', skill: '#8700ff', bashBorder: '#ff0087',
+    claude: '#d77757', claudeShimmer: '#f59575', claudeBlue_FOR_SYSTEM_SPINNER: '#5769f7',
+    claudeBlueShimmer_FOR_SYSTEM_SPINNER: '#7587ff', permission: '#5769f7', permissionShimmer: '#899bff',
+    planMode: '#006666', ide: '#4782c8', promptBorder: '#8a8a8a', promptBorderShimmer: '#b7b7b7', text: '#000000',
+    inverseText: '#ffffff', inactive: '#666666', inactiveShimmer: '#8e8e8e', subtle: '#afafaf',
+    suggestion: '#5769f7', remember: '#0000ff', background: '#009999', success: '#2c7a39', error: '#ab2b3f',
+    warning: '#966c1e', merged: '#8700ff', warningShimmer: '#c89e50', diffAdded: '#69db7c',
+    diffRemoved: '#ffa8b4', diffAddedDimmed: '#c7e1cb', diffRemovedDimmed: '#fdd2d8', diffAddedWord: '#2f9d44',
+    diffRemovedWord: '#d1454b', red_FOR_SUBAGENTS_ONLY: '#dc2626', blue_FOR_SUBAGENTS_ONLY: '#6a9bcc',
+    green_FOR_SUBAGENTS_ONLY: '#16a34a', yellow_FOR_SUBAGENTS_ONLY: '#ca8a04',
+    purple_FOR_SUBAGENTS_ONLY: '#827dbd', orange_FOR_SUBAGENTS_ONLY: '#d97757',
+    pink_FOR_SUBAGENTS_ONLY: '#c46686', cyan_FOR_SUBAGENTS_ONLY: '#0891b2', professionalBlue: '#6a9bcc',
+    chromeYellow: '#fbbc04', clawd_body: '#d77757', clawd_background: '#000000', userMessageBackground: '#f0f0f0',
+    userMessageBackgroundHover: '#fcfcfc', composerSidebarBackground: '#f5f5f5', selectionBg: '#b4d5ff',
+    bashMessageBackgroundColor: '#faf5fa', memoryBackgroundColor: '#e6f5fa', rate_limit_fill: '#5769f7',
+    rate_limit_empty: '#272f6f', fastMode: '#ff6a00', fastModeShimmer: '#ff9632', effortUltra: '#8700ff',
+    briefLabelYou: '#2563eb', briefLabelClaude: '#d77757', rainbow_red: '#eb5f57', rainbow_orange: '#f58b57',
+    rainbow_yellow: '#fac35f', rainbow_green: '#91c882', rainbow_blue: '#82aadc', rainbow_indigo: '#9b82c8',
+    rainbow_violet: '#c882b4', rainbow_red_shimmer: '#fa9b93', rainbow_orange_shimmer: '#ffb989',
+    rainbow_yellow_shimmer: '#ffe19b', rainbow_green_shimmer: '#b9e6b4', rainbow_blue_shimmer: '#b4cdf0',
+    rainbow_indigo_shimmer: '#c3b4e6', rainbow_violet_shimmer: '#e6b4d2',
+  },
+}
+
+/** What the terminal itself draws with: its default text and background under each theme. */
+const TERMINAL = {
+  dark: { fg: '#d4d4d4', bg: '#1e1e1e' },
+  light: { fg: '#1f1f1f', bg: '#ffffff' },
+}
+
+const CELL_W = 9
+const CELL_H = 19
+const FONT_SIZE = 15
+const BASELINE = 14
+const PAD_X = 2
+const PAD_Y = 1
+
+// ---------------------------------------------------------------- data
+
+function wrapper(sub, ...rest) {
+  const run = spawnSync('sh', [join(REPO, 'hooks/scripts/knossos-run.sh'), sub, PROJECT, ...rest], {
+    env: { ...process.env, KNOSSOS_DATA_DIR: DATA_DIR },
+    encoding: 'utf8',
+    timeout: 60_000,
+  })
+  return run.stdout ?? ''
+}
+
+const dashboardText = args.dashboard ? readFileSync(args.dashboard, 'utf8') : wrapper('dashboard')
+const dashboard = envelopes.parseDashboard(dashboardText)
+if (dashboard === null || dashboard.status !== 'ok') {
+  console.error(`no dashboard for ${PROJECT} (data dir ${DATA_DIR}): ${dashboardText.slice(0, 200)}`)
+  process.exit(1)
+}
+
+/** A turn that edited the two files most depended on: real files, made-up turn. */
+function sampleBrief(d) {
+  const files = (d.fan_in ?? []).slice(0, 3)
+  return {
+    status: 'ok',
+    project_root: d.project_root,
+    project_id: d.project_id,
+    snapshot_id: d.snapshot_id,
+    scanned_at: 0,
+    scan_ms: 40,
+    reason: null,
+    roots_file: null,
+    refused_root: null,
+    path: d.path,
+    changed_files: files.map(f => f.path),
+    added_files: [],
+    deleted_files: [],
+    impact: Object.fromEntries(files.map(f => [f.path, f])),
+    tests: [{ path: 'tests/phpunit/Query/DashboardServiceTest.php', distance: 1 }],
+    policy: { status: 'evaluated', total: 0, violations: [], truncated: false },
+  }
+}
+
+/** What the first boundary depends on second most: where one press of `l` moves its cell. */
+function secondTarget(d) {
+  const input = layout.paneInput(d, null, FETCHED, IDLE, { ...BASE_VIEW, tab: 'boundaries' }, 0, true)
+  return layout.nextTarget(input.boundaries, 0, null) ?? undefined
+}
+
+function detailOf(d) {
+  const top = layout.mergeRanked(d)[0]
+  if (top === undefined) return null
+  const shown = { name: top.canonical, label: top.name }
+  const answer = envelopes.parseComponentDetail(wrapper('component-detail', top.canonical))
+  return layout.detailInput(shown, { snapshot_id: d.snapshot_id, name: top.canonical, detail: answer, phase: 'done' }, d.project_root)
+}
+
+/**
+ * A changed file's detail with its change since a commit, as the mod shows
+ * it when the file is opened from Changes: the first file `git diff` names
+ * since `--session-rev` (else the commit three back) that `file-detail`
+ * knows, with the diff `session-diff` reads. Null without git or such a file.
+ */
+function changedDetailOf(d) {
+  const rev = spawnSync('git', ['-C', PROJECT, 'rev-parse', args['session-rev'] ?? 'HEAD~3'], { encoding: 'utf8' }).stdout?.trim() ?? ''
+  if (!/^[0-9a-f]{40,64}$/.test(rev)) return null
+  // A file that was there and changed shows both sides of a diff; added ones only after them.
+  const changed = (spawnSync('git', ['-C', PROJECT, 'diff', '--name-status', '--relative', rev], { encoding: 'utf8' }).stdout ?? '').split('\n').map(l => l.split('\t'))
+  const names = [...changed.filter(([k]) => k === 'M'), ...changed.filter(([k]) => k !== 'M')].map(([, n]) => n ?? '').filter(n => /\.(ts|tsx|php)$/.test(n))
+  for (const path of names) {
+    const answer = envelopes.parseFileDetail(wrapper('file-detail', path))
+    if (answer?.status !== 'ok') continue
+    const shown = { name: path, label: path, file: true, changed: true }
+    const input = layout.fileDetailInput(shown, { snapshot_id: d.snapshot_id, name: path, file: true, detail: null, fileDetail: answer, phase: 'done' }, d.project_root, palette.huesOf(d))
+    const diff = envelopes.parseSessionDiff(wrapper('session-diff', `--rev=${rev}`, `--file=${path}`))
+    return { ...input, diff: diffLib.diffView(shown, { name: path, rev, snapshot: d.snapshot_id, phase: 'done', diff }, { status: 'ok', rev }) }
+  }
+  return null
+}
+
+/** The detail of the largest cycle's first member, as the Cycles tab marks it first: what its panel shows. */
+function cycleDetailOf(d) {
+  const first = d.cycles.largest[0]?.nodes?.[0]
+  if (first === undefined) return null
+  const shown = { name: first.canonical_name, label: first.name }
+  const answer = envelopes.parseComponentDetail(wrapper('component-detail', first.canonical_name))
+  return layout.detailInput(shown, { snapshot_id: d.snapshot_id, name: first.canonical_name, detail: answer, phase: 'done' }, d.project_root)
+}
+
+/** The detail of the file most depended on, as `file-detail` reads it. */
+function fileDetailOf(d) {
+  const path = (d.fan_in ?? [])[0]?.path
+  if (path === undefined) return null
+  const shown = { name: path, label: path, file: true }
+  const answer = envelopes.parseFileDetail(wrapper('file-detail', path))
+  return layout.fileDetailInput(shown, { snapshot_id: d.snapshot_id, name: path, file: true, detail: null, fileDetail: answer, phase: 'done' }, d.project_root, palette.huesOf(d))
+}
+
+/**
+ * A session of three turns over real files (made-up turns): the sample turn,
+ * then one that edits the next most depended on files, adds a file and deletes
+ * one, with tests reaching the changes from more than one runner.
+ */
+function sampleSession(d, first) {
+  const files = (d.fan_in ?? []).slice(3, 6)
+  // The hooks directory's own boundary, by the name the dashboard gives it, so it takes the colour the other tabs give it.
+  const hooks = (d.boundary_matrix?.boundaries ?? []).find(name => /^module:hooks\b/.test(name)) ?? 'module:hooks'
+  const second = {
+    ...first,
+    changed_files: files.map(f => f.path),
+    added_files: ['hooks/lib/changes.ts'],
+    deleted_files: ['hooks/lib/legacy.ts'],
+    impact: { ...Object.fromEntries(files.map(f => [f.path, f])), 'hooks/lib/changes.ts': { path: 'hooks/lib/changes.ts', dependent_files: 2, boundaries: [hooks], boundary: hooks } },
+    tests: [
+      { path: 'tests/phpunit/Query/DashboardServiceTest.php', distance: 2 },
+      { path: 'tests/phpunit/Query/TurnBriefServiceTest.php', distance: 1 },
+      { path: 'tests/phpunit/Store/StoreTest.php', distance: 3 },
+      { path: 'hooks/lib/changes.spec.ts', distance: 1, js_runner: 'vitest' },
+    ],
+  }
+  const summed = [first, second, first].reduce((s, b) => layout.accumulate(s, b), layout.NO_CHANGES)
+  // A made-up timeline to go with it: the session's scans, a few of them another writer's.
+  const origins = 'sssossssosssss'
+  return { ...summed, timeline: [...origins].map((o, i) => ({ snapshot: `sample-${i}`, origin: o === 's' ? 'session' : 'outside' })) }
+}
+
+/**
+ * The changes since `--since` as the scan ledger has them (real files, real
+ * states, real dependents and tests), the files git says changed since
+ * `--session-rev` marked as this session's, the turns being the sample one.
+ */
+function ledgerSession(first) {
+  const ledger = envelopes.parseSessionLedger(wrapper('session-changes', `--since=${args.since}`))
+  if (ledger?.status !== 'ok' || !ledger.complete) {
+    console.error(`pane-preview: the scan ledger does not account for every scan since ${args.since}`)
+    process.exit(1)
+  }
+  const diff = spawnSync('git', ['-C', PROJECT, 'diff', '--name-only', `${args['session-rev']}..HEAD`], { encoding: 'utf8' })
+  const edited = new Set((diff.stdout ?? '').split('\n').filter(line => line !== ''))
+  // The scans that took in those files are the session's, as the mod attributes a scan that took in its own edits.
+  const scans = new Set(Object.entries(ledger.files).flatMap(([path, f]) => (edited.has(path) ? (f.scans ?? []) : [])))
+  return changesLib.fromLedger(ledger, layout.accumulate(layout.NO_CHANGES, first), edited, scans)
+}
+
+const NOW = Date.now()
+const BASE_VIEW = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
+const IDLE = { phase: 'idle', reason: null }
+/**
+ * The live watcher is on by default: the previews' header says so while the
+ * graph is fresh. The README's says what is so while it draws: no watcher.
+ */
+const LIVE = README ? { phase: 'off' } : { phase: 'live' }
+const FETCHED = { fetchedAt: NOW, failed: false }
+const detail = detailOf(dashboard)
+const fileDetail = fileDetailOf(dashboard)
+const cycleDetail = cycleDetailOf(dashboard)
+const changedDetail = changedDetailOf(dashboard)
+const brief = sampleBrief(dashboard)
+const session = README ? ledgerSession(brief) : sampleSession(dashboard, brief)
+const root = dashboard.project_root ?? PROJECT
+const refused = { ...brief, status: 'not-allowed', refused_root: root, roots_file: join(DATA_DIR, 'roots.json') }
+
+/** Where the checkout stands, as the header names it: read once, as the mod reads it at start-up. */
+const GIT = envelopes.parseSessionHead(wrapper('session-head')) ?? null
+
+/** The Branch tab's comparison with the merge base, read as the mod reads it (`branch-diff`), once. */
+const BRANCH = { snapshot: dashboard.snapshot_id ?? null, phase: 'done', answer: envelopes.parseBranchDiff(wrapper('branch-diff')) }
+
+/** The Churn tab's hotspots, read as the mod reads them (`churn`), once, for the commit the checkout is at. */
+const CHURN = { head: GIT?.rev ?? null, phase: 'done', answer: envelopes.parseChurn(wrapper('churn')) }
+
+/** The blast radius of the component the detail shows, read as the mod reads it (`blast-radius`). */
+const RINGS =
+  detail?.component == null
+    ? null
+    : { name: detail.component.canonical, snapshot: dashboard.snapshot_id ?? null, phase: 'done', answer: envelopes.parseBlastRadius(wrapper('blast-radius', `--component=${detail.component.canonical}`)) }
+
+/**
+ * A route the path explorer draws: from the first component three hops out
+ * in the detail's rings to the component the detail shows, read as the mod
+ * reads it (`path-between`). Null when the rings name none that far.
+ */
+const ROUTE_ENDS = (() => {
+  const far = RINGS?.answer?.rings?.find(r => r.hop >= 3)?.items?.[0] ?? RINGS?.answer?.rings?.find(r => r.hop === 2)?.items?.[0]
+  if (far === undefined || detail?.component == null) return null
+  return { from: { name: far.canonical_name, label: rows.displayName(far) }, to: { name: detail.component.canonical, label: detail.component.name }, index: 0, back: null }
+})()
+const ROUTE = ROUTE_ENDS === null ? null : { from: ROUTE_ENDS.from.name, to: ROUTE_ENDS.to.name, snapshot: dashboard.snapshot_id ?? null, phase: 'done', answer: envelopes.parsePathBetween(wrapper('path-between', `--from=${ROUTE_ENDS.from.name}`, `--to=${ROUTE_ENDS.to.name}`)) }
+
+/** The detail of the file the Churn tab ranks first: what its panel shows beside the list. */
+const churnDetail = (() => {
+  const path = CHURN.answer?.files?.[0]?.path
+  if (path === undefined) return null
+  const shown = { name: path, label: path, file: true }
+  const answer = envelopes.parseFileDetail(wrapper('file-detail', path))
+  return layout.fileDetailInput(shown, { snapshot_id: dashboard.snapshot_id, name: path, file: true, detail: null, fileDetail: answer, phase: 'done' }, dashboard.project_root, palette.huesOf(dashboard))
+})()
+
+/** A note being added on the detail's component: as typed, and as knossos checked it before the person says yes. */
+const NOTE_TYPED = detail?.component == null ? null : { component: detail.component.canonical, phase: 'editing', value: 'Every stable id goes through here: keep it pure', previous: null, reason: null }
+const NOTE_ASKED = NOTE_TYPED === null ? null : { ...NOTE_TYPED, phase: 'confirming', previous: null }
+
+/** The finder over the pane, as after typing `dash`: the matches `graph-search` reads for it. */
+const FOUND = { query: 'dash', for: 'dash', phase: 'idle', answer: envelopes.parseGraphSearch(wrapper('graph-search', '--query=dash')) }
+
+/**
+ * The rows the latest scan lit, as after a scan moved the second and fourth
+ * hub, the first file most depended on and the cycles tile: a sample flash
+ * over real rows (the preview draws no scan).
+ */
+const FLASH = {
+  keys: [...layout.mergeRanked(dashboard).filter((_, i) => i === 1 || i === 3).map(i => `hub:${i.canonical}`), ...(dashboard.fan_in ?? []).slice(0, 1).map(f => `file:${f.path}`), 'tile:cycles', 'tile:components'],
+  until: NOW + 3_000,
+}
+
+/**
+ * The Boundaries tab's marked cell spelled out, read as the mod reads it
+ * (`boundary-couplings` through the wrapper), for the cell `input` marks;
+ * null off that tab.
+ */
+function couplingsFor(input) {
+  const pair = layout.couplingPair(input)
+  if (pair === null) return null
+  const answer = envelopes.parseCouplings(wrapper('boundary-couplings', `--from=${pair.from}`, `--to=${pair.to}`))
+  return { snapshot: dashboard.snapshot_id ?? null, from: pair.from, to: pair.to, phase: 'done', answer }
+}
+
+/** The pane for a state: the view over BASE_VIEW, and what else the state holds. */
+function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null, live = LIVE, feedback = null, hover = false, peek = null, flash = null, search = null, note = null } = {}) {
+  const make = extras => layout.paneInput(dashboard, turn, refresh, rescan, { ...BASE_VIEW, ...view }, NOW, true, shown, allow, changes, null, live, extras, peek)
+  const base = { git: GIT, feedback, branch: BRANCH, flash, search, churn: CHURN, rings: RINGS, route: ROUTE, note }
+  const input = make({ ...base, couplings: couplingsFor(make(base)) })
+  // Sized by the pane's height too: its lists grow with the rows it has. `hover` draws the marked row's card as a resting pointer shows it.
+  // As the window shows it scrolled to the top: a pane taller than its height has its footer bar over the last rows.
+  const windowed = (columns, height) => {
+    const { body, footer, pinned } = layout.paneLayout(input, columns, height)
+    return pinned ? [...body.slice(0, Math.max(0, height - footer.length)), ...footer] : [...body, ...footer]
+  }
+  return Object.assign((columns, height = layout.DEFAULT_ROWS) => (hover ? hovered(windowed(columns, height), columns) : windowed(columns, height)), { sized: true })
+}
+
+/**
+ * The rows with the marked row's hover card painted over the rows below it,
+ * where the render hook places it: under the row's name, kept inside the
+ * pane, over the row when the rows below cannot hold it.
+ */
+function hovered(laidOut, columns) {
+  const y = laidOut.findIndex(row => row.segments.some(s => s.preview !== undefined && s.bg !== undefined))
+  if (y < 0) return laidOut
+  const row = laidOut[y]
+  let x = 0
+  let preview = null
+  for (const s of row.segments) {
+    if (s.preview !== undefined && s.bg !== undefined) {
+      preview = s.preview
+      break
+    }
+    x += [...s.text].length
+  }
+  const height = preview.rows.length
+  const top = y + 1 + height <= laidOut.length || y < height ? y + 1 : y - height
+  const left = Math.max(0, Math.min(x, columns - preview.width))
+  const out = laidOut.map(r => ({ ...r }))
+  preview.rows.forEach((line, i) => {
+    const target = out[top + i]
+    if (target === undefined) return
+    const cells = []
+    for (const s of target.segments) for (const ch of s.text) cells.push({ ...s, text: ch, preview: undefined })
+    while (cells.length < left + preview.width) cells.push({ text: ' ' })
+    const card = []
+    for (const s of line.segments) for (const ch of s.text) card.push({ ...s, text: ch })
+    // A row a raster draws is drawn as text here: the card covers it.
+    out[top + i] = { key: target.key, segments: [...cells.slice(0, left), ...card, ...cells.slice(left + card.length)] }
+  })
+  return out
+}
+
+/** The band above the prompt as the mod draws it: the model's text in its tone, then its buttons. */
+function bandRows(cases) {
+  const tones = { alert: 'error', warn: 'warning', normal: 'inactive' }
+  return columns =>
+    cases.flatMap(([key, b, job], i) => {
+      const model = band.bandModel(b, job, NOW, palette.declaredOf(dashboard), palette.huesOf(dashboard))
+      if (model === null) return []
+      // As the band hook: the text gives way to the buttons, each `[ label ]` and a space.
+      const labels = [...(model.showDetails ? ['details'] : []), ...(model.copy === undefined ? [] : ['copy']), 'hide']
+      const room = Math.max(1, columns - labels.reduce((n, l) => n + l.length + 5, 0) - 1)
+      const segments = [{ text: `${rows.fit(model.text, room)} `, color: tones[model.tone] }]
+      if (model.showDetails) segments.push(rows.button('details', 'details'), { text: ' ' })
+      if (model.copy !== undefined) segments.push(rows.button('copy', 'copy'), { text: ' ' })
+      segments.push(rows.button('hide', 'hide'))
+      const row = { key, segments }
+      const fitted = rows.rowWidth(row) <= columns ? row : { ...row, segments: rows.clip(segments, columns) }
+      return i === 0 ? [fitted] : [{ key: `gap-${key}`, segments: [{ text: ' ' }] }, fitted]
+    })
+}
+
+/** Claude Code's prompt box under the band, empty, in its border colour. */
+function promptRows(columns) {
+  const width = Math.max(4, columns)
+  const edge = (l, r) => ({ key: `prompt-${l}`, segments: [{ text: `${l}${'─'.repeat(width - 2)}${r}`, color: 'promptBorder' }] })
+  return [
+    edge('╭', '╮'),
+    { key: 'prompt-line', segments: [{ text: '│', color: 'promptBorder' }, { text: ' > ', dim: true }, { text: ' '.repeat(width - 5) }, { text: '│', color: 'promptBorder' }] },
+    edge('╰', '╯'),
+  ]
+}
+
+const scannedNow = { ...brief, scanned_at: Math.floor(NOW / 1000) - 42 }
+const violated = {
+  ...scannedNow,
+  policy: { status: 'evaluated', total: 1, truncated: false, violations: [{ policy_id: 'core-does-not-reach-into-workers', source: 'Knossos\\Query\\PolicyScope', target: 'KnossosPhpScanner\\Worker' }] },
+}
+const JOB_IDLE = { phase: 'idle', lastAttemptAt: null }
+
+/** Every view the preview draws, by name. */
+/** The Overview's walk starts on the way to Changes when the session changed anything: the rows before its buckets. */
+const SESSION_ROWS = Object.keys(session.files).length > 0 ? 1 : 0
+
+const VIEWS = [
+  ['overview', pane({ tab: 'overview' }, { turn: brief })],
+  ['overview-fresh', pane({ tab: 'overview' }, { changes: layout.NO_CHANGES })],
+  ['overview-keys', pane({ tab: 'overview', showKeys: true }, { turn: brief })],
+  ['hubs', pane({ tab: 'hubs', selected: 1 })],
+  ['hubs-hover', pane({ tab: 'hubs', selected: 2 }, { hover: true })],
+  ['hubs-copied', pane({ tab: 'hubs', selected: 1 }, { feedback: { text: '✓ copied StableId', tone: 'ok', until: NOW + 2000 } })],
+  ['hubs-no-editor', pane({ tab: 'hubs', selected: 1 }, { feedback: { text: '✗ no editor · path copied', tone: 'alert', until: NOW + 2000 } })],
+  ['hubs-filtering', pane({ tab: 'hubs', filtering: true, filter: 'query' })],
+  ['hubs-filtered', pane({ tab: 'hubs', filter: 'query' })],
+  ['hubs-no-match', pane({ tab: 'hubs', filter: 'zebra' })],
+  ['hubs-sort-cross', pane({ tab: 'hubs', sort: 'cross' })],
+  ['boundaries', pane({ tab: 'boundaries' })],
+  // Marked on the first boundary a policy binds, so the spelled-out block shows what it may not use.
+  ['boundaries-marked', pane({ tab: 'boundaries', selected: dashboard.boundary_matrix?.forbidden?.[0]?.[0] ?? 0 })],
+  // The first boundary's cell stepped on once with `l`: its second dependency spelled out.
+  ['boundaries-cell', pane({ tab: 'boundaries', selected: 0, target: secondTarget(dashboard) })],
+  ['cycles', pane({ tab: 'cycles' })],
+  // The marker on the fourth member, then on a long cycle's fold (narrow), then on the second cycle.
+  ['cycles-member', pane({ tab: 'cycles', selected: 3 })],
+  ['cycles-fold', pane({ tab: 'cycles', selected: dashboard.cycles.largest[0]?.nodes?.length ?? 0 })],
+  ['cycles-second', pane({ tab: 'cycles', selected: (dashboard.cycles.largest[0]?.nodes?.length ?? 0) + 1 })],
+  ['issues', pane({ tab: 'issues' })],
+  // Wide, the marked row's detail beside the list (master-detail): a hub, a changed file with its diff, an issue's file.
+  ...(detail === null ? [] : [['hubs-peek', pane({ tab: 'hubs', selected: 0 }, { peek: detail })]]),
+  ...(changedDetail === null ? [] : [['changes-peek', pane({ tab: 'changes', selected: 0 }, { turn: brief, peek: changedDetail })]]),
+  ...(cycleDetail === null ? [] : [['cycles-peek', pane({ tab: 'cycles', selected: 0 }, { peek: cycleDetail })]]),
+  ['hubs-flash', pane({ tab: 'hubs', selected: 0 }, { flash: FLASH })],
+  ['overview-flash', pane({ tab: 'overview' }, { turn: brief, flash: FLASH })],
+  ['branch', pane({ tab: 'branch' })],
+  ['churn', pane({ tab: 'churn' })],
+  ['churn-marked', pane({ tab: 'churn', selected: 2 })],
+  ...(churnDetail === null ? [] : [['churn-peek', pane({ tab: 'churn', selected: 0 }, { peek: churnDetail })]]),
+  ...(detail === null || NOTE_TYPED === null ? [] : [['detail-note', pane({ tab: 'hubs' }, { shown: detail, note: NOTE_TYPED })], ['detail-note-ask', pane({ tab: 'hubs' }, { shown: detail, note: NOTE_ASKED })]]),
+  ...(ROUTE_ENDS === null || detail === null ? [] : [['route', pane({ tab: 'hubs', route: ROUTE_ENDS }, { shown: detail })], ['route-marked', pane({ tab: 'hubs', route: ROUTE_ENDS, selected: 1 }, { shown: detail })]]),
+  ...(detail === null ? [] : [['finder-route', pane({ tab: 'hubs', finding: true, picking: { name: detail.component?.canonical ?? '', label: detail.label } }, { shown: detail, search: FOUND })]]),
+  ['branch-marked', pane({ tab: 'branch', selected: 1 })],
+  ['finder', pane({ tab: 'issues', finding: true }, { search: FOUND })],
+  ['finder-empty', pane({ tab: 'issues', finding: true }, { search: { query: '', for: null, phase: 'idle', answer: null } })],
+  ['changes', pane({ tab: 'changes', selected: 1 }, { turn: brief })],
+  ['changes-empty', pane({ tab: 'changes' }, { changes: layout.NO_CHANGES })],
+  ...(detail === null ? [] : [['detail', pane({ tab: 'hubs' }, { shown: detail })]]),
+  ...(fileDetail === null ? [] : [['file-detail', pane({ tab: 'changes' }, { shown: fileDetail })]]),
+  ...(changedDetail === null ? [] : [['file-detail-diff', pane({ tab: 'changes' }, { shown: changedDetail })]]),
+  ...(fileDetail === null
+    ? []
+    : [['file-detail-diff-no-git', pane({ tab: 'changes' }, { shown: { ...fileDetail, diff: diffLib.diffView({ name: 'x', label: 'x', file: true, changed: true }, null, { status: 'no-git' }) } })]]),
+  ['file-detail-loading', pane({ tab: 'changes' }, { shown: { label: 'src/Query/DashboardService.php', loading: true, messages: null, component: null, file: null } })],
+  ...(dashboard.freshness.drifted?.length ? [['drift', pane({ tab: 'overview', drift: true }, { turn: brief })]] : []),
+  // The Overview's marker on the hubs bucket, then on the strongest flow; Hubs narrowed to that bucket.
+  ['overview-bucket', pane({ tab: 'overview', selected: SESSION_ROWS + Math.max(0, (dashboard.in_degree?.buckets.length ?? 1) - 1) })],
+  ['overview-flow', pane({ tab: 'overview', selected: SESSION_ROWS + (dashboard.in_degree?.buckets.length ?? 0) })],
+  ['hubs-degree', pane({ tab: 'hubs', degree: dashboard.in_degree?.buckets.at(-1) ?? null })],
+  ['detail-loading', pane({ tab: 'hubs' }, { shown: { label: 'StableId', loading: true, messages: null, component: null } })],
+  ['allow-offer', pane({ tab: 'overview' }, { turn: refused })],
+  ['allow-confirm', pane({ tab: 'overview' }, { turn: refused, allow: { phase: 'confirming', root, reason: null } })],
+  ['scanning', pane({ tab: 'overview' }, { turn: brief, rescan: { phase: 'scanning', reason: null } })],
+  ['live-scanning', pane({ tab: 'overview' }, { turn: brief, live: { phase: 'scanning' } })],
+  ['live-following', pane({ tab: 'overview' }, { turn: brief, live: { phase: 'following' } })],
+  ['live-off', pane({ tab: 'overview' }, { turn: brief, live: { phase: 'off' } })],
+  ['refresh-failed', pane({ tab: 'overview' }, { turn: brief, refresh: { fetchedAt: NOW - 600_000, failed: true } })],
+  ['rescan-failed', pane({ tab: 'overview' }, { turn: brief, rescan: { phase: 'failed', reason: 'the scan timed out' } })],
+  ['no-data', columns => layout.emptyRows('unscanned', null, columns)],
+  ['no-data-loading', columns => layout.emptyRows('loading', null, columns)],
+  ['no-data-unreadable', columns => layout.emptyRows('unreadable', null, columns)],
+  ['no-data-refused', columns => layout.emptyRows('unscanned', layout.allowInput(refused, IDLE, null), columns)],
+  ['live-following-stuck', pane({ tab: 'overview' }, { turn: brief, live: { phase: 'following', stale: true } })],
+  ['band-prompt', columns => [...bandRows([['band-ok', scannedNow, JOB_IDLE]])(columns), ...promptRows(columns)]],
+  [
+    'band',
+    bandRows([
+      ['band-ok', scannedNow, JOB_IDLE],
+      ['band-scanning', scannedNow, { phase: 'scanning', lastAttemptAt: NOW }],
+      ['band-violation', violated, JOB_IDLE],
+      ['band-failed', scannedNow, { phase: 'failed', lastAttemptAt: NOW }],
+      ['band-refused', refused, JOB_IDLE],
+    ]),
+  ],
+]
+
+// ---------------------------------------------------------------- cells
+
+const hex = n => `#${(n & 0xffffff).toString(16).padStart(6, '0')}`
+const rgb = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16))
+const mix = (a, b, t) => {
+  const [x, y] = [rgb(a), rgb(b)]
+  return `#${x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join('')}`
+}
+
+/** A Text colour as the terminal shows it: a theme key, a raw `#rrggbb`, or the terminal's default. */
+function colourOf(colour, theme, term) {
+  if (colour === undefined) return term.fg
+  if (/^#[0-9a-f]{6}$/i.test(colour)) return colour
+  return theme[colour] ?? term.fg
+}
+
+/** One cell per column: glyph, foreground, background (null for the terminal's), bold. */
+function rowCells(row, theme, term) {
+  const out = []
+  for (const s of row.segments) {
+    // A background is a theme key, laid under the segment's cells (a Button stands in a Box of it).
+    const bg = s.bg === undefined ? null : colourOf(s.bg, theme, term)
+    if (s.press !== undefined) {
+      // A plain Button: the hotkey in the accent, a colon, the label; dimColor dims it all. The render draws the
+      // label it is handed in a Box as wide as the segment, cutting at its edge, so the same label is cut here.
+      const hot = s.press.hotkey === undefined ? 0 : [...`${s.press.hotkey}`].length
+      const label = `${s.press.hotkey === undefined ? '' : `${s.press.hotkey}: `}${rows.pressLabel(s)}`
+      ;[...rows.padEnd(rows.fit(label, [...s.text].length), [...s.text].length)].forEach((ch, i) => {
+        let fg = i < hot ? theme.suggestion : term.fg
+        if (s.dim) fg = mix(fg, term.bg, 0.5)
+        out.push({ ch, fg, bg, bold: false })
+      })
+      continue
+    }
+    const style = rows.textStyle(s)
+    const fg = colourOf(style.color, theme, term)
+    // A link is drawn underlined, as a terminal draws an OSC 8 hyperlink.
+    for (const ch of s.text) out.push({ ch, fg, bg, bold: style.bold === true, link: s.link !== undefined })
+  }
+  return out
+}
+
+/**
+ * A diff element's hunks as Claude Code draws them: each line with its line
+ * number in a dim gutter, its marker, and an added or removed line on the
+ * theme's diff background; `…` between hunks it leaves apart.
+ */
+function codeCells(row, theme, term, columns, first) {
+  const lines = []
+  for (const hunk of diffLib.parseHunks(row.code.source)) {
+    let old = hunk.oldStart
+    let now = hunk.newStart
+    const width = String(Math.max(old, now) + hunk.lines.length).length
+    if (!first) lines.push([...' '.repeat(width) + ' …'].map(ch => ({ ch, fg: mix(term.fg, term.bg, 0.5), bg: null, bold: false })))
+    for (const line of hunk.lines) {
+      const marker = line[0]
+      const number = marker === '-' ? old++ : now++
+      if (marker === ' ') old++
+      const bg = marker === '+' ? theme.diffAdded : marker === '-' ? theme.diffRemoved : null
+      const gutter = [...`${String(number).padStart(width)} `].map(ch => ({ ch, fg: mix(term.fg, term.bg, 0.5), bg, bold: false }))
+      const body = [...`${marker} ${line.slice(1)}`.replace(/\t/g, '  ')].map(ch => ({ ch, fg: term.fg, bg, bold: false }))
+      const cells = [...gutter, ...body].slice(0, columns)
+      // A changed line's background runs to the edge, as the terminal paints it.
+      while (bg !== null && cells.length < columns) cells.push({ ch: ' ', fg: term.fg, bg, bold: false })
+      if (cells.length === columns && gutter.length + body.length > columns) cells[columns - 1] = { ...cells[columns - 1], ch: '…' }
+      lines.push(cells)
+    }
+  }
+  return lines
+}
+
+/** A run of raster rows as the engine receives them: the packed cells, decoded. */
+function rasterCells(grid, themeName, term) {
+  const packed = raster.rasterOf(grid, Math.max(1, ...grid.map(rows.rowWidth)), raster.rasterTheme(themeName))
+  const bytes = Buffer.from(packed.cells, 'base64')
+  const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4)
+  const out = []
+  for (let y = 0; y < packed.rows; y++) {
+    const line = []
+    for (let x = 0; x < packed.columns; x++) {
+      const [cp, fg, bg] = words.slice((y * packed.columns + x) * 3, (y * packed.columns + x) * 3 + 3)
+      line.push({
+        ch: String.fromCodePoint(cp),
+        fg: fg === raster.DEFAULT_COLOUR ? term.fg : hex(fg),
+        bg: bg === raster.DEFAULT_COLOUR ? null : hex(bg),
+        bold: false,
+      })
+    }
+    out.push(line)
+  }
+  return out
+}
+
+/** The pane's rows as lines of cells, raster blocks drawn as the terminal's Raster would be. */
+function screen(laidOut, themeName, columns) {
+  const theme = THEMES[themeName]
+  const term = TERMINAL[themeName]
+  const lines = []
+  let firstHunk = true
+  for (let i = 0; i < laidOut.length; i++) {
+    if (laidOut[i].code !== undefined) {
+      lines.push(...codeCells(laidOut[i], theme, term, columns, firstHunk))
+      firstHunk = false
+      continue
+    }
+    const block = laidOut[i].raster
+    if (block === undefined) {
+      // A row's Box is as wide as the pane and clips there, as the render draws it.
+      lines.push(rowCells(laidOut[i], theme, term).slice(0, columns))
+      continue
+    }
+    let end = i
+    while (end + 1 < laidOut.length && laidOut[end + 1].raster === block) end++
+    lines.push(...rasterCells(laidOut.slice(i, end + 1), themeName, term))
+    i = end
+  }
+  return lines
+}
+
+// ---------------------------------------------------------------- drawing
+
+const EIGHTHS_LEFT = '▏▎▍▌▋▊▉'
+const EIGHTHS_LOW = '▁▂▃▄▅▆▇'
+const SHADE = { '░': 0.25, '▒': 0.5, '▓': 0.75 }
+const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/** A block or rule glyph as the terminal draws it, edge to edge; null for an ordinary glyph. */
+function blockShape(ch, x, y, fg) {
+  const w = CELL_W
+  const h = CELL_H
+  if (ch === '█') return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fg}"/>`
+  const left = EIGHTHS_LEFT.indexOf(ch)
+  if (left >= 0) return `<rect x="${x}" y="${y}" width="${((left + 1) * w) / 8}" height="${h}" fill="${fg}"/>`
+  const low = EIGHTHS_LOW.indexOf(ch)
+  if (low >= 0) return `<rect x="${x}" y="${y + h - ((low + 1) * h) / 8}" width="${w}" height="${((low + 1) * h) / 8}" fill="${fg}"/>`
+  if (ch in SHADE) return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fg}" fill-opacity="${SHADE[ch]}"/>`
+  if (ch === '╸') return `<rect x="${x}" y="${y + h / 2 - 1.5}" width="${w / 2}" height="3" fill="${fg}"/>`
+  if (ch === '━') return `<rect x="${x}" y="${y + h / 2 - 1.5}" width="${w}" height="3" fill="${fg}"/>`
+  if (ch === '─') return `<rect x="${x}" y="${y + h / 2 - 0.5}" width="${w}" height="1" fill="${fg}"/>`
+  if (ch === '│') return `<rect x="${x + w / 2 - 0.5}" y="${y}" width="1" height="${h}" fill="${fg}"/>`
+  // Junctions as terminals draw them: each arm from the cell's middle to its edge.
+  const arms = { '├': 'udr', '┤': 'udl', '┬': 'lrd', '┴': 'lru', '┼': 'udlr' }[ch]
+  if (arms !== undefined) {
+    const mx = x + w / 2 - 0.5
+    const my = y + h / 2 - 0.5
+    const arm = { u: [mx, y, 1, h / 2], d: [mx, my, 1, h / 2 + 0.5], l: [x, my, w / 2, 1], r: [mx, my, w / 2 + 0.5, 1] }
+    return [...arms].map(a => `<rect x="${arm[a][0]}" y="${arm[a][1]}" width="${arm[a][2]}" height="${arm[a][3]}" fill="${fg}"/>`).join('')
+  }
+  // Rounded corners as terminals draw them: a quarter circle joining the cell's middle lines.
+  const cx = x + w / 2
+  const cy = y + h / 2
+  const r = w / 2
+  const corner = {
+    '╭': `M ${x + w} ${cy} H ${cx + r} A ${r} ${r} 0 0 0 ${cx} ${cy + r} V ${y + h}`,
+    '╮': `M ${x} ${cy} H ${cx - r} A ${r} ${r} 0 0 1 ${cx} ${cy + r} V ${y + h}`,
+    '╰': `M ${cx} ${y} V ${cy - r} A ${r} ${r} 0 0 0 ${cx + r} ${cy} H ${x + w}`,
+    '╯': `M ${cx} ${y} V ${cy - r} A ${r} ${r} 0 0 1 ${cx - r} ${cy} H ${x}`,
+  }[ch]
+  if (corner !== undefined) return `<path d="${corner}" fill="none" stroke="${fg}" stroke-width="1"/>`
+  return null
+}
+
+/** The cells as SVG, the first at (`ox`, `oy`) pixels. */
+function cellLayer(lines, ox, oy) {
+  const parts = []
+  lines.forEach((line, row) => {
+    const y = oy + row * CELL_H
+    let run = null
+    const flush = () => {
+      if (run === null) return
+      const xs = run.xs.join(' ')
+      parts.push(
+        `<text x="${xs}" y="${y + BASELINE}" fill="${run.fg}"${run.bold ? ' font-weight="bold"' : ''} xml:space="preserve">${esc(run.text)}</text>`,
+      )
+      if (run.link) parts.push(`<rect x="${run.xs[0]}" y="${y + BASELINE + 2}" width="${run.text.length * CELL_W}" height="1" fill="${run.fg}" fill-opacity="0.6"/>`)
+      run = null
+    }
+    line.forEach((cell, col) => {
+      const x = ox + col * CELL_W
+      if (cell.bg !== null) parts.push(`<rect x="${x}" y="${y}" width="${CELL_W}" height="${CELL_H}" fill="${cell.bg}"/>`)
+      const shape = blockShape(cell.ch, x, y, cell.fg)
+      if (shape !== null) {
+        flush()
+        parts.push(shape)
+        return
+      }
+      if (cell.ch === ' ') {
+        flush()
+        return
+      }
+      if (run !== null && (run.fg !== cell.fg || run.bold !== cell.bold || run.link !== (cell.link === true))) flush()
+      run ??= { fg: cell.fg, bold: cell.bold, link: cell.link === true, text: '', xs: [] }
+      run.text += cell.ch
+      run.xs.push(x)
+    })
+    flush()
+  })
+  return parts
+}
+
+function svgOf(lines, columns, themeName, bodyRows = null) {
+  const term = TERMINAL[themeName]
+  const width = (columns + PAD_X * 2) * CELL_W
+  const height = (lines.length + PAD_Y * 2) * CELL_H
+  // Where the pane's body ends at this height: rows past the mark are the ones the person scrolls to.
+  const fold =
+    bodyRows === null || bodyRows >= lines.length
+      ? []
+      : [`<rect x="0" y="${(PAD_Y + bodyRows) * CELL_H}" width="${PAD_X * CELL_W - 4}" height="2" fill="${THEMES[themeName].warning}"/>`]
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+    `<rect width="100%" height="100%" fill="${term.bg}"/>`,
+    ...fold,
+    `<g font-family="DejaVu Sans Mono" font-size="${FONT_SIZE}">`,
+    ...cellLayer(lines, PAD_X * CELL_W, PAD_Y * CELL_H),
+    '</g>',
+    '</svg>',
+  ].join('\n')
+}
+
+/** The README frame: room for the shadow, the window's corner radius, its title bar and the padding around the cells. */
+const FRAME = { margin: 32, radius: 10, bar: 34, padX: 26, padY: 20 }
+
+/**
+ * The cells in a terminal window: a title bar with three quiet dots and the
+ * title, rounded corners, a hairline edge and a soft shadow that falls on a
+ * transparent margin, so the image sits on a light or a dark page alike.
+ */
+function framedSvg(lines, columns, themeName, title) {
+  const term = TERMINAL[themeName]
+  const dark = themeName.startsWith('dark')
+  const { margin, radius, bar, padX, padY } = FRAME
+  const w = columns * CELL_W + padX * 2
+  const h = bar + lines.length * CELL_H + padY * 2
+  const width = w + margin * 2
+  const height = h + margin * 2
+  const chrome = mix(term.bg, term.fg, dark ? 0.07 : 0.045)
+  const dots = mix(term.bg, term.fg, dark ? 0.28 : 0.22)
+  const edge = dark ? 'stroke="#ffffff" stroke-opacity="0.09"' : 'stroke="#000000" stroke-opacity="0.12"'
+  const x0 = margin
+  const y0 = margin
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+    '<defs>',
+    `<filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feGaussianBlur in="SourceAlpha" stdDeviation="11"/><feOffset dy="7"/><feComponentTransfer><feFuncA type="linear" slope="${dark ? 0.42 : 0.2}"/></feComponentTransfer></filter>`,
+    `<clipPath id="window"><rect x="${x0}" y="${y0}" width="${w}" height="${h}" rx="${radius}"/></clipPath>`,
+    '</defs>',
+    `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" rx="${radius}" fill="#000000" filter="url(#shadow)"/>`,
+    `<g clip-path="url(#window)">`,
+    `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" fill="${term.bg}"/>`,
+    `<rect x="${x0}" y="${y0}" width="${w}" height="${bar}" fill="${chrome}"/>`,
+    `<rect x="${x0}" y="${y0 + bar - 1}" width="${w}" height="1" fill="${mix(term.bg, term.fg, dark ? 0.12 : 0.1)}"/>`,
+    '</g>',
+    ...[0, 1, 2].map(i => `<circle cx="${x0 + 20 + i * 17}" cy="${y0 + bar / 2}" r="5.5" fill="${dots}"/>`),
+    `<text x="${x0 + w / 2}" y="${y0 + bar / 2 + 4.5}" text-anchor="middle" font-family="DejaVu Sans" font-size="13" fill="${mix(term.bg, term.fg, 0.55)}">${esc(title)}</text>`,
+    `<rect x="${x0 + 0.5}" y="${y0 + 0.5}" width="${w - 1}" height="${h - 1}" rx="${radius - 0.5}" fill="none" ${edge}/>`,
+    `<g font-family="DejaVu Sans Mono" font-size="${FONT_SIZE}">`,
+    ...cellLayer(lines, x0 + padX, y0 + bar + padY),
+    '</g>',
+    '</svg>',
+  ].join('\n')
+}
+
+/** SVG to PNG through rsvg-convert, at `zoom`; exits on failure. */
+function png(svg, file, zoom = 1) {
+  const run = spawnSync('rsvg-convert', ['-z', String(zoom), '-o', file], { input: svg })
+  if (run.status !== 0) {
+    console.error(`rsvg-convert failed for ${file}: ${run.stderr}`)
+    process.exit(1)
+  }
+}
+
+// ---------------------------------------------------------------- main
+
+/**
+ * Shrinks a README PNG to a 256-colour palette through Python's Pillow: the
+ * window's opaque pixels get 192 colours (text and flat fills need no more),
+ * and the shadow, which is black at varying opacity, gets 62 steps of its
+ * own and one fully clear entry, so it stays a soft fall-off. A quantizer
+ * left to itself spends too few entries on alpha and draws the shadow as a
+ * flat grey band. Without Pillow the PNG stays as drawn, and says so.
+ */
+function shrink(file) {
+  const script = [
+    'import sys',
+    'from PIL import Image',
+    'path = sys.argv[1]',
+    'image = Image.open(path).convert("RGBA")',
+    'alpha = image.getchannel("A")',
+    'window = image.convert("RGB").quantize(colors=192, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)',
+    'steps = alpha.point(lambda a: 255 if a == 0 else 192 + min(61, a * 62 // 256))',
+    'out = window.copy()',
+    'out.paste(steps, mask=alpha.point(lambda a: 255 if a < 250 else 0))',
+    'palette = window.getpalette()[: 192 * 3] + [0, 0, 0] * 64',
+    'out.putpalette(palette)',
+    'clear = [255] * 192 + [round((i + 0.5) * 256 / 62) for i in range(62)] + [0, 0]',
+    'out.save(path, optimize=True, transparency=bytes(min(255, c) for c in clear))',
+  ].join('\n')
+  const run = spawnSync('python3', ['-c', script, file], { encoding: 'utf8' })
+  if (run.status !== 0) console.error(`pane-preview: kept ${file} unshrunk (python3 with Pillow is needed to shrink it): ${run.stderr}`)
+}
+
+/** The README's screenshots: view, theme and, for a wide layout, its width; every other shot is one width. */
+const README_COLUMNS = 100
+const README_SHOTS = [
+  ['overview', 'dark'],
+  ['changes', 'dark'],
+  ['hubs-peek', 'dark', 160],
+  ['branch', 'dark'],
+  ['churn', 'dark'],
+  ['finder', 'dark'],
+  ['route', 'dark'],
+  ['boundaries-cell', 'dark'],
+  ['cycles', 'dark'],
+  ['detail', 'dark'],
+  ['band-prompt', 'dark'],
+  ['overview', 'light'],
+]
+
+const only = args.only ? new Set(args.only.split(',')) : null
+// A full run starts the directory over; `--only` redraws its views beside the rest.
+if (only === null) for (const file of readdirSync(OUT)) if (file.endsWith('.png')) rmSync(join(OUT, file))
+const written = []
+if (README) {
+  const draws = new Map(VIEWS)
+  const project = baseName(dashboard.project_root ?? PROJECT)
+  for (const [name, themeName, columns = README_COLUMNS] of README_SHOTS) {
+    if (only !== null && !only.has(name)) continue
+    const draw = draws.get(name)
+    if (draw === undefined) continue
+    const file = join(OUT, `${name}-${themeName}.png`)
+    const title = name === 'band-prompt' ? `claude · ${project}` : `/knossos · ${project}`
+    png(framedSvg(screen(draw(columns), themeName, columns), columns, themeName, title), file, 2)
+    shrink(file)
+    written.push(file)
+  }
+} else {
+  for (const [name, draw] of VIEWS) {
+    if (only !== null && !only.has(name)) continue
+    for (const columns of COLUMNS) {
+      for (const height of draw.sized === true ? HEIGHTS : [null]) {
+        const laidOut = height === null ? draw(columns) : draw(columns, height)
+        for (const themeName of THEME_NAMES) {
+          const file = join(OUT, `${name}-${columns}${height === null ? '' : `x${height}`}-${themeName}.png`)
+          png(svgOf(screen(laidOut, themeName, columns), columns, themeName, height), file)
+          written.push(file)
+        }
+      }
+    }
+  }
+  writeFileSync(join(OUT, 'index.txt'), `${written.map(p => p.slice(OUT.length + 1)).join('\n')}\n`)
+}
+console.log(`${written.length} PNGs in ${OUT}`)

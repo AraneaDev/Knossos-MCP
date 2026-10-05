@@ -15,6 +15,104 @@ use PHPUnit\Framework\Attributes\Group;
 
 final class PluginCommandTest extends KnossosTestCase
 {
+    /** Everything a host install writes, relative to the plugin directory, sorted. */
+    private const INSTALLED = [
+        '.claude-plugin/marketplace.json',
+        '.claude-plugin/plugin.json',
+        'hooks/hooks.json',
+        'hooks/lib/activity.ts',
+        'hooks/lib/agent.ts',
+        'hooks/lib/alerts.ts',
+        'hooks/lib/band.ts',
+        'hooks/lib/baseline.ts',
+        'hooks/lib/boundaries.ts',
+        'hooks/lib/branch.ts',
+        'hooks/lib/cards.ts',
+        'hooks/lib/changes.ts',
+        'hooks/lib/churn.ts',
+        'hooks/lib/cycles.ts',
+        'hooks/lib/diagram.ts',
+        'hooks/lib/diff.ts',
+        'hooks/lib/envelopes.ts',
+        'hooks/lib/files.ts',
+        'hooks/lib/finder.ts',
+        'hooks/lib/flash.ts',
+        'hooks/lib/hover.ts',
+        'hooks/lib/layout.ts',
+        'hooks/lib/live.ts',
+        'hooks/lib/notes.ts',
+        'hooks/lib/overview.ts',
+        'hooks/lib/palette.ts',
+        'hooks/lib/paths.ts',
+        'hooks/lib/raster.ts',
+        'hooks/lib/rings.ts',
+        'hooks/lib/route.ts',
+        'hooks/lib/rows.ts',
+        'hooks/lib/scheduler.ts',
+        'hooks/lib/sparkline.ts',
+        'hooks/lib/tiles.ts',
+        'hooks/lib/views.ts',
+        'hooks/mod/actions.ts',
+        'hooks/mod/agent.ts',
+        'hooks/mod/loaders.ts',
+        'hooks/mod/port.ts',
+        'hooks/mod/render.tsx',
+        'hooks/mod/session.ts',
+        'hooks/mod/state.ts',
+        'hooks/mod/watcher.ts',
+        'hooks/register.tsx',
+        'hooks/scripts/knossos-run.sh',
+        'hooks/scripts/lib.sh',
+        'hooks/scripts/session-brief.sh',
+        'skills/graph/SKILL.md',
+        'types/index.d.ts',
+    ];
+
+    /** The mod's own sources, as an installation root holds them: what the stand-in roots copy. */
+    private const MOD_SOURCES = [
+        '/hooks/register.tsx',
+        '/hooks/lib/activity.ts',
+        '/hooks/lib/agent.ts',
+        '/hooks/lib/alerts.ts',
+        '/hooks/lib/band.ts',
+        '/hooks/lib/baseline.ts',
+        '/hooks/lib/boundaries.ts',
+        '/hooks/lib/branch.ts',
+        '/hooks/lib/cards.ts',
+        '/hooks/lib/changes.ts',
+        '/hooks/lib/churn.ts',
+        '/hooks/lib/cycles.ts',
+        '/hooks/lib/diagram.ts',
+        '/hooks/lib/diff.ts',
+        '/hooks/lib/envelopes.ts',
+        '/hooks/lib/files.ts',
+        '/hooks/lib/finder.ts',
+        '/hooks/lib/flash.ts',
+        '/hooks/lib/hover.ts',
+        '/hooks/lib/layout.ts',
+        '/hooks/lib/live.ts',
+        '/hooks/lib/notes.ts',
+        '/hooks/lib/overview.ts',
+        '/hooks/lib/palette.ts',
+        '/hooks/lib/paths.ts',
+        '/hooks/lib/raster.ts',
+        '/hooks/lib/rings.ts',
+        '/hooks/lib/route.ts',
+        '/hooks/lib/rows.ts',
+        '/hooks/lib/scheduler.ts',
+        '/hooks/lib/sparkline.ts',
+        '/hooks/lib/tiles.ts',
+        '/hooks/lib/views.ts',
+        '/hooks/mod/actions.ts',
+        '/hooks/mod/agent.ts',
+        '/hooks/mod/loaders.ts',
+        '/hooks/mod/port.ts',
+        '/hooks/mod/render.tsx',
+        '/hooks/mod/session.ts',
+        '/hooks/mod/state.ts',
+        '/hooks/mod/watcher.ts',
+    ];
+
     private function context(): CliCommandContext
     {
         return $this->contextFor(self::repositoryRoot());
@@ -148,7 +246,10 @@ final class PluginCommandTest extends KnossosTestCase
         assertSame(false, $decoded['existed']);
         assertSame('/srv/knossos-data', $decoded['data']);
         assertSame(true, in_array('hooks/scripts/session-brief.sh', $decoded['files'], true));
-        assertSame(true, in_array('skills/knossos/SKILL.md', $decoded['files'], true));
+        assertSame(true, in_array('hooks/scripts/knossos-run.sh', $decoded['files'], true));
+        assertSame(true, in_array('skills/graph/SKILL.md', $decoded['files'], true));
+        // The container scripts are standalone, so no shared library is shipped for them.
+        assertSame(false, in_array('hooks/scripts/lib.sh', $decoded['files'], true));
         // Every listed file is really there, so the list cannot drift from what
         // emit() writes without this failing.
         foreach ($decoded['files'] as $relative) {
@@ -185,7 +286,7 @@ final class PluginCommandTest extends KnossosTestCase
         $status = (new PluginCommand())->run(
             'install-agent-plugin',
             [],
-            ['out' => [$out], 'data' => ['/srv/knossos-data'], 'image' => ['knossos-mcp:dev']],
+            ['out' => [$out], 'data' => ['/srv/knossos-data'], 'image' => ['knossos:dev']],
             $this->context(),
         );
         ob_get_clean();
@@ -194,11 +295,11 @@ final class PluginCommandTest extends KnossosTestCase
         assertSame(true, is_file($out . '/.claude-plugin/plugin.json'));
         assertSame(true, is_file($out . '/.claude-plugin/marketplace.json'));
         assertSame(true, is_file($out . '/hooks/hooks.json'));
-        assertSame(true, is_file($out . '/skills/knossos/SKILL.md'));
+        assertSame(true, is_file($out . '/skills/graph/SKILL.md'));
 
         $hook = (string) file_get_contents($out . '/hooks/scripts/session-brief.sh');
         assertSame(true, str_contains($hook, 'docker run'));
-        assertSame(true, str_contains($hook, 'knossos-mcp:dev'));
+        assertSame(true, str_contains($hook, 'knossos:dev'));
         assertSame(true, str_contains($hook, '/srv/knossos-data'));
         assertSame(false, str_contains($hook, '__KNOSSOS_'));  // every token substituted
         // A regression dropping the chmod() call would leave the hook non-executable.
@@ -219,9 +320,14 @@ final class PluginCommandTest extends KnossosTestCase
             '/.claude-plugin/plugin.json',
             '/hooks/hooks.json',
             '/hooks/scripts/session-brief-container.sh',
-            '/skills/knossos/SKILL.md',
+            '/hooks/scripts/knossos-run-container.sh',
+            ...self::MOD_SOURCES,
+            '/types/index.d.ts',
+            '/skills/graph/SKILL.md',
         ] as $relative) {
-            mkdir(dirname($root . $relative), 0o755, true);
+            if (!is_dir(dirname($root . $relative))) {
+                mkdir(dirname($root . $relative), 0o755, true);
+            }
             copy(self::repositoryRoot() . $relative, $root . $relative);
         }
         assertSame(false, file_exists($root . '/.claude-plugin/marketplace.json'));
@@ -289,7 +395,7 @@ final class PluginCommandTest extends KnossosTestCase
         // Pre-create the target so that .claude-plugin already exists (and is
         // therefore NOT tracked as created), but plugin.json is a DIRECTORY
         // where emit() expects to copy() a file. mkdir() of hooks, hooks/scripts
-        // and skills/knossos all succeed and ARE tracked; the first copy() then
+        // and skills/graph all succeed and ARE tracked; the first copy() then
         // fails on the pre-existing plugin.json directory. This exercises the
         // rollback branch that removes a non-empty set of tracked directories,
         // which the file-blocks-mkdir test above cannot reach.
@@ -354,6 +460,406 @@ final class PluginCommandTest extends KnossosTestCase
         exec('rm -rf ' . escapeshellarg($out));
     }
 
+    #[Group('cli')]
+    /**
+     * The mod's sources as the repository holds them, `/`-led and sorted:
+     * register.tsx and every module under hooks/lib and hooks/mod, specs left out.
+     *
+     * @return list<string>
+     */
+    private static function modSourcesOnDisk(): array
+    {
+        $root = self::repositoryRoot();
+        $found = [
+            ...(glob($root . '/hooks/register.tsx') ?: []),
+            ...(glob($root . '/hooks/lib/*.ts') ?: []),
+            ...(glob($root . '/hooks/mod/*.ts') ?: []),
+            ...(glob($root . '/hooks/mod/*.tsx') ?: []),
+        ];
+        $sources = array_values(array_filter(
+            array_map(static fn (string $path): string => substr($path, strlen($root)), $found),
+            static fn (string $path): bool => !str_ends_with($path, '.spec.ts'),
+        ));
+        sort($sources);
+
+        return $sources;
+    }
+
+    /**
+     * Whether an installed path is one of the mod's sources, in the shape
+     * {@see modSourcesOnDisk()} globs for.
+     */
+    private static function isModSource(string $path): bool
+    {
+        return preg_match('~^/hooks/(register\.tsx|lib/[^/]+\.ts|mod/[^/]+\.tsx?)$~', $path) === 1;
+    }
+
+    /**
+     * The installer names its modules one by one, so a module added to the
+     * tree but left out of that list would ship a mod that fails to load,
+     * with every hand-written list here still agreeing with the installer.
+     * The tree is the one source that cannot drift.
+     */
+    #[Group('cli')]
+    public function testTheInstallerShipsEveryModSourceInTheTree(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin');
+        try {
+            ob_start();
+            $status = (new PluginCommand())->run(
+                'install-agent-plugin',
+                [],
+                ['out' => [$out], 'data' => ['/srv/knossos-data'], 'json' => ['true']],
+                $this->context(),
+            );
+            $output = (string) ob_get_clean();
+            assertSame(0, $status);
+            $decoded = json_decode(trim($output), true, 8, JSON_THROW_ON_ERROR);
+
+            $shipped = array_map(static fn (string $file): string => '/' . $file, $decoded['files']);
+            $shippedSources = array_values(array_filter($shipped, self::isModSource(...)));
+            sort($shippedSources);
+            $onDisk = self::modSourcesOnDisk();
+
+            assertSame(true, in_array('/hooks/mod/render.tsx', $onDisk, true));
+            assertSame($onDisk, $shippedSources);
+
+            // The hand-written lists the other tests lean on hold the same set.
+            $listed = self::MOD_SOURCES;
+            sort($listed);
+            assertSame($onDisk, $listed);
+            $installed = array_values(array_filter(
+                array_map(static fn (string $file): string => '/' . $file, self::INSTALLED),
+                self::isModSource(...),
+            ));
+            assertSame($onDisk, $installed);
+        } finally {
+            exec('rm -rf ' . escapeshellarg($out));
+        }
+    }
+
+    public function testSpecFilesNeverReachAnInstalledPlugin(): void
+    {
+        $root = $this->sourceRoot();
+        try {
+            // A spec sitting beside the sources it tests must stay behind.
+            file_put_contents($root . '/hooks/lib/band.spec.ts', '// spec');
+            file_put_contents($root . '/hooks/lib/band.test.ts', '// test');
+            file_put_contents($root . '/hooks/tsconfig.json', '{}');
+
+            $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+            foreach ($this->treeOf($root . '/.plugin') as $file) {
+                assertSame(false, str_contains($file, '.spec.') || str_contains($file, '.test.') || str_contains($file, 'tsconfig'));
+            }
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
+        }
+    }
+
+    #[Group('cli')]
+    public function testContainerEmitWritesTheRunWrapperWithImageAndDataSubstituted(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-run');
+        try {
+            ob_start();
+            try {
+                (new PluginCommand())->run(
+                    'install-agent-plugin',
+                    [],
+                    ['out' => [$out], 'data' => ['/srv/knossos-data'], 'image' => ['ghcr.io/me/knossos:9']],
+                    $this->context(),
+                );
+            } finally {
+                ob_get_clean();
+            }
+
+            $wrapper = (string) file_get_contents($out . '/hooks/scripts/knossos-run.sh');
+            assertSame(true, str_contains($wrapper, 'docker run'));
+            assertSame(true, str_contains($wrapper, 'ghcr.io/me/knossos:9'));
+            assertSame(true, str_contains($wrapper, '/srv/knossos-data'));
+            assertSame(false, str_contains($wrapper, '__KNOSSOS_'));
+            assertSame(false, file_exists($out . '/hooks/scripts/lib.sh'));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($out));
+        }
+    }
+
+    #[Group('cli')]
+    public function testInstalledScriptsAreExecutableAndTheLibraryIsNot(): void
+    {
+        $root = $this->sourceRoot();
+        $out = $this->temporaryPath('knossos-plugin-modes');
+        try {
+
+            $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+            ob_start();
+            try {
+                (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['/srv/d']], $this->contextFor($root));
+            } finally {
+                ob_get_clean();
+            }
+
+            foreach ([$root . '/.plugin', $out] as $directory) {
+                foreach (['session-brief.sh', 'knossos-run.sh'] as $script) {
+                    assertSame('0755', substr(sprintf('%o', fileperms($directory . '/hooks/scripts/' . $script)), -4));
+                }
+            }
+            assertSame('0644', substr(sprintf('%o', fileperms($root . '/.plugin/hooks/scripts/lib.sh')), -4));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($out));
+        }
+    }
+
+    /**
+     * Install, then run an installed script against a stub binary.
+     *
+     * The stub prints the data location it was handed and its arguments, so
+     * what a person's hook would really read is what is asserted. The
+     * variable is removed from the child's environment so the baked value is
+     * the only source.
+     *
+     * @param array<string, list<string>> $options
+     * @return string the stub's first line
+     */
+    private function runInstalledScript(string $script, array $options, ?string $installerEnv): string
+    {
+        $root = $this->sourceRoot();
+        try {
+            $previous = getenv('KNOSSOS_DATA_DIR');
+            putenv($installerEnv === null ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $installerEnv);
+            try {
+                $this->runWithStubbedClaude($root, ['execute' => ['true']] + $options);
+            } finally {
+                putenv($previous === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $previous);
+            }
+            return $this->runStubbed($root, $script);
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
+        }
+    }
+
+    /** Run an installed script from $root against a stub binary and return its trimmed output. */
+    private function runStubbed(string $root, string $script): string
+    {
+        $stub = $root . '/stub-knossos';
+        file_put_contents($stub, <<<'SH'
+            #!/bin/sh
+            printf 'DATA=%s ARGS=%s\n' "${KNOSSOS_DATA_DIR-}" "$*"
+            SH . "\n");
+        chmod($stub, 0o755);
+        $command = sprintf(
+            'cd %1$s && env -u KNOSSOS_DATA_DIR -u KNOSSOS_ROOTS_FILE KNOSSOS_BIN=%2$s CLAUDE_PROJECT_DIR=%1$s sh %3$s %4$s 2>&1',
+            escapeshellarg($root),
+            escapeshellarg($stub),
+            escapeshellarg($root . '/.plugin/hooks/scripts/' . $script),
+            $script === 'knossos-run.sh' ? 'turn-brief ' . escapeshellarg($root) : '',
+        );
+
+        return trim((string) shell_exec($command));
+    }
+
+    #[Group('cli')]
+    public function testInstalledSessionBriefReadsTheDataDirectoryGivenOnTheCommandLine(): void
+    {
+        $line = $this->runInstalledScript('session-brief.sh', ['data-dir' => ['/x y/data']], null);
+
+        assertSame(true, str_starts_with($line, 'DATA=/x y/data ARGS=session-brief '));
+    }
+
+    #[Group('cli')]
+    public function testInstalledSessionBriefSurvivesASingleQuoteInTheDataDirectory(): void
+    {
+        $line = $this->runInstalledScript('session-brief.sh', ['data-dir' => ["/it's/data"]], null);
+
+        assertSame(true, str_starts_with($line, "DATA=/it's/data ARGS=session-brief "));
+    }
+
+    #[Group('cli')]
+    public function testInstalledSessionBriefTakesTheInstallersEnvironmentWhenNoOptionIsGiven(): void
+    {
+        $line = $this->runInstalledScript('session-brief.sh', [], '/from/env');
+
+        assertSame(true, str_starts_with($line, 'DATA=/from/env ARGS=session-brief '));
+    }
+
+    #[Group('cli')]
+    public function testInstalledSessionBriefLeavesTheDataDirectoryEmptyWithoutAnySource(): void
+    {
+        $line = $this->runInstalledScript('session-brief.sh', [], null);
+
+        assertSame(true, str_starts_with($line, 'DATA= ARGS=session-brief '));
+    }
+
+    #[Group('cli')]
+    public function testInstalledRunWrapperReadsTheBakedDataDirectory(): void
+    {
+        $line = $this->runInstalledScript('knossos-run.sh', ['data-dir' => ["/it's/data"]], null);
+
+        assertSame(true, str_starts_with($line, "DATA=/it's/data ARGS=turn-brief "));
+    }
+
+    #[Group('cli')]
+    public function testTheDataDirectoryIsReportedInTheJsonOutput(): void
+    {
+        $root = $this->sourceRoot();
+        $bin = $this->temporaryPath('knossos-plugin-bin');
+        try {
+            mkdir($bin, 0o755, true);
+            file_put_contents($bin . '/claude', "#!/bin/sh\nexit 0\n");
+            chmod($bin . '/claude', 0o755);
+            $path = (string) getenv('PATH');
+            putenv('PATH=' . $bin . ':' . $path);
+            ob_start();
+            try {
+                (new PluginCommand())->run(
+                    'install-agent-plugin',
+                    [],
+                    ['execute' => ['true'], 'json' => ['true'], 'data-dir' => ['/srv/graph']],
+                    $this->contextFor($root),
+                );
+            } finally {
+                $output = (string) ob_get_clean();
+                putenv('PATH=' . $path);
+            }
+            $lines = array_values(array_filter(explode("\n", trim($output))));
+            $decoded = json_decode((string) end($lines), true, 8, JSON_THROW_ON_ERROR);
+
+            assertSame('/srv/graph', $decoded['data_dir']);
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($bin));
+        }
+    }
+
+    #[Group('cli')]
+    public function testADataDirectoryWithALineBreakOrNulIsRejected(): void
+    {
+        $root = $this->sourceRoot();
+        try {
+
+            foreach (["\n", "\r", "\0"] as $character) {
+                try {
+                    (new PluginCommand())->run('install-agent-plugin', [], ['execute' => ['true'], 'data-dir' => ['/a' . $character . 'b']], $this->contextFor($root));
+                    self::fail('Expected an InvalidArgumentException.');
+                } catch (InvalidArgumentException $error) {
+                    assertSame(true, str_contains($error->getMessage(), 'data-dir'));
+                }
+            }
+            assertSame(false, file_exists($root . '/.plugin'));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
+        }
+    }
+
+    /**
+     * Emit a container plugin with a hostile --data and run its installed
+     * script with a stub `docker` first on PATH that prints its arguments.
+     *
+     * @return array{output: string, marker: bool}
+     */
+    private function runHostileContainerScript(string $script, string $subcommandArguments): array
+    {
+        $root = $this->sourceRoot();
+        $out = $this->temporaryPath('knossos-plugin-hostile');
+        $bin = $this->temporaryPath('knossos-plugin-bin');
+        $marker = $this->temporaryPath('knossos-marker');
+        $hostile = '/a/$(touch ' . $marker . ')"q\'s`touch ' . $marker . '`\\z';
+        try {
+            ob_start();
+            try {
+                (new PluginCommand())->run(
+                    'install-agent-plugin',
+                    [],
+                    ['out' => [$out], 'data' => [$hostile], 'image' => ["img/it's/$(touch " . $marker . '):1']],
+                    $this->contextFor($root),
+                );
+            } finally {
+                ob_get_clean();
+            }
+            mkdir($bin, 0o755, true);
+            file_put_contents($bin . '/docker', <<<'SH'
+                #!/bin/sh
+                for a in "$@"; do printf 'ARG=%s\n' "$a"; done
+                SH . "\n");
+            chmod($bin . '/docker', 0o755);
+            $command = sprintf(
+                'cd %1$s && PATH=%2$s:$PATH CLAUDE_PROJECT_DIR=%1$s sh %3$s %4$s 2>&1',
+                escapeshellarg($root),
+                escapeshellarg($bin),
+                escapeshellarg($out . '/hooks/scripts/' . $script),
+                $subcommandArguments,
+            );
+            $output = (string) shell_exec($command);
+
+            return ['output' => $output . "\nHOSTILE=" . $hostile, 'marker' => file_exists($marker)];
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($out) . ' ' . escapeshellarg($bin) . ' ' . escapeshellarg($marker));
+        }
+    }
+
+    #[Group('cli')]
+    public function testHostileValuesReachTheContainerSessionBriefVerbatim(): void
+    {
+        $result = $this->runHostileContainerScript('session-brief.sh', '');
+
+        $hostile = substr(strstr($result['output'], 'HOSTILE=') ?: '', 8);
+        assertSame(true, $hostile !== '');
+        assertSame(true, str_contains($result['output'], 'ARG=' . $hostile . ':/data'));
+        assertSame(true, str_contains($result['output'], "ARG=img/it's/$(touch "));
+        assertSame(false, $result['marker']);
+    }
+
+    #[Group('cli')]
+    public function testHostileValuesReachTheContainerRunWrapperVerbatim(): void
+    {
+        $root = sys_get_temp_dir();
+        $result = $this->runHostileContainerScript('knossos-run.sh', 'turn-brief ' . escapeshellarg($root));
+
+        $hostile = substr(strstr($result['output'], 'HOSTILE=') ?: '', 8);
+        assertSame(true, $hostile !== '');
+        assertSame(true, str_contains($result['output'], 'ARG=' . $hostile . ':/data'));
+        assertSame(true, str_contains($result['output'], "ARG=img/it's/$(touch "));
+        assertSame(false, $result['marker']);
+    }
+
+    #[Group('cli')]
+    public function testARelativeDataDirectoryIsRejected(): void
+    {
+        $root = $this->sourceRoot();
+        try {
+            foreach ([['data-dir' => ['rel/data']], []] as $options) {
+                $previous = getenv('KNOSSOS_DATA_DIR');
+                putenv('KNOSSOS_DATA_DIR=' . ($options === [] ? 'also/relative' : ''));
+                try {
+                    (new PluginCommand())->run('install-agent-plugin', [], ['execute' => ['true']] + $options, $this->contextFor($root));
+                    self::fail('Expected an InvalidArgumentException.');
+                } catch (InvalidArgumentException $error) {
+                    assertSame(true, str_contains($error->getMessage(), 'absolute'));
+                    assertSame(true, str_contains($error->getMessage(), $options === [] ? 'also/relative' : 'rel/data'));
+                } finally {
+                    putenv($previous === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $previous);
+                }
+            }
+            assertSame(false, file_exists($root . '/.plugin'));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
+        }
+    }
+
+    #[Group('cli')]
+    public function testDataDirIsReportedAsIgnoredOnTheContainerRoute(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-ignored');
+        try {
+            $prose = $this->emitProse($out, ['data-dir' => ['/srv/graph']]);
+
+            assertSame(true, str_contains($prose, '--data-dir only applies to a host install and was ignored; the container scripts read --data.'));
+            assertSame(false, str_contains($this->emitProse($out, []), '--data-dir'));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($out));
+        }
+    }
+
     /**
      * A stand-in installation root carrying every file an install reads.
      *
@@ -369,7 +875,12 @@ final class PluginCommandTest extends KnossosTestCase
             '/hooks/hooks.json',
             '/hooks/scripts/session-brief.sh',
             '/hooks/scripts/session-brief-container.sh',
-            '/skills/knossos/SKILL.md',
+            '/hooks/scripts/knossos-run.sh',
+            '/hooks/scripts/knossos-run-container.sh',
+            '/hooks/scripts/lib.sh',
+            ...self::MOD_SOURCES,
+            '/types/index.d.ts',
+            '/skills/graph/SKILL.md',
         ] as $relative) {
             $directory = dirname($root . $relative);
             if (!is_dir($directory)) {
@@ -498,13 +1009,10 @@ final class PluginCommandTest extends KnossosTestCase
 
         $this->runWithStubbedClaude($root, ['execute' => ['true']]);
 
-        assertSame([
-            '/.claude-plugin/marketplace.json',
-            '/.claude-plugin/plugin.json',
-            '/hooks/hooks.json',
-            '/hooks/scripts/session-brief.sh',
-            '/skills/knossos/SKILL.md',
-        ], $this->treeOf($root . '/.plugin'));
+        assertSame(
+            array_map(static fn (string $file): string => '/' . $file, self::INSTALLED),
+            $this->treeOf($root . '/.plugin'),
+        );
         // The descriptor belongs to the materialised directory now. Writing one
         // at the root is what made `marketplace add <root>` resolve at all.
         assertSame(false, file_exists($root . '/.claude-plugin/marketplace.json'));
@@ -605,7 +1113,7 @@ final class PluginCommandTest extends KnossosTestCase
         $decoded = json_decode(trim($run['output']), true, 8, JSON_THROW_ON_ERROR);
         assertSame(true, $decoded['executed']);
         assertSame($root . '/.plugin', $decoded['plugin_directory']);
-        assertSame(5, count($decoded['files']));
+        assertSame(self::INSTALLED, $decoded['files']);
 
         exec('rm -rf ' . escapeshellarg($root));
     }
@@ -653,8 +1161,8 @@ final class PluginCommandTest extends KnossosTestCase
         assertSame('ghcr.io/me/knossos:2', $this->emitJson($named, ['image' => ['ghcr.io/me/knossos:2']])['image']);
         assertSame(true, str_contains((string) file_get_contents($named . '/hooks/scripts/session-brief.sh'), 'ghcr.io/me/knossos:2'));
 
-        assertSame('knossos-mcp:dev', $this->emitJson($default, [])['image']);
-        assertSame(true, str_contains((string) file_get_contents($default . '/hooks/scripts/session-brief.sh'), 'knossos-mcp:dev'));
+        assertSame('knossos:dev', $this->emitJson($default, [])['image']);
+        assertSame(true, str_contains((string) file_get_contents($default . '/hooks/scripts/session-brief.sh'), 'knossos:dev'));
 
         exec('rm -rf ' . escapeshellarg($named) . ' ' . escapeshellarg($default));
     }
@@ -675,7 +1183,7 @@ final class PluginCommandTest extends KnossosTestCase
 
         $second = $this->emitProse($out, ['execute' => ['true']]);
         assertSame(true, str_contains($second, 'The target directory already existed; its files were replaced.'));
-        assertSame(true, str_contains($second, '--execute writes directly; --execute is not needed here and was ignored.') || str_contains($second, '--execute is not needed here and was ignored.'));
+        assertSame(true, str_contains($second, '--out writes directly; --execute is not needed here and was ignored.'));
 
         exec('rm -rf ' . escapeshellarg($out));
     }
@@ -689,12 +1197,203 @@ final class PluginCommandTest extends KnossosTestCase
 
         $this->emitProse($out, []);
 
-        foreach (['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills', '/skills/knossos'] as $directory) {
+        foreach (['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills', '/skills/graph'] as $directory) {
             assertSame(true, is_dir($out . $directory), $directory);
         }
         assertSame('0755', substr(sprintf('%o', fileperms($out . '/hooks/scripts')), -4));
 
         exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /** An update over an earlier install leaves one skill, never the old directory beside the renamed one. */
+    #[Group('cli')]
+    public function testAnInstallRemovesTheSkillDirectoryAnEarlierReleaseLeft(): void
+    {
+        $root = $this->sourceRoot();
+        $out = $root . '/.plugin';
+        mkdir($out . '/skills/knossos', 0o755, true);
+        file_put_contents($out . '/skills/knossos/SKILL.md', "---\nname: knossos\n---\n");
+        file_put_contents($out . '/skills/knossos/extra.md', 'old');
+        mkdir($out . '/skills/ask-the-graph', 0o755, true);
+        file_put_contents($out . '/skills/ask-the-graph/SKILL.md', "---\nname: ask-the-graph\n---\n");
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+        assertSame(false, file_exists($out . '/skills/knossos'));
+        assertSame(false, file_exists($out . '/skills/ask-the-graph'));
+        assertSame(['graph'], array_values(array_diff(scandir($out . '/skills') ?: [], ['.', '..'])));
+        assertSame(true, is_file($out . '/skills/graph/SKILL.md'));
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    /** An emit names any directory, such as ~/.claude: skill directories of the person's own under the old names survive it. */
+    #[Group('cli')]
+    public function testAnEmitKeepsSkillDirectoriesUnderTheNamesEarlierReleasesUsed(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-claude-home');
+        mkdir($out . '/skills/knossos', 0o755, true);
+        file_put_contents($out . '/skills/knossos/SKILL.md', 'a skill of the person\'s own');
+        mkdir($out . '/skills/ask-the-graph', 0o755, true);
+        file_put_contents($out . '/skills/ask-the-graph/notes.md', 'theirs');
+
+        $this->emitProse($out, []);
+
+        assertSame('a skill of the person\'s own', (string) file_get_contents($out . '/skills/knossos/SKILL.md'));
+        assertSame('theirs', (string) file_get_contents($out . '/skills/ask-the-graph/notes.md'));
+        assertSame(
+            ['ask-the-graph', 'graph', 'knossos'],
+            array_values(array_diff(scandir($out . '/skills') ?: [], ['.', '..'])),
+        );
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /** A failed install puts the old skill directory back exactly as it was. */
+    #[Group('cli')]
+    public function testAFailedInstallRestoresTheStaleSkillDirectory(): void
+    {
+        $root = $this->sourceRoot();
+        $out = $root . '/.plugin';
+        mkdir($out . '/skills/knossos', 0o755, true);
+        file_put_contents($out . '/skills/knossos/SKILL.md', 'old skill');
+        mkdir($out . '/skills/ask-the-graph', 0o755, true);
+        // plugin.json is a directory, so the manifest cannot be written after the skills are retired.
+        mkdir($out . '/.claude-plugin/plugin.json', 0o755, true);
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+        assertSame('old skill', (string) file_get_contents($out . '/skills/knossos/SKILL.md'));
+        assertSame(['ask-the-graph', 'knossos'], array_values(array_diff(scandir($out . '/skills') ?: [], ['.', '..'])));
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    /** An emit names any directory: a file of someone else's in it survives, whatever its name. */
+    #[Group('cli')]
+    public function testAnEmitNeverDeletesAFileItDidNotWrite(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-foreign');
+        mkdir($out . '/hooks/lib', 0o755, true);
+        mkdir($out . '/hooks/scripts', 0o755, true);
+        file_put_contents($out . '/hooks/my-guard.sh', '# a hook of the person\'s own');
+        file_put_contents($out . '/hooks/lib/trend.ts', 'export const mine = 1');
+        file_put_contents($out . '/hooks/scripts/lib.sh', '# theirs');
+
+        $this->emitProse($out, []);
+
+        assertSame('# a hook of the person\'s own', (string) file_get_contents($out . '/hooks/my-guard.sh'));
+        assertSame('export const mine = 1', (string) file_get_contents($out . '/hooks/lib/trend.ts'));
+        assertSame('# theirs', (string) file_get_contents($out . '/hooks/scripts/lib.sh'));
+        assertSame(true, is_file($out . '/hooks/lib/layout.ts'));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /** An update deletes the files an earlier install left in the plugin's directories that this one no longer ships, and nothing else. */
+    #[Group('cli')]
+    public function testAnInstallDeletesOnlyTheFilesItNoLongerShipsInsideThePluginDirectories(): void
+    {
+        $root = $this->sourceRoot();
+        $out = $root . '/.plugin';
+        $outside = $this->temporaryPath('knossos-plugin-outside');
+        mkdir($out . '/hooks/lib/kept', 0o755, true);
+        mkdir($outside, 0o755, true);
+        file_put_contents($out . '/hooks/lib/trend.ts', 'export const old = 1');
+        file_put_contents($out . '/hooks/lib/kept/inner.ts', 'a subdirectory is not the plugin\'s');
+        file_put_contents($out . '/notes.txt', 'the root is not one of the plugin\'s directories');
+        file_put_contents($outside . '/keep.ts', 'outside');
+        symlink($outside . '/keep.ts', $out . '/hooks/lib/linked.ts');
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+        assertSame(false, file_exists($out . '/hooks/lib/trend.ts'));
+        assertSame(false, is_link($out . '/hooks/lib/linked.ts'));
+        assertSame('outside', (string) file_get_contents($outside . '/keep.ts'));
+        assertSame(true, is_file($out . '/hooks/lib/kept/inner.ts'));
+        assertSame(true, is_file($out . '/notes.txt'));
+        assertSame(true, is_file($out . '/hooks/lib/layout.ts'));
+
+        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($outside));
+    }
+
+    /** A plugin directory that is a link to somewhere else is never pruned: what is there is not the plugin's. */
+    #[Group('cli')]
+    public function testAnInstallNeverDeletesThroughALinkedDirectory(): void
+    {
+        $root = $this->sourceRoot();
+        $outside = $this->temporaryPath('knossos-plugin-outside');
+        mkdir($root . '/.plugin', 0o755, true);
+        mkdir($outside, 0o755, true);
+        file_put_contents($outside . '/other.d.ts', 'someone else\'s');
+        symlink($outside, $root . '/.plugin/types');
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+        assertSame("someone else's", (string) file_get_contents($outside . '/other.d.ts'));
+
+        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($outside));
+    }
+
+    /** The host install prunes the same way: its tree is exactly what it ships. */
+    #[Group('cli')]
+    public function testAnInstallDeletesTheFilesItNoLongerShips(): void
+    {
+        $root = $this->sourceRoot();
+        mkdir($root . '/.plugin/hooks/lib', 0o755, true);
+        file_put_contents($root . '/.plugin/hooks/lib/trend.ts', 'export const old = 1');
+        file_put_contents($root . '/.plugin/hooks/register.test.ts', 'a test is never shipped');
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+        assertSame(
+            array_map(static fn (string $file): string => '/' . $file, self::INSTALLED),
+            $this->treeOf($root . '/.plugin'),
+        );
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    /** A failed install puts back every file it deleted, with its bytes and its mode. */
+    #[Group('cli')]
+    public function testAFailedInstallRestoresTheFilesItDeleted(): void
+    {
+        $root = $this->sourceRoot();
+        $out = $root . '/.plugin';
+        mkdir($out . '/hooks/lib', 0o755, true);
+        file_put_contents($out . '/hooks/lib/trend.ts', 'export const old = 1');
+        chmod($out . '/hooks/lib/trend.ts', 0o600);
+        // plugin.json is a directory, so the manifest cannot be written after the prune.
+        mkdir($out . '/.claude-plugin/plugin.json', 0o755, true);
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+        assertSame('export const old = 1', (string) file_get_contents($out . '/hooks/lib/trend.ts'));
+        assertSame('0600', substr(sprintf('%o', fileperms($out . '/hooks/lib/trend.ts')), -4));
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    /** The plugin's slash command is `/knossos`, so no skill it ships may carry that name again. */
+    #[Group('cli')]
+    public function testNoSkillTheClaudePluginShipsSharesANameWithItsCommand(): void
+    {
+        $root = self::repositoryRoot();
+        // The mod registers its command where it starts the session up.
+        $mod = (string) file_get_contents($root . '/hooks/mod/session.ts');
+        assertSame(1, preg_match("/command\\.register\\(\\{\\s*name: '([^']+)'/", $mod, $command));
+
+        $names = [];
+        foreach (glob($root . '/skills/*/SKILL.md') ?: [] as $file) {
+            assertSame(1, preg_match('/^---\nname: (\S+)\n/', (string) file_get_contents($file), $found), $file);
+            // The directory and the declared name must agree, or the person
+            // sees one name in the picker and finds another on disk.
+            assertSame(basename(dirname($file)), $found[1], $file);
+            $names[] = $found[1];
+        }
+
+        assertSame(true, $names !== []);
+        assertSame(false, in_array($command[1], $names, true), $command[1]);
     }
 
     /** An emit replaces a hand-edited descriptor, because the plugin it describes is regenerated. */
@@ -819,5 +1518,68 @@ final class PluginCommandTest extends KnossosTestCase
         }
 
         return $output;
+    }
+
+    /** The container values sit inside single quotes in a line-oriented script: a line break or NUL is refused. */
+    #[Group('cli')]
+    public function testContainerDataAndImageWithALineBreakOrNulAreRejected(): void
+    {
+        foreach (['data', 'image'] as $option) {
+            foreach (["\n", "\r", "\0"] as $character) {
+                $out = $this->temporaryPath('knossos-plugin-break');
+                $options = ['out' => [$out], 'data' => ['/srv/data']];
+                $options[$option] = [($option === 'data' ? '/srv/' : 'img') . $character . 'x'];
+                try {
+                    (new PluginCommand())->run('install-agent-plugin', [], $options, $this->context());
+                    self::fail('Expected an InvalidArgumentException for ' . $option);
+                } catch (InvalidArgumentException $error) {
+                    assertSame(true, str_contains($error->getMessage(), $option . ' must not contain'));
+                }
+                assertSame(false, file_exists($out));
+            }
+        }
+    }
+
+    /** A relative --data would reach `docker run -v` as a named volume, not the data directory. */
+    #[Group('cli')]
+    public function testARelativeContainerDataPathIsRejected(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-relative');
+        try {
+            (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['srv/data']], $this->context());
+            self::fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException $error) {
+            assertSame(true, str_contains($error->getMessage(), 'absolute'));
+            assertSame(true, str_contains($error->getMessage(), 'srv/data'));
+        }
+        assertSame(false, file_exists($out));
+    }
+
+    /** The preview names the graph the hooks will read, as data and as a sentence. */
+    #[Group('cli')]
+    public function testThePreviewNamesTheDataDirectory(): void
+    {
+        $previous = getenv('KNOSSOS_DATA_DIR');
+        putenv('KNOSSOS_DATA_DIR');
+        try {
+            ob_start();
+            (new PluginCommand())->run('install-agent-plugin', [], ['json' => ['true'], 'data-dir' => ['/srv/graph']], $this->context());
+            $decoded = json_decode(trim((string) ob_get_clean()), true, 8, JSON_THROW_ON_ERROR);
+            assertSame('/srv/graph', $decoded['data_dir']);
+
+            ob_start();
+            (new PluginCommand())->run('install-agent-plugin', [], ['data-dir' => ['/srv/graph']], $this->context());
+            assertSame(true, str_contains((string) ob_get_clean(), "\nData directory: /srv/graph (the hooks read the graph there).\n"));
+
+            ob_start();
+            (new PluginCommand())->run('install-agent-plugin', [], ['json' => ['true']], $this->context());
+            assertSame('', json_decode(trim((string) ob_get_clean()), true, 8, JSON_THROW_ON_ERROR)['data_dir']);
+
+            ob_start();
+            (new PluginCommand())->run('install-agent-plugin', [], [], $this->context());
+            assertSame(true, str_contains((string) ob_get_clean(), "\nData directory: not set, the hooks derive the graph from the project path.\n"));
+        } finally {
+            putenv($previous === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $previous);
+        }
     }
 }

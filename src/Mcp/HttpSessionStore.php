@@ -81,7 +81,7 @@ final readonly class HttpSessionStore
      */
     public function markInitialized(string $id): string
     {
-        if (!preg_match('/^[a-f0-9]{64}$/', $id)) {
+        if (!preg_match('/^[a-f0-9]{64}$/D', $id)) {
             return self::UNKNOWN_OR_EXPIRED;
         }
         $now = time();
@@ -104,7 +104,7 @@ final readonly class HttpSessionStore
      */
     public function touch(string $id): void
     {
-        if (!preg_match('/^[a-f0-9]{64}$/', $id)) {
+        if (!preg_match('/^[a-f0-9]{64}$/D', $id)) {
             return;
         }
         $now = time();
@@ -125,7 +125,7 @@ final readonly class HttpSessionStore
      */
     private function row(string $id): ?array
     {
-        if (!preg_match('/^[a-f0-9]{64}$/', $id)) {
+        if (!preg_match('/^[a-f0-9]{64}$/D', $id)) {
             return null;
         }
         $statement = $this->pdo->prepare('SELECT initialized FROM http_sessions WHERE id = :id AND expires_at > :now');

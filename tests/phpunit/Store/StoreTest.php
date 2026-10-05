@@ -23,7 +23,7 @@ final class StoreTest extends KnossosTestCase
         $pdo = SqliteConnection::open(':memory:');
         $runner = new MigrationRunner($pdo, self::repositoryRoot() . '/migrations');
 
-        assertSame(['001_initial_graph', '002_classifications', '003_boundary_memberships', '004_contribution_cache', '005_scan_locks', '006_http_sessions', '007_scan_snapshots', '008_occurrence_edges', '009_file_line_count', '010_language_scoped_node_uniqueness', '011_annotations', '012_add_missing_indexes', '013_edges_fk_child_indexes', '014_scan_git_head', '015_scan_duration', '016_scan_dirty_paths', '017_scan_unit_inputs'], $runner->migrate());
+        assertSame(['001_initial_graph', '002_classifications', '003_boundary_memberships', '004_contribution_cache', '005_scan_locks', '006_http_sessions', '007_scan_snapshots', '008_occurrence_edges', '009_file_line_count', '010_language_scoped_node_uniqueness', '011_annotations', '012_add_missing_indexes', '013_edges_fk_child_indexes', '014_scan_git_head', '015_scan_duration', '016_scan_dirty_paths', '017_scan_unit_inputs', '018_snapshot_metrics', '019_scan_ledger'], $runner->migrate());
         assertSame([], $runner->migrate());
         assertSame('1', (string) $pdo->query('PRAGMA foreign_keys')->fetchColumn());
         $edgeSchema = (string) $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'edges'")->fetchColumn();
@@ -197,14 +197,10 @@ final class StoreTest extends KnossosTestCase
     }
 
     #[Group('store')]
-    public function testStableIdsAreDeterministicAndRouteMethodsAreOrderIndependent(): void
+    public function testStableIdsAreDeterministic(): void
     {
         $project = StableId::project('shop');
         assertSame($project, StableId::project('shop'));
-        assertSame(
-            StableId::route($project, ['POST', 'GET'], '/checkout', 'CheckoutController'),
-            StableId::route($project, ['GET', 'POST'], '/checkout', 'CheckoutController'),
-        );
         assertNotSame(
             StableId::symbol($project, 'php', 'class', 'Checkout'),
             StableId::symbol($project, 'typescript', 'class', 'Checkout'),
@@ -289,24 +285,10 @@ final class StoreTest extends KnossosTestCase
             StableId::boundary($alpha, 'typescript:tsconfig.json', '{"compilerOptions":{}}'),
             StableId::boundary($beta, 'typescript:tsconfig.json', '{"compilerOptions":{}}'),
         );
-
-        // route(): projectId-sensitive, uri-sensitive, action-sensitive.
-        assertNotSame(
-            StableId::route($alpha, ['GET'], '/checkout', 'CheckoutController'),
-            StableId::route($alpha, ['GET'], '/invoice', 'CheckoutController'),
-        );
-        assertNotSame(
-            StableId::route($alpha, ['GET'], '/checkout', 'CheckoutController'),
-            StableId::route($alpha, ['GET'], '/checkout', 'InvoiceController'),
-        );
-        assertNotSame(
-            StableId::route($alpha, ['GET'], '/checkout', 'CheckoutController'),
-            StableId::route($beta, ['GET'], '/checkout', 'CheckoutController'),
-        );
     }
 
     /**
-     * Kills the Foreach_ mutant on src/Store/StableId.php line 74. The
+     * Kills the Foreach_ mutant on src/Store/StableId.php line 96. The
      * mutant iterates over `[]` instead of `$parts`, so the empty-part
      * check inside `make()` never fires; an empty-string call into any
      * factory must throw.
@@ -317,13 +299,13 @@ final class StoreTest extends KnossosTestCase
         assertThrows(fn() => StableId::project(''), InvalidArgumentException::class);
         assertThrows(fn() => StableId::file('p', ''), InvalidArgumentException::class);
         assertThrows(
-            fn() => StableId::route('p', [], '/x', 'A'),
+            fn() => StableId::symbol('p', 'php', 'class', ''),
             InvalidArgumentException::class,
         );
     }
 
     /**
-     * Kills the BitwiseOr mutant on src/Store/StableId.php line 80. The
+     * Kills the BitwiseOr mutant on src/Store/StableId.php line 102. The
      * mutant collapses
      * `(JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)`
      * into `(A | B) & C`, which on the actual flag values evaluates to 0;

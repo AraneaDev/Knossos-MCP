@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-image="${1:-knossos-mcp:quality-runtime}"
+image="${1:-knossos:quality-runtime}"
 fixture="${KNOSSOS_LIFECYCLE_FIXTURE:-$PWD/tests/Fixtures/mixed}"
 volume=$(docker volume create)
 source_volume=$(docker volume create)

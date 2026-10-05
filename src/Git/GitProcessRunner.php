@@ -222,7 +222,7 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
             ));
         }
         $hardened = [$command[0]];
-        foreach ([...self::FORCED_CONFIG, ...$this->driverOverrides($command, $timeoutMs)] as $setting) {
+        foreach ([...self::FORCED_CONFIG, ...self::safeDirectory(), ...$this->driverOverrides($command, $timeoutMs)] as $setting) {
             $hardened[] = '-c';
             $hardened[] = $setting;
         }
@@ -273,13 +273,39 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
         if ($root === null) {
             return [];
         }
+        $safe = array_merge(...array_map(static fn(string $setting): array => ['-c', $setting], self::safeDirectory()));
         $keys = $this->execute(
-            [$command[0], '--no-optional-locks', '-C', $root, 'config', '--list', '--includes', '--name-only', '-z'],
+            [$command[0], ...$safe, '--no-optional-locks', '-C', $root, 'config', '--list', '--includes', '--name-only', '-z'],
             min($timeoutMs, self::MAX_ENUMERATION_TIMEOUT_MS),
             'driver enumeration',
         );
 
         return self::parseDriverOverrides($keys);
+    }
+
+    /**
+     * The `safe.directory` setting a containerised run asks for, as `-c`
+     * values: none unless `KNOSSOS_GIT_SAFE_DIRECTORY` names an absolute
+     * path.
+     *
+     * A container's user is not the one who owns the mounted project, and
+     * git refuses a repository another user owns. Git honours the setting
+     * only from the system or global config, which this runner never reads
+     * ({@see self::ENVIRONMENT}), or from the command line, so the container
+     * wrapper names the project it mounted and it is passed here. A value
+     * that is not one absolute path (`*`, which trusts everything) adds
+     * nothing.
+     *
+     * @return list<string>
+     */
+    private static function safeDirectory(): array
+    {
+        $directory = getenv('KNOSSOS_GIT_SAFE_DIRECTORY');
+        if (!is_string($directory) || preg_match('#^/[^\x00-\x1f\x7f]*$#D', $directory) !== 1) {
+            return [];
+        }
+
+        return ['safe.directory=' . $directory];
     }
 
     /**

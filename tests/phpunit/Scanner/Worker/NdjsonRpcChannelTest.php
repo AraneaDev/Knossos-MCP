@@ -499,14 +499,6 @@ final class NdjsonRpcChannelTest extends TestCase
         assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
     }
 
-    public function testStderrReturnsEmptyInitially(): void
-    {
-        $process = $this->mockProcess();
-        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
-
-        assertSame('', $channel->stderr());
-    }
-
     public function testBeginRequestStartsProcessAndResetsState(): void
     {
         $process = $this->mockProcess();
@@ -679,8 +671,197 @@ final class NdjsonRpcChannelTest extends TestCase
         );
 
         assertSame('WORKER_EXITED', $error->diagnosticCode);
-        assertContains('killed by signal 15', $error->getMessage());
-        assertContains('out-of-memory killer', $error->getMessage());
+        assertSame(15, $error->terminatingSignal);
+        // The worker was still owned and mid-request, so the signal cannot
+        // have come from Knossos: it closes a worker only after a request has
+        // already failed for a reason it reports instead.
+        assertSame(
+            'Scanner worker was killed by signal 15 (SIGTERM) before responding, and Knossos did not send it: Knossos '
+            . 'stops a worker only after a request has already failed, and reports that reason instead. A host memory '
+            . 'guard such as earlyoom or systemd-oomd sends SIGTERM to the largest process when memory runs low; the '
+            . "kernel's own OOM killer sends SIGKILL (9).",
+            $error->getMessage(),
+        );
+    }
+
+    public function testAWorkerKilledBySigkillIsNamedToo(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 100));
+        $deadline = $channel->beginRequest();
+
+        $process->running = false;
+        $process->signaled = true;
+        $process->termsig = 9;
+        ftruncate($process->pipes[1], 0);
+        fclose($process->pipes[1]);
+        $process->pipes[1] = fopen('php://temp', 'r');
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame(9, $error->terminatingSignal);
+        assertContains('killed by signal 9 (SIGKILL) before responding, and Knossos did not send it', $error->getMessage());
+    }
+
+    public function testAWorkerThatCrashedWithASignalIsNotBlamedOnTheHost(): void
+    {
+        // SIGSEGV, SIGABRT, SIGBUS, SIGILL and SIGFPE are raised by the
+        // process itself when it crashes, so pointing at earlyoom would send
+        // the reader the wrong way.
+        foreach ([11 => 'SIGSEGV', 6 => 'SIGABRT', 7 => 'SIGBUS', 4 => 'SIGILL', 8 => 'SIGFPE'] as $signal => $name) {
+            $process = $this->mockProcess();
+            $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 100));
+            $deadline = $channel->beginRequest();
+            $process->running = false;
+            $process->signaled = true;
+            $process->termsig = $signal;
+            ftruncate($process->pipes[1], 0);
+            fclose($process->pipes[1]);
+            $process->pipes[1] = fopen('php://temp', 'r');
+
+            $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+            assertSame(
+                sprintf('Scanner worker crashed with signal %d (%s) before responding.', $signal, $name),
+                $error->getMessage(),
+            );
+            assertSame($signal, $error->terminatingSignal);
+        }
+    }
+
+    public function testAWorkerStoppedByAnInterruptOrHangupSaysWhoCouldHaveSentIt(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 100));
+        $deadline = $channel->beginRequest();
+        $process->running = false;
+        $process->signaled = true;
+        $process->termsig = 1;
+        ftruncate($process->pipes[1], 0);
+        fclose($process->pipes[1]);
+        $process->pipes[1] = fopen('php://temp', 'r');
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        // Not "no terminal": that holds only where setsid exists, and the
+        // supervisor runs the worker without it elsewhere (macOS).
+        assertSame(
+            'Scanner worker was stopped by signal 1 (SIGHUP) before responding, and Knossos did not send it. A person, '
+            . 'a supervisor or a closing terminal sends this signal to stop a process.',
+            $error->getMessage(),
+        );
+    }
+
+    public function testARequestTooLargeNamesItsLimit(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 256));
+        $channel->beginRequest();
+
+        $error = captureThrows(
+            static fn() => $channel->send(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'scan', 'params' => ['pad' => str_repeat('p', 400)]]),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_REQUEST_TOO_LARGE', $error->diagnosticCode);
+        assertSame(
+            'Worker request exceeds the 256-byte request frame limit (the larger of worker_execution.max_line_bytes '
+            . 'and worker_execution.max_output_bytes), so Knossos did not send it.',
+            $error->getMessage(),
+        );
+    }
+
+    public function testAnOversizedFrameSaysWhatItWas(): void
+    {
+        $frames = [
+            '{"jsonrpc":"2.0","id":3,"result":{"pad":"' => "it was the worker's response to the request",
+            '{"jsonrpc":"2.0","method":"scan\\/progress","params":{"pad":"' => 'it was a scan/progress notification',
+            '{"jsonrpc":"2.0","method":"scan/contribution","params":{"pad":"' => null,
+            'xxxxxxxx' => null,
+        ];
+        foreach ($frames as $prefix => $expected) {
+            $process = $this->mockProcess();
+            $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+            $deadline = $channel->beginRequest();
+            fwrite($process->pipes[1], $prefix . str_repeat('x', 300));
+            rewind($process->pipes[1]);
+
+            $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+            assertSame($expected, $error->frameDescription, $prefix);
+        }
+    }
+
+    public function testACompleteFrameJustOverTheLimitIsTooLargeRatherThanInvalid(): void
+    {
+        // Over the limit by less than one read, the frame and its newline
+        // arrive together, and the line is taken whole. It is still a frame
+        // too large, which splitting can act on, not a malformed one.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], '{"jsonrpc":"2.0","method":"scan/contribution","params":{"owner_key":"w:file:a.ts","pad":"' . str_repeat('x', 100) . "\"}}\n");
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame('WORKER_FRAME_TOO_LARGE', $error->diagnosticCode);
+        assertSame(true, $error->frameIsAFilesAnswer);
+    }
+
+    public function testAnEmptyFrameIsStillInvalid(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], "\n");
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame('WORKER_FRAME_INVALID', $error->diagnosticCode);
+    }
+
+    public function testAnOversizedFrameWrittenBeforeTheWorkerExitedIsStillTooLarge(): void
+    {
+        // The whole frame can arrive with the end of the stream. Reported as
+        // an exit, it lost the one fact that splitting the batch can act on.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat('x', 300));
+        rewind($process->pipes[1]);
+        $process->running = false;
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame('WORKER_FRAME_TOO_LARGE', $error->diagnosticCode);
+    }
+
+    public function testAnOversizedFrameSaysWhetherItWasAFilesAnswer(): void
+    {
+        $frames = [
+            '{"jsonrpc":"2.0","method":"scan/contribution","params":{"owner_key":"w:file:a.ts","pad":"' => true,
+            '{"jsonrpc":"2.0","id":3,"result":{"input_hashes":{"' => false,
+            '{"jsonrpc":"2.0","id":3,"error":{"message":"' => false,
+            '{"jsonrpc":"2.0","method":"scan/input_hashes","params":{"' => false,
+            // JSON may escape a slash, and json_encode does by default.
+            '{"jsonrpc":"2.0","method":"scan\\/contribution","params":{"owner_key":"w:file:a.ts","pad":"' => true,
+            '{"jsonrpc":"2.0","method":"scan\\/input_hashes","params":{"' => false,
+            'xxxxxxxx' => null,
+        ];
+        foreach ($frames as $prefix => $expected) {
+            $process = $this->mockProcess();
+            $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+            $deadline = $channel->beginRequest();
+            fwrite($process->pipes[1], $prefix . str_repeat('x', 300));
+            rewind($process->pipes[1]);
+
+            $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+            assertSame('WORKER_FRAME_TOO_LARGE', $error->diagnosticCode);
+            assertSame($expected, $error->frameIsAFilesAnswer, $prefix);
+        }
     }
 
     public function testAWorkerThatChoseItsExitCodeStillReportsThatCode(): void
@@ -803,8 +984,7 @@ final class NdjsonRpcChannelTest extends TestCase
         );
 
         assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
-        assertSame(true, str_contains($error->getMessage(), 'ImportError: no module named knossos'));
-        assertSame('ImportError: no module named knossos', $channel->stderr());
+        assertSame(true, str_contains($error->getMessage(), 'Worker stderr: ImportError: no module named knossos'));
         assertSame(true, $process->statusChecks < 10);
 
         fclose($stdoutPair[1]);
@@ -845,7 +1025,7 @@ final class NdjsonRpcChannelTest extends TestCase
 
         assertSame(true, in_array($error->diagnosticCode, ['WORKER_TIMEOUT', 'WORKER_PIPE_BROKEN'], true));
         assertSame(true, $passes < 25);
-        assertSame('warming up', $channel->stderr());
+        assertSame(true, str_ends_with($error->getMessage(), ' Worker stderr: warming up'));
 
         fclose($stdinPair[1]);
         fclose($stdoutPair[1]);
@@ -912,7 +1092,7 @@ final class NdjsonRpcChannelTest extends TestCase
 
         $passes = 0;
         $announced = false;
-        captureThrows(
+        $error = captureThrows(
             static function () use ($channel, &$passes, &$announced, $stderrPair): void {
                 $channel->send(['data' => str_repeat('y', 8_000_000)], static function () use (&$passes, &$announced, $stderrPair): bool {
                     // Any pass after the first: stdout's EOF has been observed
@@ -930,7 +1110,7 @@ final class NdjsonRpcChannelTest extends TestCase
             WorkerException::class,
         );
 
-        assertSame('TAIL', $channel->stderr());
+        assertSame(true, str_ends_with($error->getMessage(), ' Worker stderr: TAIL'));
 
         fclose($stdinPair[1]);
         fclose($stderrPair[1]);
@@ -1058,6 +1238,13 @@ final class NdjsonRpcChannelTest extends TestCase
         $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
 
         assertSame('WORKER_FRAME_TOO_LARGE', $error->diagnosticCode);
+        // Knossos ends the worker over this, so the message says so and names
+        // the limit, rather than leaving a signal for the reader to explain.
+        assertSame(
+            'Worker frame exceeds the 128-byte line limit (worker_execution.max_line_bytes), so Knossos stopped the worker.',
+            $error->getMessage(),
+        );
+        assertSame(null, $error->terminatingSignal);
     }
 
     public function testAnOversizedPartialFrameBeyondTheOutputBudgetIsAnOutputLimit(): void
@@ -1071,6 +1258,10 @@ final class NdjsonRpcChannelTest extends TestCase
         $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
 
         assertSame('WORKER_OUTPUT_LIMIT', $error->diagnosticCode);
+        assertSame(
+            'Worker output exceeds the 128-byte request limit (worker_execution.max_output_bytes), so Knossos stopped the worker.',
+            $error->getMessage(),
+        );
     }
 
     /**

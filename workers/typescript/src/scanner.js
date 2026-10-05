@@ -201,20 +201,25 @@ class InputReadRecorder {
  */
 export class TypeScriptScanner {
     /**
-     * @param {{observeHostPath?: (stage: "load"|"read", absolute: string) => void}} [options]
+     * @param {{observeHostPath?: (stage: "load"|"read", absolute: string) => void, collectGarbage?: () => void}} [options]
      *   `observeHostPath` is a test seam, handed to each request's recorder.
+     *   `collectGarbage` runs a full collection; it defaults to the `gc` that
+     *   `--expose-gc` provides, and does nothing when the flag was not given.
      */
-    constructor({ observeHostPath } = {}) {
+    constructor({ observeHostPath, collectGarbage } = {}) {
         this.programCache = new Map();
         this.observeHostPath = observeHostPath;
+        this.collectGarbage = collectGarbage ?? (() => globalThis.gc?.());
         // Reset per request; see #cacheProgram.
         this.programsBuiltThisRequest = 0;
+        // Set when a program leaves the cache; see #collectReleasedPrograms.
+        this.releasedSinceCollection = false;
     }
 
     /**
      * Stream deterministic owned contributions for the requested source files.
      *
-     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown}} params
+     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, declaration_files?: unknown}} params
      * @param {(contribution: object) => void} emit
      * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>}}
      */
@@ -259,6 +264,7 @@ export class TypeScriptScanner {
             vueProjects: Array.isArray(params.vue_projects)
                 ? params.vue_projects
                 : [],
+            declarationFiles: declarationFilesFrom(params.declaration_files),
             packageDirectories: Array.isArray(params.package_directories)
                 ? params.package_directories.filter(
                       (directory) => typeof directory === "string",
@@ -343,24 +349,35 @@ export class TypeScriptScanner {
     #scanFallback(root, remaining, parsedConfigs, request, tally) {
         request.owner = undefined;
         request.owners = new Map();
+        // The project's declaration files, grouped as the files are: an
+        // ambient `declare module` satisfies an import only from inside the
+        // importer's program, and the files requested with it are whatever
+        // this batch or this incremental scan happened to hold.
+        const declarations = fallbackGroups(
+            root,
+            request.declarationFiles,
+            parsedConfigs,
+            request.packageDirectories,
+        );
         for (const [directory, group] of fallbackGroups(
             root,
             remaining,
             parsedConfigs,
             request.packageDirectories,
         )) {
+            const files = [
+                ...new Set([
+                    ...group.files,
+                    ...(declarations.get(directory)?.files ?? []),
+                ]),
+            ];
             tally(
                 this.#scanProgram(
                     `${directory}\0<fallback>`,
                     programConfig(
                         request,
                         directory,
-                        fallbackConfig(
-                            root,
-                            group.files,
-                            group.parsed,
-                            directory,
-                        ),
+                        fallbackConfig(root, files, group.parsed, directory),
                     ),
                     request,
                 ),
@@ -396,6 +413,7 @@ export class TypeScriptScanner {
         },
     ) {
         this.#reserveProgramSlot(key);
+        this.#collectReleasedPrograms();
         const oldProgram = this.programCache.get(key);
         let program;
         try {
@@ -465,7 +483,23 @@ export class TypeScriptScanner {
             if (this.programCache.size <= limit) break;
             if (oldest === key) continue;
             this.programCache.delete(oldest);
+            this.releasedSinceCollection = true;
         }
+    }
+
+    // A released program is only garbage until V8 collects it, and under the
+    // worker's 2 GB heap cap V8 has no reason to: on a project with nine
+    // programs per request the worker grew to 1.7 GB resident with under
+    // 0.5 GB live, and a host memory guard (earlyoom) SIGTERMed it as the
+    // largest process on the machine. Collecting before the next build keeps
+    // the process near its live set, about two programs: on that project the
+    // peak fell to 1.2 GB with no measurable change in scan time. Only when
+    // something was released, so a request within the cache's bound pays
+    // nothing.
+    #collectReleasedPrograms() {
+        if (!this.releasedSinceCollection) return;
+        this.releasedSinceCollection = false;
+        this.collectGarbage();
     }
 
     /**
@@ -488,6 +522,7 @@ export class TypeScriptScanner {
         this.programsBuiltThisRequest += 1;
         if (this.programsBuiltThisRequest > MAX_CACHED_PROGRAMS) {
             this.programCache.clear();
+            this.releasedSinceCollection = true;
             return;
         }
         this.programCache.delete(key);
@@ -495,6 +530,7 @@ export class TypeScriptScanner {
         while (this.programCache.size > MAX_CACHED_PROGRAMS) {
             const oldest = this.programCache.keys().next().value;
             this.programCache.delete(oldest);
+            this.releasedSinceCollection = true;
         }
     }
 
@@ -670,7 +706,7 @@ class TypeScriptLanguageFactCollector {
                 declaration_file: this.sourceFile.isDeclarationFile,
                 executable:
                     startsWithShebang(this.sourceFile.text) ||
-                    hasMainGuard(this.sourceFile) ||
+                    hasMainGuard(this.sourceFile, this.checker) ||
                     isClassicScript(this.sourceFile),
             },
         );
@@ -900,6 +936,60 @@ class TypeScriptLanguageFactCollector {
         }
     }
 
+    /**
+     * Whether a method fulfils a member of a type its class extends or
+     * implements, or of the type its object literal is handed to: the source
+     * says so with `override`, or the checker finds a member of that name on
+     * a heritage or contextual type. The type may be a dependency's
+     * or a built-in one (`Iterator`), whose members are not in the graph, so
+     * the dispatch through it leaves no edge to this method.
+     */
+    overridesSupertypeMember(node) {
+        if (!ts.isMethodDeclaration(node)) return false;
+        // An object literal's method fulfils the member of the type the
+        // literal is handed to (`registerHooks({ resolve() {} })`), which
+        // calls it unseen.
+        if (ts.isObjectLiteralExpression(node.parent)) {
+            const name = this.checker.getSymbolAtLocation(
+                node.name,
+            )?.escapedName;
+            const contract = this.checker.getContextualType(node.parent);
+            const member =
+                name === undefined
+                    ? undefined
+                    : contract?.getProperty(
+                          ts.unescapeLeadingUnderscores(name),
+                      );
+            // A contextual type inferred from the literal itself
+            // (`define<T>(options: T)`) holds this very method: that names
+            // no contract, so only a member declared elsewhere counts.
+            return (member?.declarations ?? []).some(
+                (declaration) => declaration !== node,
+            );
+        }
+        if (
+            !ts.isClassDeclaration(node.parent) &&
+            !ts.isClassExpression(node.parent)
+        )
+            return false;
+        const flags = ts.getCombinedModifierFlags(node);
+        if (flags & ts.ModifierFlags.Override) return true;
+        // A heritage type describes instances; a static method sharing an
+        // instance member's name fulfils nothing of it.
+        if (flags & ts.ModifierFlags.Static) return false;
+        const name = this.checker.getSymbolAtLocation(node.name)?.escapedName;
+        if (name === undefined) return false;
+        return (node.parent.heritageClauses ?? []).some((clause) =>
+            clause.types.some(
+                (type) =>
+                    this.checker
+                        .getTypeAtLocation(type)
+                        .getProperty(ts.unescapeLeadingUnderscores(name)) !==
+                    undefined,
+            ),
+        );
+    }
+
     markRuntimeInvoked(member) {
         const id = this.declaredIds.get(member);
         const fact =
@@ -1054,6 +1144,10 @@ class TypeScriptLanguageFactCollector {
                 : ambientAttributes(node, descriptor.attributes),
         );
         this.addEdge("contains", parent.id, id, node);
+        if (this.overridesSupertypeMember(node)) {
+            const fact = this.accumulator.nodesById.get(id);
+            fact.attributes = { ...fact.attributes, overrides: true };
+        }
         const nest = this.nest.declaration(node, id, canonical);
         const applicationRoles = this.application.declaration(
             node,
@@ -2193,6 +2287,8 @@ function decodeLikeTypeScript(buffer) {
  * unless the bytes are the same, in which case so are the facts. The read is
  * bounded to one byte past the cap for the same reason: whatever it opens, it
  * never reads more than a file the host would accept.
+ *
+ * @param {InputReadRecorder} reads the request's recorder
  */
 function readHashedSourceFile(
     root,
@@ -2667,6 +2763,8 @@ function inputKeyLocation(root, walked) {
  * reused program holds only this request's reads and this finds nothing. It is
  * here so that a compiler that kept an earlier request's SourceFile would make
  * that file's facts unverifiable rather than vouched for by the earlier read.
+ *
+ * @param {InputReadRecorder} reads the request's recorder
  */
 function recordUnreadSourceFiles(root, program, reads, maxFileBytes) {
     for (const sourceFile of program.getSourceFiles()) {
@@ -4573,19 +4671,24 @@ function isImportMetaUrl(expression) {
 }
 
 // Whether a file-scope `if` runs its body only when the file is the program
-// entered: `import.meta.main` (Bun, Deno) or CommonJS `require.main === module`.
+// entered: `import.meta.main` (Bun, Deno), CommonJS `require.main === module`,
+// or the ES-module comparison of `import.meta.url` with `process.argv[1]`.
 // This is JavaScript's `__main__` guard, and it says the same thing a shebang
 // does: something outside the graph runs the file, so no inbound edge is owed.
-// A guard nested in a function, or a negated one, says nothing about that.
-function hasMainGuard(sourceFile) {
+// A guard nested in a function, or a negated one, says nothing about that, and
+// neither does one whose names the file binds to something of its own.
+function hasMainGuard(sourceFile, checker) {
     return sourceFile.statements.some(
         (statement) =>
             ts.isIfStatement(statement) &&
-            isMainGuardCondition(unwrapParentheses(statement.expression)),
+            isMainGuardCondition(
+                unwrapParentheses(statement.expression),
+                checker,
+            ),
     );
 }
 
-function isMainGuardCondition(expression) {
+function isMainGuardCondition(expression, checker) {
     if (isImportMetaMain(expression)) return true;
     if (!ts.isBinaryExpression(expression)) return false;
     const operator = expression.operatorToken.kind;
@@ -4596,9 +4699,224 @@ function isMainGuardCondition(expression) {
         return false;
     const left = unwrapParentheses(expression.left);
     const right = unwrapParentheses(expression.right);
+    const isModule = (node) => isUnshadowed(node, "module", checker);
+    if (
+        (isRequireMain(left, checker) && isModule(right)) ||
+        (isModule(left) && isRequireMain(right, checker))
+    )
+        return true;
+    // The ES-module form compares this module's location with the script node
+    // was started on, as two URLs or as two paths. A URL never equals a path,
+    // so a comparison that mixes them is no guard at all.
+    const isEntry = (node) => isScriptArgument(node, checker);
+    const self = locationOf(left, isImportMetaUrl, checker);
+    const entry = locationOf(right, isEntry, checker);
+    if (self !== null && self === entry) return true;
+    const reversedSelf = locationOf(right, isImportMetaUrl, checker);
+    const reversedEntry = locationOf(left, isEntry, checker);
+    return reversedSelf !== null && reversedSelf === reversedEntry;
+}
+
+const URL_MODULES = ["url", "node:url"];
+const FS_MODULES = ["fs", "node:fs"];
+const PROCESS_MODULES = ["process", "node:process"];
+
+/**
+ * Whether an expression is the location of `isSource`'s value, and in which
+ * form: "url" for a file URL, "path" for a file-system path. The conversions
+ * `fileURLToPath`, `pathToFileURL(...).href` and `realpathSync`, imported from
+ * node's own modules, keep the location while changing or normalising its
+ * form; anything else loses it.
+ *
+ * @returns {"url" | "path" | null}
+ */
+function locationOf(expression, isSource, checker) {
+    const current = unwrapParentheses(expression);
+    if (isSource(current)) return isImportMetaUrl(current) ? "url" : "path";
+    const inner = (call) => locationOf(call.arguments[0], isSource, checker);
+    if (
+        ts.isPropertyAccessExpression(current) &&
+        current.name.text === "href"
+    ) {
+        const call = unwrapParentheses(current.expression);
+        return isImportedCall(call, "pathToFileURL", URL_MODULES, checker) &&
+            inner(call) === "path"
+            ? "url"
+            : null;
+    }
+    if (isImportedCall(current, "fileURLToPath", URL_MODULES, checker))
+        return inner(current) === "url" ? "path" : null;
+    if (isImportedCall(current, "realpathSync", FS_MODULES, checker))
+        return inner(current) === "path" ? "path" : null;
+    return null;
+}
+
+/**
+ * A one-argument call to the export `name` of one of `modules`: through a
+ * named import under any local name, or as a member of the module's default
+ * or namespace import (`url.fileURLToPath`).
+ */
+function isImportedCall(expression, name, modules, checker) {
+    if (!ts.isCallExpression(expression) || expression.arguments.length !== 1)
+        return false;
+    const callee = unwrapParentheses(expression.expression);
+    if (ts.isIdentifier(callee)) {
+        const binding = importBinding(callee, checker);
+        return binding !== null && modules.includes(binding.module)
+            ? binding.imported === name
+            : false;
+    }
+    if (
+        !ts.isPropertyAccessExpression(callee) ||
+        callee.name.text !== name ||
+        !ts.isIdentifier(callee.expression)
+    )
+        return false;
+    return isModuleObject(callee.expression, modules, checker);
+}
+
+/** An identifier bound to a module's default or namespace import. */
+function isModuleObject(identifier, modules, checker) {
+    const binding = importBinding(identifier, checker);
     return (
-        (isRequireMain(left) && isIdentifierNamed(right, "module")) ||
-        (isIdentifierNamed(left, "module") && isRequireMain(right))
+        binding !== null &&
+        modules.includes(binding.module) &&
+        (binding.imported === "default" || binding.imported === "*")
+    );
+}
+
+/**
+ * The import an identifier is bound to: the module it names and the export
+ * (`"default"`, `"*"` for a namespace, or the export's own name). Null when
+ * the identifier is bound to anything else, or to nothing.
+ *
+ * @returns {{module: string, imported: string} | null}
+ */
+function importBinding(identifier, checker) {
+    const declarations =
+        checker.getSymbolAtLocation(identifier)?.declarations ?? [];
+    if (declarations.length !== 1) return null;
+    const [declaration] = declarations;
+    let imported;
+    let clause;
+    if (ts.isImportSpecifier(declaration)) {
+        imported = (declaration.propertyName ?? declaration.name).text;
+        clause = declaration.parent.parent;
+    } else if (ts.isNamespaceImport(declaration)) {
+        imported = "*";
+        clause = declaration.parent;
+    } else if (ts.isImportClause(declaration)) {
+        imported = "default";
+        clause = declaration;
+    } else return requireBinding(declaration);
+    const specifier = clause.parent.moduleSpecifier;
+    return ts.isStringLiteral(specifier)
+        ? { module: specifier.text, imported }
+        : null;
+}
+
+/**
+ * The same for a CommonJS `require`: `const url = require("url")` binds the
+ * whole module, `const { fileURLToPath: toPath } = require("url")` one export.
+ *
+ * @returns {{module: string, imported: string} | null}
+ */
+function requireBinding(declaration) {
+    if (
+        ts.isVariableDeclaration(declaration) &&
+        ts.isIdentifier(declaration.name)
+    ) {
+        const module = requiredModule(declaration.initializer);
+        return module === null ? null : { module, imported: "*" };
+    }
+    if (
+        !ts.isBindingElement(declaration) ||
+        declaration.dotDotDotToken !== undefined ||
+        !ts.isObjectBindingPattern(declaration.parent) ||
+        !ts.isVariableDeclaration(declaration.parent.parent)
+    )
+        return null;
+    const module = requiredModule(declaration.parent.parent.initializer);
+    const property = declaration.propertyName ?? declaration.name;
+    return module !== null &&
+        (ts.isIdentifier(property) || ts.isStringLiteral(property))
+        ? { module, imported: property.text }
+        : null;
+}
+
+/** The module `require("name")` loads, or null for any other expression. */
+function requiredModule(expression) {
+    if (expression === undefined) return null;
+    const call = unwrapParentheses(expression);
+    return ts.isCallExpression(call) &&
+        isIdentifierNamed(unwrapParentheses(call.expression), "require") &&
+        call.arguments.length === 1 &&
+        ts.isStringLiteral(call.arguments[0])
+        ? call.arguments[0].text
+        : null;
+}
+
+/**
+ * Whether `node` is the identifier `name` and no binding the file declares in
+ * a scope holding it could be what it refers to: it is the global, or
+ * CommonJS's own `module`, `exports` or `require`. Only a real binding counts.
+ * Assigning `module.exports` or `exports.x` gives the file a binder symbol of
+ * that name too, and that symbol is CommonJS's own, not a local.
+ */
+function isUnshadowed(node, name, checker) {
+    if (!isIdentifierNamed(node, name)) return false;
+    const sourceFile = node.getSourceFile();
+    return !(checker.getSymbolAtLocation(node)?.declarations ?? []).some(
+        (declaration) =>
+            isLocalBinding(declaration) &&
+            declaration.getSourceFile() === sourceFile,
+    );
+}
+
+/**
+ * A declaration that binds a name in its scope, as code writes it. An ambient
+ * one (`declare const process`, anything in a `declare` block) describes what
+ * the runtime defines and binds nothing of its own.
+ */
+function isLocalBinding(declaration) {
+    if (
+        (declaration.flags & ts.NodeFlags.Ambient) !== 0 ||
+        (ts.getCombinedModifierFlags(declaration) &
+            ts.ModifierFlags.Ambient) !==
+            0
+    )
+        return false;
+    return (
+        // Covers a catch clause's binding too.
+        ts.isVariableDeclaration(declaration) ||
+        ts.isBindingElement(declaration) ||
+        ts.isParameter(declaration) ||
+        ts.isFunctionDeclaration(declaration) ||
+        ts.isClassDeclaration(declaration) ||
+        ts.isEnumDeclaration(declaration) ||
+        ts.isModuleDeclaration(declaration) ||
+        ts.isImportClause(declaration) ||
+        ts.isImportSpecifier(declaration) ||
+        ts.isNamespaceImport(declaration) ||
+        ts.isImportEqualsDeclaration(declaration)
+    );
+}
+
+/** `process.argv[1]`: the path of the script node was started on. */
+function isScriptArgument(expression, checker) {
+    if (
+        !ts.isElementAccessExpression(expression) ||
+        !ts.isNumericLiteral(expression.argumentExpression) ||
+        expression.argumentExpression.text !== "1" ||
+        !ts.isPropertyAccessExpression(expression.expression) ||
+        expression.expression.name.text !== "argv"
+    )
+        return false;
+    const process = expression.expression.expression;
+    return (
+        isUnshadowed(process, "process", checker) ||
+        (ts.isIdentifier(process) &&
+            isModuleObject(process, PROCESS_MODULES, checker))
     );
 }
 
@@ -4611,11 +4929,11 @@ function isImportMetaMain(expression) {
     );
 }
 
-function isRequireMain(expression) {
+function isRequireMain(expression, checker) {
     return (
         ts.isPropertyAccessExpression(expression) &&
         expression.name.text === "main" &&
-        isIdentifierNamed(expression.expression, "require")
+        isUnshadowed(expression.expression, "require", checker)
     );
 }
 
@@ -4795,6 +5113,23 @@ function assertScannablePath(relative) {
         )
     )
         throw new Error("Project-relative path is invalid.");
+}
+
+/**
+ * The project's declaration files the core listed, keeping only well-formed
+ * project-relative `.d.ts`, `.d.mts` and `.d.cts` names. They are only offered
+ * to a program; the compiler host still decides whether each may be read.
+ */
+function declarationFilesFrom(input) {
+    if (!Array.isArray(input)) return [];
+    return input.filter((relative) => {
+        try {
+            assertScannablePath(relative);
+        } catch {
+            return false;
+        }
+        return /\.d\.[cm]?ts$/.test(relative);
+    });
 }
 
 function validatedInside(root, relative) {

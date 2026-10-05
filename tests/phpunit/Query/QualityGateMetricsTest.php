@@ -329,6 +329,26 @@ final class QualityGateMetricsTest extends KnossosTestCase
     }
 
     /**
+     * A method the scanner marks as overriding a supertype's member is reached
+     * through that supertype, and health drops it for that mark alone, so the
+     * budget may not charge for it either.
+     */
+    #[Group('query')]
+    public function testUnreferencedCandidatesExcludeMethodsTheScannerMarkedAsOverriding(): void
+    {
+        [$pdo, $repository, $ids] = $this->baseline();
+        $this->addNode($repository, $ids, 'method', 'App\\Visitor::enterNode', 'enterNode', attributes: ['overrides' => true]);
+        $this->addNode($repository, $ids, 'method', 'App\\Visitor::helper', 'helper');
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $gate = (new ArchitectureQueryService($pdo))
+            ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
+
+        // App\Checkout from the fixture, plus the unmarked App\Visitor::helper.
+        assertSame(2, $gate->data['metrics']['unreferenced_candidates']);
+    }
+
+    /**
      * Give one node a role, the way the classifier does during a scan.
      *
      * @param array<string, string> $ids

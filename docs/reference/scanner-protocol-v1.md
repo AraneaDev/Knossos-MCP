@@ -1,6 +1,5 @@
 # Knossos scanner worker protocol v1
 
-Status: Phase 1 foundation  
 Wire format: UTF-8 newline-delimited JSON-RPC 2.0  
 Protocol version: `1.0`  
 Output schema version: `1.0`
@@ -24,10 +23,7 @@ limits before accepting contributions.
 ## Methods
 
 The worker protocol has four methods: `initialize`, `scan`, `cancel`, and
-`shutdown`. `cancel` is advisory and best-effort: the workers are
-single-threaded and blocked inside `scan` when it arrives, so the host
-terminates the process rather than waiting. No worker advertises a `cancel`
-capability.
+`shutdown`. `cancel` is advisory and best-effort: a worker handles one request at a time and reads the next line only after the scan in progress has answered, so the host terminates the process rather than waiting. No worker advertises a `cancel` capability.
 
 ### `initialize`
 
@@ -55,8 +51,7 @@ Version mismatch is fatal and occurs before project paths are sent.
 
 ### `scan`
 
-Accepts a request ID, project context, project-relative added/changed/deleted
-inputs, configuration hashes, and limits. A worker streams zero or more
+Accepts a request ID and `params` that carry the project's real root (`root`), the project-relative paths this request must scan (`files`), and the bounds (`limits`: `max_files` and `max_file_bytes`). The core sends only the files that need scanning: a file whose cached contribution is still valid is not sent. The packaged workers receive extra fields for their own language: `frameworks` (PHP, Python and Rust), `config_files` (TypeScript and Rust), and several TypeScript project lists. A worker streams zero or more
 `scan/contribution` notifications, and zero or more `scan/input_hashes`
 notifications (below), followed by a final result containing counts.
 
@@ -75,11 +70,11 @@ must therefore treat every `scan` as covering only the files that request named,
 and must not assume the first `scan` sees the whole project or that any request
 is the last one.
 
-Two consequences for a worker author:
+Three consequences for a worker author:
 
 - **Every integer in the result is a per-request count, and the core sums it
   across a language's requests.** `files_scanned`, and any counter of its own a
-  worker adds, must report what THIS request did, not a running total: a worker
+  worker adds, must report what THIS request did alone: a worker
   that returns a cumulative figure will be double-counted. Other non-integer
   result fields are not summed; the last request's value is the one reported.
   `input_hashes` (below) is the exception: the core verifies it against
@@ -93,7 +88,7 @@ Two consequences for a worker author:
   The core cannot predict how much output a request will produce (measured
   expansion from source bytes to protocol output ranges from under 2x for real
   hand-written sources to 15x for code dense in declared symbols), so it sizes
-  batches optimistically and halves the budget when a worker overflows. A worker
+  batches optimistically and halves the budget, up to four times, when a worker overflows. A worker
   must therefore be safe to re-ask for files it has already partially reported
   on; the core discards the partial output of a failed request. Ordinary worker
   failures are not retried.
@@ -144,7 +139,7 @@ A result may also carry `input_hashes`: an object mapping every project file
 the worker read while deriving that request's facts to the lowercase SHA-256
 hex of the raw bytes read, or to `null` when a read was attempted and failed,
 or a lookup that decides facts found nothing there (see keying reads, below).
-This covers files the worker read for another file's sake, not only the file a
+This covers files the worker read for another file's sake, as well as the file a
 contribution describes: a module index built by reading every module to
 resolve one file's imports, or a type checker that loads a whole program to
 check one of its files. A worker that declares the `input_hashes` capability,
@@ -369,8 +364,7 @@ and confidence is `certain`, `probable`, or `possible`.
 ### `cancel`
 
 Accepts the active scan request ID, sent verbatim so an integer id is never
-stringified. It is a notification with no reply: a single-threaded worker is
-blocked inside `scan` and will not read the frame until that scan has finished,
+stringified. It is a notification with no reply: a worker busy inside `scan` will not read the frame until that scan has finished,
 so the core discards uncommitted output and terminates the process rather than
 waiting for cooperation.
 

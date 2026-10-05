@@ -32,7 +32,7 @@ final class OracleAgreementTest extends KnossosTestCase
             // A recorded clean working tree, which the oracle needs past its
             // own gate: a scan that recorded no dirty set at all declines.
             $pdo->prepare('UPDATE scans SET git_head = :head, dirty_paths_json = :dirty WHERE id = :id')
-                ->execute(['head' => str_repeat('a', 40), 'dirty' => \Knossos\Git\DirtyPathSet::clean()->encode(), 'id' => $scanId]);
+                ->execute(['head' => str_repeat('a', 40), 'dirty' => \Knossos\Git\DirtyPathSet::of([])->encode(), 'id' => $scanId]);
 
             // One modification, one deletion, one addition, on disk.
             file_put_contents($root . '/src/a.php', "<?php\nfinal class A {}\n");

@@ -88,7 +88,10 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 'external_ancestor' => null,
                 'uncontracted_literal' => false,
             ];
-            if ($context['inherited']) {
+            // The scanner saw the supertype member this one fulfils, which may
+            // live outside the graph, where the walk above cannot look.
+            if ($context['inherited']
+                || ReportableComponent::isDeclaredOverride((string) $candidate['row']['kind'], $candidate['row']['attributes_json'] ?? null)) {
                 ++$excludedInherited;
                 continue;
             }

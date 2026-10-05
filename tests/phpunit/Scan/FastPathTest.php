@@ -222,6 +222,59 @@ final class FastPathTest extends KnossosTestCase
         return $installation;
     }
 
+    /**
+     * An installation whose TypeScript worker answers every file except one
+     * named `Huge`, whose contribution is a frame over the 2 MB line limit.
+     */
+    private function installationRootWithAnOversizedTypescriptFile(string $record): string
+    {
+        $installation = sys_get_temp_dir() . '/knossos-stale-left-out-install-' . bin2hex(random_bytes(6));
+        $this->copyTree(self::repositoryRoot() . '/workers/php', $installation . '/workers/php');
+        mkdir($installation . '/workers/typescript/bin', 0o777, true);
+        file_put_contents($installation . '/workers/typescript/bin/worker.js', sprintf(
+            "const r = require('node:child_process').spawnSync(%s, [%s, 'per_file_frame_too_large_for_huge', %s, '2100000'], { stdio: 'inherit' });\nprocess.exit(r.status ?? 1);\n",
+            json_encode(PHP_BINARY),
+            json_encode(self::repositoryRoot() . '/tests/Fixtures/workers/fake-worker.php'),
+            json_encode($record),
+        ));
+
+        return $installation;
+    }
+
+    #[Group('scan')]
+    public function testAnUnchangedRescanWithALeftOutFileTakesTheFastPath(): void
+    {
+        // A left-out file with no cache entry counted as added on every
+        // rescan, so a project holding one never took the fast path again.
+        $root = sys_get_temp_dir() . '/knossos-stale-left-out-' . bin2hex(random_bytes(6));
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
+        file_put_contents($root . '/frontend/src/Huge.ts', "export const huge = 1;\n");
+        $record = (string) tempnam(sys_get_temp_dir(), 'knossos-left-out-record-');
+        $installation = $this->installationRootWithAnOversizedTypescriptFile($record);
+        try {
+            $pdo = $this->freshTestDatabase();
+            $service = new ProjectScanService($pdo, $installation, [$root]);
+
+            $first = $service->scan($root);
+            assertSame([], $first->data['degraded_languages'], json_encode($first->warnings));
+            assertSame(1, $first->data['left_out_files']);
+            $requests = count(file($record, FILE_IGNORE_NEW_LINES) ?: []);
+
+            $second = $service->scan($root);
+
+            assertSame('no_change', $second->data['fast_path'] ?? null);
+            assertSame(1, $second->data['left_out_files']);
+            assertContains('frontend/src/Huge.ts', $second->summary);
+            assertSame(0, $second->data['added_files']);
+            assertSame($requests, count(file($record, FILE_IGNORE_NEW_LINES) ?: []), 'Nothing was sent to the worker.');
+        } finally {
+            $this->removeTempTree($root);
+            $this->removeTempTree($installation);
+            @unlink($record);
+            @unlink($record . '.framed');
+        }
+    }
+
     #[Group('scan')]
     public function testDegradedIncrementalScanPreservesTheLastGoodGraph(): void
     {

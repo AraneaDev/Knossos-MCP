@@ -149,6 +149,11 @@ final class GitDriftOracleTest extends KnossosTestCase
             self::assertSame(1, $drift->added, 'The new path has no files row but is trackable.');
             self::assertSame(1, $drift->deleted, 'The old path has a files row and no file on disk.');
             self::assertSame(0, $drift->changed, 'Neither half of a rename is a content change.');
+            self::assertSame(
+                [['path' => 'src/a.php', 'change' => 'deleted'], ['path' => 'src/renamed.php', 'change' => 'added']],
+                $drift->paths,
+                'Each drifted path is named with how it drifted, so the reader learns which files, not only how many.',
+            );
         } finally {
             $this->removeTempTree($root);
         }
@@ -443,7 +448,7 @@ final class GitDriftOracleTest extends KnossosTestCase
             $project->execute(['project' => $projectId]);
             $scanId = (string) $project->fetchColumn();
             $pdo->prepare('UPDATE scans SET git_head = :head, dirty_paths_json = :dirty WHERE id = :id')
-                ->execute(['head' => self::HEAD, 'dirty' => DirtyPathSet::clean()->encode(), 'id' => $scanId]);
+                ->execute(['head' => self::HEAD, 'dirty' => DirtyPathSet::of([])->encode(), 'id' => $scanId]);
 
             file_put_contents($root . '/src/chunk1/f0005.php', "<?php\nfinal class Chunk1Edit {}\n");
             file_put_contents($root . '/src/chunk2/g0002.php', "<?php\nfinal class Chunk2Edit {}\n");

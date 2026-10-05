@@ -5,6 +5,12 @@ declare(strict_types=1);
 require __DIR__ . '/lib/git-ignore.php';
 
 $root = dirname(__DIR__);
+foreach ($argv as $argument) {
+    // A throwaway tree, so the checker itself can be tested against fixtures.
+    if (str_starts_with($argument, '--root=')) {
+        $root = rtrim(substr($argument, 7), '/');
+    }
+}
 $checkExternal = in_array('--external', $argv, true);
 
 /**
@@ -21,8 +27,22 @@ $checkExternal = in_array('--external', $argv, true);
  * link syntax around it is still checked.
  */
 const UNFETCHED_HOSTS = ['img.shields.io', 'mcpobservatory.com'];
-$paths = array_merge([$root . '/README.md'], documentationFiles($root . '/docs'));
+/**
+ * The directories whose Markdown is checked. Each must exist: a root missing
+ * from the tree fails the check by name, so an image that leaves one out (the
+ * quality image once left out plugins/) cannot pass without checking it.
+ */
+const DOCUMENTATION_ROOTS = ['docs', 'skills', 'plugins'];
 $failures = [];
+$paths = array_values(array_filter([$root . '/README.md', $root . '/CONTRIBUTING.md'], 'is_file'));
+foreach (DOCUMENTATION_ROOTS as $documentationRoot) {
+    if (!is_dir($root . '/' . $documentationRoot)) {
+        $failures[] = 'missing documentation root ' . $documentationRoot . '/';
+        continue;
+    }
+    $paths = array_merge($paths, documentationFiles($root, $documentationRoot));
+}
+$headingSlugs = [];
 $external = [];
 foreach ($paths as $path) {
     $contents = (string) file_get_contents($path);
@@ -36,7 +56,10 @@ foreach ($paths as $path) {
             }
         }
     }
-    preg_match_all('/(?<!!)\[[^]]*]\(([^) ]+)(?:\s+"[^"]*")?\)/', $contents, $matches);
+    // `](target)` matches links and images alike, and both halves of the nested
+    // `[![alt](image)](href)` badge form. Fenced code is not prose.
+    $prose = implode("\n", linesOutsideFences($contents));
+    preg_match_all('/]\(([^) ]+)(?:\s+"[^"]*")?\)/', $prose, $matches);
     foreach ($matches[1] as $target) {
         $target = trim($target, '<>');
         if (str_starts_with($target, 'https://')) {
@@ -47,13 +70,21 @@ foreach ($paths as $path) {
             $failures[] = relative($root, $path) . ': unsupported or insecure link ' . $target;
             continue;
         }
-        $file = rawurldecode(explode('#', $target, 2)[0]);
-        if ($file === '') {
+        $parts = explode('#', $target, 2);
+        $file = rawurldecode($parts[0]);
+        $fragment = isset($parts[1]) ? rawurldecode($parts[1]) : '';
+        $resolved = $file === '' ? $path : dirname($path) . '/' . $file;
+        if ($file !== '' && !file_exists($resolved)) {
+            $failures[] = relative($root, $path) . ': missing link target ' . $target;
             continue;
         }
-        $resolved = dirname($path) . '/' . $file;
-        if (!file_exists($resolved)) {
-            $failures[] = relative($root, $path) . ': missing link target ' . $target;
+        if ($fragment === '' || !is_file($resolved) || strtolower(pathinfo($resolved, PATHINFO_EXTENSION)) !== 'md') {
+            continue;
+        }
+        $headingSlugs[$resolved] ??= headingSlugs((string) file_get_contents($resolved));
+        // `#L12` and `#L12-L20` point at a line, which GitHub resolves itself.
+        if (preg_match('/^L\d+(?:-L\d+)?$/', $fragment) !== 1 && !isset($headingSlugs[$resolved][strtolower($fragment)])) {
+            $failures[] = relative($root, $path) . ': missing anchor ' . $target;
         }
     }
 }
@@ -104,10 +135,14 @@ printf(
  * tree and not yet committed is on its way into the repository, and skipping it
  * would let a broken link land.
  *
+ * Run once per documentation root (`docs`, `skills`, `plugins`), so a link in a
+ * skill or plugin copy is held to the same standard as one in the manual.
+ *
  * @return list<string>
  */
-function documentationFiles(string $directory): array
+function documentationFiles(string $root, string $directory): array
 {
+    $directory = $root . '/' . $directory;
     $files = [];
     $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, FilesystemIterator::SKIP_DOTS));
     foreach ($iterator as $file) {
@@ -115,16 +150,82 @@ function documentationFiles(string $directory): array
             continue;
         }
         $path = str_replace('\\', '/', $file->getPathname());
+        if (str_contains($path, '/node_modules/')) {
+            continue;
+        }
         $files[] = $path;
     }
     sort($files, SORT_STRING);
-    $ignored = gitIgnoredPaths(dirname($directory), $files);
+    $ignored = gitIgnoredPaths($root, $files);
 
     return array_values(array_filter($files, static fn(string $path): bool => !isset($ignored[$path])));
+}
+
+/**
+ * The anchors a Markdown page offers, by GitHub's rules, as a set keyed by slug.
+ *
+ * Only ATX headings outside fenced code count. The slug is the heading text
+ * lower-cased, with everything but letters, digits, underscores, spaces and
+ * hyphens removed and spaces turned into hyphens. A repeated slug gets `-1`,
+ * `-2` and so on.
+ *
+ * @return array<string, true>
+ */
+function headingSlugs(string $contents): array
+{
+    $slugs = [];
+    $seen = [];
+    foreach (linesOutsideFences($contents) as $line) {
+        if (preg_match('/^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/', $line, $heading) !== 1) {
+            continue;
+        }
+        $text = (string) preg_replace('/!?\[([^]]*)]\([^)]*\)/', '$1', $heading[1]);
+        $text = strtolower(str_replace('`', '', $text));
+        $slug = str_replace(' ', '-', (string) preg_replace('/[^\p{L}\p{N}_ -]/u', '', $text));
+        $count = $seen[$slug] ?? 0;
+        $seen[$slug] = $count + 1;
+        $slugs[$count === 0 ? $slug : $slug . '-' . $count] = true;
+    }
+
+    return $slugs;
 }
 
 /** A path shown relative to the repository root, so failures name what a reader can find. */
 function relative(string $root, string $path): string
 {
     return str_replace($root . '/', '', $path);
+}
+
+/**
+ * The lines of a Markdown page that are not fenced code, by the CommonMark rules.
+ *
+ * An opener is up to three spaces of indent and a run of three or more backticks
+ * or tildes; a backtick opener's info string may not hold a backtick, which is
+ * what keeps an inline "```code``` is a thing" in prose. The closer uses the same
+ * character, is at least as long as the opener and has no info string. A fence
+ * that never closes runs to the end of the file. The fence lines are dropped too.
+ *
+ * @return list<string>
+ */
+function linesOutsideFences(string $contents): array
+{
+    $kept = [];
+    $char = null;
+    $length = 0;
+    foreach (preg_split('/\R/', $contents) ?: [] as $line) {
+        if ($char === null) {
+            if (preg_match('/^ {0,3}(`{3,}|~{3,})(.*)$/', $line, $open) === 1 && !($open[1][0] === '`' && str_contains($open[2], '`'))) {
+                $char = $open[1][0];
+                $length = strlen($open[1]);
+                continue;
+            }
+            $kept[] = $line;
+            continue;
+        }
+        if (preg_match('/^ {0,3}(`{3,}|~{3,})[ \t]*$/', $line, $close) === 1 && $close[1][0] === $char && strlen($close[1]) >= $length) {
+            $char = null;
+        }
+    }
+
+    return $kept;
 }

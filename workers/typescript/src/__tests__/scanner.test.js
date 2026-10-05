@@ -1773,6 +1773,51 @@ describe("the program cache only holds what it can serve", () => {
         expect(scanner.programCache.size).toBe(0);
     });
 
+    it("collects the programs it released before building the next one", () => {
+        // Releasing a program only makes it garbage. Under a 2 GB heap cap V8
+        // has no reason to collect it, so a request over many configs grew
+        // to 1.7 GB resident with under 0.5 GB of it live, and a host memory
+        // guard SIGTERMed the worker as the largest process on the machine.
+        const root = fixture({
+            "tsconfig.one.json": '{"files":["src/a.ts"]}\n',
+            "tsconfig.two.json": '{"files":["src/b.ts"]}\n',
+            "tsconfig.three.json": '{"files":["src/c.ts"]}\n',
+            "src/a.ts": A_FILE,
+            "src/b.ts": "export class B {}\n",
+            "src/c.ts": "export class C {}\n",
+        });
+        const residentAtCollection = [];
+        const scanner = new TypeScriptScanner({
+            collectGarbage: () =>
+                residentAtCollection.push(scanner.programCache.size),
+        });
+
+        scanWithResult(scanner, root, ["src/a.ts", "src/b.ts", "src/c.ts"], {
+            config_files: [
+                "tsconfig.one.json",
+                "tsconfig.two.json",
+                "tsconfig.three.json",
+            ],
+        });
+
+        // The third build had to evict the first program, so a collection
+        // ran before it, with only the one program still cached.
+        expect(residentAtCollection).toEqual([1]);
+    });
+
+    it("never collects when nothing was released", () => {
+        const root = fixture({ "src/a.ts": A_FILE });
+        let collections = 0;
+        const scanner = new TypeScriptScanner({
+            collectGarbage: () => ++collections,
+        });
+
+        scanWithResult(scanner, root, ["src/a.ts"]);
+        scanWithResult(scanner, root, ["src/a.ts"]);
+
+        expect(collections).toBe(0);
+    });
+
     it("still reuses nothing it could not have reused anyway", () => {
         // The release must not cost reuse that was working: a second request
         // over the same over-cap configs reused nothing before this change

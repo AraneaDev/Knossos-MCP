@@ -33,9 +33,16 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
     /**
      * Evaluate declared policies, returning each violation with the edge that breaches it.
      *
+     * `$sourceFiles` scopes the check to edges whose source component is
+     * declared in one of those project-relative files. A caller that only
+     * wants those files' violations then pays for their edges alone, and
+     * the edge and time limits (and `truncated`) speak for that scope rather
+     * than for the whole project. Empty checks every edge.
+     *
      * @param list<array<string, mixed>> $policies
+     * @param list<string> $sourceFiles
      */
-    public function checkArchitecture(string $projectId, array $policies, string $minConfidence = 'possible', int $limit = 100, int $maxEdges = self::DEFAULT_MAX_EDGES, int $timeoutMs = 1000): ResultEnvelope
+    public function checkArchitecture(string $projectId, array $policies, string $minConfidence = 'possible', int $limit = 100, int $maxEdges = self::DEFAULT_MAX_EDGES, int $timeoutMs = 1000, array $sourceFiles = []): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
@@ -95,21 +102,7 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         sort($allKinds, SORT_STRING);
 
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
-        $placeholders = implode(',', array_fill(0, count($allKinds), '?'));
-        // Only the columns the evaluation and the violation record read. `e.*`
-        // dragged attributes_json along for every edge, which is most of the
-        // width of a row and is never looked at here.
-        $statement = $this->pdo->prepare(
-            'SELECT e.id, e.kind, e.source_id, e.target_id, e.confidence, e.origin, e.start_line, e.end_line, ' .
-            'f.relative_path, source.kind AS source_kind, source.canonical_name AS source_name, ' .
-            'target.kind AS target_kind, target.canonical_name AS target_name FROM edges e ' .
-            'JOIN nodes source ON source.id = e.source_id JOIN nodes target ON target.id = e.target_id ' .
-            'LEFT JOIN files f ON f.id = e.file_id WHERE e.project_id = ? ' .
-            sprintf('AND e.kind IN (%s) ', $placeholders) .
-            "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
-            'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
-        );
-        $statement->execute([$projectId, ...$allKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
+        $statement = $this->policyEdges($projectId, $allKinds, $confidenceRank[$minConfidence], $maxEdges, $sourceFiles);
         // Streamed rather than collected: a gate asks for the largest bound the
         // checker accepts, and holding that many joined rows exhausted a 128 MB
         // limit. Memory is now the boundary map plus the violations kept, both
@@ -216,6 +209,45 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
             ['Policy violations are static graph findings; runtime behavior and dynamic dependencies may differ.'],
             $truncated,
         );
+    }
+
+    /**
+     * The edges a policy check walks, in a stable order, one past the edge budget.
+     *
+     * @param list<string> $kinds
+     * @param list<string> $sourceFiles empty for every edge, else only edges whose source is declared in one of them
+     */
+    private function policyEdges(string $projectId, array $kinds, int $confidenceRank, int $maxEdges, array $sourceFiles): \PDOStatement
+    {
+        if (count($sourceFiles) > 500) {
+            throw new InvalidArgumentException('source_files must name at most 500 files.');
+        }
+        $placeholders = static fn(array $values): string => implode(',', array_fill(0, count($values), '?'));
+        // Only the columns the evaluation and the violation record read. `e.*`
+        // dragged attributes_json along for every edge, which is most of the
+        // width of a row and is never looked at here.
+        $statement = $this->pdo->prepare(
+            'SELECT e.id, e.kind, e.source_id, e.target_id, e.confidence, e.origin, e.start_line, e.end_line, ' .
+            'f.relative_path, source.kind AS source_kind, source.canonical_name AS source_name, ' .
+            'target.kind AS target_kind, target.canonical_name AS target_name FROM edges e ' .
+            'JOIN nodes source ON source.id = e.source_id JOIN nodes target ON target.id = e.target_id ' .
+            'LEFT JOIN files f ON f.id = e.file_id WHERE e.project_id = ? ' .
+            sprintf('AND e.kind IN (%s) ', $placeholders($kinds)) .
+            "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
+            ($sourceFiles === [] ? '' : sprintf(
+                'AND source.file_id IN (SELECT id FROM files WHERE project_id = ? AND relative_path IN (%s)) ',
+                $placeholders($sourceFiles),
+            )) .
+            'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
+        );
+        $scope = $sourceFiles === [] ? [] : [$projectId, ...$sourceFiles];
+        // bindValue keeps the integers integers; execute([...]) would send them as text.
+        foreach ([$projectId, ...$kinds, $confidenceRank, ...$scope, $maxEdges + 1] as $index => $value) {
+            $statement->bindValue($index + 1, $value, is_int($value) ? \PDO::PARAM_INT : \PDO::PARAM_STR);
+        }
+        $statement->execute();
+
+        return $statement;
     }
 
     /**

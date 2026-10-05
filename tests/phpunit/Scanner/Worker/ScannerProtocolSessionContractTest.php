@@ -273,11 +273,6 @@ final class ScannerProtocolSessionContractTest extends TestCase
 
                 return $next instanceof Closure ? $next($this->lastId) : $next;
             }
-
-            public function stderr(): string
-            {
-                return '';
-            }
         };
 
         return [new ScannerProtocolSession($process, $channel), $channel, $process];

@@ -33,7 +33,7 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
     private const TEST_IMPACT_SCAN_LIMIT = 100;
 
     /** Most changed files one request may name, and most a working tree may contribute. */
-    private const MAX_FILES = 50;
+    public const MAX_FILES = 50;
 
     /** Most components the changed files map to directly, each of which fans out into its own impact search. */
     private const MAX_DIRECT_COMPONENTS = 1000;

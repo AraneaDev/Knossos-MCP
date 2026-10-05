@@ -300,6 +300,122 @@ while (($line = fgets(STDIN)) !== false) {
                 fflush(STDOUT);
                 exit(0);
             }
+            // Stands in for a host memory guard such as earlyoom, which
+            // SIGTERMs the largest process when memory runs low: the worker
+            // is killed mid-request by a signal nobody on the Knossos side
+            // sent. `_once` is killed on its first oversized request only.
+            if (($mode === 'per_file_sigterm' || $mode === 'per_file_sigterm_once')
+                && count($requested) > $threshold
+                && ($mode === 'per_file_sigterm' || !file_exists($pidFile . '.sigtermed'))) {
+                file_put_contents($pidFile . '.sigtermed', '1');
+                posix_kill(getmypid(), SIGTERM);
+                sleep(5);
+                exit(0);
+            }
+            // A parser crash: the worker kills itself with SIGSEGV on any
+            // request over the threshold, every time.
+            if ($mode === 'per_file_segv' && count($requested) > $threshold) {
+                posix_kill(getmypid(), SIGSEGV);
+                sleep(5);
+                exit(0);
+            }
+            // Every request fails on an oversized frame before any file is
+            // answered, as a line limit set far too low would make it.
+            if ($mode === 'per_file_frame_too_large_always') {
+                fwrite(STDOUT, str_repeat('x', 150_000));
+                fflush(STDOUT);
+                exit(0);
+            }
+            // Fails before answering anything whenever the batch holds the
+            // oversized file, so nothing the worker says narrows the search.
+            if ($mode === 'per_file_frame_too_large_blind') {
+                foreach ($requested as $relativePath) {
+                    if (str_contains((string) $relativePath, 'Huge')) {
+                        fwrite(STDOUT, str_repeat('x', 150_000));
+                        fflush(STDOUT);
+                        exit(0);
+                    }
+                }
+                foreach ($requested as $relativePath) {
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                respond($id, ['count' => count($requested), 'files_scanned' => count($requested)]);
+                continue;
+            }
+            // A broken worker: answers the first file of any batch of more
+            // than one, then fails, whatever the files are.
+            if ($mode === 'per_file_frame_too_large_after_one' && count($requested) > 1) {
+                notifyContribution(fileContribution('knossos.fake:file:' . $requested[0], (string) $requested[0]));
+                fwrite(STDOUT, str_repeat('x', 150_000));
+                fflush(STDOUT);
+                exit(0);
+            }
+            if ($mode === 'per_file_frame_too_large_after_one') {
+                foreach ($requested as $relativePath) {
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                respond($id, ['count' => count($requested), 'files_scanned' => count($requested)]);
+                continue;
+            }
+            // Answers every file, then writes an oversized frame that names
+            // nothing at all: by elimination it belongs to no file.
+            if ($mode === 'per_file_frame_too_large_after_all') {
+                foreach ($requested as $relativePath) {
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                fwrite(STDOUT, str_repeat('x', 150_000));
+                fflush(STDOUT);
+                exit(0);
+            }
+            // Answers every file, then sends a final response too large for
+            // one frame: an oversized frame that belongs to no file.
+            if ($mode === 'per_file_frame_too_large_result') {
+                foreach ($requested as $relativePath) {
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                fwrite(STDOUT, '{"jsonrpc":"2.0","id":' . json_encode($id) . ',"result":{"pad":"' . str_repeat('x', 150_000));
+                fflush(STDOUT);
+                exit(0);
+            }
+            // Answers in request order and fails at the oversized file, so the
+            // files after it are unanswered too and nothing narrows it down
+            // but splitting.
+            if ($mode === 'per_file_frame_too_large_in_order') {
+                foreach ($requested as $relativePath) {
+                    if (str_contains((string) $relativePath, 'Huge')) {
+                        fwrite(STDOUT, str_repeat('x', 150_000));
+                        fflush(STDOUT);
+                        exit(0);
+                    }
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                respond($id, ['count' => count($requested), 'files_scanned' => count($requested)]);
+                continue;
+            }
+            // A file whose own contribution is too large for one frame: every
+            // other file is answered, then the oversized frame for this one
+            // ends the request whatever batch it travels in.
+            if ($mode === 'per_file_frame_too_large_for_huge') {
+                foreach ($requested as $relativePath) {
+                    if (!str_contains((string) $relativePath, 'Huge')) {
+                        notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                    }
+                }
+                foreach ($requested as $relativePath) {
+                    if (str_contains((string) $relativePath, 'Huge')) {
+                        // The threshold, when given, sets the frame's size, so a
+                        // caller with production limits can be made to overflow.
+                        // Blocking first: run under node, the pipe is non-blocking
+                        // and a large write would stop at the pipe's capacity.
+                        stream_set_blocking(STDOUT, true);
+                        fwrite(STDOUT, str_repeat('x', $threshold > 0 ? $threshold : 150_000));
+                        fflush(STDOUT);
+                        exit(0);
+                    }
+                }
+                respond($id, ['count' => count($requested), 'files_scanned' => count($requested)]);
+                continue;
+            }
             if ($mode === 'per_file_oom_once'
                 && count($requested) > $threshold
                 && !file_exists($pidFile . '.oomed')) {

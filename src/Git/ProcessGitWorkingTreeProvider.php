@@ -33,11 +33,11 @@ final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProv
         }
         $revision = 'HEAD';
         if ($baseRef !== null) {
-            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._\/@{}~^:+-]{0,199}$/', $baseRef) !== 1) {
+            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._\/@{}~^:+-]{0,199}$/D', $baseRef) !== 1) {
                 throw new RuntimeException('base_ref contains unsupported characters.');
             }
             $revision = trim($this->runner->run(['git', '--no-optional-locks', '--no-pager', '-C', $root, 'rev-parse', '--verify', $baseRef . '^{commit}'], $timeoutMs, 'working-tree query'));
-            if (preg_match('/^[a-f0-9]{40,64}$/', $revision) !== 1) {
+            if (preg_match('/^[a-f0-9]{40,64}$/D', $revision) !== 1) {
                 throw new RuntimeException('base_ref did not resolve to a commit.');
             }
         }

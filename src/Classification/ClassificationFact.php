@@ -27,7 +27,7 @@ final readonly class ClassificationFact
                 throw new InvalidArgumentException('Classification reference, role, and rule ID must not be empty.');
             }
         }
-        if (!preg_match('/^[a-z][a-z0-9_.-]*$/', $role)) {
+        if (!preg_match('/^[a-z][a-z0-9_.-]*$/D', $role)) {
             throw new InvalidArgumentException('Classification roles use lowercase namespaced identifiers.');
         }
     }

@@ -149,6 +149,30 @@ final readonly class ReportableComponent
     }
 
     /**
+     * A method its scanner marked as fulfilling a supertype's member.
+     *
+     * The source says so, or the language does: a method in a Rust
+     * `impl Trait for T`, a PHP `#[\Override]` or a member of a built-in
+     * interface the class implements, a Python `@override` or an AST
+     * visitor's `visit_*` hook, a TypeScript `override` or a member a
+     * heritage type declares. When that supertype lives outside the project,
+     * its members are not in the graph, so the inherited-method walk cannot
+     * find the contract; whatever dispatches through the supertype (a
+     * traverser calling `enterNode`, `json_encode` calling `jsonSerialize`)
+     * leaves no edge to the method. It is reached the way an inherited
+     * method is.
+     */
+    public static function isDeclaredOverride(string $kind, mixed $attributesJson): bool
+    {
+        if ($kind !== 'method' || !is_string($attributesJson)) {
+            return false;
+        }
+        $decoded = json_decode($attributesJson, true);
+
+        return is_array($decoded) && ($decoded['overrides'] ?? false) === true;
+    }
+
+    /**
      * A constructor, which the engine invokes through `new` on the declaring type.
      *
      * No call edge points at it even in code that constructs the type constantly,

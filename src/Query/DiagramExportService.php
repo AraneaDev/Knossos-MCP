@@ -154,7 +154,11 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
         $sql .= ' ORDER BY degree DESC, n.canonical_name, n.id LIMIT ?';
         $nodeParams[] = $poolSize;
         $statement = $this->pdo->prepare($sql);
-        $statement->execute($nodeParams);
+        // bindValue keeps the integers integers; execute([...]) would send them as text.
+        foreach ($nodeParams as $index => $value) {
+            $statement->bindValue($index + 1, $value, is_int($value) ? \PDO::PARAM_INT : \PDO::PARAM_STR);
+        }
+        $statement->execute();
         $pool = $statement->fetchAll();
         $truncated = count($pool) > $maxNodes;
         $reasons = $truncated ? ['node_limit'] : [];

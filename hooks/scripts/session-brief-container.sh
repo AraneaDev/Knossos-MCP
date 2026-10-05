@@ -6,12 +6,13 @@
 #
 # The project is mounted at the same path inside the container as outside. That
 # is not cosmetic: projects are keyed by `root_realpath`, so a project scanned
-# as /work would never match a session starting in /home/me/project.
+# as /work would never match a session starting in /home/me/project. It is
+# also named as git's safe directory: the container's user does not own it.
 set -u
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
-IMAGE="__KNOSSOS_IMAGE__"
-DATA="__KNOSSOS_DATA__"
+IMAGE='__KNOSSOS_IMAGE__'
+DATA='__KNOSSOS_DATA__'
 
 # Same reason as the local hook: the working directory and the argument must
 # name the same place. `docker run` gives the container its image's own working
@@ -19,6 +20,8 @@ DATA="__KNOSSOS_DATA__"
 # carries the project in; entering it here keeps a caller that passes no
 # CLAUDE_PROJECT_DIR from mounting one directory and reading another.
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
+# Absolute from here on: a relative path would mean something else to the binary, the mount and the find below once the directory changes.
+PROJECT_DIR=$(pwd -P) || exit 0
 
 command -v docker >/dev/null 2>&1 || exit 0
 
@@ -41,6 +44,7 @@ find_timeout() {
 # bounded: a session start must never wait on a stuck daemon.
 if TIMEOUT_BIN="$(find_timeout)"; then
     OUTPUT="$("$TIMEOUT_BIN" 10 docker run --rm \
+        -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
         "$IMAGE" session-brief "$PROJECT_DIR" 2>/dev/null)" || exit 0
@@ -50,6 +54,7 @@ else
     # hook's own "timeout" to 15, and Claude Code enforces that ceiling on
     # the whole process regardless of what runs inside it.
     OUTPUT="$(docker run --rm \
+        -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
         "$IMAGE" session-brief "$PROJECT_DIR" 2>/dev/null)" || exit 0

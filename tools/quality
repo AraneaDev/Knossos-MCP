@@ -52,6 +52,57 @@ run_test_suite() {
     fi
 }
 
+# The Claude Code mod's own checks: `claude plugin validate`, `claude plugin test`
+# and a strict type-check of register.tsx, all against a STAGING copy and never
+# the repository root. The root also holds scanner fixtures named *.test.ts
+# (tests/Fixtures), which `claude plugin test` has no way to exclude and which
+# fail it whatever the mod does. The staging directory is what an install
+# writes: `install-agent-plugin --out` is the one place that knows the file
+# list, so this does not keep a second copy of it that could drift. It
+# registers nothing with Claude Code; the host-path argument is only baked into
+# the container scripts, which none of these checks execute.
+#
+# The Claude CLI is pinned in the Dockerfile's quality stage, so CI always
+# runs this. A machine without it says so plainly instead of passing quietly.
+#
+# The type-check needs the engine's API declarations, which the CLI only writes
+# when a session loads the plugin (`.claude-plugin/types/claude-code/index.d.ts`)
+# or invokes its plugin-authoring skill. A headless gate can trigger neither, so
+# the check runs where that file exists, or where KNOSSOS_CLAUDE_CODE_TYPES
+# names it, and says it did not run everywhere else.
+run_mod_checks() (
+    stage=$(mktemp -d)
+    trap 'rm -rf "$stage"' EXIT INT TERM
+    php "$root/bin/knossos" install-agent-plugin --out="$stage/plugin" --data=/nonexistent >/dev/null
+    cp "$root/hooks/register.test.ts" "$stage/plugin/hooks/"
+    claude plugin validate "$stage/plugin"
+    claude plugin test "$stage/plugin"
+
+    types="${KNOSSOS_CLAUDE_CODE_TYPES:-$root/.claude-plugin/types/claude-code/index.d.ts}"
+    if [ -f "$types" ]; then
+        # Absolute paths, so the file can live in the temp directory beside the
+        # staging copy rather than in the tree.
+        printf '%s\n' '{"compilerOptions":{"target":"es2023","lib":["es2023"],"types":[],' \
+            '"module":"esnext","moduleResolution":"bundler","strict":true,' \
+            '"noUncheckedIndexedAccess":true,"noEmit":true,"skipLibCheck":true,' \
+            '"jsx":"react","jsxFactory":"h","jsxFragmentFactory":"Fragment"},' \
+            "\"include\":[\"$types\",\"$stage/plugin/types/index.d.ts\"," \
+            "\"$stage/plugin/hooks/register.tsx\",\"$stage/plugin/hooks/register.test.ts\"]}" \
+            > "$stage/tsconfig.json"
+        "$root/node_modules/.bin/tsc" -p "$stage/tsconfig.json"
+    else
+        printf 'knossos mod: Claude Code API types not found; strict type-check of hooks/register.tsx NOT run\n' >&2
+    fi
+)
+
+run_mod_checks_if_available() {
+    if command -v claude >/dev/null 2>&1; then
+        run_mod_checks
+    else
+        printf 'knossos mod: claude CLI not found; plugin validate, plugin test and the type-check NOT run\n' >&2
+    fi
+}
+
 if in_lane static; then
 composer validate --strict
 composer --working-dir=workers/php validate --strict
@@ -63,6 +114,13 @@ composer lint
 vendor/bin/php-cs-fixer check --using-cache=no --allow-risky=yes --sequential
 vendor/bin/phpstan analyse --no-progress --debug --memory-limit=512M
 npm run lint:js
+# The mod's sources under hooks/lib, then every module and spec under
+# hooks/lib and hooks/mod. Vitest strips the specs' types without reading
+# them, and the staged type-check below reaches only what an install ships,
+# so without this a spec drifts from the types it builds silently. The specs
+# resolve `claude-code` through the stand-in (hooks/engine.d.ts), because the
+# engine's own declarations exist only where a session has loaded the mod.
+npm run typecheck:mod
 npm run format:check
 npm run lint:md
 # The tests are linted and formatted alongside the worker they exercise: a
@@ -127,7 +185,8 @@ if command -v shellcheck >/dev/null 2>&1; then
     shellcheck tools/quality tools/quality-container tools/install-hooks tools/benchmark \
         tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain tools/install \
         hooks/scripts/session-brief.sh hooks/scripts/session-brief-container.sh \
-        tests/shell/session-brief-hook.sh
+        hooks/scripts/knossos-run.sh hooks/scripts/knossos-run-container.sh hooks/scripts/lib.sh \
+        tests/shell/session-brief-hook.sh tests/shell/knossos-run-hook.sh tests/shell/install-hooks.sh
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "shellcheck is required in the quality container" >&2
     exit 1
@@ -151,6 +210,8 @@ fi
 if in_lane tests; then
 npm --prefix workers/typescript run check
 run_test_suite
+npm run test:mod
+run_mod_checks_if_available
 fi
 
 if [ "$profile" = "full" ] && in_lane release; then
@@ -173,18 +234,23 @@ if [ "$profile" = "full" ] && in_lane release; then
     if [ "${KNOSSOS_EXTERNAL_LINKS:-1}" = "1" ]; then
         php tools/documentation-check.php --external
     fi
-    npm_config_cache=/tmp/knossos-inspector-cache npx -y @modelcontextprotocol/inspector@0.21.2 --cli \
-        php /opt/knossos/bin/knossos serve --allow-root=/opt/knossos \
-        --db=/tmp/knossos-inspector.sqlite --method tools/list
+    # Inspector 2 takes the server command first and its own options after
+    # `--`. Version 1 read its package.json through a path it tested against
+    # the working directory but imported relative to its own module, so it
+    # crashed whenever the directory above the checkout held a package.json,
+    # and passed only where it did not, as in the image's /opt.
+    npm_config_cache=/tmp/knossos-inspector-cache npx -y @modelcontextprotocol/inspector@2.9.0 --cli \
+        php "$root/bin/knossos" serve --allow-root="$root" \
+        --db=/tmp/knossos-inspector.sqlite -- --method tools/list
     # Built only when it is not already here. CI builds this target in its
     # own job, through buildx against a layer cache, and loads it into the
     # daemon before the lane starts; rebuilding it here would throw that away
     # and pay for an uncached build inside the container. Locally the image is
     # usually absent, so the build still happens on a workstation.
-    if ! docker image inspect knossos-mcp:quality-runtime >/dev/null 2>&1; then
-        docker build --target runtime -t knossos-mcp:quality-runtime .
+    if ! docker image inspect knossos:quality-runtime >/dev/null 2>&1; then
+        docker build --target runtime -t knossos:quality-runtime .
     fi
-    docker run --rm knossos-mcp:quality-runtime doctor --json
+    docker run --rm knossos:quality-runtime doctor --json
     tools/release-lifecycle
     tools/supply-chain
     tools/benchmark
@@ -197,7 +263,7 @@ if [ "$profile" = "full" ] && in_lane coverage; then
     # Mutation testing is deliberately NOT part of any profile: a full-src
     # Infection run takes over an hour, which is far too slow to gate a push.
     # Run it on demand instead -- `.github/workflows/mutation.yml`
-    # (workflow_dispatch), or locally per docs/development/adversarial-testing.md.
+    # (workflow_dispatch), or locally per docs/contribute/adversarial-testing.md.
     tools/coverage
 fi
 
@@ -246,8 +312,11 @@ if [ "$profile" = "full" ] && in_lane gate; then
     gate_repo="${KNOSSOS_GATE_REPO:-$root}"
     # A mounted checkout belongs to the runner's user rather than this
     # container's, and git refuses to read a repository it believes is someone
-    # else's. Scoped to this one path, not a blanket `*`.
-    git config --global --add safe.directory "$gate_repo" >/dev/null 2>&1 || true
+    # else's. Scoped to this one path, not a blanket `*`, and added only once so
+    # repeated runs do not pile up copies in the global config.
+    if ! git config --global --get-all safe.directory 2>/dev/null | grep -qxF -- "$gate_repo"; then
+        git config --global --add safe.directory "$gate_repo" >/dev/null 2>&1 || true
+    fi
 
     # The commit to measure against: what CI worked out from the event, else
     # where this branch left the default branch, else the previous commit so a

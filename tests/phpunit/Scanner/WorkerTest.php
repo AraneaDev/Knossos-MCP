@@ -32,7 +32,6 @@ final class WorkerTest extends KnossosTestCase
         assertSame(1, count($contributions));
         assertSame('worker:file:src/Checkout.ts', $contributions[0]->ownerKey);
         assertSame('Checkout', $contributions[0]->nodes[0]->displayName);
-        assertContains('fake worker scan log', $client->stderr());
 
         $client->cancel('scan-2');
         // An empty scan is the cheapest round trip left now that discover is
