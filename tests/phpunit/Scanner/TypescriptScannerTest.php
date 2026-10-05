@@ -139,16 +139,75 @@ final class TypescriptScannerTest extends KnossosTestCase
     #[Group('typescript-scanner')]
     public function testTypescriptWorkerMarksMainGuardedModulesExecutable(): void
     {
-        $root = sys_get_temp_dir() . '/knossos-ts-main-guard-' . bin2hex(random_bytes(6));
-        mkdir($root . '/src', 0o755, true);
-        $files = [
-            'package.json' => '{"name":"main-guard-fixture"}',
+        $executable = $this->executableModules('main-guard', [
             'src/hook.ts' => "export function handle() {}\nif (import.meta.main) {\n    handle();\n}\n",
             'src/cli.cjs' => "function run() {}\nif (require.main === module) run();\n",
             'src/reversed.js' => "function run() {}\nif (module === require.main) {\n    run();\n}\n",
             'src/nested.ts' => "export function check() {\n    if (import.meta.main) return 1;\n    return 0;\n}\n",
             'src/negated.ts' => "export function lib() {}\nif (!import.meta.main) lib();\n",
-        ];
+        ]);
+
+        assertSame(true, $executable['src/hook.ts']);
+        assertSame(true, $executable['src/cli.cjs']);
+        assertSame(true, $executable['src/reversed.js']);
+        // Only a guard at file scope says how the file is entered.
+        assertSame(false, $executable['src/nested.ts']);
+        // A negated guard runs its body when the module is imported, not run.
+        assertSame(false, $executable['src/negated.ts']);
+    }
+
+    /**
+     * The ES-module guard compares this module's location with the script node
+     * was started on, `process.argv[1]`, after converting one to the other's
+     * form with node's own url and fs functions. Those names count only when
+     * they are node's: imported, required, or reached through the module
+     * object, and not shadowed by a local `process`. An ambient declaration
+     * of `process` describes the global, so it shadows nothing.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerMarksEsModuleMainGuardedModulesExecutable(): void
+    {
+        $guard = "export function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n";
+        $executable = $this->executableModules('esm-main-guard', [
+            'src/url.mjs' => "import { pathToFileURL } from \"node:url\";\nexport function run() {}\n"
+                . "if (pathToFileURL(process.argv[1]).href === import.meta.url) run();\n",
+            'src/namespace.mjs' => "import * as nodeUrl from \"node:url\";\nimport * as nodeFs from \"fs\";\nexport function run() {}\n"
+                . "if (nodeUrl.pathToFileURL(nodeFs.realpathSync(process.argv[1])).href === import.meta.url) run();\n",
+            'src/process-import.mjs' => "import process from \"node:process\";\nimport { fileURLToPath } from \"node:url\";\n" . $guard,
+            'src/required.js' => "import { createRequire } from \"node:module\";\nconst require = createRequire(import.meta.url);\n"
+                . "const { fileURLToPath } = require(\"node:url\");\n" . $guard,
+            'src/required-whole.js' => "import { createRequire } from \"node:module\";\nconst require = createRequire(import.meta.url);\n"
+                . "const url = require(\"url\");\nexport function run() {}\n"
+                . "if (url.fileURLToPath(import.meta.url) === process.argv[1]) run();\n",
+            'src/ambient.mts' => "import { fileURLToPath } from \"node:url\";\ndeclare const process: { argv: string[] };\n" . $guard,
+            'src/shadowed.mjs' => "import { fileURLToPath } from \"node:url\";\nconst process = { argv: [] };\n" . $guard,
+            'src/mixed.mjs' => "export function run() {}\nif (import.meta.url === process.argv[1]) run();\n",
+        ]);
+
+        assertSame(true, $executable['src/url.mjs']);
+        assertSame(true, $executable['src/namespace.mjs']);
+        assertSame(true, $executable['src/process-import.mjs']);
+        assertSame(true, $executable['src/required.js']);
+        assertSame(true, $executable['src/required-whole.js']);
+        assertSame(true, $executable['src/ambient.mts']);
+        // A local `process` is not the one node fills in.
+        assertSame(false, $executable['src/shadowed.mjs']);
+        // A URL is never equal to a path, so this guard never fires.
+        assertSame(false, $executable['src/mixed.mjs']);
+    }
+
+    /**
+     * Scan `$files` with the TypeScript worker and report, per module, whether
+     * it was marked executable.
+     *
+     * @param array<string, string> $files contents by path under the fixture root
+     * @return array<string, mixed>
+     */
+    private function executableModules(string $name, array $files): array
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-' . $name . '-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = ['package.json' => '{"name":"' . $name . '-fixture"}', ...$files];
         foreach ($files as $relative => $contents) {
             file_put_contents($root . '/' . $relative, $contents);
         }
@@ -180,13 +239,7 @@ final class TypescriptScannerTest extends KnossosTestCase
             }
         }
 
-        assertSame(true, $executable['src/hook.ts']);
-        assertSame(true, $executable['src/cli.cjs']);
-        assertSame(true, $executable['src/reversed.js']);
-        // Only a guard at file scope says how the file is entered.
-        assertSame(false, $executable['src/nested.ts']);
-        // A negated guard runs its body when the module is imported, not run.
-        assertSame(false, $executable['src/negated.ts']);
+        return $executable;
     }
 
     /**
