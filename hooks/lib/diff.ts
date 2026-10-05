@@ -235,17 +235,28 @@ const weightOf = (drawn: DrawnHunk): number => JSON.stringify(drawn.source).leng
  */
 export function diffPage(view: Extract<DiffView, { phase: 'diff' }>): { start: number; end: number; before: number; drawn: DrawnHunk[] } {
   const start = Math.min(Math.max(0, view.from ?? 0), Math.max(0, view.hunks.length - 1))
+  // Each hunk looked at is built and weighed once, whichever loop looks first.
+  const built = new Map<number, { hunk: DrawnHunk; weight: number }>()
+  const at = (index: number): { hunk: DrawnHunk; weight: number } => {
+    let entry = built.get(index)
+    if (entry === undefined) {
+      const hunk = drawnHunk(view, index)
+      entry = { hunk, weight: weightOf(hunk) }
+      built.set(index, entry)
+    }
+    return entry
+  }
   const drawn: DrawnHunk[] = []
   let spent = 0
   for (let i = start; i < view.hunks.length && drawn.length < HUNKS_SHOWN; i++) {
-    const hunk = drawnHunk(view, i)
-    if (spent + weightOf(hunk) > DIFF_TEXT_MAX) break
-    spent += weightOf(hunk)
+    const { hunk, weight } = at(i)
+    if (spent + weight > DIFF_TEXT_MAX) break
+    spent += weight
     drawn.push(hunk)
   }
   let before = start
   for (let back = 0; before > 0 && start - before < HUNKS_SHOWN; ) {
-    const weight = weightOf(drawnHunk(view, before - 1))
+    const { weight } = at(before - 1)
     if (back + weight > DIFF_TEXT_MAX) break
     back += weight
     before--

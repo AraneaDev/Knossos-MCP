@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Dashboard, DiffState, Inspected, KnossosView, SessionDiff } from '../../types'
-import { DIFF_TEXT_MAX, diffSection, diffView, folded, HUNK_LINES, hunkSource, HUNKS_SHOWN, LINE_MAX, parseHunks } from './diff'
+import { DIFF_TEXT_MAX, diffPage, diffSection, diffView, folded, HUNK_LINES, hunkSource, HUNKS_SHOWN, LINE_MAX, parseHunks } from './diff'
 import type { DiffView } from './diff'
 import { parseSessionDiff, parseSessionRev } from './envelopes'
 import { diffRows, fileDetailRows } from './__tests__/tabs'
@@ -316,5 +316,22 @@ describe('a page of very large opened hunks', () => {
     // Far under a second even on a slow CI machine; the quadratic cut took about a minute.
     expect(performance.now() - started).toBeLessThan(200)
     for (const r of rows.filter(r => r.code !== undefined)) expect(r.code!.source.length).toBeLessThanOrEqual(10_000)
+  })
+})
+
+describe('a page of hunks', () => {
+  it('builds and weighs each hunk it looks at once, for the page and the page before alike', () => {
+    const diff = Array.from({ length: 6 }, (_, i) => `@@ -${i * 10 + 1},1 +${i * 10 + 1},1 @@\n-a${i}\n+b${i}\n`).join('')
+    const view = diffView(SHOWN, done(answer({ diff })), { status: 'ok', rev: REV }, { name: SHOWN.name, rev: REV, snapshot: 's1', open: [], from: 3 })
+    if (view?.phase !== 'diff') throw new Error('no diff')
+    const weighed = vi.spyOn(JSON, 'stringify')
+    try {
+      const page = diffPage(view)
+      expect(page).toMatchObject({ start: 3, end: 6, before: 0 })
+      // Three hunks on the page and three before it: six weighings, one each.
+      expect(weighed).toHaveBeenCalledTimes(6)
+    } finally {
+      weighed.mockRestore()
+    }
   })
 })
