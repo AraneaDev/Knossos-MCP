@@ -370,9 +370,9 @@ cycle.
 
 ## Issues
 
-![The Issues tab on this repository: no policy violations, no diagnostics, one function over the 205-line budget, no dead-code candidates, and the complexity hotspots ranked by lines times dependents](../images/claude-code/issues.png)
+![The Issues tab on this repository: the policy violation, diagnostic, line-budget and dead-code cards, each headed by its count, above the complexity hotspots ranked by lines times dependents](../images/claude-code/issues.png)
 
-The Issues tab on this repository, where the only finding left is one function over the line budget.
+The Issues tab on this repository: a card per kind of finding, each headed by its count, and the complexity hotspots below them.
 
 Issues gathers what needs fixing, one card each, in the order a pane this wide stacks them:
 
