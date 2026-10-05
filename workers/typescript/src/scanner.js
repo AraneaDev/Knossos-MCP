@@ -4808,7 +4808,7 @@ function importBinding(identifier, checker) {
     } else if (ts.isImportClause(declaration)) {
         imported = "default";
         clause = declaration;
-    } else return null;
+    } else return requireBinding(declaration);
     const specifier = clause.parent.moduleSpecifier;
     return ts.isStringLiteral(specifier)
         ? { module: specifier.text, imported }
@@ -4816,16 +4816,78 @@ function importBinding(identifier, checker) {
 }
 
 /**
- * Whether `node` is the identifier `name` and the file declares nothing of
- * that name it could refer to instead: the global, or CommonJS's own binding.
+ * The same for a CommonJS `require`: `const url = require("url")` binds the
+ * whole module, `const { fileURLToPath: toPath } = require("url")` one export.
+ *
+ * @returns {{module: string, imported: string} | null}
+ */
+function requireBinding(declaration) {
+    if (
+        ts.isVariableDeclaration(declaration) &&
+        ts.isIdentifier(declaration.name)
+    ) {
+        const module = requiredModule(declaration.initializer);
+        return module === null ? null : { module, imported: "*" };
+    }
+    if (
+        !ts.isBindingElement(declaration) ||
+        declaration.dotDotDotToken !== undefined ||
+        !ts.isObjectBindingPattern(declaration.parent) ||
+        !ts.isVariableDeclaration(declaration.parent.parent)
+    )
+        return null;
+    const module = requiredModule(declaration.parent.parent.initializer);
+    const property = declaration.propertyName ?? declaration.name;
+    return module !== null &&
+        (ts.isIdentifier(property) || ts.isStringLiteral(property))
+        ? { module, imported: property.text }
+        : null;
+}
+
+/** The module `require("name")` loads, or null for any other expression. */
+function requiredModule(expression) {
+    if (expression === undefined) return null;
+    const call = unwrapParentheses(expression);
+    return ts.isCallExpression(call) &&
+        isIdentifierNamed(unwrapParentheses(call.expression), "require") &&
+        call.arguments.length === 1 &&
+        ts.isStringLiteral(call.arguments[0])
+        ? call.arguments[0].text
+        : null;
+}
+
+/**
+ * Whether `node` is the identifier `name` and no binding the file declares in
+ * a scope holding it could be what it refers to: it is the global, or
+ * CommonJS's own `module`, `exports` or `require`. Only a real binding counts.
+ * Assigning `module.exports` or `exports.x` gives the file a binder symbol of
+ * that name too, and that symbol is CommonJS's own, not a local.
  */
 function isUnshadowed(node, name, checker) {
     if (!isIdentifierNamed(node, name)) return false;
     const sourceFile = node.getSourceFile();
     return !(checker.getSymbolAtLocation(node)?.declarations ?? []).some(
         (declaration) =>
-            !ts.isSourceFile(declaration) &&
+            isLocalBinding(declaration) &&
             declaration.getSourceFile() === sourceFile,
+    );
+}
+
+/** A declaration that binds a name in its scope, as code writes it. */
+function isLocalBinding(declaration) {
+    return (
+        // Covers a catch clause's binding too.
+        ts.isVariableDeclaration(declaration) ||
+        ts.isBindingElement(declaration) ||
+        ts.isParameter(declaration) ||
+        ts.isFunctionDeclaration(declaration) ||
+        ts.isClassDeclaration(declaration) ||
+        ts.isEnumDeclaration(declaration) ||
+        ts.isModuleDeclaration(declaration) ||
+        ts.isImportClause(declaration) ||
+        ts.isImportSpecifier(declaration) ||
+        ts.isNamespaceImport(declaration) ||
+        ts.isImportEqualsDeclaration(declaration)
     );
 }
 

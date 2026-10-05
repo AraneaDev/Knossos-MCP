@@ -261,6 +261,24 @@ describe("the ES-module main guard", () => {
             'import process from "node:process";\nimport { fileURLToPath } from "node:url";\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
         "src/main.cjs":
             "function run() {}\nif (require.main === module) run();\n",
+        // Assigning `module.exports` or `exports.x` gives the file a binder
+        // symbol for `module`; that is still CommonJS's own `module`.
+        "src/exports-module.cjs":
+            "module.exports = {};\nfunction run() {}\nif (require.main === module) run();\n",
+        "src/exports-member.cjs":
+            "exports.x = 1;\nfunction run() {}\nif (require.main === module) run();\n",
+        // A `process` declared in a scope that does not hold the guard.
+        "src/parameter.mjs":
+            'import { fileURLToPath } from "node:url";\nexport function run(process) {\n    return process;\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/catch-binding.mjs":
+            'import { fileURLToPath } from "node:url";\nexport function run() {}\ntry {\n    run();\n} catch (process) {\n    run(process);\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/nested-scope.mjs":
+            'import { fileURLToPath } from "node:url";\nexport function run() {\n    const process = { argv: [] };\n    return process;\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        // The url module through `require`, whole or destructured.
+        "src/required.js":
+            'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst { fileURLToPath: toPath } = require("node:url");\nexport function run() {}\nif (toPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/required-whole.js":
+            'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst url = require("url");\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
     };
     const unguarded = {
         // A URL is never equal to a path, so this guard never fires.
@@ -294,6 +312,12 @@ describe("the ES-module main guard", () => {
             "const module = require.main;\nfunction run() {}\nif (require.main === module) run();\n",
         "src/shadowed-require.cjs":
             "function require() {\n    return null;\n}\nfunction run() {}\nif (module === require.main) run();\n",
+        // A `var` in a block is hoisted to the file's scope, where the guard is.
+        "src/hoisted-var.mjs":
+            'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (run) {\n    var process = { argv: [] };\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        // A module other than url, through `require`.
+        "src/required-other.js":
+            'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst { fileURLToPath } = require("./helpers.mjs");\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
     };
 
     it("marks each form executable and leaves look-alikes alone", () => {
