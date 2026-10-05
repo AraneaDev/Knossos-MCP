@@ -230,18 +230,20 @@ policy violations in the error colour, drifted files in the accent. A tile
 draws its trend as a sparkline when it has room and five or more snapshots
 move. `dead code` counts the candidates the Issues tab lists and has no delta.
 The `drifted` label is a button that lists the drifted files, as `d` does. The
-labels of the figures that count a list are buttons too, each opening the tab
-that lists them with the marker on the first: `components` opens Hubs,
-`boundaries` Boundaries, `cycles` Cycles, and `policy`, `dead code` and
-`diagnostics` Issues (on its first violation, or its first dead-code
-candidate). At zero there is nothing to list, and the label is plain. `max
+labels of the other figures that count a list are buttons too, each opening the
+tab that lists them with the marker on the first item: `components` opens Hubs,
+`boundaries` opens Boundaries, `cycles` opens Cycles, and `policy`,
+`diagnostics` and `dead code` open Issues on their first violation, diagnostic
+or candidate. When Issues lists none of what the figure counts, the tab opens
+at its top. At zero there is nothing to list, and the label is plain. `max
 degree` is a single figure, so it is always plain.
 
 **This session**: the session's scans as a row of dots, how many files it
 touched, their dependents and the tests that reach them, with a warning when no
 test does. A warning about files no test reaches is a button: it opens Changes
 with only those files listed, as `u` does. The marker starts on the way to the
-Changes tab. `t` copies the tests' command. Before anything changed it is one line, `nothing changed yet`.
+Changes tab. `t` copies the tests' command. Before anything changed it is one
+line, `nothing changed yet`.
 
 **Composition**: what the project is made of, as a 100 percent stacked bar per
 dimension. Components by boundary, each in its colour, the five largest named
@@ -389,7 +391,8 @@ Issues gathers what needs fixing, one card each, in the order a pane this wide s
 
 - **Policy violations**: each declared policy violation, with the offending
   file and line.
-- **Diagnostics**: the scan's errors and warnings.
+- **Diagnostics**: the scan's errors and warnings. The marker walks them:
+  `o` opens a diagnostic's file and `e` opens it at its line.
 - **Over budget**: files with a PHP function longer than the
   `max_php_function_lines` budget in `maintainability-budgets.json`, with how
   many functions are over and the longest. Its note names the rule
@@ -419,8 +422,8 @@ dim for one that took in changes made outside it, then how many of each. Under
 it, the files, their dependents and the boundaries they reach, and in the
 warning colour how many files no test reaches.
 
-When the reach of some file is known and none reaches it, `▲ N files no test
-reaches` is a button, as is `u`. It lists only those files, the marker on the
+`▲ N files no test reaches` counts the files that knossos knows no test reaches.
+The count is a button, as is `u`. It lists only those files, the marker on the
 first, and the line then reads `▲ N files no test reaches · showing only these`.
 Pressing it again, `u`, or the `show all files` row under it lists every file,
 the marker kept on its file. The list shows every file again after a `/clear`,
@@ -567,8 +570,9 @@ boundary's colour. Each side shows as many neighbours as the height allows,
 and the rest as one `+87 more` box. On a pane too narrow for the three boxes,
 the users stand above and what it uses below; below 50 columns both sides are
 tables. The marker walks both sides, users first, and `o` opens a neighbour as
-its own detail. Pressing the `+87 more` box moves the marker onto the first neighbour it
-hides, when the detail lists one.
+its own detail. Pressing the `+87 more` box moves the marker onto the nearest
+neighbour it hides, below the shown ones or above them, when the detail lists
+one.
 
 **Blast radius**: see [below](#blast-radius).
 
