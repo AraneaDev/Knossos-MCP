@@ -32,6 +32,7 @@ export default [
                 console: "readonly",
                 process: "readonly",
                 setTimeout: "readonly",
+                URL: "readonly",
             },
         },
     },
