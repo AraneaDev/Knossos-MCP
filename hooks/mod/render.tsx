@@ -12,7 +12,7 @@ import { allowInput, detailInput, emptyRows, fileDetailInput, fit, linkMarkdown,
 import type { Openable, PaneInput, Preview, Row, Segment } from '../lib/layout'
 import { CARD_BG, declaredOf, huesOf, SELECTED_BG } from '../lib/palette'
 import { rasterOf, rasterTheme } from '../lib/raster'
-import { cells, dimRow, pressLabel, textStyle } from '../lib/rows'
+import { cells, dimRow, pressLabel, rowsHeight, textStyle } from '../lib/rows'
 import { shownChanges } from './port'
 import type { Port } from './port'
 import { fieldKey, mod } from './state'
@@ -424,7 +424,7 @@ export async function drawPane(io: Port, ui: Elements[RenderSurface], surface: R
   let used = height
   const draw = (rows: number, lean: boolean): RenderElement => {
     const laidOut = paneLayout(input, columns, rows, offset)
-    used = laidOut.body.filter(r => !r.key.startsWith('fill-')).length + laidOut.footer.length
+    used = rowsHeight(laidOut.body.filter(r => !r.key.startsWith('fill-'))) + laidOut.footer.length
     if (!laidOut.pinned) {
       return (
         <Box key={key} flexDirection="column">
@@ -433,8 +433,9 @@ export async function drawPane(io: Port, ui: Elements[RenderSurface], surface: R
       )
     }
     // Taller than the window: the bar is drawn over its last rows wherever it is scrolled to, and the body ends in room for it.
+    // Counted in rows as drawn (a diff element one per line), so it follows the window to the last line.
     const reserve = laidOut.footer.map((_, i) => ({ key: `bar-room-${i}`, segments: [{ text: ' ' }] }))
-    const top = Math.min(offset, laidOut.body.length + reserve.length - height) + height - laidOut.footer.length
+    const top = Math.min(offset, rowsHeight(laidOut.body) + reserve.length - height) + height - laidOut.footer.length
     return (
       <Box key={key} flexDirection="column">
         {drawRows(act, ui, surface, themeName, [...laidOut.body, ...reserve], columns, lean)}

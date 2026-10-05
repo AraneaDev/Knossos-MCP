@@ -20,7 +20,7 @@
  * list cut short shows the rows around the marker and an `n more ↓` line.
  */
 import { FAINT, HEADING } from './palette'
-import { cells, clip, dimRow, fit, rowWidth, segmentsWidth, spaces, tierOf, tinted } from './rows'
+import { cells, clip, dimRow, fit, rowsHeight, rowWidth, segmentsWidth, spaces, tierOf, tinted } from './rows'
 import type { Row, Segment, Tier } from './rows'
 
 /**
@@ -371,9 +371,10 @@ export function equalColumns(width: number, count: number): number[] {
 
 /** A card's rows stretched to `height`: blank rows inside its frame, before its bottom edge (after its last row when it has none). */
 function stretched(rows: Row[], width: number, height: number, tier: Tier, key: string): Row[] {
-  if (rows.length >= height || rows.length === 0) return rows
+  const tall = rowsHeight(rows)
+  if (tall >= height || rows.length === 0) return rows
   const framed = tier !== 'narrow' && rows[rows.length - 1]?.key.endsWith('-end') === true
-  const fill = Array.from({ length: height - rows.length }, (_, i): Row => ({
+  const fill = Array.from({ length: height - tall }, (_, i): Row => ({
     key: `${key}-fill-${i}`,
     segments: framed ? [{ text: '│', color: FRAME }, { text: spaces(width - 2) }, { text: '│', color: FRAME }] : [{ text: spaces(width) }],
   }))
@@ -458,11 +459,13 @@ export function gridRows(grid: Block[][], width: number, tier: Tier, budget: num
  * blank rows after it. Taller already, it is left as it is.
  */
 export function fillColumn(rows: Row[], width: number, height: number, tier: Tier, key = 'stretch'): Row[] {
-  if (rows.length >= height || rows.length === 0) return rows
+  // Counted as drawn: a diff element takes a row for each of its lines.
+  const tall = rowsHeight(rows)
+  if (tall >= height || rows.length === 0) return rows
   // The last framed card grows, wherever it stands: collapsed cards after it (one line each, no frame) follow it down.
   const end = tier === 'narrow' ? -1 : rows.map(row => !row.key.includes('|') && row.segments[0]?.text.startsWith('╰') === true).lastIndexOf(true)
-  if (end < 0) return [...rows, ...Array.from({ length: height - rows.length }, (_, i): Row => blankRow(`${key}-${i}`))]
-  const fill = Array.from({ length: height - rows.length }, (_, i): Row => ({ key: `${key}-${i}`, segments: [{ text: '│', color: FRAME }, { text: spaces(width - 2) }, { text: '│', color: FRAME }] }))
+  if (end < 0) return [...rows, ...Array.from({ length: height - tall }, (_, i): Row => blankRow(`${key}-${i}`))]
+  const fill = Array.from({ length: height - tall }, (_, i): Row => ({ key: `${key}-${i}`, segments: [{ text: '│', color: FRAME }, { text: spaces(width - 2) }, { text: '│', color: FRAME }] }))
   return [...rows.slice(0, end), ...fill, ...rows.slice(end)]
 }
 

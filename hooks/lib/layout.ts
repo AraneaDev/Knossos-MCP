@@ -32,6 +32,7 @@ import {
   padEnd,
   placeOf,
   plural,
+  rowsHeight,
   rowWidth,
   segmentsWidth,
   spaces,
@@ -1188,7 +1189,8 @@ export function paneLayout(input: PaneInput, columns: number, height: number = D
   }
   if (help.length > 0) rows.push(blank('gap-help'), ...help)
   const body = rows.map(row => (row.code !== undefined || rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))
-  const fill = height - body.length - footer.length
+  // Counted as drawn: a diff element takes a row for each of its lines, so a long change pins the bar and scrolls.
+  const fill = height - rowsHeight(body) - footer.length
   if (fill >= 0) return { body: [...body, ...Array.from({ length: fill }, (_, i) => blank(`fill-${i}`))], footer, pinned: false }
   return { body, footer, pinned: true }
 }

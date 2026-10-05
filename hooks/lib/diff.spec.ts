@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import type { DiffState, Inspected, SessionDiff } from '../../types'
+import type { Dashboard, DiffState, Inspected, KnossosView, SessionDiff } from '../../types'
 import { DIFF_TEXT_MAX, diffSection, diffView, folded, HUNK_LINES, hunkSource, HUNKS_SHOWN, LINE_MAX, parseHunks } from './diff'
 import type { DiffView } from './diff'
 import { parseSessionDiff, parseSessionRev } from './envelopes'
 import { diffRows, fileDetailRows } from './__tests__/tabs'
 import { plainText } from './__tests__/plain-text'
+import { paneInput, paneLayout } from './layout'
 import { rowWidth } from './rows'
 import type { Row } from './rows'
+import type { DetailInput } from './views'
 
 const WIDTHS = [40, 60, 80, 100, 130, 140, 200]
 const REV = '0123456789abcdef0123456789abcdef01234567'
@@ -191,4 +193,45 @@ describe('a change drawn in a panel', () => {
     expect(section.body.map(r => r.key)).toContain('diff-more-0')
     expect(section.body.map(r => r.key)).toContain('diff-hunks-more')
   })
+})
+
+describe('the full detail of a long change', () => {
+  const dashboard = {
+    status: 'ok',
+    path: '/work/app',
+    project_root: '/work/app',
+    project_id: 'p1',
+    snapshot_id: 's1',
+    freshness: { state: 'fresh', age_seconds: 1, drift_files: 0 },
+    hubs: [],
+    hubs_truncated: false,
+    hubs_truncation_reasons: [],
+    hotspots: [],
+    dead_code_candidates: 0,
+    dead_code_truncated: false,
+    cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] },
+    trend: [],
+    fan_in: [],
+    fan_in_truncated: false,
+  } as unknown as Dashboard
+  const view: KnossosView = { inspect: SHOWN, isBandHidden: false, tab: 'changes', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
+  /** The rows a row takes on screen: a diff element one per line of its source (it wraps nothing), any other one. */
+  const height = (rows: Row[]): number => rows.reduce((n, r) => n + (r.code === undefined ? 1 : r.code.source.split('\n').length), 0)
+
+  for (const columns of [60, 100, 140, 200]) {
+    it(`counts every line of its diff elements, so the pane scrolls to the last and the bar stays pinned (${columns} columns)`, () => {
+      const shown: DetailInput = { label: SHOWN.label, loading: false, messages: ['Not in the graph.'], component: null, file: null, diff: viewOf(answer({ diff: long(HUNK_LINES * 3) })) }
+      const input = paneInput(dashboard, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, view, 0, true, shown)
+      for (const rows of [30, 50, 80]) {
+        const laid = paneLayout(input, columns, rows)
+        const total = height(laid.body) + laid.footer.length
+        // Taller than the window: pinned, with no blank fill under it; else exactly the window.
+        if (laid.pinned) expect(laid.body.some(r => r.key.startsWith('fill-')), `${rows}`).toBe(false)
+        else expect(total, `${rows}`).toBe(rows)
+        expect(laid.pinned, `${rows}`).toBe(height(laid.body) + laid.footer.length > rows)
+        // No card is stretched with blank rows once the change alone overfills the window.
+        if (laid.pinned) expect(laid.body.filter(r => r.key.startsWith('stretch')), `${rows}`).toEqual([])
+      }
+    })
+  }
 })

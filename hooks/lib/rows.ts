@@ -117,6 +117,14 @@ export const MARK = 3
 
 export const cells = (text: string): number => [...text].length
 export const rowWidth = (row: Row): number => row.segments.reduce((n, s) => n + cells(s.text), 0)
+/**
+ * The rows `row` takes on screen: a diff element one per line of its text,
+ * since it wraps nothing (`truncate-end`) and cuts a line at the edge; any
+ * other row one. What the pane counts its height and its scrolling in.
+ */
+export const rowHeight = (row: Row): number => (row.code === undefined ? 1 : row.code.source.split('\n').length)
+/** The rows `rows` take on screen together (see {@link rowHeight}). */
+export const rowsHeight = (rows: readonly Row[]): number => rows.reduce((n, row) => n + rowHeight(row), 0)
 export const segmentsWidth = (segments: Segment[]): number => segments.reduce((n, s) => n + cells(s.text), 0)
 
 /** `text` cut to `width` cells, the last one an ellipsis when anything was cut. */
