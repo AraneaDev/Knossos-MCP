@@ -48,7 +48,7 @@ scan.
 
 The pane draws the same walk as rings around the component:
 
-<!-- still:rings -->
+![ResultEnvelope's detail: its dependencies, and its blast radius as nested rings one, two and three or more hops out, with the tests that reach each ring](../images/claude-code/rings.png)
 
 ## Explain flow
 
@@ -71,7 +71,7 @@ count (`routes_to`, `calls`, `dispatches`, `handles`, `listens_to`,
 A pair with no static path returns an empty `paths` list rather than an error.
 That is a real answer, though it proves nothing about the runtime.
 
-<!-- still:route -->
+![A route from ServeCommand::run to ResultEnvelope: five routes found, the strongest drawn as boxes with the call and its file and line on each hop](../images/claude-code/route.png)
 
 ## Dependency cycles
 
@@ -91,7 +91,7 @@ TypeScript `import type`, is erased at runtime and does not count, so a loop
 closed only by such imports is not reported. The result says so in its
 `warnings`.
 
-<!-- still:cycles -->
+![The Cycles tab: a 13-member dependency cycle drawn as a serpentine of boxes with a return edge labelled back to the start, and the list of all cycles below](../images/claude-code/cycles.png)
 
 ## Architecture health
 
@@ -116,7 +116,7 @@ The dead-code half of the result is the subtlest thing Knossos reports. It
 splits what nothing references from what only tests reach. What it excludes
 before reporting, and why, is in [dead-code candidates](dead-code-candidates.md).
 
-<!-- still:hubs-detail -->
+![The Hubs tab: the most depended-on components with ResultEnvelope marked, and its dependencies drawn beside the list](../images/claude-code/hubs-detail.png)
 
 ## Suggest location
 

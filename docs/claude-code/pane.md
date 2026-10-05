@@ -32,7 +32,7 @@ The pane needs three things, and shows nothing useful without them:
 
 ## The band
 
-<!-- still:band -->
+![After the turn, with the pane shut: the band above the prompt reads knossos, 1 file, 2 dependents, with details and hide](../images/claude-code/band.png)
 
 After a turn that edited files, one line above the prompt sums up the turn:
 
@@ -106,7 +106,7 @@ When the leading watcher stops answering, the pill says
 `another session's watcher is stuck` beside it. As the pane narrows, the
 language chips go first, then the commit, the branch and the reason.
 
-In a detail, the first row is the way back instead: `Knossos-MCP › Hubs ›
+In a detail, the first row is the way back instead: `knossos › Hubs ›
 ResultEnvelope`.
 
 The second row is the tab bar. The open tab stands on the theme's selection
@@ -189,7 +189,7 @@ request to scan a project that has no graph yet.
 
 ### Colours
 
-<!-- still:overview-light -->
+![The Overview tab in Claude Code's light theme, drawn in that theme's own colours](../images/claude-code/overview-light.png)
 
 The pane draws in your Claude Code theme's own colours, so it follows a dark,
 light, daltonized or ANSI theme and a theme you pick in `/config`. Colour
@@ -207,14 +207,14 @@ carries meaning only:
 - Everything else is neutral: names and figures in the text colour, labels and
   units dim, bar tracks fainter still.
 
-<!-- still:hubs-detail-light -->
+![The Hubs tab with ResultEnvelope's dependencies beside the list, in Claude Code's light theme](../images/claude-code/hubs-detail-light.png)
 
 When a new snapshot lands, the rows whose figures it changed are drawn on a
 cool ground for about three seconds.
 
 ## Overview
 
-<!-- still:overview -->
+![The Knossos pane's Overview tab beside Claude Code: headline counts, this session, composition by boundary, language and kind, dependency concentration and cross-boundary flows](../images/claude-code/overview.png)
 
 Overview measures the project; the lists are on the other tabs.
 
@@ -265,7 +265,7 @@ The marker walks the way to Changes, the buckets, then the flows.
 
 ## Hubs
 
-<!-- still:hubs-detail -->
+![The Hubs tab: the most depended-on components with ResultEnvelope marked, and its dependencies drawn beside the list](../images/claude-code/hubs-detail.png)
 
 **Hubs and hotspots** lists the components most depended on, one row each,
 with its boundary and three degrees:
@@ -305,7 +305,7 @@ still: here `ResultEnvelope`, used by 89 and using 15.
 
 ## Boundaries
 
-<!-- still:boundaries -->
+![The Boundaries tab: a heat map of dependencies between ten boundaries with forbidden cells crossed, the per-boundary table, and the tests to core flow drawn](../images/claude-code/boundaries.png)
 
 **The heat map** shows how much each boundary depends on each other one. Rows
 are where a dependency starts, columns where it lands. The axes are lettered,
@@ -343,7 +343,7 @@ name and `q` asks Claude what its dependencies are for.
 
 ## Cycles
 
-<!-- still:cycles -->
+![The Cycles tab: a 13-member dependency cycle drawn as a serpentine of boxes with a return edge labelled back to the start, and the list of all cycles below](../images/claude-code/cycles.png)
 
 **Cycle 1** draws the marked dependency cycle as a serpentine of boxes, one box
 per member: the first row left to right, the next right to left, an arrow from
@@ -392,7 +392,7 @@ longest function.
 
 ## Changes
 
-<!-- still:changes-diff -->
+![The Changes tab after a turn edited hooks/lib/paths.ts: one scan from this session, the file with its two dependents and no test reaching it, and its detail with the diff since the session began](../images/claude-code/changes-diff.png)
 
 Changes lists everything that changed in the project since the session began,
 whoever changed it: the session's own turns and subagents, your editor, a
@@ -473,7 +473,7 @@ process the earlier ones read `outside`.
 
 ## Branch
 
-<!-- still:branch -->
+![The Branch tab: what this checkout added against its merge base with main, as new cross-boundary dependencies, hubs that grew, new dead code and churn hotspots](../images/claude-code/branch.png)
 
 Branch compares the checked-out branch with the snapshot taken where it left
 its default branch.
@@ -506,7 +506,7 @@ On a tall pane, the rows left over go to the churn hotspots (see Churn).
 
 ## Churn
 
-<!-- still:churn -->
+![The Churn tab: a scatter of commits in the last 30 days against dependents, and the churn hotspots ranked by commits times dependents](../images/claude-code/churn.png)
 
 Churn ranks the files changed most often in the last thirty days that much of
 the project depends on. A file's score is its commits in the window times the
@@ -570,7 +570,7 @@ itself. The band, the notes and Changes count the same way.
 
 ## The finder
 
-<!-- still:finder -->
+![The finder over the pane: ResultEnv typed, 20 matches listed with ResultEnvelope marked first](../images/claude-code/finder.png)
 
 `f` opens the finder over any tab. Type part of a name and it lists the
 components and files whose name holds those letters in order (`dsvc` finds
@@ -592,7 +592,7 @@ brings the tab under it back as it was.
 
 ## A route between two components
 
-<!-- still:route -->
+![A route from ServeCommand::run to ResultEnvelope: five routes found, the strongest drawn as boxes with the call and its file and line on each hop](../images/claude-code/route.png)
 
 `p` on a component's detail starts a route. The finder opens, offering
 components only, and the one you open is where the route ends.
@@ -612,7 +612,7 @@ ServeCommand.php:33`).
 
 ## Blast radius
 
-<!-- still:rings -->
+![ResultEnvelope's detail: its dependencies, and its blast radius as nested rings one, two and three or more hops out, with the tests that reach each ring](../images/claude-code/rings.png)
 
 A component's detail draws its blast radius: what depends on it one hop away,
 two hops away, and further, as concentric frames with the furthest ring
@@ -640,7 +640,7 @@ opens it as its detail. Below 44 columns the rings are plain lists.
 
 ## A note on a component
 
-<!-- still:note-on-detail -->
+![ResultEnvelope's detail with a note recorded under Notes: every MCP answer is built here](../images/claude-code/note-on-detail.png)
 
 `m` on a component's detail adds a note to it, as the `note` kind of the
 `annotate_component` tool does. A note is for a fact the next session should

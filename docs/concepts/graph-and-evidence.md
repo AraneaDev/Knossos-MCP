@@ -63,7 +63,7 @@ grouping is never mistaken for a decision someone made. A component can sit in
 more than one boundary. `list_boundaries` shows them, and
 [declared rules](architecture-rules.md) are written against them.
 
-<!-- still:boundaries -->
+![The Boundaries tab: a heat map of dependencies between ten boundaries with forbidden cells crossed, the per-boundary table, and the tests to core flow drawn](../images/claude-code/boundaries.png)
 
 Roles come from classification rules that run after the workers: file-name and
 path conventions, framework conventions, manifest entry points and test

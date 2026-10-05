@@ -66,7 +66,7 @@ available. Limits are bounded to 100 projects per request and offsets to
 
 ## Component inspection
 
-<!-- still:finder -->
+![The finder over the pane: ResultEnv typed, 20 matches listed with ResultEnvelope marked first](../images/claude-code/finder.png)
 
 Use `inspect_component` after search when a coding task needs one bounded,
 model-friendly component dossier rather than several graph queries:

@@ -70,7 +70,7 @@ component has the same kind and display name. Candidates are labelled
 `possible` and name the heuristic (`exact_kind_and_display_name`). They are
 navigation hints that assert no identity.
 
-<!-- still:changes-diff -->
+![The Changes tab after a turn edited hooks/lib/paths.ts: one scan from this session, the file with its two dependents and no test reaching it, and its detail with the diff since the session began](../images/claude-code/changes-diff.png)
 
 Only complete archives can be diffed. Oversized or unavailable retained facts
 return an explicit error instead of silently comparing partial data. Static

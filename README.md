@@ -39,9 +39,9 @@ Nothing in the scan installs dependencies, imports a module or boots a framework
 
 ---
 
-<!-- still:hero -->
+![Claude Code with the Knossos pane: /knossos opens it, Hubs, Cycles and Boundaries pass by, the finder opens ResultEnvelope's blast radius, then a one-line edit to hooks/lib/paths.ts, the band summing up what it reaches, and its diff on the Changes tab](docs/images/claude-code/hero.gif)
 
-A Claude Code session: the brief at its start, `/knossos` opening the pane, a walk through its
+A Claude Code session: `/knossos` opening the pane, a walk through its
 tabs and a search, then an edit, the note the agent gets about it, and the diff in Changes.
 
 ## Features
@@ -168,30 +168,30 @@ knossos scan /absolute/path/to/project
 
 Then, in a Claude Code session in that project, type `/knossos`. The pane opens on Overview:
 
-<!-- still:overview -->
+![The Knossos pane's Overview tab beside Claude Code: headline counts, this session, composition by boundary, language and kind, dependency concentration and cross-boundary flows](docs/images/claude-code/overview.png)
 
 Overview: what moved since the last scan, what this session touched, and how dependencies
 concentrate.
 
-<!-- still:hubs-detail -->
+![The Hubs tab: the most depended-on components with ResultEnvelope marked, and its dependencies drawn beside the list](docs/images/claude-code/hubs-detail.png)
 
 Hubs: the most depended-on components, with the marked one's neighbourhood beside the list.
 
-<!-- still:cycles -->
+![The Cycles tab: a 13-member dependency cycle drawn as a serpentine of boxes with a return edge labelled back to the start, and the list of all cycles below](docs/images/claude-code/cycles.png)
 
 Cycles: each dependency cycle drawn as boxes, with the hop where it crosses a boundary marked.
 
-<!-- still:changes-diff -->
+![The Changes tab after a turn edited hooks/lib/paths.ts: one scan from this session, the file with its two dependents and no test reaching it, and its detail with the diff since the session began](docs/images/claude-code/changes-diff.png)
 
 Changes: every file changed since the session began, its dependents, the tests that reach it,
 and its diff.
 
-<!-- still:branch -->
+![The Branch tab: what this checkout added against its merge base with main, as new cross-boundary dependencies, hubs that grew, new dead code and churn hotspots](docs/images/claude-code/branch.png)
 
 Branch: what this branch added against its merge base, from new boundary crossings to new dead
 code.
 
-<!-- still:finder -->
+![The finder over the pane: ResultEnv typed, 20 matches listed with ResultEnvelope marked first](docs/images/claude-code/finder.png)
 
 The finder: `f`, a few letters of a name, and Enter opens that component.
 

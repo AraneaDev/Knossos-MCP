@@ -150,7 +150,7 @@ to extend.
 
 ## Next step
 
-<!-- still:overview -->
+![The Knossos pane's Overview tab beside Claude Code: headline counts, this session, composition by boundary, language and kind, dependency concentration and cross-boundary flows](../images/claude-code/overview.png)
 
 Where you use the graph decides what you set up next.
 
