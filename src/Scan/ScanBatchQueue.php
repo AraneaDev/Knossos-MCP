@@ -18,8 +18,13 @@ use Knossos\Scanner\Worker\WorkerExecutionPolicy;
  * finish. A search for the one file behind an oversized frame is bounded per
  * language: the halving bound plus two blind binary searches over its files,
  * enough to isolate two oversized frames the worker's answers do not narrow,
- * and far short of searching a broken worker's batch file by file. And a hard
- * cap on requests keeps any combination of the two linear in the files.
+ * and far short of searching a broken worker's batch file by file.
+ *
+ * What keeps any combination of the two linear is the shape of the search:
+ * every failed batch is replaced by two or more batches that partition it, so
+ * a language sends at most 2n - b requests (see {@see self::searchFrame()}).
+ * The hard cap on requests ({@see self::requestCap()}) is a defensive
+ * invariant above that bound, reachable only if that rule is ever broken.
  */
 final class ScanBatchQueue
 {

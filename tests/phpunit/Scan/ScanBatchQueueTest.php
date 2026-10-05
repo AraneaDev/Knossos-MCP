@@ -77,6 +77,38 @@ final class ScanBatchQueueTest extends TestCase
         assertContains('after 10 frame-search retries, the most a language of 8 files to scan is allowed', $error->getMessage());
     }
 
+    public function testTheChargeIsDecidedOnTheCountsBeforeTheProbeIsTakenOff(): void
+    {
+        // 7 files, 3 answered, 4 suspected: charged. Taking the probe off
+        // first would leave 3 suspected against 3 answered and make it free.
+        // 7 files: 4 + 2 * ceil(log2 7) = 10 charged splits, then the eleventh throws.
+        $queue = $this->queue($this->files(7, 100), batchFiles: 8, batchBytes: 10_000);
+        $batch = $queue->next();
+        $answered = $this->answers(['f00', 'f01', 'f02']);
+        for ($round = 0; $round < 10; ++$round) {
+            $queue->searchFrame($batch, $this->frame(), $answered, self::SCANNER);
+        }
+
+        $error = captureThrows(
+            fn() => $queue->searchFrame($batch, $this->frame(), $answered, self::SCANNER),
+            WorkerException::class,
+        );
+
+        assertContains('after 10 frame-search retries, the most a language of 7 files to scan is allowed', $error->getMessage());
+    }
+
+    public function testASingleUnansweredFileGoesOutAloneAheadOfTheAnsweredOnes(): void
+    {
+        // Nothing is left to halve behind the probe, so no empty batch is queued.
+        $queue = $this->queue($this->files(4, 100), batchFiles: 8, batchBytes: 10_000);
+        $batch = $queue->next();
+
+        $file = $queue->searchFrame($batch, $this->frame(), $this->answers(['f00', 'f01', 'f03']), self::SCANNER);
+
+        assertSame(null, $file);
+        assertSame([['f02'], ['f00', 'f01', 'f03']], $this->drain($queue));
+    }
+
     public function testASearchOfOneFileHandsThatFileBackToBeLeftOut(): void
     {
         $queue = $this->queue($this->files(1, 100), batchFiles: 8, batchBytes: 10_000);

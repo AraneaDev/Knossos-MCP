@@ -190,7 +190,7 @@ final class LanguageScanRunnerTest extends TestCase
         $file = new \stdClass();
         $file->language = $language;
         $file->relativePath = match ($language) {
-            'php' => 'src/Foo.php', 'python' => 'src/foo.py', default => 'src/foo.ts'
+            'php' => 'src/Foo.php', 'python' => 'src/foo.py', default => 'src/foo.ts',
         };
         $file->contentHash = 'hashfoo';
 
@@ -1219,7 +1219,10 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame($huge, array_values(array_intersect($huge, $result->leftOutPaths)));
         assertSame(6, $result->leftOut);
         assertSame(594, $result->parsed);
-        assertSame(true, count($this->recordedBatches()) <= 2 * 600 - 2, (string) count($this->recordedBatches()));
+        // 2n - b, with b the batches 600 files make at the packaged file cap
+        // (their 600 KB is well under the byte budget).
+        $batches = (int) ceil(600 / WorkerExecutionPolicy::SCAN_BATCH_FILES);
+        assertSame(true, count($this->recordedBatches()) <= 2 * 600 - $batches, (string) count($this->recordedBatches()));
     }
 
     public function testManyBatchesThatEachOverflowOnceAllFinish(): void
