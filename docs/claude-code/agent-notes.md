@@ -234,11 +234,11 @@ One file's architectural context from the Knossos graph, in one short answer: it
 `… (cut short)` past that). Each list names five, then counts the rest:
 
 ```text
-src/Query/ResultEnvelope.php: boundary core, PHP, 96 lines, 7 components.
-Dependents: 47 files in core, tests; closest: src/Query/DashboardService.php, src/Mcp/ToolService.php, src/Query/BriefService.php, src/Cli/QueryCommand.php, src/Query/RescanService.php, and 42 more.
-Rules: core may not depend on php-worker, tests.
-Tests that reach it: tests/phpunit/Query/ResultEnvelopeTest.php (1 hop), tests/phpunit/Mcp/McpTest.php (2 hops).
-Latest commits: d2bde05 2026-10-04 fix(query): keep meta when null.
+src/Query/ResultEnvelope.php: boundary core, PHP, 111 lines, 15 components.
+Dependents: 47 files in composer:araneadev/knossos (+node:knossos-quality, python:root), core, namespace:Knossos, tests; closest: tests/phpunit/Query/ResultEnvelopeTest.php, src/Mcp/ToolService.php, src/Query/ArchitectureQueryService.php, tests/phpunit/Mcp/MaxCharsTest.php, tests/phpunit/Protocol/ProtocolTest.php, and 42 more.
+Rules: core may not depend on php-worker, typescript-worker, python-worker, rust-worker, tooling, tests.
+Tests that reach it: tests/phpunit/Mcp/BoundaryLegendTest.php (1 hop), tests/phpunit/Mcp/ComponentLegendTest.php (1 hop), tests/phpunit/Mcp/MaxCharsTest.php (1 hop), tests/phpunit/Mcp/McpTest.php (1 hop), tests/phpunit/Mcp/RefreshIfStaleTest.php (1 hop), and more.
+Latest commits: 4e7027a 2026-07-30 feat(quality): enforce docstring coverage, and fix what running Knossos over Knossos found (#26); 2e6541c 2026-07-23 feat(mcp): opt-in refresh_if_stale rescans stale graphs before answering read tools; b63a610 2026-07-19 feat(envelope): add optional staleness, next_steps, meta enrichment fields.
 This session has not changed it.
 ```
 
