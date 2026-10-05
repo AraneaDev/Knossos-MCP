@@ -5,7 +5,7 @@
 **The labyrinth mapped once: on screen beside Claude Code, and in the notes your agent reads while it works.**
 
 [![Release](https://img.shields.io/github/v/release/AraneaDev/knossos?label=release)](https://github.com/AraneaDev/knossos/releases)
-[![Tool page](https://img.shields.io/badge/tool%20page-aranea--development.nl-0b7285)](https://aranea-development.nl/en/tools/knossos-mcp)
+[![Tool page](https://img.shields.io/badge/tool%20page-aranea--development.nl-0b7285)](https://aranea-development.nl/en/tools/knossos)
 [![CI](https://img.shields.io/github/actions/workflow/status/AraneaDev/knossos/quality.yml?label=CI)](https://github.com/AraneaDev/knossos/actions/workflows/quality.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FAraneaDev%2Fknossos%2Fgh-pages%2Fcoverage.json)](https://github.com/AraneaDev/knossos/actions/workflows/quality.yml)
 [![License](https://img.shields.io/github/license/AraneaDev/knossos?label=license&color=yellow)](LICENSE)
@@ -309,7 +309,7 @@ drive releases, and how to add a language scanner.
 
 ## Links
 
-- [Tool page](https://aranea-development.nl/en/tools/knossos-mcp)
+- [Tool page](https://aranea-development.nl/en/tools/knossos)
 - [Model Context Protocol](https://modelcontextprotocol.io/)
 - [Claude Code plugins](https://code.claude.com/docs/en/plugins)
 - [Changelog](CHANGELOG.md)
