@@ -4,7 +4,7 @@
 `dead_code_candidates` alongside its hubs and hotspots: components with no
 inbound edge among the selected edge kinds.
 
-These are **candidates, not findings**. A zero in-degree is absence of static
+These are **candidates, not findings**. They rest on what [the graph and its evidence](graph-and-evidence.md) can and cannot see. A zero in-degree is absence of static
 evidence, not proof of absence: reflection, configuration, templates, registry
 arrays, callbacks, dispatch tables, and framework conventions all reference code
 without leaving a statically visible edge. The tool says so in its own
@@ -29,9 +29,7 @@ test-only findings are waiting behind a higher `limit`.
 `test_only` is usually the more valuable half. A component nothing references
 may be waiting on a caller nobody has written yet; one whose own test is its
 only caller is finished work that no product path reaches, and it still costs
-review, refactors, and CI time. A scan of a 588-file React project found ten
-such files: 908 lines of production code and 1,089 lines of test, still
-receiving maintenance a week earlier, reachable from no screen.
+review, refactors, and CI time. In a scan of this repository's PHP and TypeScript sources together with their tests, 56 of the 65 candidates were `test_only`.
 
 Passing `include_tests` asks for test code to count as part of the architecture,
 which collapses the distinction: nothing is reported as `test_only`, and a
@@ -68,8 +66,7 @@ A PHP class name built at runtime from a namespace literal, `new ('App\Cards\' .
 or the same string held in a variable first, references every class directly in that
 namespace: any of them may be the one built.
 
-The `reason` field names the specific ground, so a caller never has to infer why
-a candidate was demoted.
+The `reason` field names the ground for three of the cases: an untyped call, an object literal with no contract, and an external ancestor. A demotion for a non-`ast` origin or a framework role keeps the generic reason, so read `origin` and `roles` on the component for those.
 
 ## What is excluded before reporting
 
@@ -87,16 +84,14 @@ auditable rather than invisible.
 | `excluded_entry_scripts`         | Modules a scanner marked as executable scripts (a shebang, a `__main__` guard, PHP file-scope code, a library crate's root) whose bodies something outside the graph enters, and a Python package's `__init__` when the package holds other modules.                                             |
 | `excluded_type_declarations`     | Modules and symbols declared in a `.d.ts` / `.d.mts`, and declarations inside `declare global { }` or `declare module 'x' { }` in any file (see below).                                                                                                                                          |
 | `suppressed_candidates`          | Canonical names matched by `dead_code_suppressions` in [project configuration](../get-started/project-configuration.md).                                                                                                                                                                         |
-| `excluded_convention_discovered` | Components carrying an entry-point role: a controller, a command, a job, `application.entry_point`, or `tooling.config` (see below).                                                                                                                                                             |
+| `excluded_convention_discovered` | Components a framework or tool reaches by convention: controllers, commands, jobs, listeners, handlers, migrations and similar framework roles, `application.entry_point`, `library.public_api`, test modules and `tooling.config` (see below).                                                  |
 | `annotated_false_positives`      | Components carrying a `false_positive` [annotation](../agents/agent-integration.md#component-annotations).                                                                                                                                                                                       |
 
 ### Why engine-invoked members are excluded
 
 Instantiating a type is recorded as a `constructs` edge to the **class**, never
 to its constructor. Every constructor in every graph therefore has an in-degree
-of zero, however heavily the class is used. On one 109-file TypeScript project,
-five of thirteen surviving candidates were constructors of classes the same
-graph showed being instantiated.
+of zero, however heavily the class is used. Without the exclusion, a small TypeScript project reports constructors of classes the same graph shows being instantiated.
 
 Constructors are the most common case, not the only one. `__destruct` runs when
 the last reference drops, `__toString` on a string cast, `__invoke` on a call,
@@ -130,8 +125,7 @@ with `declaration_file`, and both are excluded.
 A call edges to an interface method only when its receiver is typed as the
 interface. `foreach ($this->rules as $rule) { $rule->classify($node); }` types
 nothing, so the declaration carries an in-degree of zero while every
-implementation runs on every scan. This repository reported six such contracts
-at once.
+implementation runs on every scan.
 
 A candidate method is excluded when an internal type that implements or extends
 the declaring type declares a member of the same name, and the declaring type
@@ -170,8 +164,7 @@ attribute.
 
 `npm run build` invokes `scripts/build.mjs` by name, and Composer invokes
 `bin/console` the same way. Nothing in the project imports either, so both
-carry an in-degree of zero however central they are. Five of the eight
-candidates on that same 111-file scan were scripts of this kind.
+carry an in-degree of zero however central they are.
 
 Discovery reads each `package.json` and `composer.json` for the paths it names
 as `bin`, `main`/`module`, and `scripts` (and, for a package depending on
@@ -215,17 +208,13 @@ resolution answers with the `.ts`, so the fossil absorbs the dependency and the
 handler the host actually executes is left looking dead. The manifest settles
 which of the two runs on the runtime's authority rather than the type checker's.
 
-A script the manifest does not name stays reportable, which is the useful
-signal: after this exclusion the same scan reported exactly one script, and it
-was a developer tool wired into nothing.
+A script the manifest does not name stays reportable, which is the useful signal: a developer tool wired into nothing.
 
 ### Why tool configuration is excluded
 
 ESLint reads `eslint.config.js`, Vitest reads `vitest.config.ts`, pytest reads
 `conftest.py`: the tool finds each by filename and no project code imports it,
-so its in-degree is zero in every project. A self-scan of a 111-file TypeScript
-project returned eight candidates and all eight were configuration of this
-shape.
+so its in-degree is zero in every project. Without the exclusion, a small TypeScript project reports its own tool configuration as candidates.
 
 Such modules are classified `tooling.config` (rule `core.tooling.config.v1`)
 and, like test modules, are not reported. Recognition is by filename convention

@@ -1,15 +1,17 @@
 # Reviewing a change
 
 Four tools answer "what does this change put at risk?" at different widths.
-Start with `review_diff`; reach for the others when you want one of its parts
-on its own.
+Start with `review_diff`. Reach for `changed_files_impact` when you want its
+impact part on its own, and for `test_impact` and `change_impact` when you want
+the tests or the Git history. They rest on the graph described in
+[the graph and its evidence](graph-and-evidence.md).
 
-| Tool                   | CLI                    | Answers                                                     |
-| ---------------------- | ---------------------- | ----------------------------------------------------------- |
-| `review_diff`          | `review-diff`          | All four of the below in one call, scoped to the change.    |
-| `changed_files_impact` | `changed-files-impact` | What a set of changed files, or your working tree, touches. |
-| `test_impact`          | `test-impact`          | Which test files statically exercise the change.            |
-| `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.           |
+| Tool                   | CLI                    | Answers                                                      |
+| ---------------------- | ---------------------- | ------------------------------------------------------------ |
+| `review_diff`          | `review-diff`          | Impact, rules, budgets and cycles for a change, in one call. |
+| `changed_files_impact` | `changed-files-impact` | What a set of changed files, or your working tree, touches.  |
+| `test_impact`          | `test-impact`          | Which test files statically exercise the change.             |
+| `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.            |
 
 Every Git-reading tool here runs `git` read-only in the scanned root: optional
 locks disabled, argument-array process execution, hooks never invoked, a hard
@@ -42,8 +44,9 @@ for an explicit set, `base_ref` for a Git range.
 
 ### Policies and budgets default to `knossos.json`
 
-If `policies` or `budgets` are omitted, `review_diff` reads them from the
-project's `knossos.json` (or `.jsonc`) at query time: no separate
+If `policies` or `budgets` are omitted, `review_diff` reads the `policies` and
+`quality_budgets` keys of the project's `knossos.json` (or `.jsonc`) at query
+time: no separate
 `check_architecture`/`quality_gate` call is needed to exercise the project's
 own declared rules. Pass either explicitly (as with `check_architecture` and
 `quality_gate`) to override the file, including passing `[]`/`{}` to opt out.
@@ -172,8 +175,7 @@ ranking exposes its simple factors: three points per commit, one per distinct
 author, and a bounded static-proximity weight.
 
 These are prioritization heuristics, not proof of risk, ownership, code quality,
-or future failure. Renames are intentionally not followed in the first version,
-and history outside the selected window is absent. If Git is unavailable or the
+or future failure. Renames are not followed, and history outside the selected window is absent. If Git is unavailable or the
 scanned root is not a repository, the tool returns the static impact with zero
 change scores and a reason instead of failing the whole query.
 

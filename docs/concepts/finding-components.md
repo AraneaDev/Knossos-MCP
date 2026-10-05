@@ -1,9 +1,15 @@
 # Finding and reading components
 
 The read surface: locate a project, locate a component inside it, read that
-component, and list every place a symbol is used. Every tool here is annotated
-read-only and idempotent, and every one returns the shared
-[response envelope](../reference/response-envelopes.md).
+component, and list every place a symbol is used. None of these tools edits
+your project. They are annotated idempotent, but only `list_projects` is
+annotated read-only: the others can rescan a stale graph first, which writes
+Knossos's own graph. Pass `refresh_if_stale: false` to prevent that on one call;
+[the agent integration page](../agents/agent-integration.md#refreshing-a-stale-graph)
+has the rest.
+Every one returns the shared [response envelope](../reference/response-envelopes.md).
+What the components, edges and evidence in the answers are is explained in
+[the graph and its evidence](graph-and-evidence.md).
 
 | Tool                   | CLI                    | Answers                                             |
 | ---------------------- | ---------------------- | --------------------------------------------------- |
@@ -59,6 +65,8 @@ available. Limits are bounded to 100 projects per request and offsets to
 100,000.
 
 ## Component inspection
+
+<!-- still:finder -->
 
 Use `inspect_component` after search when a coding task needs one bounded,
 model-friendly component dossier rather than several graph queries:

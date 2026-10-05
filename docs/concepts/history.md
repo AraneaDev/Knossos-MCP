@@ -1,8 +1,9 @@
 # Scan history
 
-Every successful rescan archives the graph it replaced, so architecture can be
-compared over time rather than only inspected in the present. Three tools read
-that history.
+Every successful rescan archives the graph it replaced, so you can compare
+architecture over time instead of only inspecting the present. A snapshot is
+one complete scan; [the graph and its evidence](graph-and-evidence.md) describes
+what it holds. Three tools read the history.
 
 | Tool                  | CLI                   | Answers                                          |
 | --------------------- | --------------------- | ------------------------------------------------ |
@@ -17,9 +18,9 @@ compatible reads. Before a successful rescan replaces that graph, it captures
 the previous active scan as an immutable, versioned JSON fact set in the same
 transaction.
 
-The default retention is five prior snapshots. Projects may set
-`snapshot_retention` from `0` through `20` in their persisted scan
-configuration; zero disables history. Activation prunes older archives and
+The default retention is five prior snapshots. Set `snapshot_retention` from
+`0` through `20` in [`knossos.json`](../get-started/project-configuration.md),
+or with `--snapshot-retention` on `knossos scan`; zero disables history. Activation prunes older archives and
 their unreferenced completed scan records atomically.
 
 List available metadata with:
@@ -29,11 +30,11 @@ knossos list-snapshots project_... --json
 ```
 
 Or call `list_snapshots` over MCP. Results distinguish the active normalized
-scan from retained archives and include scanner/config fingerprints, timing,
-fact count, byte size, and archive completeness.
+scan from retained archives (`active`, `retained`) and include scanner and
+config fingerprints, timing, `fact_count`, `byte_size` and `complete_archive`.
 
-Each fact table is capped at 200,000 rows and a complete archive at 50 MB. An
-oversized graph retains an explicit incomplete metadata record instead of
+Each fact table is capped at 200,000 rows and a complete archive at 100 MB of
+uncompressed payload. An oversized graph retains an explicit incomplete metadata record instead of
 silently presenting partial facts as complete. Incomplete snapshots are useful
 for audit timing and fingerprints but are not eligible for full snapshot diffs.
 
@@ -64,9 +65,12 @@ counts confidence increases and decreases. Every category has deterministic
 ordering, while `max_changes` applies a global output cap and reports both the
 total and reported counts.
 
-Rename candidates require a unique removed/added component pair with exactly
-the same kind and display name. They are labelled `possible` and include the
-heuristic name; they are navigation hints rather than asserted identity.
+A removed component becomes a rename candidate when exactly one added
+component has the same kind and display name. Candidates are labelled
+`possible` and name the heuristic (`exact_kind_and_display_name`). They are
+navigation hints, not asserted identity.
+
+<!-- still:changes-diff -->
 
 Only complete archives can be diffed. Oversized or unavailable retained facts
 return an explicit error instead of silently comparing partial data. Static

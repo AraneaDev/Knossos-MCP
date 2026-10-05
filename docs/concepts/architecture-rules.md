@@ -8,8 +8,9 @@ snapshot. Both are also composed into
 one change set.
 
 Both read their declarations from files you check in, so the rules live beside
-the code they govern. `knossos.json` can hold them directly; see
-[project configuration](../get-started/project-configuration.md).
+the code they govern. `knossos.json` holds them directly, as `policies` and
+`quality_budgets`; see [project configuration](../get-started/project-configuration.md).
+Boundaries are explained in [the graph and its evidence](graph-and-evidence.md#boundaries-and-roles).
 
 ## Boundary policies
 
@@ -19,6 +20,11 @@ unambiguous name and declares allowed and/or forbidden target boundaries.
 Internal dependencies within the source boundary are implicitly allowed unless
 that boundary is explicitly denied. Use `@unassigned` to match targets without
 boundary membership.
+
+A policy takes these fields and no others: `id` (required, unique, at most 100
+bytes), `from_boundary` (required), `allow_targets`, `deny_targets` (at least
+one of the two) and `edge_kinds`. When you leave out `edge_kinds`, every
+dependency relationship counts. At most 50 policies can be evaluated at once.
 
 ```json
 [
@@ -43,23 +49,29 @@ The equivalent MCP tool accepts the JSON array as `policies`. Optional
 evaluation. Boundary names that resolve to both explicit and inferred
 boundaries are rejected; use the stable ID returned by `list_boundaries`.
 
-Findings include the policy ID, violating relationship, both components,
-boundary memberships, reason, confidence, and source evidence. They describe
+Findings include the policy ID, the violating relationship (with its kind,
+confidence and origin), both components, the boundary memberships on each side,
+the `reasons`, and source evidence in the envelope. `bounds.violation_count` is
+the exact total even when `limit` cuts the list. Findings describe
 the indexed static graph, not runtime enforcement, and may miss dependencies
 created through reflection, configuration, framework conventions, or dynamic
 dispatch.
 
 ## Quality budgets
 
-`quality_gate` compares the active graph with a complete retained baseline and
-evaluates only the limits supplied by the caller. Supported budgets are:
+`quality_gate` compares the active graph with a complete retained baseline
+(see [scan history](history.md)) and evaluates only the limits supplied by the
+caller. Each limit is an integer from 0 to 100000, and the baseline must differ
+from the active snapshot. Supported budgets are:
 
-- `new_cycles`
-- `boundary_violations`
-- `error_diagnostics` and `warning_diagnostics`
-- `hub_degree_growth`
-- `unreferenced_candidates`
-- `public_surface_changes`
+| Budget                                     | What it limits                                                                         |
+| ------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `new_cycles`                               | Cycles beyond the baseline's count.                                                    |
+| `boundary_violations`                      | Policy violations in the active graph. Needs `policies`.                               |
+| `error_diagnostics`, `warning_diagnostics` | Diagnostics of that severity in the active scan.                                       |
+| `hub_degree_growth`                        | How far the highest component degree grew past the baseline's.                         |
+| `unreferenced_candidates`                  | Dead-code candidates in the active graph.                                              |
+| `public_surface_changes`                   | Routes, commands, endpoints, exports and public or entry-point roles added or removed. |
 
 Example budget file:
 
@@ -80,12 +92,16 @@ knossos quality-gate project_... scan_... \
   --budgets=knossos-budgets.json --policies=architecture-policies.json --json
 ```
 
-The command exits nonzero when any budget fails. `--sarif` embeds SARIF 2.1.0
+The command exits nonzero when any budget fails. A `boundary_violations` check
+whose policy scan hit its edge or time bound is marked `indeterminate` and
+fails, because a count taken from a partial scan is only a lower bound.
+`--sarif` embeds SARIF 2.1.0
 for findings with sound file mappings, currently boundary-policy evidence and
 scanner diagnostics. Other metrics remain structured JSON because assigning a
 single source location would be misleading.
 
-`--propose-baseline` returns current metrics as a reviewable proposal. It never
+`--propose-baseline` returns the current metrics as `proposed_baseline`, a
+reviewable proposal. It never
 writes, updates, or suppresses a checked-in baseline automatically; adopting a
 proposal remains an explicit repository change.
 
