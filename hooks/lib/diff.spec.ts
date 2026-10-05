@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Dashboard, DiffState, Inspected, KnossosView, SessionDiff } from '../../types'
 import { DIFF_TEXT_MAX, diffPage, diffSection, diffView, folded, HUNK_LINES, hunkSource, HUNKS_SHOWN, LINE_MAX, parseHunks } from './diff'
-import type { DiffView } from './diff'
+import type { DiffView, Hunk } from './diff'
 import { parseSessionDiff, parseSessionRev } from './envelopes'
 import { diffRows, fileDetailRows } from './__tests__/tabs'
 import { plainText } from './__tests__/plain-text'
@@ -311,10 +311,26 @@ describe('a page of very large opened hunks', () => {
     const hunk = (h: number) => `@@ -${h * 100_000 + 1},0 +${h * 100_000 + 1},20000 @@\n${Array.from({ length: 20_000 }, (_, i) => `+h${h} line ${i}`).join('\n')}`
     const diff = `${Array.from({ length: 12 }, (_, h) => hunk(h)).join('\n')}\n`
     const view = diffView(SHOWN, done(answer({ diff })), { status: 'ok', rev: REV }, { name: SHOWN.name, rev: REV, snapshot: 's1', open: Array.from({ length: 12 }, (_, i) => i), from: 0 })!
+    // The work as well as the time: the quadratic cut joined the hunk again for every line it dropped.
+    // Counted, not recorded: keeping each call's array would hold every hunk the old cut rebuilt.
+    const join = Array.prototype.join
+    let joins = 0
+    Array.prototype.join = function (this: unknown[], separator?: string) {
+      joins++
+      return join.call(this, separator)
+    }
     const started = performance.now()
-    const rows = diffRows(view, 200)
+    let rows: Row[]
+    try {
+      rows = diffRows(view, 200)
+    } finally {
+      Array.prototype.join = join
+    }
+    const took = performance.now() - started
+    // A join for each hunk built, and a few for the card's rows: never one per line dropped.
+    expect(joins).toBeLessThan(200)
     // Far under a second even on a slow CI machine; the quadratic cut took about a minute.
-    expect(performance.now() - started).toBeLessThan(200)
+    expect(took).toBeLessThan(200)
     for (const r of rows.filter(r => r.code !== undefined)) expect(r.code!.source.length).toBeLessThanOrEqual(10_000)
   })
 })
@@ -324,14 +340,75 @@ describe('a page of hunks', () => {
     const diff = Array.from({ length: 6 }, (_, i) => `@@ -${i * 10 + 1},1 +${i * 10 + 1},1 @@\n-a${i}\n+b${i}\n`).join('')
     const view = diffView(SHOWN, done(answer({ diff })), { status: 'ok', rev: REV }, { name: SHOWN.name, rev: REV, snapshot: 's1', open: [], from: 3 })
     if (view?.phase !== 'diff') throw new Error('no diff')
-    const weighed = vi.spyOn(JSON, 'stringify')
+    const stringify = vi.spyOn(JSON, 'stringify')
     try {
       const page = diffPage(view)
       expect(page).toMatchObject({ start: 3, end: 6, before: 0 })
-      // Three hunks on the page and three before it: six weighings, one each.
-      expect(weighed).toHaveBeenCalledTimes(6)
+      // Only the weighings: a hunk's source, which starts at its header, counted per hunk.
+      const weighed = stringify.mock.calls.map(c => c[0]).filter((v): v is string => typeof v === 'string' && v.startsWith('@@ '))
+      const perHunk = new Map<string, number>()
+      for (const source of weighed) perHunk.set(source.split('\n')[0]!, (perHunk.get(source.split('\n')[0]!) ?? 0) + 1)
+      // Three hunks on the page and three before it, each weighed once.
+      expect(perHunk.size).toBe(6)
+      expect([...perHunk.values()]).toEqual([1, 1, 1, 1, 1, 1])
     } finally {
-      weighed.mockRestore()
+      stringify.mockRestore()
     }
+  })
+})
+
+describe('cutting a hunk to the element', () => {
+  /** The cut as it was before it took one pass: drop the last line until header and lines fit. */
+  function slowSource(hunk: Hunk, shown: string[]): string {
+    const head = (lines: string[]): string => {
+      const old = lines.filter(l => !l.startsWith('+')).length
+      const now = lines.filter(l => !l.startsWith('-')).length
+      const oldStart = old === 0 && hunk.lines.some(l => !l.startsWith('+')) ? Math.max(0, hunk.oldStart - 1) : hunk.oldStart
+      const newStart = now === 0 && hunk.lines.some(l => !l.startsWith('-')) ? Math.max(0, hunk.newStart - 1) : hunk.newStart
+      return `@@ -${oldStart},${old} +${newStart},${now} @@${hunk.heading === '' ? '' : ` ${hunk.heading}`}`
+    }
+    let lines = shown
+    while (lines.length > 1 && [head(lines), ...lines].join('\n').length > 10_000) lines = lines.slice(0, -1)
+    return [head(lines), ...lines].join('\n')
+  }
+  /** A small fixed-seed generator, so a failure names the case it found. */
+  function random(seed: number): () => number {
+    let s = seed >>> 0
+    return () => {
+      s = (s * 1_664_525 + 1_013_904_223) >>> 0
+      return s / 2 ** 32
+    }
+  }
+
+  it('keeps exactly what the old cut kept, on randomised hunks', () => {
+    const next = random(20261005)
+    for (let n = 0; n < 500; n++) {
+      const count = 1 + Math.floor(next() * 120)
+      const lines = Array.from({ length: count }, () => `${' +-'[Math.floor(next() * 3)]}${'x'.repeat(Math.floor(next() * LINE_MAX))}`)
+      const hunk: Hunk = { oldStart: Math.floor(next() * 3), newStart: Math.floor(next() * 3), heading: next() < 0.5 ? '' : 'function f()', lines }
+      const shown = lines.slice(0, Math.floor(next() * (count + 1)))
+      expect(hunkSource(hunk, shown), `case ${n}`).toBe(slowSource(hunk, shown))
+    }
+  })
+
+  it('keeps a prefix that ends exactly at the limit, and not the line after it', () => {
+    const head = '@@ -1,0 +1,51 @@'
+    // Fifty lines of 199 characters and the header take 16 + 50 * 200 = 10,016 characters: one too many.
+    // With the last of them shortened by 16 and the header counting fifty, they land on 10,000 exactly.
+    const lines = [...Array.from({ length: 49 }, () => `+${'x'.repeat(198)}`), `+${'y'.repeat(182)}`, `+${'z'.repeat(10)}`]
+    const hunk: Hunk = { oldStart: 1, newStart: 1, heading: '', lines }
+    const source = hunkSource(hunk, lines)
+    expect(head.length).toBe(16)
+    expect(source.length).toBe(10_000)
+    expect(source.split('\n')).toHaveLength(51)
+    expect(source).not.toContain('z')
+    expect(source).toBe(slowSource(hunk, lines))
+  })
+})
+
+describe('a hunk with no lines', () => {
+  it('is passed by, so every element holds a line under its header', () => {
+    expect(parseHunks('@@ -1,0 +1,0 @@\n\\ No newline at end of file\n@@ -4,1 +4,1 @@\n-a\n+b\n').map(h => h.lines)).toEqual([['-a', '+b']])
+    expect(parseHunks('@@ -1,0 +1,0 @@\n')).toEqual([])
   })
 })
