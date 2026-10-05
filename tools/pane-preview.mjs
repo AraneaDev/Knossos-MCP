@@ -48,7 +48,7 @@
  */
 import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename as baseName, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -84,6 +84,27 @@ registerHooks({
 })
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+/** Where `path` really lands: the real path of its deepest ancestor that exists, then the rest of it, so a symlink anywhere above it is followed. */
+function realTarget(path) {
+  const rest = []
+  let head = resolve(path)
+  while (!existsSync(head) && dirname(head) !== head) {
+    rest.unshift(baseName(head))
+    head = dirname(head)
+  }
+  return join(realpathSync(head), ...rest)
+}
+
+// The real captures (tools/capture/shoot.mjs) are never written here, through a symlink or not; checked before anything is drawn.
+{
+  const captures = realTarget(join(REPO, 'docs/images/claude-code'))
+  const out = realTarget(args.out ?? join(REPO, 'readme' in args ? '.superpowers/pane-preview/readme' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
+  if (out === captures || out.startsWith(captures + '/')) {
+    console.error(`pane-preview: refusing to write to ${out}: docs/images/claude-code holds the real Claude Code captures (tools/capture/shoot.mjs)`)
+    process.exit(2)
+  }
+}
 const layout = await import(join(REPO, 'hooks/lib/layout.ts'))
 const envelopes = await import(join(REPO, 'hooks/lib/envelopes.ts'))
 const raster = await import(join(REPO, 'hooks/lib/raster.ts'))
@@ -95,11 +116,6 @@ const diffLib = await import(join(REPO, 'hooks/lib/diff.ts'))
 
 const README = 'readme' in args
 const OUT = resolve(args.out ?? join(REPO, README ? '.superpowers/pane-preview/readme' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
-const CAPTURES = join(REPO, 'docs/images/claude-code')
-if (OUT === CAPTURES || OUT.startsWith(CAPTURES + '/')) {
-  console.error(`pane-preview: refusing to write to ${OUT}: docs/images/claude-code holds the real Claude Code captures (tools/capture/shoot.mjs)`)
-  process.exit(2)
-}
 const PROJECT = resolve(args.project ?? REPO)
 const DATA_DIR = resolve(args['data-dir'])
 const COLUMNS = (args.columns ?? '60,100,140,200').split(',').map(Number)

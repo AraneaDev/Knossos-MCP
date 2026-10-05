@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'pane-preview.mjs')
+const CAPTURES = join(dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'images', 'claude-code')
 let scratch = null
 
 afterEach(() => {
@@ -43,5 +44,20 @@ describe('pane-preview', () => {
     expect(run.status).toBe(2)
     expect(run.stderr).toContain('--since=<snapshot> and --session-rev=<git rev>')
     expect(existsSync(out)).toBe(false)
+  })
+
+  it('refuses an output in the real captures, through a symlink to them or to a dir above them, and writes nothing there', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'knossos-stale-preview-'))
+    const before = readdirSync(CAPTURES).sort()
+    const data = join(scratch, 'data')
+    mkdirSync(data)
+    symlinkSync(CAPTURES, join(scratch, 'shots'))
+    symlinkSync(dirname(CAPTURES), join(scratch, 'images'))
+    for (const out of [join(scratch, 'shots'), join(scratch, 'shots', 'new', 'deeper'), join(scratch, 'images', 'claude-code'), CAPTURES]) {
+      const run = spawnSync(process.execPath, [SCRIPT, `--data-dir=${data}`, `--out=${out}`], { encoding: 'utf8' })
+      expect(run.status, out).toBe(2)
+      expect(run.stderr).toContain('refusing to write')
+    }
+    expect(readdirSync(CAPTURES).sort()).toEqual(before)
   })
 })
