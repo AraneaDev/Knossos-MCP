@@ -54,12 +54,12 @@ in any shell you type `knossos` from. `tools/install` defaults it to
 `~/.knossos` and writes it into the registration it creates.
 
 Unpinned, it falls back to `<cwd>/.knossos`, and that fallback is per-caller.
-The consequences are quiet rather than loud:
+The consequences are quiet:
 
 - Two servers, one registered with the variable and one without, build **two
   graphs of the same project**. Both answer. Neither mentions the other.
-- `knossos` typed inside a project addresses `<project>/.knossos`, not the graph
-  the server reads, so a scan you just ran can leave the server's copy stale.
+- `knossos` typed inside a project addresses `<project>/.knossos`, a graph the
+  server never reads, so a scan you just ran can leave the server's copy stale.
 - `knossos allow-root` writes the roots file beside whichever database it
   derived, so a grant can land in a file the running server never reads. The
   command says which file it wrote and whether the location was named or

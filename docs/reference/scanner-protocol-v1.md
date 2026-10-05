@@ -74,7 +74,7 @@ Three consequences for a worker author:
 
 - **Every integer in the result is a per-request count, and the core sums it
   across a language's requests.** `files_scanned`, and any counter of its own a
-  worker adds, must report what THIS request did, not a running total: a worker
+  worker adds, must report what THIS request did alone: a worker
   that returns a cumulative figure will be double-counted. Other non-integer
   result fields are not summed; the last request's value is the one reported.
   `input_hashes` (below) is the exception: the core verifies it against
@@ -139,7 +139,7 @@ A result may also carry `input_hashes`: an object mapping every project file
 the worker read while deriving that request's facts to the lowercase SHA-256
 hex of the raw bytes read, or to `null` when a read was attempted and failed,
 or a lookup that decides facts found nothing there (see keying reads, below).
-This covers files the worker read for another file's sake, not only the file a
+This covers files the worker read for another file's sake, as well as the file a
 contribution describes: a module index built by reading every module to
 resolve one file's imports, or a type checker that loads a whole program to
 check one of its files. A worker that declares the `input_hashes` capability,
