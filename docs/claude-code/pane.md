@@ -134,8 +134,11 @@ detail in place of the tab.
 
 Lists size themselves to the pane's height, up to 28 rows each. A list cut
 short ends in `24 more ↓` (and `3 above ↑` once the marker has moved down it),
-and moving the marker scrolls it. A pane too short for even a few rows
-scrolls as a whole.
+and moving the marker scrolls it. Each part of that line is a button that moves
+the marker onto the nearest row it counts, the last above or the first below,
+and the list follows. A list the marker does not walk (the tests that reach the
+changes) keeps it as text. A pane too short for even a few rows scrolls as a
+whole.
 
 ### Keys
 
@@ -157,6 +160,7 @@ a line:
 | `q`         | ask Claude about the marked row; your press sends the prompt                                           |
 | `t`         | on Overview and Changes: copy the command for the tests that reach this session's changes              |
 | `d`         | list the files drifted since the snapshot, or hide them                                                |
+| `u`         | on Overview and Changes: list only the changed files no test reaches, or every file again              |
 | `l`         | on Boundaries: move the marked cell to the next boundary the marked one depends on                     |
 | `f`         | open the [finder](#the-finder)                                                                         |
 | `p`         | in a component's detail: draw a [route](#a-route-between-two-components) to another component          |
@@ -225,12 +229,19 @@ deviates is coloured: cycles and diagnostics above zero in the warning colour,
 policy violations in the error colour, drifted files in the accent. A tile
 draws its trend as a sparkline when it has room and five or more snapshots
 move. `dead code` counts the candidates the Issues tab lists and has no delta.
-The `drifted` label is a button that lists the drifted files, as `d` does.
+The `drifted` label is a button that lists the drifted files, as `d` does. The
+labels of the figures that count a list are buttons too, each opening the tab
+that lists them with the marker on the first: `components` opens Hubs,
+`boundaries` Boundaries, `cycles` Cycles, and `policy`, `dead code` and
+`diagnostics` Issues (on its first violation, or its first dead-code
+candidate). At zero there is nothing to list, and the label is plain. `max
+degree` is a single figure, so it is always plain.
 
 **This session**: the session's scans as a row of dots, how many files it
 touched, their dependents and the tests that reach them, with a warning when no
-test does. The marker starts on the way to the Changes tab. `t` copies the
-tests' command. Before anything changed it is one line, `nothing changed yet`.
+test does. A warning about files no test reaches is a button: it opens Changes
+with only those files listed, as `u` does. The marker starts on the way to the
+Changes tab. `t` copies the tests' command. Before anything changed it is one line, `nothing changed yet`.
 
 **Composition**: what the project is made of, as a 100 percent stacked bar per
 dimension. Components by boundary, each in its colour, the five largest named
@@ -408,6 +419,16 @@ dim for one that took in changes made outside it, then how many of each. Under
 it, the files, their dependents and the boundaries they reach, and in the
 warning colour how many files no test reaches.
 
+When the reach of some file is known and none reaches it, `▲ N files no test
+reaches` is a button, as is `u`. It lists only those files, the marker on the
+first, and the line then reads `▲ N files no test reaches · showing only these`.
+Pressing it again, `u`, or the `show all files` row under it lists every file,
+the marker kept on its file. The list shows every file again after a `/clear`,
+and once no file is left that no test reaches. `▲ N policy violations
+introduced` is a button that opens Issues on its first violation. When no test
+reaches the changes at all, the tests card's `▲ no test reaches these changes`
+lists the files no test reaches in the same way.
+
 Each file row has:
 
 | column   | meaning                                                                                     |
@@ -546,7 +567,8 @@ boundary's colour. Each side shows as many neighbours as the height allows,
 and the rest as one `+87 more` box. On a pane too narrow for the three boxes,
 the users stand above and what it uses below; below 50 columns both sides are
 tables. The marker walks both sides, users first, and `o` opens a neighbour as
-its own detail.
+its own detail. Pressing the `+87 more` box moves the marker onto the first neighbour it
+hides, when the detail lists one.
 
 **Blast radius**: see [below](#blast-radius).
 
