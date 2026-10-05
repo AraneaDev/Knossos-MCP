@@ -204,12 +204,12 @@ is in [first scan](docs/get-started/first-scan.md#a-worked-example).
 
 Four notes, each one line, each said once at the moment it helps:
 
-| note     | fires                                                            |
-| -------- | ---------------------------------------------------------------- |
-| Read     | after a Read of a heavily depended-on or policed file            |
-| edit     | after an edit of a heavily depended-on file the Read note missed |
-| turn end | after a turn that edited files, once it is scanned               |
-| commit   | after a commit, on what the session's changes leave behind       |
+| note     | fires                                                                                                                          |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Read     | after a Read of a heavily depended-on or policed file                                                                          |
+| edit     | after an edit of a heavily depended-on file the Read note missed                                                               |
+| turn end | after a turn that edited files, once it is scanned: the boundary violations it introduced and the tests that reach its changes |
+| commit   | after a commit, on what the session's changes leave behind                                                                     |
 
 After a commit, for example:
 
@@ -221,9 +221,11 @@ And the agent can ask about one file with `knossos_context` before it edits it:
 
 ```text
 src/Query/ResultEnvelope.php: boundary core, PHP, 96 lines, 7 components.
-Dependents: 47 files in core, tests; closest: src/Query/DashboardService.php, src/Mcp/ToolService.php, …
+Dependents: 47 files in core, tests; closest: src/Query/DashboardService.php, src/Mcp/ToolService.php, src/Query/BriefService.php, src/Cli/QueryCommand.php, src/Query/RescanService.php, and 42 more.
 Rules: core may not depend on php-worker, tests.
 Tests that reach it: tests/phpunit/Query/ResultEnvelopeTest.php (1 hop), tests/phpunit/Mcp/McpTest.php (2 hops).
+Latest commits: d2bde05 2026-10-04 fix(query): keep meta when null.
+This session has not changed it.
 ```
 
 Every note, its exact wording and its limits are in [notes for the model](docs/claude-code/agent-notes.md).
@@ -272,7 +274,8 @@ processes through the [scanner SDK](docs/reference/scanner-sdk.md).
 - Scanning never installs dependencies, executes project code or boots a framework. Workers are
   supervised and resource-capped, and their output is untrusted until it passes validation.
 - The allow-list is a security boundary. `serve` refuses to start without a root, and Knossos
-  only ever reads the roots file, so widening it stays a deliberate act on disk.
+  never writes the roots file during normal operation: only `tools/install` and
+  `knossos allow-root --execute` do, so widening it stays a deliberate act on disk.
 - The database is derived and rebuildable, and source mounts stay read-only.
 - The Git-backed tools run `git` with repository-controlled hooks, pagers and drivers forced off.
 - MCP stdio is the recommended transport. The loopback-only HTTP profile has its own

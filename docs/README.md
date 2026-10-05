@@ -123,7 +123,14 @@ help text and schemas they come from, never the Markdown.
 
 ## Decisions and examples
 
-- [Architecture decision records](adr/): why the runtime, the transport and the
-  enrichment boundaries are the way they are.
+- [ADR 0001: PHP core with isolated language scanner workers](adr/0001-core-runtime-and-scanner-isolation.md):
+  why the core is PHP and every language scanner runs as its own process.
+- [ADR 0002: Isolate a current MCP stdio adapter](adr/0002-current-mcp-stdio-adapter.md):
+  why the stdio server is a small adapter of its own, kept apart from the tool
+  logic.
+- [ADR 0003: Prioritize static NestJS enrichment](adr/0003-typescript-framework-enrichment.md):
+  why NestJS got static enrichment before Next.js and Express.
+- [ADR 0004: Serve MCP 2026-07-28 alongside 2025-11-25](adr/0004-protocol-2026-07-28.md):
+  how one dispatcher serves two protocol revisions.
 - [CI and editor examples](examples/): GitHub Actions, GitLab CI and VS Code
   task recipes, used by the integration guide.

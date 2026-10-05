@@ -128,12 +128,12 @@ volume, disable networking, and keep stdin open for MCP:
                 "--network",
                 "none",
                 "--mount",
-                "type=bind,source=/absolute/project,target=/workspace,readonly",
+                "type=bind,source=/absolute/project,target=/absolute/project,readonly",
                 "--mount",
                 "type=volume,source=knossos-data,target=/data",
                 "knossos:dev",
                 "serve",
-                "--allow-root=/workspace"
+                "--allow-root=/absolute/project"
             ]
         }
     }

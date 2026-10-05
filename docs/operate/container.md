@@ -130,9 +130,10 @@ docker run --rm \
   knossos:dev install-agent-plugin --out=/out --data="$HOME/.knossos"
 ```
 
-- `--out=DIR` writes `.claude-plugin/`, `hooks/`, and `skills/` under `DIR`,
-  the same five files a local install materialises and differing only in the
-  hook script, all-or-nothing: a failure partway through removes everything
+- `--out=DIR` writes `.claude-plugin/`, `hooks/`, `skills/` and `types/` under
+  `DIR`: the same manifest, mod, skill and types a local install materialises,
+  except that its two hook scripts run the container and need no `lib.sh`. The
+  write is all-or-nothing: a failure partway through removes everything
   the command created (or, if `DIR` already existed, only the files and
   directories this call added), so a failed emit never leaves a directory
   that looks like a working plugin but is missing pieces.

@@ -101,7 +101,7 @@ $ bin/knossos architecture-summary project_1b4f41… --json
    {"kind":"references","count":5888}, …]}}
 ```
 
-Ask what breaks if you change an interface. Each dependant carries the edge that
+Ask what breaks if you change an interface. Each of its dependents carries the edge that
 justifies it and the exact source line, so you can check the answer:
 
 ```console
