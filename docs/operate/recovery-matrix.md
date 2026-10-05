@@ -66,12 +66,21 @@ budget for the rest of the scan. This repeats up to
 `max_scan_batch_halvings` times (4) per batch, after which the failure falls
 through to the ordinary degrade path below.
 
-A batch of one file is never retried (there is nothing left to split), so it
-degrades immediately instead of burning the remaining attempts. Only a failure
-that says the batch was too big is retried: `WORKER_OUTPUT_LIMIT`,
-`WORKER_FRAME_TOO_LARGE`, `WORKER_REQUEST_TOO_LARGE`, and a TypeScript worker
-that exited from V8 heap exhaustion on a request that names no `tsconfig`. A
-crash for any other reason, a timeout, or a cancellation is never retried.
+Three kinds of failure are retried this way: a size signal
+(`WORKER_OUTPUT_LIMIT`, `WORKER_FRAME_TOO_LARGE`, `WORKER_REQUEST_TOO_LARGE`), a
+TypeScript worker that exited from V8 heap exhaustion on a request that names
+no `tsconfig`, and a worker of any language killed by a signal Knossos did not
+send. The last is what a host memory guard such as earlyoom or systemd-oomd
+does to the largest process when memory runs low, and a smaller request on a
+fresh worker needs less memory at its peak. A crash for any other reason, a
+timeout, or a cancellation is never retried.
+
+A batch of one file cannot be split any further, so it is never retried. When
+that one file's own answer is what outgrew a size limit, as a generated bundle
+can, the file is left out with a diagnostic naming the limit and the rest of
+the language is kept. Any other failure of a one-file batch degrades the
+language at once. When retries run out, the diagnostic says how many smaller
+batches were tried.
 
 Sending a whole project in one request made `max_output_bytes` a project-wide
 ceiling: at roughly 14.9 KB of protocol output per PHP file, a scan of more than

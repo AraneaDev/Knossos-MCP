@@ -671,8 +671,36 @@ final class NdjsonRpcChannelTest extends TestCase
         );
 
         assertSame('WORKER_EXITED', $error->diagnosticCode);
-        assertContains('killed by signal 15', $error->getMessage());
-        assertContains('out-of-memory killer', $error->getMessage());
+        assertSame(15, $error->terminatingSignal);
+        // The worker was still owned and mid-request, so the signal cannot
+        // have come from Knossos: it closes a worker only after a request has
+        // already failed for a reason it reports instead.
+        assertSame(
+            'Scanner worker was killed by signal 15 (SIGTERM) before responding, and Knossos did not send it: Knossos '
+            . 'stops a worker only after a request has already failed, and reports that reason instead. A host memory '
+            . 'guard such as earlyoom or systemd-oomd sends SIGTERM to the largest process when memory runs low; the '
+            . "kernel's own OOM killer sends SIGKILL (9).",
+            $error->getMessage(),
+        );
+    }
+
+    public function testAWorkerKilledBySigkillIsNamedToo(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 100));
+        $deadline = $channel->beginRequest();
+
+        $process->running = false;
+        $process->signaled = true;
+        $process->termsig = 9;
+        ftruncate($process->pipes[1], 0);
+        fclose($process->pipes[1]);
+        $process->pipes[1] = fopen('php://temp', 'r');
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame(9, $error->terminatingSignal);
+        assertContains('killed by signal 9 (SIGKILL) before responding, and Knossos did not send it', $error->getMessage());
     }
 
     public function testAWorkerThatChoseItsExitCodeStillReportsThatCode(): void
@@ -1049,6 +1077,13 @@ final class NdjsonRpcChannelTest extends TestCase
         $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
 
         assertSame('WORKER_FRAME_TOO_LARGE', $error->diagnosticCode);
+        // Knossos ends the worker over this, so the message says so and names
+        // the limit, rather than leaving a signal for the reader to explain.
+        assertSame(
+            'Worker frame exceeds the 128-byte line limit (worker_execution.max_line_bytes), so Knossos stopped the worker.',
+            $error->getMessage(),
+        );
+        assertSame(null, $error->terminatingSignal);
     }
 
     public function testAnOversizedPartialFrameBeyondTheOutputBudgetIsAnOutputLimit(): void
@@ -1062,6 +1097,10 @@ final class NdjsonRpcChannelTest extends TestCase
         $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
 
         assertSame('WORKER_OUTPUT_LIMIT', $error->diagnosticCode);
+        assertSame(
+            'Worker output exceeds the 128-byte request limit (worker_execution.max_output_bytes), so Knossos stopped the worker.',
+            $error->getMessage(),
+        );
     }
 
     /**

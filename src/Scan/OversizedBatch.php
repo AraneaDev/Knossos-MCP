@@ -29,8 +29,37 @@ final class OversizedBatch
      */
     public static function signalledBy(LanguageDescriptor $descriptor, WorkerException $error, array $request): bool
     {
-        return in_array($error->diagnosticCode, self::SIZE_CODES, true)
-            || self::isTypeScriptHeapExhaustion($descriptor, $error, $request);
+        return self::isSizeLimit($error)
+            || self::isTypeScriptHeapExhaustion($descriptor, $error, $request)
+            || self::wasKilledFromOutside($error);
+    }
+
+    /**
+     * Whether the output or the request outgrew a cap sized for a batch.
+     *
+     * Unlike the other reasons, this one is about the files themselves: a file
+     * whose answer alone outgrows the cap will do so in any batch.
+     */
+    public static function isSizeLimit(WorkerException $error): bool
+    {
+        return in_array($error->diagnosticCode, self::SIZE_CODES, true);
+    }
+
+    /**
+     * Whether the worker was killed by a signal Knossos did not send.
+     *
+     * A host memory guard such as earlyoom SIGTERMs the largest process when
+     * memory runs low, and a worker in the middle of a big request is often
+     * that process. Nothing in the batch was wrong, so it is worth a fresh
+     * worker and a smaller request, which needs less memory at its peak; for
+     * TypeScript that is the fallback programs a smaller batch no longer
+     * builds, and the garbage a fresh process has not yet accumulated. The
+     * halving bound keeps a host that kills every attempt from being retried
+     * without end.
+     */
+    private static function wasKilledFromOutside(WorkerException $error): bool
+    {
+        return $error->diagnosticCode === 'WORKER_EXITED' && $error->terminatingSignal !== null;
     }
 
     /**

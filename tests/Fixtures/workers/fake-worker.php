@@ -300,6 +300,37 @@ while (($line = fgets(STDIN)) !== false) {
                 fflush(STDOUT);
                 exit(0);
             }
+            // Stands in for a host memory guard such as earlyoom, which
+            // SIGTERMs the largest process when memory runs low: the worker
+            // is killed mid-request by a signal nobody on the Knossos side
+            // sent. `_once` is killed on its first oversized request only.
+            if (($mode === 'per_file_sigterm' || $mode === 'per_file_sigterm_once')
+                && count($requested) > $threshold
+                && ($mode === 'per_file_sigterm' || !file_exists($pidFile . '.sigtermed'))) {
+                file_put_contents($pidFile . '.sigtermed', '1');
+                posix_kill(getmypid(), SIGTERM);
+                sleep(5);
+                exit(0);
+            }
+            // A file whose own contribution is too large for one frame: every
+            // other file is answered, then the oversized frame for this one
+            // ends the request whatever batch it travels in.
+            if ($mode === 'per_file_frame_too_large_for_huge') {
+                foreach ($requested as $relativePath) {
+                    if (!str_contains((string) $relativePath, 'Huge')) {
+                        notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                    }
+                }
+                foreach ($requested as $relativePath) {
+                    if (str_contains((string) $relativePath, 'Huge')) {
+                        fwrite(STDOUT, str_repeat('x', 150_000));
+                        fflush(STDOUT);
+                        exit(0);
+                    }
+                }
+                respond($id, ['count' => count($requested), 'files_scanned' => count($requested)]);
+                continue;
+            }
             if ($mode === 'per_file_oom_once'
                 && count($requested) > $threshold
                 && !file_exists($pidFile . '.oomed')) {

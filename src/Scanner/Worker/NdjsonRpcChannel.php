@@ -222,7 +222,10 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             if ($pending > $this->limits->maxLineBytes) {
                 // Longer than any part may be, so this frame is output.
                 $this->chargeOutput($pending);
-                throw new WorkerException('WORKER_FRAME_TOO_LARGE', 'Worker frame exceeds the line limit.');
+                throw new WorkerException('WORKER_FRAME_TOO_LARGE', sprintf(
+                    'Worker frame exceeds the %d-byte line limit (worker_execution.max_line_bytes), so Knossos stopped the worker.',
+                    $this->limits->maxLineBytes,
+                ));
             }
 
             // Only the request's own deadline is renewed: a caller's shorter
@@ -289,6 +292,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 throw new WorkerException(
                     'WORKER_EXITED',
                     $this->withStderr(self::exitDescription($status)),
+                    terminatingSignal: $status['signaled'] && $status['termsig'] > 0 ? $status['termsig'] : null,
                 );
             }
         }
@@ -304,15 +308,25 @@ final class NdjsonRpcChannel implements RpcChannelInterface
      * fact been SIGTERMed by the host's out-of-memory killer, which leaves no
      * message anywhere the scan can see.
      *
+     * The signal is named as coming from outside because it provably did: this
+     * status is read from a process the supervisor still holds, mid-request,
+     * and Knossos only ever signals a worker from close(), after a request
+     * has already failed with a diagnostic of its own. On the host where this
+     * was first seen the sender was earlyoom, which SIGTERMs the process with
+     * the most memory once available memory drops under its threshold.
+     *
      * @param array{running: bool, signaled: bool, exitcode: int, termsig: int, ...} $status
      */
     private static function exitDescription(array $status): string
     {
         if ($status['signaled'] && $status['termsig'] > 0) {
             return sprintf(
-                'Scanner worker was killed by signal %d before responding. Nothing in the worker chose this, so look '
-                . 'outside it: an out-of-memory killer or a supervisor stopping the process.',
+                'Scanner worker was killed by signal %d%s before responding, and Knossos did not send it: Knossos stops '
+                . 'a worker only after a request has already failed, and reports that reason instead. A host memory '
+                . 'guard such as earlyoom or systemd-oomd sends SIGTERM to the largest process when memory runs low; '
+                . "the kernel's own OOM killer sends SIGKILL (9).",
                 $status['termsig'],
+                self::signalName($status['termsig']),
             );
         }
         if ($status['exitcode'] < 0) {
@@ -320,6 +334,14 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         }
 
         return sprintf('Scanner worker exited before responding (exit %d).', $status['exitcode']);
+    }
+
+    /** The conventional name of a signal a worker is likely to die of, as " (SIGTERM)", or nothing. */
+    private static function signalName(int $signal): string
+    {
+        $name = [1 => 'SIGHUP', 2 => 'SIGINT', 6 => 'SIGABRT', 9 => 'SIGKILL', 11 => 'SIGSEGV', 15 => 'SIGTERM'][$signal] ?? null;
+
+        return $name === null ? '' : ' (' . $name . ')';
     }
 
     /**
@@ -358,7 +380,10 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         // without bound.
         $this->sendBufferedBytes += strlen($chunk);
         if ($this->sendBufferedBytes > $this->limits->maxLineBytes + self::READ_CHUNK_BYTES) {
-            throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
+            throw new WorkerException('WORKER_OUTPUT_LIMIT', sprintf(
+                'Worker wrote more than one %d-byte frame before reading its whole request, so Knossos stopped the worker.',
+                $this->limits->maxLineBytes,
+            ));
         }
 
         return false;
@@ -459,7 +484,10 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     {
         $this->outputBytes += $bytes;
         if ($this->outputBytes > $this->limits->maxOutputBytes) {
-            throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
+            throw new WorkerException('WORKER_OUTPUT_LIMIT', sprintf(
+                'Worker output exceeds the %d-byte request limit (worker_execution.max_output_bytes), so Knossos stopped the worker.',
+                $this->limits->maxOutputBytes,
+            ));
         }
     }
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Knossos\Discovery\ProjectUnit;
+use Knossos\Scanner\Protocol\{Diagnostic, Evidence, ScanContribution};
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 use Throwable;
@@ -195,6 +196,10 @@ final readonly class LanguageScanRunner
         // rather than to a batch, so a full scan of a mid-sized codebase failed
         // on limits sized for a batch.
         $scanned = $metadata = [];
+        // Files left out because their answer alone outgrew a size cap, each
+        // with a contribution saying so. Kept apart from $scanned so they are
+        // neither counted as parsed nor cached.
+        $leftOut = $leftOutPaths = [];
         // Every path discovery hashed, not only this language's files: a worker
         // may read a file another language claims, or a manifest such as the
         // package.json module resolution reads or the Cargo.toml a crate is
@@ -224,11 +229,21 @@ final readonly class LanguageScanRunner
                 // rethrow, and let run() degrade or propagate it. A single file
                 // cannot be split any further, so retrying it would only burn
                 // the remaining attempts and worker restarts.
-                if (!OversizedBatch::signalledBy($descriptor, $error, $request)
+                $retryable = OversizedBatch::signalledBy($descriptor, $error, $request) && !$cancellation->isCancelled();
+                if ($retryable && count($item['files']) === 1 && OversizedBatch::isSizeLimit($error)) {
+                    // That one file's own answer is what outgrew the cap, and it
+                    // will do so in any batch. Failing the language for it threw
+                    // away every other file's facts; leaving it out keeps them.
+                    $path = $item['files'][0]->relativePath;
+                    $leftOut[] = self::leftOutContribution($manifest->id, $path, $error);
+                    $leftOutPaths[$path] = true;
+                    $client = $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
+                    continue;
+                }
+                if (!$retryable
                     || count($item['files']) <= 1
-                    || $item['halvings'] >= WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS
-                    || $cancellation->isCancelled()) {
-                    throw $error;
+                    || $item['halvings'] >= WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS) {
+                    throw self::withRetries($error, $item['halvings']);
                 }
                 $budget = max(1, intdiv($item['budget'], 2));
                 $sourceBytes = min($sourceBytes, $budget);
@@ -265,14 +280,17 @@ final readonly class LanguageScanRunner
         }
         $recorded = $this->cache->entriesForScanned(
             $scanned,
-            $partition->filesToScan,
+            array_values(array_filter(
+                $partition->filesToScan,
+                static fn(object $file): bool => !isset($leftOutPaths[$file->relativePath]),
+            )),
             $manifest,
             $plan->preparation->configurationHashes[$descriptor->key],
         );
 
         return [
             'manifest' => $manifest,
-            'contributions' => [...$partition->cached, ...$recorded['contributions']],
+            'contributions' => [...$partition->cached, ...$recorded['contributions'], ...$leftOut],
             'cache_entries' => [...$partition->cacheEntries, ...$recorded['cache_entries']],
             'parsed' => count($scanned),
             'unchanged' => count($partition->cached),
@@ -354,6 +372,54 @@ final readonly class LanguageScanRunner
         return array_map(
             static fn(array $files): array => ['files' => $files, 'budget' => $budget, 'halvings' => $halvings],
             $batches,
+        );
+    }
+
+    /**
+     * The contribution a file gets when its answer alone was too large to take.
+     *
+     * Carries only the reason, under the owner key the worker would have used,
+     * so the file stays accounted for and the gap is visible in the graph.
+     */
+    private static function leftOutContribution(string $scannerId, string $relativePath, WorkerException $error): ScanContribution
+    {
+        return new ScanContribution($scannerId . ':file:' . $relativePath, [], [], [
+            new Diagnostic(
+                'error',
+                $error->diagnosticCode,
+                sprintf(
+                    "Left out of the graph: the scanner's answer for %s alone was too large. %s A single file cannot be "
+                    . 'split any further, so its facts are omitted and the rest of the language is kept.',
+                    $relativePath,
+                    $error->getMessage(),
+                ),
+                new Evidence($relativePath, 1, 1),
+            ),
+        ]);
+    }
+
+    /**
+     * Say how many smaller batches were tried before a failure was given up on.
+     *
+     * Without it a degraded language reads as if one request failed once,
+     * and the obvious next step, retrying smaller, looks untried.
+     */
+    private static function withRetries(WorkerException $error, int $halvings): WorkerException
+    {
+        if ($halvings === 0) {
+            return $error;
+        }
+
+        return new WorkerException(
+            $error->diagnosticCode,
+            sprintf(
+                '%s This was after %d %s in smaller batches with a fresh worker.',
+                $error->getMessage(),
+                $halvings,
+                $halvings === 1 ? 'retry' : 'retries',
+            ),
+            $error,
+            $error->terminatingSignal,
         );
     }
 

@@ -54,6 +54,22 @@ final class OversizedBatchTest extends TestCase
         assertSame(false, OversizedBatch::signalledBy(self::descriptor('typescript'), new WorkerException('WORKER_EXITED', 'exit code 3'), []));
     }
 
+    public function testAWorkerKilledFromOutsideSplitsTheBatchInAnyLanguageAndConfiguration(): void
+    {
+        $killed = new WorkerException('WORKER_EXITED', 'killed', terminatingSignal: 15);
+
+        assertSame(true, OversizedBatch::signalledBy(self::descriptor('php'), $killed, []));
+        // Unlike heap exhaustion, the sender is the host running low, which a
+        // fresh worker and a smaller request can get past even for a
+        // configured program.
+        assertSame(true, OversizedBatch::signalledBy(self::descriptor('typescript'), $killed, ['config_files' => ['tsconfig.json']]));
+        assertSame(false, OversizedBatch::signalledBy(self::descriptor('php'), new WorkerException('WORKER_EXITED', 'exit 3'), []));
+        // Only an exit: a signal recorded on any other failure is not this case.
+        assertSame(false, OversizedBatch::signalledBy(self::descriptor('php'), new WorkerException('WORKER_TIMEOUT', 'slow', terminatingSignal: 15), []));
+        // And it says nothing about the files, so a lone file is not left out for it.
+        assertSame(false, OversizedBatch::isSizeLimit($killed));
+    }
+
     private static function descriptor(string $key): LanguageDescriptor
     {
         return new LanguageDescriptor(key: $key, stage: $key . '-analysis', languages: [$key], command: ['node']);
