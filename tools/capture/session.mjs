@@ -450,7 +450,7 @@ export async function createSession({
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         // HOME is a temp dir, never the user's: Claude Code names the project
         // `~/<name>` in its header when the project lies in HOME (so the shot
-        // reads ~/Knossos-MCP, not a temp path), and with the user's HOME it
+        // reads ~/knossos, not a temp path), and with the user's HOME it
         // would also find their ~/.claude rules and memory.
         HOME: homeDir,
     };

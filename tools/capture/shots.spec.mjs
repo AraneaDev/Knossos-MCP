@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { lapse, paneFocused, parseArgs, promptText } from "./shoot.mjs";
-import { SHOTS, STEP_KINDS, WAIT_BUDGET_MS } from "./shots.mjs";
+import { SHOTS, STEP_KINDS, THIS_SESSION, WAIT_BUDGET_MS } from "./shots.mjs";
 
 const entries = Object.entries(SHOTS);
 
@@ -101,5 +101,27 @@ describe("promptText", () => {
         const screen = "❯ /knossos\n  ⎿  opened\n────\n❯ 6\n────\n  footer";
         expect(promptText(screen)).toBe("6");
         expect(promptText("no prompt")).toBe("");
+    });
+});
+
+describe("THIS_SESSION", () => {
+    const re = new RegExp(THIS_SESSION, "m");
+    it("needs one scan or more from the session itself", () => {
+        expect(re.test("scans ● 1 this session")).toBe(true);
+        expect(re.test("scans ●● 12 this session · 1 outside")).toBe(true);
+        expect(re.test("scans ● 0 this session · 1 outside")).toBe(false);
+        expect(re.test("scans ●● 10 outside · 0 this session")).toBe(false);
+    });
+    it("takes the Changes still in the hero's session, after its turn", () => {
+        const steps = SHOTS.hero.steps;
+        const turn = steps.findIndex((s) => s.do === "submit");
+        const still = steps.findIndex(
+            (s) => s.do === "still" && s.name === "changes-diff",
+        );
+        expect(turn).toBeGreaterThan(-1);
+        expect(still).toBeGreaterThan(turn);
+        expect(
+            steps.slice(turn, still).some((s) => s.match === THIS_SESSION),
+        ).toBe(true);
     });
 });

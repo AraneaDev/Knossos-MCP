@@ -25,7 +25,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { clearInterval, setInterval } from "node:timers";
 import { promisify } from "node:util";
-import { cursor, plain, send, snap, type, waitFor } from "./driver.mjs";
+import { cursor, plain, resize, send, snap, type, waitFor } from "./driver.mjs";
 import { framePage } from "./frame.mjs";
 import { buildGif } from "./gif.mjs";
 import { renderPng } from "./render.mjs";
@@ -71,15 +71,22 @@ export function parseArgs(argv, shots = SHOTS) {
 const git = (dir, ...args) =>
     run("git", ["-C", dir, ...args]).then(({ stdout }) => stdout.trim());
 
+/** The throwaway worktree's dir name: the pane header and Claude Code's `~/` path both show it. */
+export const WORKTREE_NAME = "knossos";
+
 /**
- * A detached worktree of HEAD at `<home>/<name of the repo>`, so the pane's
- * header reads the same as this checkout's. Its removal is registered before
+ * A detached worktree of HEAD at `<home>/<name>` (WORKTREE_NAME), so the pane's
+ * header and Claude Code's `~/<name>` read the project's name, whatever this
+ * checkout's dir is called. Its removal is registered before
  * it is added, so a signal or an error while git adds it still removes it.
  * Never `git config` in it: in a linked worktree that writes the shared
  * repository config.
  */
-export async function throwawayWorktree(repo, { home, runGit = git }) {
-    const dir = path.join(home, path.basename(repo));
+export async function throwawayWorktree(
+    repo,
+    { home, name = WORKTREE_NAME, runGit = git },
+) {
+    const dir = path.join(home, name);
     registerCleanup(async () => {
         await runGit(repo, "worktree", "remove", "--force", dir).catch(
             () => {},
@@ -416,7 +423,7 @@ const until = (session, step, re) =>
     });
 
 /** Steps a GIF shows only the outcome of. */
-const QUICK = ["send", "press", "focus", "widen"];
+const QUICK = ["send", "press", "focus", "widen", "resize"];
 
 /** Where the edit goes: `text` as a line above the first line holding `anchor`. */
 export function insertBefore(content, anchor, text, file = "the file") {
@@ -516,11 +523,32 @@ export async function playShot(session, shot, { worktree, record = false }) {
                 );
                 break;
             }
+            case "resize":
+                await resize(session, ...step.size);
+                // Until Claude Code has drawn at the new size: its prompt's rule spans the width.
+                await waitFor(
+                    session,
+                    (s) => new RegExp(`^─{${session.cols}}$`, "m").test(s),
+                    {
+                        timeoutMs: 20000,
+                        step: `resize to ${step.size.join("x")}`,
+                    },
+                );
+                await settle(session);
+                break;
             case "cut":
                 tape.stop();
                 break;
             case "still":
-                stills[step.name] = await settle(session);
+                // With the size it was taken at: a `resize` can change it within a shot.
+                stills[step.name] = {
+                    frame: await settle(session),
+                    view: {
+                        cols: session.cols,
+                        rows: session.rows,
+                        theme: shot.theme,
+                    },
+                };
                 break;
             default:
                 throw new Error(`unknown step: ${step.do}`);
@@ -536,6 +564,14 @@ export async function playShot(session, shot, { worktree, record = false }) {
     };
     try {
         for (const step of shot.steps) await runStep(step);
+    } catch (error) {
+        // What was taken before the failure, so a GIF cut before it (and its model turn) is not lost.
+        error.partial = {
+            frames: tape.frames,
+            stills,
+            cut: record && !tape.on,
+        };
+        throw error;
     } finally {
         tape.stop();
     }
@@ -586,6 +622,37 @@ export async function checkLength(dir, shot) {
     return ms;
 }
 
+/** Writes a shot's GIF (from its frames, when it records) and its stills under `out`. */
+async function writeShot(name, shot, { frames, stills }, { out, view }) {
+    const dir = path.join(OUT, name);
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    await mkdir(out, { recursive: true });
+    if (shot.gif === true && frames.length > 0) {
+        const pngs = frames.map((_, i) => path.join(dir, `${pad(i)}.png`));
+        // The frames as text too, to look at or rebuild without shooting again.
+        for (const [i, f] of frames.entries())
+            await writeFile(path.join(dir, `${pad(i)}.ansi`), f);
+        await renderPng(
+            frames.map((f) => framePage(f, view)),
+            pngs,
+            view,
+        );
+        const ms = await checkLength(dir, shot);
+        const built = await buildGif(dir, path.join(out, `${name}.gif`));
+        process.stdout.write(
+            `${name}: ${frames.length} frames (${(ms / 1000).toFixed(1)} s), ${built.bytes} bytes${built.mp4 ? `, ${built.mp4}` : ""}\n`,
+        );
+    }
+    for (const [still, { frame, view: at }] of Object.entries(stills)) {
+        const png = path.join(dir, `${still}.png`);
+        await renderPng([framePage(frame, at)], [png], at);
+        await writeFile(path.join(dir, `${still}.ansi`), frame);
+        await copyFile(png, path.join(out, `${still}.png`));
+        process.stdout.write(`${still}: ${path.join(out, `${still}.png`)}\n`);
+    }
+}
+
 async function shootOne(
     name,
     shot,
@@ -600,59 +667,31 @@ async function shootOne(
         ...view,
         pluginDir: path.join(REPO, ".plugin"),
         tmpRoot: runDir,
-        // The worktree lies in it, so the header names the project `~/Knossos-MCP`.
+        // The worktree lies in it, so the header names the project `~/knossos`.
         home,
         ...(shot.claude ? { claudeArgs: shot.claude } : {}),
     });
     try {
-        const record = shot.gif === true;
-        const { frames, stills } = await playShot(session, shot, {
-            worktree,
-            record,
-        });
-        const dir = path.join(OUT, name);
-        await rm(dir, { recursive: true, force: true });
-        await mkdir(dir, { recursive: true });
-        await mkdir(out, { recursive: true });
-        if (record) {
-            const pngs = frames.map((_, i) => path.join(dir, `${pad(i)}.png`));
-            // The frames as text too, to look at or rebuild without shooting again.
-            for (const [i, f] of frames.entries())
-                await writeFile(path.join(dir, `${pad(i)}.ansi`), f);
-            await renderPng(
-                frames.map((f) => framePage(f, view)),
-                pngs,
-                view,
-            );
-            const ms = await checkLength(dir, shot);
-            const built = await buildGif(dir, path.join(out, `${name}.gif`));
-            process.stdout.write(
-                `${name}: ${frames.length} frames (${(ms / 1000).toFixed(1)} s), ${built.bytes} bytes${built.mp4 ? `, ${built.mp4}` : ""}\n`,
-            );
+        let taken;
+        try {
+            taken = await playShot(session, shot, {
+                worktree,
+                record: shot.gif === true,
+            });
+        } catch (error) {
+            // A GIF already cut is kept, with the stills taken so far: shooting it again costs a model turn.
+            if (error.partial?.cut === true)
+                await writeShot(name, shot, error.partial, { out, view });
+            throw error;
         }
-        const named = Object.entries(stills);
-        if (named.length > 0) {
-            const pngs = named.map(([still]) => path.join(dir, `${still}.png`));
-            await renderPng(
-                named.map(([, f]) => framePage(f, view)),
-                pngs,
-                view,
-            );
-            for (const [i, [still, f]] of named.entries()) {
-                await writeFile(path.join(dir, `${still}.ansi`), f);
-                await copyFile(pngs[i], path.join(out, `${still}.png`));
-                process.stdout.write(
-                    `${still}: ${path.join(out, `${still}.png`)}\n`,
-                );
-            }
-        }
+        await writeShot(name, shot, taken, { out, view });
     } finally {
         await session.close();
     }
 }
 
-export async function main(argv = process.argv.slice(2)) {
-    const { only, out } = parseArgs(argv);
+export async function main(argv = process.argv.slice(2), shots = SHOTS) {
+    const { only, out } = parseArgs(argv, shots);
     installExitHandlers();
     let current = null;
     try {
@@ -663,11 +702,11 @@ export async function main(argv = process.argv.slice(2)) {
         registerCleanup(() => rm(runDir, { recursive: true, force: true }));
         const home = path.join(runDir, "home");
         const worktree = await throwawayWorktree(REPO, { home });
-        const base = only.some((s) => SHOTS[s].base === true);
+        const base = only.some((s) => shots[s].base === true);
         const stage = await stageGraph(worktree, { base, tmpRoot: runDir });
         for (const name of only) {
             current = name;
-            await shootOne(name, SHOTS[name], {
+            await shootOne(name, shots[name], {
                 worktree,
                 stage,
                 out,

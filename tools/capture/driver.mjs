@@ -73,3 +73,18 @@ export async function waitFor(
     error.lastFrame = plain(last);
     throw error;
 }
+
+/** Resizes the session's window to `cols` x `rows`; Claude Code draws again at the new size. */
+export async function resize(session, cols, rows) {
+    await tmux(session, [
+        "resize-window",
+        "-t",
+        session.name,
+        "-x",
+        String(cols),
+        "-y",
+        String(rows),
+    ]);
+    session.cols = cols;
+    session.rows = rows;
+}

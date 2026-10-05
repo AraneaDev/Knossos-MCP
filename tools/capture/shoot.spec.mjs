@@ -277,7 +277,7 @@ describe("throwawayWorktree", () => {
                     }
                 })(),
             ).rejects.toThrow(/the shot failed/);
-            expect(dir).toBe(path.join(root, "home", "Repo"));
+            expect(dir).toBe(path.join(root, "home", "knossos"));
             await expect(stat(dir)).rejects.toThrow(/ENOENT/);
             const { stdout } = await run("git", [
                 "-C",
@@ -323,7 +323,7 @@ describe("stageGraph", () => {
         const scans = [];
         const gits = [];
         try {
-            const stage = await stageGraph("/w/Knossos-MCP", {
+            const stage = await stageGraph("/w/knossos", {
                 source,
                 realDataDir: source,
                 tmpRoot: root,
@@ -344,7 +344,7 @@ describe("stageGraph", () => {
             for (const scan of scans) {
                 expect(scan.args).toEqual([
                     "scan",
-                    "/w/Knossos-MCP",
+                    "/w/knossos",
                     "--snapshot-retention=5",
                 ]);
                 expect(scan.env.KNOSSOS_DATA_DIR).toBe(stage);
@@ -363,7 +363,7 @@ describe("stageGraph", () => {
                 JSON.parse(
                     await readFile(path.join(stage, "roots.json"), "utf8"),
                 ).roots,
-            ).toEqual(["/a", "/w/Knossos-MCP"]);
+            ).toEqual(["/a", "/w/knossos"]);
             expect(
                 await readFile(path.join(source, "roots.json"), "utf8"),
             ).toBe('{"roots":["/a"]}');
@@ -377,7 +377,7 @@ describe("stageGraph", () => {
         let scanned = false;
         try {
             await expect(
-                stageGraph("/w/Knossos-MCP", {
+                stageGraph("/w/knossos", {
                     source: root,
                     realDataDir: root,
                     tmpRoot: root,

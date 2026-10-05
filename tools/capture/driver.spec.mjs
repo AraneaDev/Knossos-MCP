@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { plain, waitFor } from "./driver.mjs";
+import { plain, resize, waitFor } from "./driver.mjs";
 
 describe("plain", () => {
     it("strips ANSI sequences", () =>
@@ -30,5 +30,23 @@ describe("waitFor", () => {
             message: expect.stringContaining("open pane"),
             lastFrame: "nothing",
         });
+    });
+});
+
+describe("resize", () => {
+    it("resizes the window on the session's own server and keeps the new size", async () => {
+        const calls = [];
+        const session = {
+            name: "s",
+            socket: "sock",
+            cols: 160,
+            rows: 48,
+            runTmux: async (argv) => calls.push(argv),
+        };
+        await resize(session, 224, 56);
+        expect(calls).toEqual([
+            ["-L", "sock", "resize-window", "-t", "s", "-x", "224", "-y", "56"],
+        ]);
+        expect([session.cols, session.rows]).toEqual([224, 56]);
     });
 });

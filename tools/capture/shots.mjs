@@ -14,6 +14,8 @@
  * - `focus`: gives the pane the keyboard (ctrl+x tab) unless it has it; with
  *   `field`, its open field; with `prompt`, hands it back to the prompt (Escape).
  * - `widen`: widens the pane (ctrl+x left) until it is `columns` wide.
+ * - `resize`: resizes the terminal to `size` ([columns, rows]); the stills
+ *   after it are taken at that size.
  * - `wait`: a visible beat: until `match` (a regex source, multiline) is on
  *   screen, or gone with `absent`, then a moment to read it. `fixture` names
  *   the FIXTURE entry the match depends on, for the error on a timeout.
@@ -48,7 +50,7 @@ export const FIXTURE = {
     boundaryPair: "tests → core",
     // The label hooks/lib/diagram.ts draws under a cycle once the diagram closes the loop.
     cycleDrawn: "back to the start",
-    // The small file the hero's turn and the Changes still edit, and the line the edit goes above.
+    // The small file the hero's turn edits, and the line the edit goes above.
     edited: "hooks/lib/paths.ts",
     editAnchor: "function normalise",
 };
@@ -76,6 +78,7 @@ export const STEP_KINDS = [
     "press",
     "focus",
     "widen",
+    "resize",
     "wait",
     "hold",
     "edit",
@@ -157,16 +160,11 @@ const pane = (
     steps: [...ready, ...openPane(PANE[size[0]], false), ...steps, still(name)],
 });
 
+/** The Changes heading's count of the session's own scans, one or more. */
+export const THIS_SESSION = String.raw`scans\b.*\b[1-9]\d* this session`;
+
 /** The hero's one prompt. */
 export const PROMPT = `Add a one-line comment above the normalise function in ${FIXTURE.edited} saying what it does. Edit only that file and run nothing.`;
-
-/** The edit the Changes still makes by hand, where the hero's turn makes it. */
-const handEdit = {
-    do: "edit",
-    file: FIXTURE.edited,
-    before: FIXTURE.editAnchor,
-    text: "// Resolves . and .. segments, so two spellings of one path compare equal.",
-};
 
 const hubDetail = (theme) =>
     pane(
@@ -239,11 +237,26 @@ export const SHOTS = {
             wait("diff", String.raw`Changed since the session began`),
             hold(2500),
             { do: "cut" },
-            // The band takes the turn's figures once the turn is over; it shows with the pane shut.
             wait("turn over", String.raw`esc to interrupt`, {
                 absent: true,
                 timeoutMs: 180000,
             }),
+            // Changes with the turn's own edit in it, so the still shows a change from this session:
+            // wide enough for the list with the marked file's detail and diff beside it.
+            { do: "resize", size: SIZES.wide },
+            { do: "focus" },
+            { do: "widen", columns: PANE[224] },
+            press("b", String.raw`± Changes this session`),
+            wait(
+                "change and its diff",
+                String.raw`${marked(FIXTURE.edited)}[\s\S]*Changed since the session began`,
+                { timeoutMs: 60000, fixture: "edited" },
+            ),
+            wait("from this session", THIS_SESSION, { timeoutMs: 60000 }),
+            wait("fresh", String.raw`● live`, { timeoutMs: 60000 }),
+            still("changes-diff"),
+            // The band takes the turn's figures once the turn is over; it shows with the pane shut.
+            { do: "resize", size: SIZES.hero },
             { do: "focus", prompt: true },
             knossosCommand,
             wait("band", String.raw`knossos · `, { timeoutMs: 120000 }),
@@ -270,21 +283,6 @@ export const SHOTS = {
             fixture: "boundaryPair",
         }),
     ]),
-    "changes-diff": pane(
-        "changes-diff",
-        [
-            // Made once the watcher runs, so the graph takes it in and stays fresh.
-            handEdit,
-            press("6"),
-            wait(
-                "change and its diff",
-                String.raw`${marked(FIXTURE.edited)}[\s\S]*Changed since the session began`,
-                { timeoutMs: 60000, fixture: "edited" },
-            ),
-            wait("fresh", String.raw`● live`, { timeoutMs: 60000 }),
-        ],
-        { size: SIZES.wide },
-    ),
     branch: pane(
         "branch",
         [
