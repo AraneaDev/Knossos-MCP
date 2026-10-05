@@ -1,10 +1,15 @@
-# Checked-in project configuration
+# Project configuration
 
-Knossos automatically reads either `knossos.json` or `knossos.jsonc` from the
-scanned project root. Keeping both is an error. JSONC accepts comments and
-trailing commas without changing string contents.
+A `knossos.json` in the root of a project tells Knossos what to skip, where the
+boundaries are, which rules to check and how much a scan may spend. Every scan
+reads it, from the CLI, the MCP server or the watcher. You need one when the
+defaults scan too much, or when you want [boundaries and policies](../concepts/architecture-rules.md)
+that belong to the repository and not to whoever scans it.
 
-Add schema completion to editors with:
+Use either `knossos.json` or `knossos.jsonc`. Keeping both is an error.
+JSONC accepts comments and trailing commas without changing string contents.
+
+## A minimal file
 
 ```json
 {
@@ -13,60 +18,133 @@ Add schema completion to editors with:
 }
 ```
 
-The published schema is
+`version` is required and must be `1`. The `$schema` line gives editors
+completion; the schema is
 [`project-config-v1.schema.json`](../../schemas/project-config-v1.schema.json).
+
+This repository's own [`knossos.json`](../../knossos.json) is a worked example
+with ignores, boundaries and deny policies.
 
 ## Settings
 
-- `ignores`: at most 100 relative patterns; absolute paths and parent traversal
-  are rejected. These add to the built-in exclusions, which cover dependency and
-  build directories (`vendor`, `node_modules`, `dist`, `build`, `coverage`,
-  `.stryker-tmp`, `.worktrees`, `site` and the rest) and any directory in this tool's own `.knossos`
-  namespace, `.knossos-src` and `.knossos-ci` included, plus minified bundles
-  (`*.min.js`, `*.min.mjs`, `*.min.cjs`) and JavaScript compiled beside its source (a `.js`
-  ending with a `sourceMappingURL` comment next to a same-named `.ts`). Built-in exclusions
-  apply first and a `!` pattern cannot re-include them.
-- `limits.max_files` and `limits.max_file_bytes`: bounded discovery/worker
-  limits.
-- `limits.worker_timeout_ms`: how long a language worker may stay silent during one request,
-  from 1,000 through 120,000 milliseconds; defaults to 30,000. Every file it reports and every
-  heartbeat restarts the wait, and no request runs longer than 120,000 milliseconds.
-- `boundaries`: named project-relative path or PHP namespace matchers.
-- `frameworks`: explicit static-analysis hints for supported frameworks.
-- `snapshot_retention`: immutable history count from 0 through 20.
-- `policies`: checked architecture boundary policies.
-- `quality_budgets`: supported architecture regression budget keys.
-- `dead_code_suppressions`: at most 200 canonical names, each either an exact
-  match or prefixed with a trailing `*` wildcard. Matching components are
-  omitted from `architecture_health` dead-code candidates; the count of
-  suppressed candidates is reported as `bounds.suppressed_candidates`. A bare
-  `"*"` entry suppresses every dead-code candidate project-wide; do not
-  commit it.
+Unknown keys are an error. These are the keys:
 
-The configuration file itself cannot be ignored, because it participates in
-the scanner configuration fingerprint and invalidates cached contributions when
-changed.
+| Key                      | Shape                           | What it does                                                  |
+| ------------------------ | ------------------------------- | ------------------------------------------------------------- |
+| `ignores`                | up to 100 strings               | Relative patterns to skip, on top of the built-in exclusions. |
+| `limits`                 | object                          | Discovery and worker bounds, below.                           |
+| `boundaries`             | up to 50 objects                | Named groups of components, by path or by PHP namespace.      |
+| `frameworks`             | up to 20 strings                | Hints for static analysis of a supported framework.           |
+| `snapshot_retention`     | integer, 0 to 20                | How many historical snapshots to keep.                        |
+| `policies`               | up to 50 objects                | Architecture rules between boundaries.                        |
+| `quality_budgets`        | object of integers, 0 to 100000 | Allowed regressions for the quality gate.                     |
+| `dead_code_suppressions` | up to 200 strings               | Components to leave out of the dead-code candidates.          |
+
+### Ignores
+
+Patterns are relative to the project root. Absolute paths and parent traversal
+(`..`) are rejected, and a pattern is at most 500 bytes. The built-in
+exclusions apply first, and a `!` pattern cannot re-include them. They cover:
+
+- dependency and build directories: `vendor`, `node_modules`, `dist`, `build`,
+  `coverage`, `site`, `.next`, `.nuxt`, `.venv`, `venv`, `__pycache__`, `.tox`,
+  `.mypy_cache`, `.pytest_cache`, `.pnpm-store`, `.yarn`, `.stryker-tmp`,
+  `.worktrees` and the VCS and IDE folders `.git` and `.idea`;
+- Knossos's own namespace: `.knossos` and anything starting with `.knossos-`,
+  such as `.knossos-src` and `.knossos-ci`;
+- Laravel IDE Helper stubs (`_ide_helper*`) and the VitePress `.vitepress/cache`
+  and `.vitepress/dist` directories;
+- minified bundles (`*.min.js`, `*.min.mjs`, `*.min.cjs`), and JavaScript
+  compiled beside its source: a `.js` ending with a `sourceMappingURL` comment
+  next to a same-named `.ts`.
+
+The configuration file itself cannot be ignored. It is part of the scanner
+configuration fingerprint, so changing it invalidates the cached contributions.
+
+### Limits
+
+| Key                 | Range                     | Meaning                                               |
+| ------------------- | ------------------------- | ----------------------------------------------------- |
+| `max_files`         | 1 to 100,000              | Files discovered per scan.                            |
+| `max_file_bytes`    | 1 to 100,000,000          | Size of the largest file a worker reads.              |
+| `worker_timeout_ms` | 1,000 to 120,000 (30,000) | How long a worker may stay silent during one request. |
+| `worker_memory_mb`  | 64 to 65,536              | Heap cap for a language worker.                       |
+
+Every file a worker reports and every heartbeat restarts the `worker_timeout_ms`
+wait, and no request runs longer than 120,000 milliseconds. When a worker hits
+its heap cap, the scan error names `limits.worker_memory_mb` as the fix.
+
+### Boundaries
+
+```json
+{
+    "boundaries": [
+        { "name": "core", "path_prefix": "src" },
+        { "name": "billing", "namespace_prefix": "App\\Billing" }
+    ]
+}
+```
+
+Each boundary has a unique `name` and exactly one of `path_prefix` (project
+relative) or `namespace_prefix`. Policies refer to boundaries by name.
+
+### Frameworks
+
+`laravel`, `symfony`, `django`, `fastapi`, `flask`, `nextjs`, `nestjs`, `react`,
+`vue`, `axum`, `actix` and `rocket`. Any other value fails the scan.
+
+### Policies
+
+A policy has an `id`, a `from_boundary`, and at least one of `allow_targets` or
+`deny_targets`, each a list of boundary names. An optional `edge_kinds` list
+limits it to some relationship kinds. [Architecture rules](../concepts/architecture-rules.md)
+explains how they are checked.
+
+### Quality budgets
+
+The supported keys are `new_cycles`, `boundary_violations`, `error_diagnostics`,
+`warning_diagnostics`, `hub_degree_growth`, `unreferenced_candidates` and
+`public_surface_changes`. Each is a count the quality gate tolerates against a
+baseline snapshot. See [change review](../concepts/change-review.md).
+
+### Dead-code suppressions
+
+Each entry is a canonical name, matched exactly or, with a trailing `*`, as a
+prefix. Matching components are omitted from the `architecture_health` dead-code
+candidates, and `bounds.suppressed_candidates` reports how many were. A bare
+`"*"` suppresses every candidate in the project, so do not commit it. To mark
+one component as a false positive without editing the file, use
+[an annotation](../agents/agent-integration.md#component-annotations).
 
 ## Precedence
 
 Values resolve in this order:
 
-1. Explicit CLI or MCP scan argument.
-2. Checked-in project configuration.
-3. Safe built-in default.
+1. An explicit CLI or MCP scan argument.
+2. The checked-in configuration.
+3. The built-in default.
 
-For example, `--snapshot-retention=0` overrides a configured value, and an
-explicit empty MCP `boundaries` list disables configured boundaries for that
-scan. Omitted arguments inherit project configuration.
+`--snapshot-retention=0` overrides a configured value, and an explicit empty
+`boundaries` list in an MCP scan disables the configured boundaries for that
+scan. Omitted arguments inherit the file.
 
-Scan results report the configuration source, precedence rule, framework
-hints, policy count, reviewed quality budgets, and effective worker timeout and
-stream limits. Absolute project roots are not copied into configuration
-metadata.
+A scan result reports the configuration source, the precedence rule, the
+framework hints, the policy count, the reviewed quality budgets, and the
+effective worker timeout and stream limits. It never copies absolute project
+roots into that metadata.
 
-## Validation and safety
+## Validation
 
-Unknown keys, unsupported versions/framework hints, excessive collections,
-unsafe path matchers, invalid numeric bounds, and malformed policy/budget shapes
-fail before discovery with stable `PROJECT_CONFIG_*` diagnostic prefixes. The
-file is capped at one megabyte and is never executed.
+A configuration that breaks a rule fails before discovery, with a stable
+diagnostic prefix:
+
+| Prefix                               | Cause                                                                                         |
+| ------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `PROJECT_CONFIG_AMBIGUOUS`           | Both `knossos.json` and `knossos.jsonc` exist.                                                |
+| `PROJECT_CONFIG_UNKNOWN_KEY`         | A key outside the lists above, at any level.                                                  |
+| `PROJECT_CONFIG_VERSION_UNSUPPORTED` | `version` is missing or not `1`.                                                              |
+| `PROJECT_CONFIG_INVALID`             | A value out of range, an unsupported framework, a malformed boundary, policy or budget.       |
+| `PROJECT_CONFIG_UNSAFE`              | A path matcher that is absolute or climbs out of the project, or a file over 1,000,000 bytes. |
+| `PROJECT_CONFIG_UNREADABLE`          | The file exists and cannot be read.                                                           |
+
+The file is never executed.

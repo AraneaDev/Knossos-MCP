@@ -1,11 +1,14 @@
 # Agent integration
 
-Three surfaces exist for coding agents rather than for people: a paste-ready
-orientation brief, a bounded task-shaped evidence bundle, and durable
-annotations an agent can write back to the graph. Two more have their own
-pages: the brief injected at the start of a Claude Code session
-([session brief](../claude-code/session-brief.md)), and the skill that decides which
-questions reach any of these tools at all
+Three surfaces are for coding agents more than for people: a paste-ready
+orientation brief, a bounded evidence bundle for one task, and durable
+annotations an agent writes back to the graph. Use them when you want an agent
+oriented before it greps, and when you want it to remember a judgment between
+sessions.
+
+Two related surfaces have their own pages: the brief injected at the start of a
+Claude Code session ([session brief](../claude-code/session-brief.md)), and the
+skill that decides which questions reach these tools at all
 ([the routing skill](../claude-code/skill.md)).
 
 | Tool                   | CLI                    | Answers                                           |
@@ -15,90 +18,78 @@ questions reach any of these tools at all
 | `annotate_component`   | `annotate-component`   | Record a durable judgment on a component.         |
 | `list_annotations`     | `list-annotations`     | Read those judgments back.                        |
 
-The server also exposes MCP-protocol surfaces with no CLI equivalent:
-per-project resources at `knossos://<project_id>/summary`, `/boundaries`, and
-`/brief` (the first two JSON, the last the same markdown
-`export_agent_brief` renders), plus the `orient` and `review_diff` prompts.
+The server also exposes two MCP surfaces with no CLI equivalent: per-project
+resources at `knossos://<project_id>/summary`, `/boundaries` and `/brief` (the
+first two JSON, the last the markdown `export_agent_brief` renders), and the
+`orient` and `review_diff` prompts. Every field of every tool is in
+[the MCP tool reference](../reference/mcp-tools.md).
 
-## Refreshing a stale graph without asking twice
+## Refreshing a stale graph
 
-Most read tools accept `refresh_if_stale`, and where they do it defaults to
-`true`, so a call that lands on a stale graph rescans before
-answering instead of leaving you to read a staleness banner, call
-`scan_project`, and ask again: the round trip a session would otherwise spend
-discovering it needed a fresh graph. A tool's entry in
-[the MCP tool reference](../reference/mcp-tools.md) says whether it takes the
-argument. `architecture_context` does not, and passing it there is rejected as
-an unknown argument rather than ignored.
+Most read tools accept `refresh_if_stale`, which defaults to `true`. A call that
+lands on a stale graph rescans before it answers, so the agent skips the round
+trip of reading a staleness banner, calling `scan_project` and asking again.
+A tool's entry in [the MCP tool reference](../reference/mcp-tools.md) says
+whether it takes the argument. `architecture_context` does not, and passing it
+there is rejected as an unknown argument.
 
-The rescan only runs when it is cheap enough to fit inside the call you are
-already waiting on; a project whose own scan history says it would cost more
-than a 5000 ms budget gets the stored graph and a warning instead, naming
-`scan_project` as the next step. Set `KNOSSOS_AUTO_REFRESH=0` on the server
-process to turn the default off everywhere. Either way, an explicit
-`refresh_if_stale` argument on a call always wins over both the default and
-the kill switch, so passing `false` still gets you the stored graph exactly
-as stored. Full detail on the budget and the warning's shape is in
+The rescan runs only when it fits inside the call you are already waiting on. A
+project whose own scan history estimates more than a 5000 ms budget gets the
+stored graph and a warning that names `scan_project` as the next step. Set
+`KNOSSOS_AUTO_REFRESH=0` on the server process to turn the default off
+everywhere; only the literal `0` does. An explicit `refresh_if_stale` argument
+wins over both the default and the switch, so `false` returns the stored graph
+as stored. The budget and the warning's shape are in
 [response envelopes](../reference/response-envelopes.md#refreshing-a-stale-graph).
 
-Because of this, the read tools that declare `refresh_if_stale` are no longer
-annotated `readOnlyHint: true`: a call to any of them can write Knossos's own
-graph and spawn language worker subprocesses when it repairs a stale project
-first, so a client that uses the annotation to decide whether to ask before
-calling should treat these tools accordingly. They still carry
-`destructiveHint: false` and `idempotentHint: true`, both of which remain
-true regardless of whether a rescan runs. Pass `refresh_if_stale: false` to
-get genuinely read-only behaviour back on a call. `KNOSSOS_AUTO_REFRESH=0`
-does not do that on its own: it only turns the default off, and an explicit
-`refresh_if_stale: true` still wins over it.
+A rescan writes Knossos's own graph and starts language workers. The tools that
+declare `refresh_if_stale` therefore carry `readOnlyHint: false`, together with
+`destructiveHint: false` and `idempotentHint: true`. A client that asks for
+confirmation on write tools will ask here. Pass `refresh_if_stale: false` for
+read-only behaviour on one call. `KNOSSOS_AUTO_REFRESH=0` alone does not do
+that, because an explicit `refresh_if_stale: true` still overrides it.
 
 ## Agent brief
 
 `export_agent_brief` renders a compact, deterministic markdown orientation
-brief from the graph, sized to paste directly into a `CLAUDE.md` or
-`AGENTS.md` section. Its purpose is to get a future agent session oriented
-on the codebase with zero tool calls (no `list_projects`, no
-`architecture_summary`, nothing) by baking the essentials into the
-project's own memory file.
+brief from the graph, sized to paste into a `CLAUDE.md` or `AGENTS.md`
+section. A future agent session starts oriented on the codebase with zero tool
+calls, because the essentials sit in the project's own memory file.
 
 ### What it renders
 
 Sections are appended in a fixed priority order:
 
-1. **Head**: project name, scan freshness, file/component/relationship
-   counts, and the language mix. Always included.
-2. **Boundaries**: the top explicit/inferred boundaries by member count.
-3. **Entry points**: routes, commands, and controller/command-classified
-   components: where execution starts. Test-role components are excluded; a
-   command stub declared in a test file carries the command role without
-   being a way into the system. The predicate is shared with the
-   [session brief](../claude-code/session-brief.md), which asks the same question of the
-   same graph.
-4. **Key hubs (most depended-on)**: the highest-degree components from
-   `architecture_health`'s _filtered_ hub ranking (test-role and, unless
-   requested, external/unresolved components are excluded: an unfiltered
-   ranking would be misleading in a brief meant to be trusted at a glance).
-5. **Framework signals**: detected framework roles (Laravel, Symfony,
-   Django, FastAPI, Next.js, NestJS, React, Vue), if any.
-6. **Closing pointer** (always included): a one-line reminder to rescan and
-   which live tools to call next (`scan_project`, then `architecture_summary`,
-   `impact_analysis`, or `explain_flow`).
+1. **Head**: project name, the scan's timestamp, file, component and
+   relationship counts, and the language mix. Always included.
+2. **Boundaries**: the ten largest explicit or inferred boundaries by member
+   count.
+3. **Entry points**: up to twelve routes, commands and controller or command
+   components, where execution starts. Test-role components are excluded,
+   because a command stub in a test file is no way into the system. The
+   [session brief](../claude-code/session-brief.md) asks the same question of
+   the same graph, with the same predicate.
+4. **Key hubs (most depended-on)**: the five highest-degree components from
+   `architecture_health`'s filtered hub ranking. Test-role and external or
+   unresolved components are left out, so the ranking can be trusted at a
+   glance.
+5. **Framework signals**: the detected framework roles among Laravel, Symfony,
+   Django, FastAPI, Next.js, NestJS, React and Vue.
+6. **Closing pointer**: a one-line reminder to rescan, and which live tools to
+   call next (`scan_project`, then `architecture_summary`, `impact_analysis` or
+   `explain_flow`). Always included.
 
-Any section with no data is skipped silently (not reported as omitted).
+A section with no data is skipped silently and is not reported as omitted.
 
-### Budget and omission behavior
+### Budget and omitted sections
 
-`max_chars` (1000–20000, default 4000) is a hard bound on the rendered
-markdown: the result is never longer than `max_chars`. Sections are appended
-in the priority order above only while they still fit; a section that would
-push the brief over budget is dropped **whole** (never truncated mid-list)
-and its name is reported in `omitted_sections`. The head (which caps its
-language list at 5 entries, folding the rest into a `+N more` suffix) and the
-closing pointer are always kept if there is any way to fit them. In the rare
-case where even the head plus the closing pointer would exceed `max_chars`,
-every section is omitted and, as a last resort, the head itself is truncated
-so the closing pointer (the pointer back to the live query tools) is never
-lost.
+`max_chars` (1000–20000, default 4000) is a hard bound: the markdown is never
+longer. Sections are appended in the order above while they fit. A section that
+would push the brief over budget is dropped whole, never cut mid-list, and its
+name lands in `omitted_sections`. The head caps its language list at five
+entries and folds the rest into a `+N more` suffix. When even the head and the
+closing pointer exceed `max_chars`, every section is omitted and the head is
+truncated, so the pointer back to the live tools is never lost.
 
 The response `data` shape is:
 
@@ -116,24 +107,24 @@ The response `data` shape is:
 knossos export-agent-brief project_... --max-chars=4000 --out=AGENTS.md
 ```
 
-`--out=FILE` writes the rendered markdown directly to a file (e.g. appending
-into `CLAUDE.md`/`AGENTS.md` during setup); `--json` prints the full envelope
-instead of the markdown. The MCP form takes `project_id` and `max_chars`.
+`--out=FILE` writes the markdown to a file, and `--json` prints the full
+envelope instead. The MCP form takes `project_id` and `max_chars`, plus
+`refresh_if_stale`.
 
-Run it once after a scan and paste (or `--out`) the result into the project's
-memory file. The brief reflects the last scan, not the working tree, so
-regenerate it after significant structural changes rather than treating it as
-a live source of truth. For anything current, call the live query tools it
-points to in its closing line.
+Run it after a scan and paste the result, or write it with `--out`, into the
+project's memory file. The brief reflects the last scan and no later edit, so
+regenerate it after significant structural changes. For anything current, call
+the live tools its closing line names.
 
 ## Architecture context
 
-`architecture_context` assembles a deterministic, bounded evidence bundle for
-a coding task. It combines the project summary, likely boundaries, explicit
-changed-file impact, and a small set of component dossiers without executing
-target-project code.
+`architecture_context` loads just enough context for one coding task in a single
+call. It assembles a deterministic, bounded bundle of the project summary,
+likely location, explicit changed-file impact and a few component dossiers,
+without executing target-project code.
 
-Supply a task description, changed files, or both:
+Supply a task description (up to 2000 characters), up to 50 changed files, or
+both:
 
 ```json
 {
@@ -151,42 +142,41 @@ knossos architecture-context project_... src/Checkout.php \
   --task="add checkout refund support" --max-chars=30000 --json
 ```
 
-The character budget is split explicitly across summary, location, impact, and
-dossier sections. Each section reports whether it was included, truncated, not
-requested, or omitted to preserve the total limit. Responses also report the
-actual serialized context size and allocation metadata.
+`max_chars` runs from 4000 to 100000 and defaults to 30000. It is split across
+the summary, location, impact and dossier sections. Each section reports
+whether it was `included`, `truncated`, `not_requested` or `omitted` to protect
+the total, and the response reports the serialized size and the allocation.
+`verbosity` is `compact` (the default, evidence trimmed to a preview) or `full`.
 
-Ranking remains static and deterministic when no optional semantic provider is
-available. The bundle is evidence for navigation and review, not proof of
-runtime behavior; dynamic dispatch and generated code can remain unresolved.
+Ranking is static and deterministic. The bundle is evidence for navigation and
+review, and no proof of runtime behavior; dynamic dispatch and generated code
+can stay unresolved.
 
 ### Source snippets
 
-Set `include_source: true` (or `--include-source` on the CLI) to inline a
-bounded code window (≤40 lines) for each included dossier's primary evidence
-location, alongside its `inspectComponent` serialization as a sibling
-`snippet` key. Each snippet is either `{status: 'included', path, start_line,
-end_line, code}` or `{status: 'unavailable', reason}` when the file is
-missing, outside the project root, or the recorded line range no longer
-exists.
+Set `include_source: true`, or `--include-source` on the CLI, to inline a code
+window of at most 40 lines for each included dossier's primary evidence
+location, as a sibling `snippet` key. A snippet is either
+`{status: 'included', path, start_line, end_line, code}` or
+`{status: 'unavailable', reason}`. The reasons are `no_line_evidence`,
+`outside_project_root_or_missing`, `missing_or_oversized`, `unreadable` and
+`stale_line_evidence`, the last when the recorded line range no longer exists.
 
-Unlike the rest of the bundle, snippets are read from the working tree at
-query time rather than from the scanned graph, so they may drift from the
-graph's evidence if the working tree has changed since the last scan.
-Snippets still count against the dossier section's character budget; a large
-dossier section can still be truncated or omitted under `max_chars`.
+Snippets are read from the working tree at query time and come from no scan,
+so they drift from the graph's evidence when you have edited since. They count
+against the dossier section's budget, so a large section can still be truncated
+under `max_chars`.
 
-This is the one query path that reads project source at all. It uses the same
-root guard as scanning and degrades to `unavailable` rather than failing, so
-it never needs write access.
+This is the one query path that reads project source. It uses the scan's root
+guard and degrades to `unavailable` where a scan would fail, and it never needs
+write access.
 
 ## Component annotations
 
-Use `annotate_component` to record a durable, agent-written note on a
-component and `list_annotations` to read them back. Unlike everything else in
-the graph, annotations are not derived from a scan: they are agent
-write-backs, kept in their own table and keyed by canonical name rather than
-node id.
+Use `annotate_component` to record a durable judgment on a component and
+`list_annotations` to read it back. Annotations are the one part of the graph
+that comes from an agent and not from a scan. They sit in their own table,
+keyed by canonical name and not by node id.
 
 ```json
 {
@@ -208,55 +198,49 @@ knossos list-annotations project_... --json
 
 `kind` is one of:
 
-- `intended_boundary`: this component's placement is deliberate; do not
-  flag it as misplaced.
-- `confirmed_dead`: a human or agent has verified this component is unused,
-  beyond what static analysis alone can prove.
-- `false_positive`: this component was wrongly flagged (for example, by
-  `architecture_health`'s dead-code candidates); read surfaces that consume
-  annotations use this to stop re-surfacing it.
-- `note`: a free-form annotation with no special read-side effect.
+- `intended_boundary`: this component's placement is deliberate.
+- `confirmed_dead`: a human or agent verified that nothing uses this component,
+  beyond what static analysis can prove.
+- `false_positive`: this component was flagged wrongly. `architecture_health`
+  leaves it out of its dead-code candidates and counts it under
+  `annotated_false_positives`.
+- `note`: a free-form remark. The [session brief](../claude-code/session-brief.md)
+  lists the most recent notes at the start of a session.
+
+Only `false_positive` and `note` change what another tool shows. The other two
+kinds are recorded and listed, and no tool reads them.
 
 ### Survival across rescans
 
-Every scan drops and rebuilds `nodes` (and everything keyed to a node id),
-because node ids are not stable across scans. Annotations are keyed by
-`(project_id, canonical_name, kind)` instead, with no foreign key to `nodes`,
-so a full rescan that regenerates the graph does not lose them. Only removing
-the project itself cascades the cleanup (`ON DELETE CASCADE` on `project_id`).
+Every scan rebuilds `nodes` and everything keyed to a node id, because node ids
+change between scans. Annotations are keyed by
+`(project_id, canonical_name, kind)` and have no foreign key to `nodes`, so a
+rescan keeps them. Removing the project cascades the cleanup.
 
 ### Preview convention
 
-`annotate_component` previews by default; pass `execute: true` to apply.
-`remove: true` deletes the `(component, kind)` pair instead of writing it.
-Writing the same `(component, kind)` again is an upsert: the existing value
-and `updated_at` are replaced, `created_at` is not. The response's `previous`
-field carries the annotation as it stood before the write (or `null`), so a
-caller can tell an upsert from a fresh insert.
+`annotate_component` previews by default, and `execute: true` applies it.
+`remove: true` deletes the `(component, kind)` pair. Writing the same pair
+again is an upsert: the value and `updated_at` change, `created_at` stays. The
+response's `previous` field holds the annotation as it stood before the write,
+or `null`, so a caller can tell an upsert from a fresh insert. A `value` is at
+most 2000 characters.
 
-`component` resolves the same way as other component-accepting tools: an
-exact canonical or display name match, or a unique name prefix. An ambiguous
-prefix is rejected with candidates rather than silently picking one. A name
-that does not resolve to any node in the current graph is still accepted. The
-response carries a warning ("...not found...") because the target may be
-a symbol the scanner does not see yet, or one that will exist after a
-planned change.
+`component` resolves like in other tools: an exact canonical or display name,
+or a unique name prefix. An ambiguous prefix is rejected with the candidates.
+A name that matches no node is still accepted, with a "not found" warning,
+because the target may be a symbol the scanner cannot see yet or one a planned
+change will add.
 
 ### Reading annotations
 
 `list_annotations` returns rows ordered by canonical name, then kind, with
-`value`, `author`, `created_at`, and `updated_at`. Filter by `component`
-(exact canonical name) or `kind`; `limit` (1–100, default 100) and `offset`
+`value`, `author`, `created_at` and `updated_at`. Filter by `component` (an
+exact canonical name) or `kind`. `limit` (1–100, default 100) and `offset`
 paginate.
 
 ### Not exported in graph bundles
 
-Annotations are intentionally outside `export-bundle`/`import-bundle`'s table
-list: bundles move a derived graph between databases, and annotations are
-agent-authored state tied to a specific project's history, not a scan
-artifact. Moving or replaying a bundle does not carry annotations with it.
-
-This table exists so other query surfaces can read agent-recorded ground
-truth. `annotate_component` and `list_annotations` only write and read the
-table itself; which tools consume `false_positive` and `confirmed_dead`
-annotations, and how, is documented on those tools once they do.
+`export-bundle` and `import-bundle` move a derived graph between databases, and
+annotations are outside their table list. They are agent-authored state tied to
+one project's history, so a bundle never carries them.
