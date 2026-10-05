@@ -183,6 +183,69 @@ Any MCP client that uses the common `mcpServers` stdio convention accepts this
 shape. Placement differs per client, so keep the command and the argument array
 unchanged. Do not add `-t`, because terminal framing corrupts the NDJSON.
 
+## Codex
+
+Register the stdio server with the Codex CLI, with the data and roots paths
+pinned so the CLI and the server read one graph:
+
+```sh
+codex mcp add knossos \
+    --env KNOSSOS_DATA_DIR="$HOME/.knossos" \
+    --env KNOSSOS_ROOTS_FILE="$HOME/.knossos/roots.json" \
+    -- /absolute/path/to/knossos/tools/mcp-serve
+```
+
+For Docker, build the image first and mount the project at the same absolute
+path inside the container, so the paths Codex sends match the container's:
+
+```sh
+docker build --target runtime -t knossos:dev /absolute/path/to/knossos
+codex mcp add knossos -- docker run --rm -i --network none \
+    --mount type=bind,source=/absolute/project,target=/absolute/project,readonly \
+    --mount type=volume,source=knossos-data,target=/data \
+    knossos:dev serve --allow-root=/absolute/project
+```
+
+The checkout also carries a Codex plugin with the same
+[routing skill](../claude-code/skill.md) the Claude Code plugin ships. It adds
+the skill and no server, so install it beside the registration above:
+
+```sh
+codex plugin marketplace add /absolute/path/to/knossos
+codex plugin add knossos@knossos-dev
+codex plugin list
+```
+
+The marketplace is `.agents/plugins/marketplace.json` and the plugin source is
+`plugins/knossos`. Start a new Codex session after installing or updating it.
+The session brief and the pane are Claude Code hooks and do not run in Codex.
+
+## Installation pitfalls
+
+- **No PHP or Composer on the host.** `tools/mcp-serve` cannot start without
+  them. Use the Docker image instead.
+- **An unqualified `docker build`.** It builds the last stage of the
+  Dockerfile, the CI `quality` stage, not the server. Always pass
+  `--target runtime`. The image is not published, so `docker pull` cannot stand
+  in for the build.
+- **`-t` on Docker stdio.** Use `-i` and never `-t`: terminal framing corrupts
+  the NDJSON stream. A socket permission error from Docker means the user
+  starting your client cannot reach Docker; fix that before you start Codex or
+  Claude Code.
+- **An unpinned data directory.** Keep `KNOSSOS_DATA_DIR` and
+  `KNOSSOS_ROOTS_FILE` explicit and absolute; see
+  [one data directory](#one-data-directory).
+- **Different paths inside the container.** Mount each allowed project
+  read-only at the same absolute path inside the container, and pass that path
+  to `--allow-root`. Otherwise the host paths in MCP requests match nothing in
+  the container.
+- **Git's `dubious ownership`.** The image runs as `www-data`, so a checkout
+  owned by another user trips Git's ownership check. Scanning still works, but
+  the Git-backed answers degrade. Set `KNOSSOS_GIT_SAFE_DIRECTORY` to the
+  mounted project's absolute path, and Knossos passes it to every git call as
+  `-c safe.directory=`. The Claude Code plugin's container hooks do this for
+  you.
+
 ## Native runtimes
 
 You need PHP 8.3 or newer with JSON, PDO and PDO SQLite, Node 22 or newer,

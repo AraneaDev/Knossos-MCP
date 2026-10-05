@@ -2,7 +2,7 @@
 
 # Knossos
 
-**The labyrinth mapped once, so nobody has to wander it again.**
+**The labyrinth mapped once: on screen beside Claude Code, and in the notes your agent reads while it works.**
 
 [![Release](https://img.shields.io/github/v/release/AraneaDev/knossos?label=release)](https://github.com/AraneaDev/knossos/releases)
 [![Tool page](https://img.shields.io/badge/tool%20page-aranea--development.nl-0b7285)](https://aranea-development.nl/en/tools/knossos-mcp)
@@ -13,7 +13,7 @@
 [![Last commit](https://img.shields.io/github/last-commit/AraneaDev/knossos?label=last%20commit)](https://github.com/AraneaDev/knossos/commits/main)
 [![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/)
 [![MCP Observatory](https://mcpobservatory.com/servers/github:AraneaDev/knossos/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/knossos/security)
-[![Status](https://img.shields.io/badge/status-in%20development-orange)](#install)
+[![Status](https://img.shields.io/badge/status-in%20development-orange)](#installation)
 
 </div>
 
@@ -22,234 +22,114 @@
 > Minotaur, which no one could navigate without a thread to follow back out. Ariadne handed
 > Theseus that thread.
 
-**TL;DR:** Knossos scans a repository once and turns its source relationships into a local,
-evidence-backed graph. Its MCP tools and CLI answer dependency, call-site, architecture, and
-blast-radius questions with file and line evidence, so an agent does not need to rescan the tree.
+**TL;DR:** Knossos scans a repository into a local graph of its components and the
+relationships between them, each with the file and line that proves it. In Claude Code,
+`/knossos` opens that graph as a live pane beside your session, and the agent gets a short note
+at the moment it reads, edits or commits a file that matters: how much depends on it, which
+rules bind it, and which tests reach it. The same graph answers 33 MCP tools and a CLI, for
+Claude Code, Codex or any MCP client.
 
-Every fact points back to a file and a source location. Facts that static analysis cannot prove
-are labelled with their confidence and origin instead of being guessed. Nothing in the scan
-pipeline installs dependencies, imports a module, or boots an application framework.
+Facts that static analysis cannot prove are labelled with their confidence and origin.
+Nothing in the scan installs dependencies, imports a module or boots a framework.
 
 > **Status:** pre-release. Knossos is **not yet published to Packagist or any container
-> registry**. The source is public on [GitHub](https://github.com/AraneaDev/knossos), so
-> build from source (see [Install](#install)). Image names such as `knossos:dev`
-> in this README are built locally by you; there is no `docker pull` to fetch them yet.
-
-**Contents:** [What you can ask](#what-you-can-ask-after-one-scan) ·
-[Worked example](#worked-example) · [Tools](#tools) · [Install](#install) ·
-[Languages](#supported-languages) · [Safety](#safety-model) ·
-[Documentation](docs/README.md)
+> registry**. The source is public on [GitHub](https://github.com/AraneaDev/knossos), so install
+> from a checkout (see [Installation](#installation)). Image names such as `knossos:dev` are
+> built locally by you; there is no `docker pull` to fetch them yet.
 
 ---
 
-## What you can ask after one scan
+<!-- still:hero -->
 
-- What are the major modules, entry points, and boundaries?
-- What depends, directly or transitively, on `UserRepository`?
-- What are the exact call sites of `ScannerClient::scan`?
-- How can a checkout request reach invoice generation?
-- Which relationships cross a declared boundary policy?
-- Which test files exercise the blast radius of this diff?
-- What does this working tree risk, reviewed architecturally in one call?
-- Where would a refunds feature fit the existing structure?
+A Claude Code session: the brief at its start, `/knossos` opening the pane, a walk through its
+tabs and a search, then an edit, the note the agent gets about it, and the diff in Changes.
 
-Every query and analysis capability is available both as an MCP tool and as an equivalent CLI
-command. See the [documentation index](docs/README.md) for the full map.
+## Features
 
-## Worked example
+- **The pane**: `/knossos` opens the project's architecture beside your session on eight tabs
+  (Overview, Hubs, Boundaries, Cycles, Issues, Changes, Branch and Churn), with a detail for
+  every component and file, its blast radius as rings, and the route between any two components
+- **The band**: after a turn that edited files, one line above the prompt says how far the
+  change reaches: the files, their dependents, the tests that reach them, the boundaries hit
+- **Notes for the agent**: when the agent reads a heavily depended-on or policed file, edits
+  one, ends a turn or makes a commit, it gets one short line about what that file or change
+  carries. Each note is said once and never blocks a tool call
+- **`knossos_context`**: one tool call for a file's boundary and the rules that bind it, its
+  dependents, the tests that reach it, its latest commits and whether this session changed it
+- **33 MCP tools**: impact analysis, call sites, flows between components, cycles, hubs,
+  dead-code candidates, change review, test impact, snapshots and trends. Every tool except
+  `server_info` has an equivalent CLI command
+- **Evidence on every fact**: each relationship points back to a file and a line, and a path is
+  only as confident as its weakest edge
+- **4 languages**: PHP (with Laravel and Symfony), TypeScript and JavaScript, Python and Rust,
+  reconciled into one graph for a mixed repository
+- **Architecture rules and budgets**: boundary policies that say which part may depend on
+  which, and quality budgets checked against a reviewed baseline, with SARIF for CI
+- **A live watcher**: one per project, shared by your sessions, rescans as files change, so the
+  pane and the notes follow edits made by anyone
+- **Session brief and routing skill**: each session starts knowing whether the graph is fresh,
+  the project's rules and recorded notes, and which questions to bring to the graph
+- **Safety model**: scanning never runs project code, the server reads only allowed roots, and
+  a failed scan never replaces the last good graph
 
-Scanning this repository takes about six seconds and yields a graph you can
-interrogate. Output below is real, abridged with `…`.
+## Installation
 
-```console
-$ knossos scan . --json
-{"summary":"Scanned 425 files into 6126 nodes and 35667 relationships.",
- "data":{"files":425,"nodes":6126,"edges":35667,"diagnostics":0,"mode":"full",
- "scanner_metadata":{"knossos.php":{"files_scanned":394},
-   "knossos.typescript":{"files_scanned":17,"programs":1},
-   "knossos.python":{"files_scanned":5,"parser":"python.ast"},
-   "knossos.rust":{"files_scanned":9,"parser":"rust.syn"}},
- "metrics":{"elapsed_ms":6103.6, …}}}
-```
+You need PHP 8.3 or newer with JSON, PDO and PDO SQLite, Node 22 or newer, Python 3.11 or newer,
+Composer 2 and Git. Cargo 1.82 or newer is optional and adds Rust scanning. Without PHP on the
+host, use [Docker](docs/get-started/installation.md#docker).
 
-Orient yourself in a codebase you have never opened:
+### Claude Code
 
-```console
-$ knossos architecture-summary project_1b4f41… --json
-{"summary":"Knossos-MCP contains 6126 nodes and 35667 relationships.",
- "data":{"node_kinds":[{"kind":"method","count":4196},{"kind":"class","count":453},
-   {"kind":"function","count":311},{"kind":"module","count":51},
-   {"kind":"interface","count":12}, …],
-  "edge_kinds":[{"kind":"calls","count":23381},{"kind":"contains","count":4727},
-   {"kind":"constructs","count":3898}, …]}}
-```
-
-Ask what breaks if you change an interface. Each dependant carries the edge that
-justifies it and the exact source line, so the answer is checkable:
-
-```console
-$ knossos impact-analysis project_1b4f41… 'Knossos\Scanner\ScannerClient' --json
-{"summary":"Found 100 potential static dependants within depth 4.",
- "data":{"target":{"kind":"interface","canonical_name":"Knossos\\Scanner\\ScannerClient", …},
-   "dependants":[{"node":{"canonical_name":"Knossos\\Scanner\\Worker\\ProcessScannerClient", …},
-     "distance":1,"path_confidence":"certain",
-     "via":{"kind":"implements","origin":"ast",
-       "explanation":"ProcessScannerClient depends through --implements (certain, ast)--> ScannerClient",
-       "evidence":{"path":"src/Scanner/Worker/ProcessScannerClient.php","start_line":11}}}, …],
-   "counts":{"by_distance":{"1":5,"2":15,"3":75,"4":5},
-     "by_confidence":{"certain":100,"probable":0,"possible":0}}, …}}
-```
-
-Find refactor targets without shelling out to `wc` and `find`:
-
-```console
-$ knossos file-metrics project_1b4f41… --limit=3 --json
-{"summary":"3 of 425 files by line_count desc.",
- "data":{"files":[{"path":"tests/phpunit/Reconciliation/GraphReconcilerTest.php","language":"php","line_count":2473},
-   {"path":"workers/rust/src/visit.rs","language":"rust","line_count":1559},
-   {"path":"workers/rust/tests/scan.rs","language":"rust","line_count":1521}]}}
-```
-
-Answers that rest on inference say so. `impact_analysis` returns the warning
-"Impact is a conservative static blast radius; it does not guarantee that a
-dependant will break", and dead-code candidates report absence of evidence
-rather than proven absence.
-
-MCP tool calls default to a compact verbosity that agents should prefer over `--json`: it
-hoists each repeated node object into a one-time `component_legend` keyed by canonical name,
-leaving a plain name string behind wherever the node appeared, and shortens each `via` object
-down to just its edge kind. The same call is roughly a third of the tokens. See
-[response envelopes](docs/reference/response-envelopes.md).
-
-## Tools
-
-Thirty-three MCP tools, all but `server_info` with an equivalent CLI command. Full input
-schemas are in the [MCP tool reference](docs/reference/mcp-tools.md) and
-[CLI reference](docs/reference/cli.md); each group below links to its capability guide.
-
-**Orientation**
-
-| MCP tool           | CLI      | Answers                                                                                      |
-| ------------------ | -------- | -------------------------------------------------------------------------------------------- |
-| `server_info`      | –        | Which roots this server may read, the roots file to extend, and whether it is containerised. |
-| `diagnose_runtime` | `doctor` | Whether the runtimes, scanner workers, database, and migrations are healthy.                 |
-
-**[Finding and reading components](docs/concepts/finding-components.md)**
-
-| MCP tool               | CLI                    | Answers                                                   |
-| ---------------------- | ---------------------- | --------------------------------------------------------- |
-| `list_projects`        | `list-projects`        | Which projects are scanned, how fresh, how large.         |
-| `find_component`       | `find-component`       | Ranked candidates when you only know part of a name.      |
-| `inspect_component`    | `inspect-component`    | One component's roles, boundary, relations, and evidence. |
-| `list_usages`          | `list-usages`          | Every usage site of a symbol with file:line evidence.     |
-| `architecture_summary` | `architecture-summary` | A one-call overview by language and node/edge kind.       |
-| `search_architecture`  | `search-architecture`  | Components filtered by kind, role, boundary, confidence.  |
-| `file_metrics`         | `file-metrics`         | Files ranked by line count or path, filterable.           |
-| `list_boundaries`      | `list-boundaries`      | How the codebase is partitioned, explicitly or inferred.  |
-| `export_diagram`       | `export-diagram`       | Mermaid or PlantUML source for the current graph.         |
-
-**[Structure analysis](docs/concepts/structure-analysis.md)**
-
-| MCP tool              | CLI                   | Answers                                                                                     |
-| --------------------- | --------------------- | ------------------------------------------------------------------------------------------- |
-| `impact_analysis`     | `impact-analysis`     | What depends on a symbol, with the edge that proves it.                                     |
-| `explain_flow`        | `explain-flow`        | How A reaches B, as ranked evidence-backed paths.                                           |
-| `dependency_cycles`   | `dependency-cycles`   | Circular dependencies as bounded strongly connected groups.                                 |
-| `architecture_health` | `architecture-health` | Hubs, hotspots, and dead code split into what nothing references and what only tests reach. |
-| `suggest_location`    | `suggest-location`    | Where new code for a feature belongs, with visible factors.                                 |
-
-**[Reviewing a change](docs/concepts/change-review.md)**
-
-| MCP tool               | CLI                    | Answers                                                            |
-| ---------------------- | ---------------------- | ------------------------------------------------------------------ |
-| `review_diff`          | `review-diff`          | One-call review: impact, boundary violations, gate delta, cycles.  |
-| `changed_files_impact` | `changed-files-impact` | What a set of changed files, or your working tree, touches.        |
-| `test_impact`          | `test-impact`          | Which test files statically exercise a change, ranked by distance. |
-| `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.                  |
-
-**[Rules, budgets, and history](docs/concepts/architecture-rules.md)**
-
-| MCP tool              | CLI                   | Answers                                                     |
-| --------------------- | --------------------- | ----------------------------------------------------------- |
-| `check_architecture`  | `check-architecture`  | Which relationships violate declared boundary policies.     |
-| `quality_gate`        | `quality-gate`        | Whether a change breaches architecture budgets, with SARIF. |
-| `list_snapshots`      | `list-snapshots`      | The retained scan history for a project.                    |
-| `snapshot_diff`       | `snapshot-diff`       | What changed architecturally between two scans.             |
-| `architecture_trends` | `architecture-trends` | How metrics moved over recent scans, plus release notes.    |
-
-**[Agent integration](docs/agents/agent-integration.md)**
-
-| MCP tool               | CLI                    | Answers                                                             |
-| ---------------------- | ---------------------- | ------------------------------------------------------------------- |
-| `architecture_context` | `architecture-context` | A bounded task-shaped evidence bundle for a coding task.            |
-| `export_agent_brief`   | `export-agent-brief`   | A ready-to-paste markdown orientation brief for agent memory files. |
-| `annotate_component`   | `annotate-component`   | Record a durable annotation on a component.                         |
-| `list_annotations`     | `list-annotations`     | Durable agent annotations recorded on components.                   |
-
-**Scanning and maintenance**
-
-| MCP tool              | CLI                   | Answers                                                  |
-| --------------------- | --------------------- | -------------------------------------------------------- |
-| `scan_project`        | `scan`                | Build or refresh the graph (auto, full, or incremental). |
-| `remove_project`      | `remove-project`      | Delete a project and its graph.                          |
-| `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.       |
-| `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup. |
-
-Read tools are annotated read-only and idempotent. Five tools write: `scan_project` rebuilds
-the graph directly, and the other four (`annotate_component`, `remove_project`,
-`cleanup_stale_scans`, and `maintain_database`) preview by default and only apply once called
-with `execute` set. `remove_project` and `cleanup_stale_scans` are additionally annotated
-destructive, which is what makes a client ask before running them.
-
-Eight commands are CLI-only: `version`, `serve`, `watch`, `session-brief`,
-`install-agent-plugin`, `allow-root`, and the `export-bundle`/`import-bundle` pair that moves
-a graph between databases. The server also exposes per-project MCP resources
-(`summary`, `boundaries`, `brief`) and prompts (`orient`, `review_diff`), which have no CLI
-equivalent because they are MCP-protocol surfaces.
-
-## Install
-
-The recommended distribution is Docker: built from digest-pinned base images, it carries PHP
-8.5, Node 26, Python, Composer, SQLite, the PHP parser, the TypeScript compiler, and a
-prebuilt Rust worker, so the scanned project needs none of them.
+Clone the repository, then run the installer from the project you want to scan first:
 
 ```sh
-docker build --target runtime -t knossos:dev .
-docker run --rm knossos:dev doctor --json
+git clone https://github.com/AraneaDev/knossos.git /absolute/path/to/knossos
+cd /absolute/path/to/your-project
+/absolute/path/to/knossos/tools/install
 ```
 
-Scan a project with networking disabled and the source mounted read-only:
+It installs the worker dependencies, creates the data directory `~/.knossos` with a roots file
+that allows this project, scans it, and registers the MCP server with Claude Code at user scope.
+Re-run it from another project to add that one.
+
+Then install the plugin, which carries the pane, the notes, the session brief and the routing
+skill. Its hooks run the `knossos` on your path, and must read the data directory your server
+uses:
 
 ```sh
-docker run --rm --network none \
-  --mount type=bind,source=/absolute/project,target=/workspace,readonly \
-  --mount type=volume,source=knossos-data,target=/data \
-  knossos:dev scan /workspace --json
+ln -s /absolute/path/to/knossos/bin/knossos ~/.local/bin/knossos
+knossos install-agent-plugin                                        # preview
+knossos install-agent-plugin --data-dir="$HOME/.knossos" --execute
 ```
 
-Recover persisted project IDs later without exposing absolute roots:
+Start a new session. The brief appears at its start, and `/knossos` opens the pane. Updating,
+removing and trying the plugin for one session are in [the plugin guide](docs/claude-code/plugin.md).
+
+### Codex
+
+Register the server with pinned data and roots paths:
 
 ```sh
-docker run --rm \
-  --mount type=volume,source=knossos-data,target=/data \
-  knossos:dev list-projects --json
+codex mcp add knossos \
+    --env KNOSSOS_DATA_DIR="$HOME/.knossos" \
+    --env KNOSSOS_ROOTS_FILE="$HOME/.knossos/roots.json" \
+    -- /absolute/path/to/knossos/tools/mcp-serve
 ```
 
-A native install needs PHP 8.3+ (with JSON, PDO, PDO SQLite), Node 22+, Python 3.11+,
-Composer 2, and Git; Cargo 1.82+ is optional and enables the Rust scanner. Each is a floor,
-not a range.
+A Codex plugin in this checkout adds the routing skill. The pane and the notes are Claude Code
+hooks and do not run in Codex. Both steps, and a Docker variant, are in
+[installation](docs/get-started/installation.md#codex).
 
-### Registering the server
+### Any MCP client
 
-Register the server once, for your user. `tools/install` writes this for you;
-the shape matters more than the mechanism:
+Any client that uses the common `mcpServers` stdio shape takes this entry. Keep every path
+absolute:
 
 ```json
 {
     "mcpServers": {
         "knossos": {
-            "command": "/absolute/knossos/bin/knossos",
-            "args": ["serve"],
+            "command": "/absolute/path/to/knossos/tools/mcp-serve",
             "env": {
                 "KNOSSOS_DATA_DIR": "/absolute/knossos-data",
                 "KNOSSOS_ROOTS_FILE": "/absolute/knossos-data/roots.json"
@@ -259,243 +139,121 @@ the shape matters more than the mechanism:
 }
 ```
 
-Three things are deliberate. The command is **absolute**, so the server cannot
-resolve to whatever checkout the client happened to launch it from. There is no
-`--allow-root`: the roots file governs, and it is re-read per request, so
-granting another project needs no restart. And `KNOSSOS_DATA_DIR` is **pinned**,
-which is what keeps one graph. Leave it out and the location falls back to
-`<cwd>/.knossos`, so the server, the CLI you type, and the session-brief hook
-can each end up addressing a different database of the same project without
-anything warning you.
-
-Docker, native, and client-specific variants are in
-[installation](docs/get-started/installation.md).
-
-#### Codex
-
-For a native checkout, register the stdio server with the Codex CLI. Pin the
-data and roots paths so the CLI and server use one graph:
-
-```sh
-codex mcp add knossos \
-    --env KNOSSOS_DATA_DIR="$HOME/.knossos" \
-    --env KNOSSOS_ROOTS_FILE="$HOME/.knossos/roots.json" \
-    -- /absolute/path/to/knossos/tools/mcp-serve
-```
-
-For the recommended Docker install, build the image first and keep the host
-project at the same absolute path inside the container:
-
-```sh
-docker build --target runtime -t knossos:dev /absolute/path/to/knossos
-codex mcp add knossos -- docker run --rm -i --network none \
-    --mount type=bind,source=/absolute/project,target=/absolute/project,readonly \
-    --mount type=volume,source=knossos-data,target=/data \
-    knossos:dev serve --allow-root=/absolute/project
-```
-
-#### Claude Code
-
-The equivalent native registration is:
-
-```sh
-claude mcp add knossos --scope user \
-    -e KNOSSOS_DATA_DIR="$HOME/.knossos" \
-    -e KNOSSOS_ROOTS_FILE="$HOME/.knossos/roots.json" \
-    -- /absolute/path/to/knossos/tools/mcp-serve
-```
-
-The optional Claude session-orientation plugin is a separate install; after
-the server is working, preview it with `knossos install-agent-plugin` and add
-`--execute` to apply it. Codex uses the MCP server registration above and does
-not need that Claude-only hook plugin.
-
-### Codex architecture skill
-
-This checkout also includes a Codex plugin containing the same Knossos routing
-skill used by the Claude integration. It complements the MCP server
-registration above; install both when you want graph-backed tools and automatic
-question routing in Codex:
-
-```sh
-codex plugin marketplace add /absolute/path/to/knossos
-codex plugin add knossos@knossos-dev
-codex plugin list
-```
-
-The marketplace is repo-local at `.agents/plugins/marketplace.json`, and the
-plugin source is `plugins/knossos`. Start a new Codex session after installing
-or updating it so the skill is loaded. The Claude `SessionStart` hook is not
-portable to Codex, so Codex gets the shared routing skill while Claude keeps
-its optional session-brief hook.
+The roots file is the allow-list, re-read on every request, so granting another project needs
+no restart: `knossos allow-root /absolute/path --execute`.
 
 ### Installation pitfalls
 
-- Native installation needs PHP 8.3+ with JSON/PDO/PDO SQLite, Node 22+,
-  Python 3.11+, Composer 2, and Git. Cargo 1.82+ is optional. If PHP or
-  Composer is absent, use the Docker image instead of registering
-  `tools/mcp-serve` and expecting it to start.
-- The image is not published yet. `docker build --target runtime` from this
-  checkout is required; an unqualified `docker build` selects the repository's
-  CI `quality` stage, not the server runtime, and `docker pull knossos:dev`
-  cannot replace it.
-- Docker stdio needs `-i` and must not use `-t`; terminal framing can corrupt
-  the NDJSON MCP stream. If Docker reports a socket permission error, enable
-  a rootless runtime or grant the invoking user access to Docker before
-  starting the Codex/Claude client.
-- Keep `KNOSSOS_DATA_DIR` and `KNOSSOS_ROOTS_FILE` explicit and use absolute
-  paths. The fallback `<cwd>/.knossos` can silently create a second graph.
-- In Docker, mount each allowed project read-only at the same absolute path
-  inside the container and pass that same path to `--allow-root`; otherwise
-  host paths in MCP requests will not match the container filesystem.
-- Docker runs the service as `www-data`. A host Git checkout owned by another
-  UID can therefore produce Git's `dubious ownership` warning; scanning still
-  works, but Git-aware metadata and change-impact queries may be degraded until
-  the path is named safe. Set `KNOSSOS_GIT_SAFE_DIRECTORY` to the mounted
-  project's absolute path and Knossos passes it to every git call as
-  `-c safe.directory=`; the Claude Code plugin's container hooks do this for
-  you.
+- **Pin the data directory.** Without `KNOSSOS_DATA_DIR`, each caller falls back to
+  `<cwd>/.knossos`, and the server, the CLI and the plugin can each read a different graph of
+  the same project without a warning.
+- **Build the right Docker stage.** `docker build --target runtime`; a plain `docker build`
+  produces the CI `quality` stage.
+- **No `-t` on Docker stdio.** Use `-i` alone, because terminal framing corrupts the stream.
+- **Mount projects at the same path.** In Docker, mount each project at its host path and pass
+  that path to `--allow-root`.
 
-### Session orientation for Claude Code
+Each one, with the fix, is in [installation pitfalls](docs/get-started/installation.md#installation-pitfalls).
 
-A separate, optional plugin injects a short
-[session brief](docs/claude-code/session-brief.md) at the start of each Claude Code session:
-whether the graph is fresh, the project's boundary rules and recorded notes, and its entry
-points and hubs. The same plugin ships a
-[routing skill](docs/claude-code/skill.md) that the brief arms at the end
-of every session it renders: it decides which questions a session brings back to
-the graph, and which it keeps answering by grepping and reading files.
+## Quick start
+
+The installer scanned your project. To scan another, allow it and scan it with the same data
+directory the server uses:
 
 ```sh
-knossos install-agent-plugin           # previews; add --execute to apply
+export KNOSSOS_DATA_DIR="$HOME/.knossos"
+knossos allow-root /absolute/path/to/project --execute
+knossos scan /absolute/path/to/project
 ```
 
-The hook runs whatever `knossos` binary it can find on the machine and fails silently when it
-finds none, so a symlink is usually the missing step:
+Then, in a Claude Code session in that project, type `/knossos`. The pane opens on Overview:
+
+<!-- still:overview -->
+
+Overview: what moved since the last scan, what this session touched, and how dependencies
+concentrate.
+
+<!-- still:hubs-detail -->
+
+Hubs: the most depended-on components, with the marked one's neighbourhood beside the list.
+
+<!-- still:cycles -->
+
+Cycles: each dependency cycle drawn as boxes, with the hop where it crosses a boundary marked.
+
+<!-- still:changes-diff -->
+
+Changes: every file changed since the session began, its dependents, the tests that reach it,
+and its diff.
+
+<!-- still:branch -->
+
+Branch: what this branch added against its merge base, from new boundary crossings to new dead
+code.
+
+<!-- still:finder -->
+
+The finder: `f`, a few letters of a name, and Enter opens that component.
+
+Then ask the agent a structural question, such as "what breaks if I change `UserRepository`, and
+which tests would tell me?". The routing skill sends it to the graph. Every
+tab and key is in [the pane guide](docs/claude-code/pane.md), and a first scan with real output
+is in [first scan](docs/get-started/first-scan.md#a-worked-example).
+
+## What your agent gets
+
+Four notes, each one line, each said once at the moment it helps:
+
+| note     | fires                                                            |
+| -------- | ---------------------------------------------------------------- |
+| Read     | after a Read of a heavily depended-on or policed file            |
+| edit     | after an edit of a heavily depended-on file the Read note missed |
+| turn end | after a turn that edited files, once it is scanned               |
+| commit   | after a commit, on what the session's changes leave behind       |
+
+After a commit, for example:
+
+```text
+knossos: this session's changes carry 1 changed file no test reaches (src/Kernel.php); 1 dependency cycle new since the session began (Router → Kernel). Check them before you push.
+```
+
+And the agent can ask about one file with `knossos_context` before it edits it:
+
+```text
+src/Query/ResultEnvelope.php: boundary core, PHP, 96 lines, 7 components.
+Dependents: 47 files in core, tests; closest: src/Query/DashboardService.php, src/Mcp/ToolService.php, …
+Rules: core may not depend on php-worker, tests.
+Tests that reach it: tests/phpunit/Query/ResultEnvelopeTest.php (1 hop), tests/phpunit/Mcp/McpTest.php (2 hops).
+```
+
+Every note, its exact wording and its limits are in [notes for the model](docs/claude-code/agent-notes.md).
+Over MCP, in any client, the 33 tools answer questions such as:
+
+- What depends, directly or transitively, on `UserRepository`?
+- What are the exact call sites of `ScannerClient::scan`?
+- How can a checkout request reach invoice generation?
+- Which relationships cross a declared boundary policy?
+- Which test files exercise the blast radius of this diff?
+- Where would a refunds feature fit the existing structure?
+
+Each group of tools has its own page, linked from the [docs index](docs/README.md), and every
+schema is in the [MCP tool reference](docs/reference/mcp-tools.md).
+
+## CLI and CI
+
+Every query is also a CLI command, with `--json` for scripts:
 
 ```sh
-ln -s /absolute/knossos/bin/knossos ~/.local/bin/knossos
+knossos impact-analysis <project-id> 'App\Billing\Invoice'
+knossos review-diff <project-id> --base-ref=main --policies=architecture-policies.json
+knossos quality-gate <project-id> <baseline-snapshot> --budgets=knossos-budgets.json --sarif --json
+knossos watch /absolute/path/to/project
 ```
 
-Registering the MCP server and installing the plugin are separate steps and stay that way.
-The full picture, including containerised installs and why there is no public marketplace
-route, is in [the agent plugin guide](docs/claude-code/plugin.md).
-
-### The architecture pane in Claude Code
-
-The same plugin carries a [Claude Code mod](docs/claude-code/pane.md) that puts
-the graph on screen while a session works. The images below are rendered by
-`tools/pane-preview.mjs` from this repository's own graph. The band's figures come from a
-sample turn over real files, not from a recorded session. The Changes tab and the session
-card list real changes to this repository, read from its scan ledger; which of them they
-mark as this session's is a sample.
-
-After a turn that edited files, one line above the prompt says how far the change reaches:
-the files, their dependents, the tests that reach them, and how old the figures are.
-
-![The band above the Claude Code prompt](docs/images/claude-code-mod/band-prompt-dark.png)
-
-`/knossos` opens the pane. The Overview measures and leaves the lists to the Hubs tab. A row
-of stat tiles (components, boundaries, cycles, the largest degree, dead code, diagnostics,
-policy violations and drift) says how each figure moved since the previous snapshot, with a
-sparkline where it has a history; dead code counts the candidates the Issues tab lists, while
-the health card's `gate unreferenced` row is the quality gate's wider count. Under it: what this session touched and the way to its
-changes, with `t` to copy the command for the tests that reach them; the project as stacked
-bars by boundary, language and kind; how dependencies concentrate, an in-degree histogram
-whose buckets open the hubs in that range; health over time, one row per figure on a shared
-axis; and the strongest dependencies between boundaries, a forbidden one marked as such. It
-draws in your Claude Code theme's own colours, a boundary's colour only on its swatch and
-its bars. The header names the project, its branch and commit and its languages, with the
-status as a pill. A live watcher, one per project shared by your sessions, rescans as files
-change, so the pill reads `● live · 7s` and the figures follow your edits and Claude's
-without a rescan. On Hubs, resting the pointer on a component or file shows the three files
-that depend on it most, without opening it. A container install has no watcher: there the
-figures follow each turn's own scan, and the pane's `r` rescans on request.
-
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/claude-code-mod/overview-light.png">
-  <img alt="The pane's Overview: stat tiles with deltas, this session, the composition by boundary, language and kind, and the in-degree histogram" src="docs/images/claude-code-mod/overview-dark.png">
-</picture>
-
-The Changes tab lists everything that changed in the project since the session began,
-whoever changed it, each file marked `this session` (Claude's own edits, subagents included)
-or `outside` (your editor, a checkout): with its dependents and its boundary, the tests that
-reach them, nearest first, and the command that runs them. A thin row of dots above the files
-shows the session's scans, Claude's and everyone else's apart. Without a watcher it adds up what
-the session's turns reported instead, and says so. A changed file no test reaches is marked
-`▲ none` in its tests column and counted above the table, and on the Overview's session
-card. Every file there opens to the files that depend on it.
-
-![The Changes tab, two files marked as reached by no test](docs/images/claude-code-mod/changes-dark.png)
-
-On a wide pane (past 130 columns) Hubs, Changes, Issues, Cycles, Branch and Churn stand beside the
-marked row's detail: move the marker and the neighbourhood, or a changed file's diff, follows
-it, without leaving the list. Paths are drawn in two tones, the directory dim and the file
-name bright, and a long one loses the middle of its directory, never its file name. Rows a
-new snapshot changed light up for about three seconds after it lands.
-
-![Hubs on a wide pane: the list on the left, the marked component's dependencies beside it](docs/images/claude-code-mod/hubs-peek-dark.png)
-
-The Branch tab compares the branch with the retained snapshot at its merge base with the
-default branch (found through git, locally): dependencies newly crossing from one boundary
-into another, new cycles, hubs that grew, new dead code and new policy violations, each
-opening its component. When no snapshot near the merge base is kept, it says so, and how
-partial the comparison against the nearest later one is. A tall tab gives its spare rows to
-the churn hotspots.
-
-![The Branch tab, saying that no snapshot near the merge base is retained, with the churn hotspots under it](docs/images/claude-code-mod/branch-dark.png)
-
-The Churn tab ranks the files changed most often in the last thirty days that much of the
-project depends on: commits times dependent files. A scatter puts every listed file by its
-commits and its dependents, the nine highest scores drawn as their rank; the list under it
-opens each file. The history is read once per commit the checkout is at.
-
-![The Churn tab: a scatter of commits against dependents over the ranked list](docs/images/claude-code-mod/churn-dark.png)
-
-A component's detail draws its blast radius as concentric rings: what depends on it one hop
-away, two, and further, each ring saying how much of it a test reaches, its untested
-components first and marked, and the test files that reach it. `m` adds a note to the
-component from its detail: knossos checks it first, and only `y` records it. When a scan
-brings a new dependency cycle or policy violation, a toast says so once (the
-`notifications` setting turns that off).
-
-![A component's detail: its dependencies, and its blast radius in three rings around it](docs/images/claude-code-mod/detail-dark.png)
-
-`p` on a component's detail picks another component in the finder and draws the route
-between the two as boxes down the pane, each hop labelled with its kind and where it is
-written; every route found is listed above it.
-
-![The path explorer: every route found, and the first drawn as boxes](docs/images/claude-code-mod/route-dark.png)
-
-`f` opens a finder over every component and file: type letters of a name in order and Enter
-opens the first match. `n` filters the Hubs list itself.
-
-![The finder, after typing dash](docs/images/claude-code-mod/finder-dark.png)
-
-Claude gets a `knossos_context` tool (listed as `mcp__knossos__knossos_context`): one call
-for a file's boundary and the rules that bind it, its dependents, the tests that reach it,
-its latest commits and whether this session changed it. After a commit, in the main loop or
-a subagent, Claude reads one short note on what the session's own changes carry: violations
-its turns introduced that the policy check still reports, changed files no test reaches, and
-cycles new since the session began.
-
-The Boundaries tab maps how much each boundary depends on each other one, with the pairs a
-policy forbids in red. Marking a boundary spells out what it depends on, what depends on it,
-and what it may not use, and marks its cell on the map: the two boundaries are drawn with
-the dependencies between them on the arrow, the component pairs behind that cell are listed
-under it, and `l` steps to the next one.
-
-![The Boundaries tab with tests marked and its cell on php-worker spelled out](docs/images/claude-code-mod/boundaries-cell-dark.png)
-
-The Cycles tab draws the marked cycle as boxes that snake across the pane, row by row, an
-arrow from each member to the next and a return edge that closes the loop back to the first.
-A cycle that spans boundaries frames each box in its boundary's colour, with its names in the
-text colour, and marks the hop where it crosses. `j` and `k` walk the members, `o` opens one, and `q` asks Claude how to
-break the cycle. On a narrow pane a long cycle folds its middle into one box that unfolds
-when you open it. A component's or a file's detail is drawn the same way: what uses it
-fanning in on the left, what it uses fanning out on the right, each count on its edge.
-
-![The Cycles tab: a cycle of thirteen members drawn as a serpentine of boxes, its middle folded](docs/images/claude-code-mod/cycles-dark.png)
+Exit code `0` means every evaluated gate passed, `1` that a gate failed, and `2` that the result
+could not be evaluated. See [CI and editor integration](docs/operate/ci-editor-integration.md),
+[rules and budgets](docs/concepts/architecture-rules.md), [watch mode](docs/operate/watch-mode.md)
+and the [CLI reference](docs/reference/cli.md).
 
 ## Supported languages
 
@@ -506,70 +264,52 @@ fanning in on the left, what it uses fanning out on the right, each count on its
 | Python 3.11 or newer                             | Standard-library AST in an isolated interpreter; manifests, packages, calls, routes                | [FastAPI, Django, Flask, Celery](docs/languages/python.md)                         |
 | Rust 1.82 or newer, optional on a native install | `syn` parsing; Cargo manifests, cross-file impls, routes; never invokes cargo/rustc                | [Details and limits](docs/languages/rust.md)                                       |
 
-Mixed repositories reconcile into one graph. Third-party scanners plug in as
-isolated worker processes through the [scanner SDK](docs/reference/scanner-sdk.md).
+Mixed repositories reconcile into one graph. Other scanners plug in as isolated worker
+processes through the [scanner SDK](docs/reference/scanner-sdk.md).
 
 ## Safety model
 
-- Scanning never installs dependencies, executes project code, or boots a
-  framework; workers are supervised, resource-capped, and their output is
-  untrusted until it passes schema and limit validation.
-- The allow-list is a security boundary, not a convenience. `serve` refuses to
-  start with no root from `--allow-root`, `KNOSSOS_ALLOWED_ROOTS`, or the roots
-  file. That file is re-read per request so one installation can serve every
-  project; Knossos only ever reads it, so widening the boundary stays a
-  deliberate act recorded on disk.
-- The SQLite database is derived and rebuildable; source mounts stay read-only.
-  The one exception is `architecture_context`'s opt-in `include_source`, which
-  reads a bounded query-time excerpt (≤40 lines) through the same root guard as
-  scanning and degrades to `unavailable` rather than failing, so it does not
-  require write access.
-- The Git-backed diff tools do invoke `git` inside the project, with
-  repository-controlled command hooks (`core.fsmonitor`, `core.hooksPath`,
-  `diff.external`, and any `.gitattributes` filter/textconv driver) forced off,
-  `core.pager` neutralised by `--no-pager` at each call site, and a minimal
-  environment.
-- MCP stdio is the default and recommended transport. The constrained
-  loopback-only Streamable HTTP profile and its deployment limits are documented
-  in the [HTTP threat model](docs/operate/http-threat-model.md).
-- Failed work is never activated: the last complete scan remains the queryable
-  graph. See the [fault recovery matrix](docs/operate/recovery-matrix.md).
-
-## Documentation
-
-[docs/README.md](docs/README.md) is the index. The most-used entries:
-
-- [Installation and MCP configuration](docs/get-started/installation.md)
-- [MCP tool reference](docs/reference/mcp-tools.md) and [CLI reference](docs/reference/cli.md)
-- [Checked-in project configuration](docs/get-started/project-configuration.md)
-- [Running in Docker](docs/operate/container.md)
-- [Troubleshooting and migrations](docs/operate/troubleshooting-and-migrations.md)
+- Scanning never installs dependencies, executes project code or boots a framework. Workers are
+  supervised and resource-capped, and their output is untrusted until it passes validation.
+- The allow-list is a security boundary. `serve` refuses to start without a root, and Knossos
+  only ever reads the roots file, so widening it stays a deliberate act on disk.
+- The database is derived and rebuildable, and source mounts stay read-only.
+- The Git-backed tools run `git` with repository-controlled hooks, pagers and drivers forced off.
+- MCP stdio is the recommended transport. The loopback-only HTTP profile has its own
+  [threat model](docs/operate/http-threat-model.md).
+- A failed scan is never activated: the last complete scan stays the graph you query. See the
+  [fault recovery matrix](docs/operate/recovery-matrix.md).
 
 ## Development
 
-One versioned quality profile runs locally, in Git hooks, and in CI:
+One versioned quality profile runs locally, in Git hooks and in CI:
 
 ```sh
 tools/quality-container fast
 tools/quality-container full
 ```
 
-`fast` covers linting, static analysis, formatting, hygiene, and the whole test
-suite; `full` adds security audits, coverage floors, performance budgets,
-mutation score, and supply-chain assurance. Details are in
-[quality gates](docs/contribute/quality.md).
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow, the
-Conventional Commit prefixes that drive releases, and how to add a language
-scanner.
+`fast` covers linting, static analysis, formatting and the whole test suite. `full` adds
+security audits, coverage floors, performance budgets, mutation score and supply-chain checks.
+See [quality gates](docs/contribute/quality.md), [how the mod is built](docs/contribute/mod-internals.md)
+and [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow, the Conventional Commit prefixes that
+drive releases, and how to add a language scanner.
 
 ## Further reading
 
+- [The documentation index](docs/README.md): which page answers which question
 - [What a dependency graph finds that your coding agent misses](https://tim-schipper.nl/en/blog/dependency-graph-coding-agents)
 
 ## License
 
 [MIT](LICENSE).
+
+## Links
+
+- [Tool page](https://aranea-development.nl/en/tools/knossos-mcp)
+- [Model Context Protocol](https://modelcontextprotocol.io/)
+- [Claude Code plugins](https://code.claude.com/docs/en/plugins)
+- [Changelog](CHANGELOG.md)
 
 ---
 

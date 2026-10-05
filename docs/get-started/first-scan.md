@@ -75,6 +75,64 @@ cd /absolute/path/to/your-project
 bin/knossos session-brief
 ```
 
+## A worked example
+
+The output below is real, from a scan of the Knossos repository itself, abridged
+with `…`. The scan reports what each language worker read:
+
+```console
+$ bin/knossos scan . --json
+{"summary":"Scanned 743 files into 11054 nodes and 65870 relationships.",
+ "data":{"files":743,"nodes":11054,"edges":65870,"diagnostics":0,"mode":"full",
+ "scanner_metadata":{"knossos.php":{"files_scanned":621},
+   "knossos.typescript":{"files_scanned":106,"programs":5, …},
+   "knossos.python":{"files_scanned":7,"parser":"python.ast"},
+   "knossos.rust":{"files_scanned":9,"parser":"rust.syn"}}, …}}
+```
+
+Orient yourself in a codebase you have never opened:
+
+```console
+$ bin/knossos architecture-summary project_1b4f41… --json
+{"summary":"Knossos-MCP contains 11054 nodes and 65870 relationships.",
+ "data":{"node_kinds":[{"kind":"method","count":6379},{"kind":"function","count":1391},
+   {"kind":"property","count":849},{"kind":"class","count":726}, …],
+  "edge_kinds":[{"kind":"calls","count":43552},{"kind":"contains","count":8827},
+   {"kind":"references","count":5888}, …]}}
+```
+
+Ask what breaks if you change an interface. Each dependant carries the edge that
+justifies it and the exact source line, so you can check the answer:
+
+```console
+$ bin/knossos impact-analysis project_1b4f41… 'Knossos\Scanner\ScannerClient' --json
+{"summary":"Found 100 potential static dependants within depth 4.",
+ "data":{"target":{"kind":"interface","canonical_name":"Knossos\\Scanner\\ScannerClient", …},
+   "dependants":[{"node":{"canonical_name":"Knossos\\Scanner\\Worker\\ProcessScannerClient", …},
+     "distance":1,"path_confidence":"certain",
+     "via":{"kind":"implements","origin":"ast",
+       "explanation":"ProcessScannerClient depends through --implements (certain, ast)--> ScannerClient",
+       "evidence":{"path":"src/Scanner/Worker/ProcessScannerClient.php","start_line":11}}}, …],
+   "counts":{"by_distance":{"1":5,"2":22,"3":73},
+     "by_confidence":{"certain":100,"probable":0,"possible":0}}, …},
+ "warnings":["Impact is a conservative static blast radius; it does not guarantee that a dependant will break."]}
+```
+
+Find refactor targets without `wc` and `find`:
+
+```console
+$ bin/knossos file-metrics project_1b4f41… --limit=3 --json
+{"summary":"3 of 743 files by line_count desc.",
+ "data":{"files":[{"path":"workers/typescript/src/scanner.js","language":"javascript","line_count":5077},
+   {"path":"src/Discovery/ProjectDiscoverer.php","language":"php","line_count":2835},
+   {"path":"tests/phpunit/Reconciliation/GraphReconcilerTest.php","language":"php","line_count":2760}]}}
+```
+
+Answers that rest on inference say so: the impact warning above, and dead-code
+candidates that report an absence of evidence. Over MCP the same calls default
+to a compact verbosity that names each component once, and the saving grows
+with the result; see [response envelopes](../reference/response-envelopes.md#verbosity).
+
 ## Let the server read it
 
 The CLI scans any directory you give it. The MCP server answers only for

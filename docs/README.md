@@ -1,105 +1,129 @@
 # Knossos documentation
 
-Every document describes shipped behavior. Anything a scan cannot prove is
-labelled as heuristic, bounded, or explicitly unsupported in the page that
-covers it.
+Each page answers one question. Every page describes behaviour at the code it
+ships with, and anything a scan cannot prove is labelled as heuristic, bounded
+or unsupported on the page that covers it. The [project README](../README.md)
+is the short version.
 
-## Start here
+## Get started
 
-| Document                                                      | Read it for                                                      |
-| ------------------------------------------------------------- | ---------------------------------------------------------------- |
-| [Installation](get-started/installation.md)                   | Docker and native setup, MCP client registration, allowed roots. |
-| [MCP tool reference](reference/mcp-tools.md)                  | All 33 tools: generated schemas, defaults, and annotations.      |
-| [CLI reference](reference/cli.md)                             | Generated command and option contract.                           |
-| [Project configuration](get-started/project-configuration.md) | `knossos.json` ignores, limits, boundaries, policies, budgets.   |
-| [Running in Docker](operate/container.md)                     | Image guarantees, mounts, compose profiles.                      |
+- [Installation](get-started/installation.md): how do I install Knossos and
+  register it with Claude Code, Codex or another MCP client, and what goes
+  wrong?
+- [First scan](get-started/first-scan.md): how do I scan a project, check the
+  result, and what does an answer look like?
+- [Project configuration](get-started/project-configuration.md): how do I tell
+  Knossos what to skip, where the boundaries are, and which rules and budgets
+  to check?
 
-## Capabilities
+## Claude Code
 
-Each page covers one group of tools, in both its CLI and MCP form, with its
-limits stated. The groups match the tool tables in the
-[project README](../README.md#tools).
+- [The plugin](claude-code/plugin.md): how do I install, point, update and
+  remove the Claude Code plugin?
+- [The pane](claude-code/pane.md): what do the band, each tab and each overlay
+  of the pane show, and which keys drive them?
+- [Notes for the model](claude-code/agent-notes.md): what does the mod tell the
+  model, when, in which words, and what does `knossos_context` answer?
+- [Session brief](claude-code/session-brief.md): what does a session see when
+  it starts, and how is each verdict chosen?
+- [The routing skill](claude-code/skill.md): which questions does the skill
+  send to the graph, and which does it keep away?
 
-- [Finding and reading components](concepts/finding-components.md):
-  the project catalogue, component dossiers, usage sites, summaries,
-  boundaries, and diagram export.
-- [Structure analysis](concepts/structure-analysis.md): impact analysis,
-  flow tracing, dependency cycles, architecture health, and where new code
-  belongs.
-- [Reviewing a change](concepts/change-review.md): one-call review, plus
-  changed-file impact, test impact, and Git-weighted risk on their own.
-- [Declared rules and budgets](concepts/architecture-rules.md): boundary
-  policies and reviewable regression gates.
-- [Scan history](concepts/history.md): retained snapshots, architectural
-  changelogs, and trend metrics with release notes.
-- [Dead-code candidates](concepts/dead-code-candidates.md): what
-  `architecture_health` reports as unreferenced, what it reports as reachable
-  only from tests, and everything it excludes first.
-- [The graph and its evidence](concepts/graph-and-evidence.md)
-- [Agent integration](agents/agent-integration.md): the paste-ready
-  orientation brief, task-shaped evidence bundles, and durable annotations.
-- [Session brief](claude-code/session-brief.md): the path-addressed,
-  five-state orientation text a Claude Code session sees at start.
-- [Notes for the model](claude-code/agent-notes.md): the facts the mod tells the
-  model at the moment they help, and the `knossos_context` tool.
-- [Claude Code mod](claude-code/pane.md): the blast-radius band,
-  edit notes, policy notes and architecture pane inside a Claude Code session.
-- [The routing skill](claude-code/skill.md): which questions that
-  session brings back to the graph, and which it answers by reading the tree.
+## Agents
 
-## Guides
+- [Agent integration](agents/agent-integration.md): which tools orient an agent
+  before it greps, how does it get an evidence bundle for one task, and how does
+  it record a judgment for later sessions?
 
-- [Installation and MCP configuration](get-started/installation.md)
-- [First scan](get-started/first-scan.md)
-- [Checked-in project configuration](get-started/project-configuration.md)
-- [The agent orientation plugin](claude-code/plugin.md)
-- [CI and editor integration](operate/ci-editor-integration.md)
-- [Opt-in watch mode](operate/watch-mode.md)
-- [Portable graph bundles](operate/graph-bundles.md)
+## Concepts
 
-## Language and framework support
+- [The graph and its evidence](concepts/graph-and-evidence.md): what does a
+  scan store, and how far can I trust each fact?
+- [Finding components](concepts/finding-components.md): how do I find a
+  project, a component, its relations and every place a symbol is used?
+- [Structure analysis](concepts/structure-analysis.md): what depends on this,
+  how does A reach B, where are the cycles and hubs, and where does new code
+  belong?
+- [Dead-code candidates](concepts/dead-code-candidates.md): what does
+  `architecture_health` report as unreferenced or reached only by tests, and
+  what does it exclude first?
+- [Reviewing a change](concepts/change-review.md): what does this diff put at
+  risk, and which tests reach it?
+- [Declared rules and budgets](concepts/architecture-rules.md): how do I make
+  architectural intent something a build can fail on?
+- [Scan history](concepts/history.md): what changed between two scans, and how
+  have the metrics moved?
 
-- [PHP and Laravel](languages/php-laravel.md)
-- [PHP and Symfony](languages/php-symfony.md)
-- [TypeScript and JavaScript](languages/typescript.md)
-- [Python](languages/python.md)
-- [Rust](languages/rust.md)
+## Languages
+
+- [PHP and Laravel](languages/php-laravel.md): what does the Laravel enricher
+  add to a PHP scan?
+- [PHP and Symfony](languages/php-symfony.md): what does the Symfony enricher
+  add to a PHP scan?
+- [TypeScript and JavaScript](languages/typescript.md): what does the
+  TypeScript worker extract, from which files and frameworks?
+- [Python](languages/python.md): what does the Python worker extract, and which
+  frameworks does it recognise?
+- [Rust](languages/rust.md): what does the Rust worker extract, and where does
+  it stop?
 
 ## Reference
 
-- [MCP tool reference](reference/mcp-tools.md): generated from live tool definitions.
-- [CLI reference](reference/cli.md): generated from `bin/knossos help`.
-- [Response envelopes](reference/response-envelopes.md): the shared result
-  shape every tool returns, plus verbosity, size budgets, staleness, and
-  next steps.
-- [Language API reference](reference/api.md): generated from enforced interface docblocks.
-- [Scanner worker protocol v1](reference/scanner-protocol-v1.md)
-- [Scanner and enricher SDK](reference/scanner-sdk.md)
+- [MCP tool reference](reference/mcp-tools.md): what does each tool take, and
+  what are its defaults and annotations? Generated from the tool definitions.
+- [CLI reference](reference/cli.md): which commands and options exist?
+  Generated from `bin/knossos help`.
+- [Response envelopes](reference/response-envelopes.md): what shape does every
+  answer share, and what do verbosity, size budgets and staleness do to it?
+- [Language API reference](reference/api.md): which PHP interfaces and worker
+  surfaces may an extension rely on? Generated from their docblocks.
+- [Scanner worker protocol v1](reference/scanner-protocol-v1.md): what does a
+  scanner worker read and write on the wire?
+- [Scanner and enricher SDK](reference/scanner-sdk.md): how do I add a scanner
+  for another language?
 
-Generated pages are rebuilt by `php tools/generate-reference.php`; edit the
-source help text and schemas rather than the Markdown.
+Generated pages are rebuilt by `php tools/generate-reference.php`. Edit the
+help text and schemas they come from, never the Markdown.
 
-## Operations
+## Operate
 
-- [Running in Docker](operate/container.md)
-- [Project and database maintenance](operate/maintenance.md)
-- [Fault recovery matrix](operate/recovery-matrix.md)
-- [Troubleshooting and migrations](operate/troubleshooting-and-migrations.md)
-- [Streamable HTTP transport and threat model](operate/http-threat-model.md)
-- [Supply-chain and release assurance](operate/supply-chain.md)
+- [Watch mode](operate/watch-mode.md): how do I keep a graph current as files
+  change?
+- [Running in Docker](operate/container.md): what does the image guarantee, and
+  how do I mount, compose and install the plugin for it?
+- [Project and database maintenance](operate/maintenance.md): how do I remove a
+  project, clean up failed scans, and check, compact or back up the database?
+- [Fault recovery matrix](operate/recovery-matrix.md): what happens when a scan
+  or a worker fails?
+- [Troubleshooting and migrations](operate/troubleshooting-and-migrations.md):
+  what do I check first when something breaks, and how do upgrades migrate?
+- [Streamable HTTP and its threat model](operate/http-threat-model.md): when
+  may I serve over HTTP, and what does it defend against?
+- [Supply chain and release assurance](operate/supply-chain.md): how is the
+  release image built and verified?
+- [CI and editor integration](operate/ci-editor-integration.md): how do I fail
+  a build on a rule or a budget, and which exit codes and reports do I get?
+- [Graph bundles](operate/graph-bundles.md): how do I move a graph between
+  databases without the source?
 
-## Development
+## Contribute
 
-- [Quality gates](contribute/quality.md)
-- [Coverage policy](contribute/coverage.md)
-- [Maintainability ratchets](contribute/maintainability.md)
-- [Property, fuzz, differential, and mutation testing](contribute/adversarial-testing.md)
-- [Performance budgets](contribute/performance-budgets.md)
-- [How the mod is built](contribute/mod-internals.md)
+- [Quality gates](contribute/quality.md): which checks run, in which lane, and
+  how do I run them locally?
+- [Coverage policy](contribute/coverage.md): which coverage floors apply, and
+  where are they measured?
+- [Maintainability ratchets](contribute/maintainability.md): which budgets keep
+  the code from growing worse?
+- [Adversarial testing](contribute/adversarial-testing.md): which property,
+  fuzz, differential and mutation tests guard the trust boundaries?
+- [Performance budgets](contribute/performance-budgets.md): how fast and how
+  large may a scan and a query be?
+- [How the mod is built](contribute/mod-internals.md): how is the Claude Code
+  mod put together, and how is it tested?
 
 ## Decisions and examples
 
-- [Architecture decision records](adr/): the recorded reasons behind the
-  runtime, transport, and enrichment boundaries.
-- [CI and editor examples](examples/): GitHub Actions, GitLab CI, and VS Code
-  task recipes referenced by the integration guide.
+- [Architecture decision records](adr/): why the runtime, the transport and the
+  enrichment boundaries are the way they are.
+- [CI and editor examples](examples/): GitHub Actions, GitLab CI and VS Code
+  task recipes, used by the integration guide.
