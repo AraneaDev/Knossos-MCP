@@ -274,9 +274,22 @@ describe("the ES-module main guard", () => {
             'import { fileURLToPath } from "node:url";\nexport function run() {}\ntry {\n    run();\n} catch (process) {\n    run(process);\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
         "src/nested-scope.mjs":
             'import { fileURLToPath } from "node:url";\nexport function run() {\n    const process = { argv: [] };\n    return process;\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        // An ambient declaration describes the global; it binds nothing new.
+        "src/ambient-const.mts":
+            'import { fileURLToPath } from "node:url";\ndeclare const process: { argv: string[] };\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/ambient-namespace.mts":
+            'import { fileURLToPath } from "node:url";\ndeclare namespace process {\n    const argv: string[];\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/ambient-module.mts":
+            'import { fileURLToPath } from "node:url";\ndeclare module "x" {\n    const process: { argv: string[] };\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/ambient-require.cts":
+            "declare function require(id: string): unknown;\ndeclare class module {}\nfunction run() {}\nif (require.main === module) run();\n",
         // The url module through `require`, whole or destructured.
         "src/required.js":
             'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst { fileURLToPath: toPath } = require("node:url");\nexport function run() {}\nif (toPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/required-node.js":
+            'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst url = require("node:url");\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+        "src/required-plain.js":
+            'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst { fileURLToPath } = require("url");\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
         "src/required-whole.js":
             'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst url = require("url");\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
     };

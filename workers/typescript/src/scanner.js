@@ -4873,8 +4873,19 @@ function isUnshadowed(node, name, checker) {
     );
 }
 
-/** A declaration that binds a name in its scope, as code writes it. */
+/**
+ * A declaration that binds a name in its scope, as code writes it. An ambient
+ * one (`declare const process`, anything in a `declare` block) describes what
+ * the runtime defines and binds nothing of its own.
+ */
 function isLocalBinding(declaration) {
+    if (
+        (declaration.flags & ts.NodeFlags.Ambient) !== 0 ||
+        (ts.getCombinedModifierFlags(declaration) &
+            ts.ModifierFlags.Ambient) !==
+            0
+    )
+        return false;
     return (
         // Covers a catch clause's binding too.
         ts.isVariableDeclaration(declaration) ||
