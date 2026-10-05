@@ -1,11 +1,10 @@
-# TypeScript application enrichment
+# TypeScript and JavaScript
 
-Knossos layers bounded application conventions over TypeScript compiler symbol
-resolution. Compiler-derived imports, calls, types, inheritance, and project
-references remain the primary facts; framework roles use
-`framework_convention` provenance and probable confidence.
+Knossos scans `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs` and `.cjs` files, plus `.vue`, `.svelte` and `.astro` components, with the TypeScript compiler's own symbol resolution. Imports, calls, types, inheritance and project references come from the compiler and are the primary facts. On top of them the worker layers a bounded set of application conventions. Those carry `framework_convention` provenance and, except for NestJS, probable confidence.
 
-## Supported signals
+No framework module is imported and no bundler or application is started.
+
+## Framework and application conventions
 
 - Next.js App Router `page` and `layout` exports, HTTP exports in `route` files,
   route-group path removal, and function-level `"use server"` actions.
@@ -15,8 +14,8 @@ references remain the primary facts; framework roles use
   TypeScript modules.
 - Pinia/Redux/Zustand-style `defineStore`, `createStore`, `configureStore`, and
   `create` factory declarations.
-- Literal `fetch` and common Axios calls as endpoint nodes and
-  `calls_endpoint` edges, including a static `fetch` method option.
+- Literal `fetch` and `axios.get`, `post`, `put`, `patch` and `delete` calls as `endpoint` nodes and `calls_endpoint` edges, including a static `method` option on `fetch`.
+- NestJS, described below.
 - A leading shebang marks the module `executable`, which keeps a script a shell
   runs (and that nothing therefore imports) off the dead-code report.
 - A `.js` or `.cjs` file with no import, export, `require` or `module.exports` is a classic
@@ -25,6 +24,17 @@ references remain the primary facts; framework roles use
 - A module importing `k6` or `k6/*` is a k6 load-test script: it is `executable`, and its
   default export, `setup`, `teardown`, `handleSummary` and every function a scenario names as
   its `exec` are marked `runtime_invoked`, since k6 calls them and nothing imports them.
+
+### NestJS
+
+Imports from `@nestjs/*` switch the NestJS collector on for a file. Its facts are certain, not probable.
+
+- `@Controller`, `@Injectable` and `@Module` classes get the `nestjs.controller`, `nestjs.provider` and `nestjs.module` roles.
+- `@Get`, `@Post`, `@Put`, `@Patch`, `@Delete`, `@Head`, `@Options` and `@All` methods on a controller become `route` nodes, with the controller's literal prefix joined to the method's path.
+- The `imports`, `controllers`, `providers` and `exports` arrays of `@Module` become `depends_on`, `contains` and `exports` edges to the classes they name.
+- Methods that Nest calls itself get the `nestjs.framework_handler` role: the lifecycle hooks (`onModuleInit`, `onApplicationBootstrap` and the other three), `canActivate`, `intercept`, `transform`, `catch`, `use`, the gateway methods (`handleConnection`, `handleDisconnect`, `afterInit`), a Passport strategy's `validate`, and methods decorated with `@Cron`, `@Interval`, `@Timeout`, `@OnEvent`, `@EventPattern`, `@MessagePattern`, `@Process`, the queue event decorators, `@OnWorkerEvent` or `@SubscribeMessage`.
+
+### Edges
 
 Repeated edges are collapsed to the persistence identity. Mixed type/value
 imports retain `type_only_variants` so deduplication does not erase that
@@ -52,10 +62,8 @@ component's own, and an import of `./Card.vue` resolves through relative paths, 
 `baseUrl` like any other module.
 
 - A helper, store or child component used only from a template has its edge.
-- In an `.astro` file, `Astro.props` has the component's `Props` type, as Astro's own tooling
-  gives it, so fields read from it are not typed from their destructuring defaults.
-- As svelte-check reads them: the runes (`$state`, `$derived`, `$props`) are typed by the
-  installed `svelte` package, and in a SvelteKit `+page.svelte` or `+layout.svelte`, `$props()`
+- In an `.astro` file, `Astro.props` has the component's `Props` type, as Astro's own tooling gives it, so fields read from it are not typed from their destructuring defaults.
+- In a `.svelte` file, the runes (`$state`, `$derived`, `$props`) are typed by the installed `svelte` package, as svelte-check types them, and in a SvelteKit `+page.svelte` or `+layout.svelte`, `$props()`
   gives `data` the type the route's generated `./$types` declares.
 - A generic component's type parameters (`<script lang="ts" generics="T extends …">` in
   Svelte, `generic="T"` in Vue) are declared, each standing for its constraint.
@@ -104,6 +112,4 @@ and Markdown pages.
 
 ## Limits
 
-No framework module is imported and no bundler or Next/Vue application is
-started. Dynamic route segments stay in their source spelling, dynamic request
-URLs are omitted, and framework roles do not override language symbol kinds.
+Dynamic route segments stay in their source spelling, dynamic request URLs are omitted, and framework roles never override a language symbol kind. A NestJS route whose decorator argument is not a literal gets an empty segment rather than a guessed one.

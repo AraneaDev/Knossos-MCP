@@ -40,7 +40,7 @@ This file is generated from enforced PHP interface docblocks and the isolated Ty
 
 - `initialize(): Knossos\Scanner\Protocol\ScannerManifest`: Negotiate the worker contract before any project input is sent
 - `scan(array $request): iterable`: Stream owned facts for a bounded, validated scan request
-- `cancel(string|int $requestId): void`: Request cooperative cancellation of an in-flight worker operation
+- `cancel(string|int $requestId): void`: Send an advisory cancel for an in-flight scan request. A worker busy inside the scan cannot read it, so the host ends the process
 - `shutdown(): void`: Shut down the worker and release its complete process tree
 
 ### `Knossos\Store\GraphRepository`
@@ -80,6 +80,6 @@ This file is generated from enforced PHP interface docblocks and the isolated Ty
 | --- | --- | --- |
 | TypeScript | `TypeScriptScanner.scan` | Stream deterministic owned contributions for the requested source files |
 | TypeScript | `discoverConfigFiles` | Return sorted project-relative tsconfig paths below a validated root |
-| Python | `PythonAstFactCollector` | Coordinate one AST traversal and delegate fact enrichment. |
-| Python | `scan` | Parse a bounded file set and emit one owned contribution per input. |
-| Python | `handle` | Validate and dispatch one NDJSON JSON-RPC worker request. |
+| Python | `PythonAstFactCollector` | Coordinate one AST traversal and delegate fact enrichment |
+| Python | `scan` | Parse a bounded file set and emit one owned contribution per input |
+| Python | `handle` | Validate and dispatch one NDJSON JSON-RPC worker request |

@@ -1,41 +1,29 @@
-# Symfony static enrichment support
+# Symfony
 
-Knossos detects Symfony from Composer requirements for FrameworkBundle,
-HttpKernel, Console, or Messenger. It parses PHP source and attributes without
-loading Composer autoloaders, importing application classes, compiling the
-container, or booting the kernel.
+Knossos reads a Symfony project's controllers, routes, commands, message handlers, event listeners and services from the PHP source and its attributes. It loads no autoloader, imports no application class, compiles no container and boots no kernel.
 
-## Supported static facts
+A project counts as Symfony when its root `composer.json` requires `symfony/framework-bundle`, `symfony/http-kernel`, `symfony/console` or `symfony/messenger`, or when you list `symfony` under `frameworks` in your [project configuration](../get-started/project-configuration.md). Generic PHP facts (declarations, inheritance, calls, construction, types and constructor injection) are in the graph whether or not a convention is recognized.
 
-| Area        | Recognized source                                                                 | Output                                            |
-| ----------- | --------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Controllers | `AbstractController`, `#[AsController]`, `#[Route]`                               | controller/route-handler roles                    |
-| Routes      | class and method `#[Route]` paths, names, and method lists                        | route nodes and `routes_to` edges                 |
-| Commands    | `#[AsCommand(name: ...)]`                                                         | command nodes and `handles` edges                 |
-| Messenger   | `#[AsMessageHandler]` and a typed handler parameter                               | message-handler roles and `handles_message` edges |
-| Events      | `#[AsEventListener]`, `EventSubscriberInterface`, static subscriber arrays        | listener/subscriber roles and `listens_to` edges  |
-| Services    | `#[AsAlias]`, `#[Autoconfigure]`, typed constructors, `#[Autowire(service: ...)]` | service roles, `binds`, and `injects` edges       |
-| Validation  | Doctrine annotations such as `@AdminEmail`, a `Constraint`'s `<Name>Validator`    | `references` edges                                |
-| Migrations  | the directories Doctrine Migrations' `migrations_paths` names in YAML             | entry points                                      |
-| Handlers    | a `services.yaml` `resource:` block with `tags:`, every class in its directory    | entry points                                      |
-| Serializer  | JMS Serializer `@VirtualProperty` and `#[VirtualProperty]` methods                | `runtime_invoked`                                 |
+## What you get
 
-Attribute values must be statically representable strings, string arrays, or
-class constants. Dynamic route paths, command names, and event targets produce
-stable diagnostics instead of guessed facts. Generic PHP declarations,
-inheritance, calls, construction, types, and constructor injection are retained
-whether or not Symfony enrichment recognizes a convention.
+| Area        | Recognized source                                                                  | Graph facts                                       |
+| ----------- | ---------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Controllers | `AbstractController`, `#[AsController]`, `#[Route]`                                | controller and route-handler roles                |
+| Routes      | class-level and method-level `#[Route]` paths, names and method lists              | `route` nodes and `routes_to` edges               |
+| Commands    | `#[AsCommand(name: ...)]`                                                          | `command` nodes and `handles` edges               |
+| Messenger   | `#[AsMessageHandler]` and a typed handler parameter                                | message-handler roles and `handles_message` edges |
+| Events      | `#[AsEventListener]`, `EventSubscriberInterface`, static subscriber arrays         | listener and subscriber roles, `listens_to` edges |
+| Services    | `#[AsAlias]`, `#[Autoconfigure]`, typed constructors, `#[Autowire(service: ...)]`  | service roles, `binds` and `injects` edges        |
+| Validation  | Doctrine annotations such as `@AdminEmail`, and a `Constraint`'s `<Name>Validator` | `references` edges                                |
+| Migrations  | the directories `migrations_paths` names in the Doctrine Migrations YAML           | entry points                                      |
+| Handlers    | a `services.yaml` `resource:` block with `tags:`: every class in its directory     | entry points                                      |
+| Serializer  | JMS Serializer `@VirtualProperty` and `#[VirtualProperty]` methods                 | `runtime_invoked`                                 |
 
-## Deliberate limits
+Attribute values have to be strings, string arrays or class constants. A dynamic route path, command name or event target produces a diagnostic instead of a guessed fact: `SYMFONY_DYNAMIC_ROUTE_PATH`, `SYMFONY_DYNAMIC_COMMAND_NAME` or `SYMFONY_DYNAMIC_EVENT`. Evidence always points at the attribute, declaration, parameter or subscriber entry that produced the fact.
 
-- YAML/XML service and route imports are not interpreted yet, apart from a tagged
-  `resource:` block's directory.
-- Container extensions, compiler passes, runtime service decoration, generated
-  containers, and expression-language values are not executed.
-- Subscriber arrays record statically visible event keys; runtime-computed
-  subscriptions are omitted.
-- Attribute aliases with unsupported expressions remain generic PHP attributes.
+## Limits
 
-These limits keep scans deterministic and safe. Evidence always points to the
-source attribute, declaration, parameter, or subscriber entry that produced a
-fact.
+- YAML and XML service and route imports are not interpreted. The one exception is the directory of a tagged `resource:` block.
+- Container extensions, compiler passes, runtime service decoration, generated containers and expression-language values are not executed.
+- Subscriber arrays record the event keys that are visible in the source. A subscription computed at runtime is omitted.
+- An attribute alias with an expression Knossos cannot read stays a generic PHP attribute.

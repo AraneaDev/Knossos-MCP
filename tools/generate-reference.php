@@ -108,7 +108,7 @@ foreach ([
 }
 foreach (['PythonAstFactCollector' => 'class', 'scan' => 'def', 'handle' => 'def'] as $symbol => $kind) {
     preg_match('/^' . $kind . '\s+' . $symbol . '\b[^\n]*:\n\s+"""([^"\n]+)"""/m', $python, $documentation);
-    $api .= sprintf("| Python | `%s` | %s |\n", $symbol, $documentation[1] ?? 'Missing documentation');
+    $api .= sprintf("| Python | `%s` | %s |\n", $symbol, rtrim($documentation[1] ?? 'Missing documentation', '.'));
 }
 $api = rtrim($api) . "\n";
 

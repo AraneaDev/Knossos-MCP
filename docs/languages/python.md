@@ -1,94 +1,50 @@
-# Python scanner support
+# Python
 
-Knossos supports Python 3.11 and newer projects through the same versioned,
-out-of-process scanner protocol used by the PHP and TypeScript workers. The
-bundled worker uses only Python's standard-library `ast` module and starts with
-isolated, bytecode-disabled interpreter flags. It never imports or runs the
-target project.
+Knossos scans Python 3.11 and newer through the same out-of-process scanner protocol as the other languages. The bundled worker uses only the standard-library `ast` module and starts with the isolated, bytecode-disabled flags `-I -B`. It never imports or runs your project.
 
-## Discovered inputs
+## What the scanner reads
 
-- `pyproject.toml` project units, names, PEP 621 dependencies and optional
-  dependencies, Poetry's `[tool.poetry.dependencies]`, `dev-dependencies`, and
-  `group.<name>.dependencies` tables, and `[project.scripts]` or Poetry
-  `[tool.poetry.scripts]` entry points
-- `requirements.txt` and `requirements-*.txt` dependency units for projects
-  that keep dependencies outside `pyproject.toml`
-- `.py` implementation files and `.pyi` stub files
-- packages identified by `__init__.py`
-- ordinary and relative imports, including aliases
+- `pyproject.toml`: the project unit and its name, PEP 621 dependencies and optional dependencies, Poetry's `[tool.poetry.dependencies]`, `dev-dependencies` and `group.<name>.dependencies` tables, and the entry points under `[project.scripts]` or `[tool.poetry.scripts]`
+- `requirements.txt` and `requirements-*.txt`, for projects that keep dependencies outside `pyproject.toml`
+- `.py` source files and `.pyi` stubs
+- packages, identified by `__init__.py`
+- ordinary and relative imports, with their aliases
 
-A console script such as `shop.cli:main` is mapped to the exact source path
-`shop/cli.py`, and a `.py` file listed in `[tool.vulture] paths` (a whitelist vulture reads
-as source) is an entry point too. Classification only applies when that path produced a scanner
-node, so a manifest token cannot invent an entry point.
+A console script such as `shop.cli:main` maps to the exact path `shop/cli.py`, and a `.py` file listed in `[tool.vulture] paths` (a whitelist vulture reads as source) is an entry point too. The mapping only applies when that path produced a scanner node, so a manifest cannot invent an entry point.
 
-Virtual environments and tool caches such as `.venv`, `venv`, `__pycache__`,
-`.tox`, `.mypy_cache`, and `.pytest_cache` are ignored by default.
+Discovery skips `.venv`, `venv`, `__pycache__`, `.tox`, `.mypy_cache` and `.pytest_cache` by default, along with the other directories every language skips.
 
-## Emitted facts
+## What ends up in the graph
 
-The worker emits evidence-backed modules, packages, classes, functions,
-methods, containment, imports, inheritance, and statically resolvable calls.
-Async status and decorator names are retained as node attributes. A module with
-a shebang or an `if __name__ == "__main__":` guard is marked `executable`, which
-keeps a script run by a shell or `python -m` off the dead-code report. So is a module that
-builds a served app at module level (`app = FastAPI()`, `Flask(__name__)`, Starlette, Quart,
-Litestar, or Django's WSGI and ASGI applications), which a server such as uvicorn loads by
-name.
+The worker emits modules, packages, classes, functions, methods, containment, imports, inheritance and the calls it can resolve statically. Async status and decorator names are kept as node attributes. A reference to a function or class that is not a call, such as one passed as an argument, becomes a `references` edge.
 
-A few calls nothing names are recognised as runtime-invoked: a function a
-decorator hands to an object (`@queue.register("scan")`, `@bus.on`), and a
-module whose file name no import can spell (`029_seed.py`), which a loader
-reads by path, together with its public top-level functions. A name a package
-imports is an attribute of that package, so `config.staging_dir()` reaches the
-submodule `config/__init__.py` re-exports it from. A class declared under
-`if TYPE_CHECKING:` is a module-level name.
-Cross-file references are resolved when their declarations are in the same
-scan request; other references remain explicit unresolved or external graph
-facts.
+A cross-file reference resolves when the declaration is in the same scan request. Anything else stays an explicit unresolved or external fact.
 
-Framework enrichment is structural and import-free. The core detects common
-framework dependencies from `pyproject.toml` and requirements files and passes
-those hints to the worker. The worker also preserves its structural fallback,
-so recognizable code remains enrichable when a project uses an incomplete
-manifest or dependency metadata is absent.
+Some code is never called or imported by name. The scanner marks it, so it stays off the [dead-code candidates](../concepts/dead-code-candidates.md) list:
 
-- FastAPI `FastAPI`/`APIRouter` objects, HTTP decorators, typed async or sync
-  handlers, `Depends` in parameters/decorator lists, router mounts, and explicit
-  middleware produce routes and dependency, mount, and middleware edges.
-- Django `path`/`re_path` lists, function and class-based views, model bases,
-  callable middleware, and common settings produce route, role, and setting
-  facts.
-- Flask `Flask` and `Blueprint` objects, `@app.route` or `@blueprint.route`
-  decorators, blueprint mounts, and `add_url_rule` calls produce route nodes
-  and `routes_to` or `mounts` edges. Flask route methods are retained,
-  including multiple methods on one decorator. `MethodView` subclasses receive
-  the `flask.view` role and route handlers receive `flask.route_handler`.
-- Celery-style `task`/`shared_task` decorators produce an explicit task role.
+- A module with a shebang, or with an `if __name__ == "__main__":` guard, is `executable`. So is a module that builds a served app at module level: `FastAPI()`, `Flask(__name__)`, Starlette, Quart, Litestar, or Django's `get_wsgi_application()` and `get_asgi_application()`. A server such as uvicorn loads that module by name.
+- A function a decorator hands to an object (`@queue.register("scan")`, `@bus.on`) is `runtime_invoked`.
+- A module whose file name no import can spell (`029_seed.py`) is `runtime_invoked`, together with its public top-level functions, because a loader reads it by path.
 
-Dynamic route paths are diagnosed with `PY_DYNAMIC_ROUTE_PATH` instead of being
-guessed. This includes Flask converter paths such as `/users/<int:user_id>`.
-Results are deterministic and participate in the same contribution cache,
-classification, boundary, and mixed-language reconciliation pipeline as other
-scanners.
+A name a package imports is an attribute of that package, so `config.staging_dir()` reaches the submodule that `config/__init__.py` re-exports it from. A class declared under `if TYPE_CHECKING:` is a module-level name.
+
+## Frameworks
+
+The worker recognizes a framework from what a file imports. It reads no framework hint from the request, so recognizable code is enriched even when the dependency metadata is incomplete or absent.
+
+| Framework | Recognized source                                                                                                                                                                                                   | Graph facts                                                                                                                                             |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| FastAPI   | `FastAPI` and `APIRouter` objects, HTTP decorators, `Depends` in parameters and decorator lists, `include_router`, `add_middleware`                                                                                 | `route` nodes, `routes_to`, `depends_on`, `mounts` and `uses_middleware` edges, and the `fastapi.route_handler` role                                    |
+| Django    | `path` and `re_path` lists in `urlpatterns`, function and class-based views, `models.Model` bases, `__call__` middleware, `INSTALLED_APPS`, `MIDDLEWARE`, `ROOT_URLCONF`, `ASGI_APPLICATION` and `WSGI_APPLICATION` | `route` and `setting` nodes, `routes_to` and `configures` edges, and the `django.model`, `django.view` and `django.middleware` roles                    |
+| Flask     | `Flask` and `Blueprint` objects, `@app.route` and `@blueprint.route`, `register_blueprint`, `add_url_rule`, `MethodView` subclasses                                                                                 | `route` nodes, `routes_to` and `mounts` edges, with every method of a multi-method decorator kept, and the `flask.view` and `flask.route_handler` roles |
+| Celery    | `task` and `shared_task` decorators                                                                                                                                                                                 | the `python.task` role                                                                                                                                  |
+
+Blueprint prefixes and route paths combine only when both are literals in the same file.
 
 ## Limits
 
-Dynamic imports, monkey-patching, runtime decorator effects, metaclass behavior,
-and dynamically selected call targets are not executed or inferred. Decorator
-names are structural evidence, not a claim about their runtime behavior.
-Settings are limited to statically literal architecture-relevant names; Django
-settings modules are never imported, and FastAPI dependency callables are never
-invoked. Blueprint prefixes and route paths are combined only when they are
-literal values in the same file.
-
-Syntax failures produce `PY_SYNTAX_ERROR` diagnostics for the affected file and
-do not prevent other files from contributing. A malformed or oversized file
-likewise costs only its own contribution.
-
-## Verification
-
-The worker is checked with `ruff`, `mypy`, its Python test suite, and the shared
-scanner-conformance protocol check. The repository's PHP scanner integration
-suite also drives the real worker process over NDJSON-RPC.
+- Dynamic imports, monkey-patching, runtime decorator effects, metaclass behavior and dynamically selected call targets are not executed or inferred. A decorator name is structural evidence, not a claim about what it does at runtime.
+- A dynamic route path is skipped with `PY_DYNAMIC_ROUTE_PATH`. That includes Flask converter paths such as `/users/<int:user_id>`.
+- Django settings are limited to the five names above with statically literal values, and a settings module is never imported. FastAPI dependency callables are never invoked.
+- A syntax error produces `PY_SYNTAX_ERROR` for that file, a file the worker cannot read or that is oversized produces `PY_UNSCANNABLE_FILE`, and neither stops the other files from contributing.
+- A relative import that climbs above the project root emits no edge and reports `PY_UNRESOLVED_RELATIVE_IMPORT`. A module file and a package that share one module id report `PY_MODULE_ID_COLLISION`, and the package wins.
