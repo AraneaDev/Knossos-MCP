@@ -3600,6 +3600,42 @@ describe('knossos mod', () => {
     await ui.unmount()
   })
 
+  test('once a later turn leaves no file untested, the list is every file again, and a file untested after that does not narrow it unasked', async ($, on) => {
+    const impact = (kernel: number, config?: number) => ({
+      'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'Http', tests: 2 },
+      'src/Kernel.php': { path: 'src/Kernel.php', dependent_files: 3, boundaries: ['Core'], boundary: 'Core', tests: kernel },
+      ...(config === undefined ? {} : { 'src/Config.php': { path: 'src/Config.php', dependent_files: 1, boundaries: [], boundary: null, tests: config } }),
+    })
+    const first = brief({ changed_files: ['src/Router.php', 'src/Kernel.php'], impact: impact(0), tests: [{ path: 'tests/Http/RouterTest.php', distance: 1 }] })
+    // The kernel gains a test: no file is left that none reaches.
+    const second = brief({ changed_files: ['src/Kernel.php'], impact: { 'src/Kernel.php': impact(1)['src/Kernel.php'] }, tests: [{ path: 'tests/Http/RouterTest.php', distance: 1 }] })
+    // Then a new file none reaches.
+    const third = brief({ changed_files: ['src/Config.php'], impact: { 'src/Config.php': impact(1, 0)['src/Config.php']! }, tests: [{ path: 'tests/Http/RouterTest.php', distance: 1 }] })
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], brief: [{ stdout: first }, { stdout: second }, { stdout: third }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const ui = await mountPane($, 'terminal', 120)
+    const listed = async () => (await ui.findAll({})).filter(e => typeof e.key === 'string' && /^change-\d+$/.test(e.key)).length
+    await ui.press({ key: 'tab:changes' })
+    await ui.press({ key: 'untested-row' })
+    expect(await listed()).toBe(1)
+    await edit($, `${ROOT}/src/Kernel.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(await listed()).toBe(2)
+    await edit($, `${ROOT}/src/Config.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    // Three files, one none reaches, and the list is not narrowed to it.
+    expect(drawn((await ui.find({ key: 'pane' }))?.text ?? '')).toContain('▲ 1 file no test reaches')
+    expect(drawn((await ui.find({ key: 'pane' }))?.text ?? '')).not.toContain('showing only these')
+    expect(await listed()).toBe(3)
+    await ui.unmount()
+  })
+
   test("a tile that counts a set opens the tab that lists it, and a cut list's line moves the marker onto what it counts", async ($, on) => {
     const hubs = Array.from({ length: 40 }, (_, i) => ({ name: `Hub${i}`, canonical_name: `App\\Hub${i}`, kind: 'class', in_degree: 300 - i, out_degree: i, cross_boundary_degree: 0, path: `src/Hub${i}.php`, line: 3 }))
     const w = world(on, { dashboard: [{ stdout: issuesDashboard({ hubs }) }] })
