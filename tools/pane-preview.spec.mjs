@@ -79,4 +79,18 @@ describe('pane-preview', () => {
     expect(readdirSync(CAPTURES).sort()).toEqual(before)
     expect(existsSync(join(CAPTURES, 'newdir'))).toBe(false)
   })
+
+  it('refuses `..` after a symlink (cap/../claude-code/x) once the OS has resolved it, and removes the dirs it made there', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'knossos-stale-preview-'))
+    const before = readdirSync(CAPTURES).sort()
+    const data = join(scratch, 'data')
+    mkdirSync(data)
+    symlinkSync(CAPTURES, join(scratch, 'cap'))
+    for (const out of [`${scratch}/cap/../claude-code/x`, `${scratch}/cap/../claude-code/x/y/z`, `${scratch}/cap/../claude-code`]) {
+      const run = spawnSync(process.execPath, [SCRIPT, `--data-dir=${data}`, `--out=${out}`], { encoding: 'utf8' })
+      expect(run.status, out).toBe(2)
+      expect(run.stderr, out).toContain('refusing to write')
+      expect(readdirSync(CAPTURES).sort()).toEqual(before)
+    }
+  })
 })

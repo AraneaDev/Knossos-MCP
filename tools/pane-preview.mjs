@@ -48,8 +48,8 @@
  */
 import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
-import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { basename as baseName, dirname, join, resolve } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
+import { basename as baseName, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const args = Object.fromEntries(
@@ -114,21 +114,57 @@ function realTarget(path, links = 0) {
   return at
 }
 
-// The real captures (tools/capture/shoot.mjs) are never written here, through a symlink or not; checked before anything is drawn.
-{
+const CAPTURES_MESSAGE = 'docs/images/claude-code holds the real Claude Code captures (tools/capture/shoot.mjs)'
+
+/**
+ * Makes the output directory and returns its real path, the one every file
+ * is written under. The OS resolves `out` (symlinks, `..` after a link) as
+ * mkdir does; a result in the real captures is refused, after the dirs this
+ * call made are removed again, deepest first and only while empty.
+ * `realTarget` is only an early message for a link it can follow; this is
+ * the check that counts.
+ */
+function claimOut(out) {
   const refuse = why => {
-    console.error(`pane-preview: refusing to write to ${why}: docs/images/claude-code holds the real Claude Code captures (tools/capture/shoot.mjs)`)
+    console.error(`pane-preview: refusing to write to ${why}: ${CAPTURES_MESSAGE}`)
     process.exit(2)
   }
-  const captures = realpathSync(join(REPO, 'docs/images/claude-code'))
-  let out
+  const captures = realpathSync.native(join(REPO, 'docs/images/claude-code'))
   try {
-    out = realTarget(args.out ?? join(REPO, 'readme' in args ? '.superpowers/pane-preview/readme' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
+    const early = realTarget(out)
+    if (early === captures || early.startsWith(captures + '/')) refuse(early)
   } catch (error) {
-    refuse(`${args.out} (${error.message})`)
+    refuse(`${out} (${error.message})`)
   }
-  if (out === captures || out.startsWith(captures + '/')) refuse(out)
+  // The dirs mkdir will make, as `out` names them: no lexical clean-up, so `..` keeps its meaning after a link.
+  const made = []
+  for (let dir = out; !existsSync(dir) && dirname(dir) !== dir; dir = dirname(dir)) made.push(dir)
+  try {
+    mkdirSync(out, { recursive: true })
+  } catch (error) {
+    refuse(`${out} (${error.message})`)
+  }
+  // The OS realpath(3): the JS realpathSync drops `..` against the path as written before it reads a link.
+  const real = realpathSync.native(out)
+  if (real === captures || real.startsWith(captures + '/')) {
+    for (const dir of made) {
+      try {
+        rmdirSync(dir)
+      } catch {
+        // Not empty, or gone: left as it is.
+      }
+    }
+    refuse(real)
+  }
+  return real
 }
+
+// Never the real captures, through a symlink or not; claimed before anything is drawn.
+const REAL_OUT = claimOut(
+  args.out === undefined
+    ? join(REPO, 'readme' in args ? '.superpowers/pane-preview/readme' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview')
+    : isAbsolute(args.out) ? args.out : `${process.cwd()}/${args.out}`,
+)
 const layout = await import(join(REPO, 'hooks/lib/layout.ts'))
 const envelopes = await import(join(REPO, 'hooks/lib/envelopes.ts'))
 const raster = await import(join(REPO, 'hooks/lib/raster.ts'))
@@ -139,7 +175,8 @@ const changesLib = await import(join(REPO, 'hooks/lib/changes.ts'))
 const diffLib = await import(join(REPO, 'hooks/lib/diff.ts'))
 
 const README = 'readme' in args
-const OUT = resolve(args.out ?? join(REPO, README ? '.superpowers/pane-preview/readme' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
+// Every file goes under the real directory claimOut checked, never under the path as given.
+const OUT = REAL_OUT
 const PROJECT = resolve(args.project ?? REPO)
 const DATA_DIR = resolve(args['data-dir'])
 const COLUMNS = (args.columns ?? '60,100,140,200').split(',').map(Number)
@@ -927,7 +964,6 @@ const README_SHOTS = [
 ]
 
 const only = args.only ? new Set(args.only.split(',')) : null
-mkdirSync(OUT, { recursive: true })
 // A full run starts the directory over; `--only` redraws its views beside the rest.
 if (only === null) for (const file of readdirSync(OUT)) if (file.endsWith('.png')) rmSync(join(OUT, file))
 const written = []
