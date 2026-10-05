@@ -547,7 +547,7 @@ export async function playShot(session, shot, { worktree, record = false }) {
             case "still":
                 // With the size it was taken at: a `resize` can change it within a shot.
                 stills[step.name] = {
-                    frame: await settle(session),
+                    frame: checkStill(await settle(session), step.name),
                     view: {
                         cols: session.cols,
                         rows: session.rows,
@@ -631,19 +631,63 @@ export async function checkLength(dir, shot) {
 export const shown = (frames) =>
     frames.filter((f) => !new RegExp(NEVER_SHOWN).test(plain(f)));
 
-/** Writes a shot's GIF (from its frames, when it records) and its stills under `out`. */
+/** A still's frame, or an error when it shows what NEVER_SHOWN matches: a still is never dropped silently. */
+export function checkStill(frame, name) {
+    const hit = plain(frame).match(new RegExp(NEVER_SHOWN));
+    if (hit === null) return frame;
+    const error = new Error(
+        `still ${name} shows "${hit[0]}", which no capture may show`,
+    );
+    error.lastFrame = plain(frame);
+    throw error;
+}
+
+/**
+ * Keeps what a failed shot took once its GIF was cut, in the shot's own
+ * dir under tools/capture/out (never `--out`, which only gets a whole
+ * shot), and says where. Should that fail too, it says so and returns
+ * null, so the caller still throws the shot's own error.
+ */
+export async function keepPartial(
+    name,
+    shot,
+    error,
+    {
+        view,
+        write = writeShot,
+        log = (line) => process.stderr.write(`${line}\n`),
+    },
+) {
+    if (error.partial?.cut !== true) return null;
+    const dir = path.join(OUT, name);
+    try {
+        await write(name, shot, error.partial, { out: null, view });
+    } catch (writeError) {
+        log(`partial ${name} not kept: ${writeError.message}`);
+        return null;
+    }
+    log(`partial ${name} kept in ${dir} (not copied to --out)`);
+    return dir;
+}
+
+/**
+ * Writes a shot's GIF (from its frames, when it records) and its stills
+ * into its own dir under tools/capture/out, and copies them to `out`
+ * unless `out` is null.
+ */
 async function writeShot(name, shot, taken, { out, view }) {
     const { stills } = taken;
     const frames = shown(taken.frames);
     const dir = path.join(OUT, name);
     await rm(dir, { recursive: true, force: true });
     await mkdir(dir, { recursive: true });
-    await mkdir(out, { recursive: true });
+    if (out !== null) await mkdir(out, { recursive: true });
     // The stills first: a GIF refused for its length must not take them with it.
     for (const [still, { frame, view: at }] of Object.entries(stills)) {
         const png = path.join(dir, `${still}.png`);
         await renderPng([framePage(frame, at)], [png], at);
         await writeFile(path.join(dir, `${still}.ansi`), frame);
+        if (out === null) continue;
         await copyFile(png, path.join(out, `${still}.png`));
         process.stdout.write(`${still}: ${path.join(out, `${still}.png`)}\n`);
     }
@@ -658,7 +702,7 @@ async function writeShot(name, shot, taken, { out, view }) {
             view,
         );
         const ms = await checkLength(dir, shot);
-        const built = await buildGif(dir, path.join(out, `${name}.gif`));
+        const built = await buildGif(dir, path.join(out ?? dir, `${name}.gif`));
         process.stdout.write(
             `${name}: ${frames.length} frames (${(ms / 1000).toFixed(1)} s), ${built.bytes} bytes${built.mp4 ? `, ${built.mp4}` : ""}\n`,
         );
@@ -692,8 +736,7 @@ async function shootOne(
             });
         } catch (error) {
             // A GIF already cut is kept, with the stills taken so far: shooting it again costs a model turn.
-            if (error.partial?.cut === true)
-                await writeShot(name, shot, error.partial, { out, view });
+            await keepPartial(name, shot, error, { view });
             throw error;
         }
         await writeShot(name, shot, taken, { out, view });

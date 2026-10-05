@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { lapse, paneFocused, parseArgs, promptText, shown } from "./shoot.mjs";
-import { SHOTS, STEP_KINDS, THIS_SESSION, WAIT_BUDGET_MS } from "./shots.mjs";
+import {
+    checkStill,
+    keepPartial,
+    lapse,
+    paneFocused,
+    parseArgs,
+    promptText,
+    shown,
+} from "./shoot.mjs";
+import {
+    NEVER_SHOWN,
+    SHOTS,
+    STEP_KINDS,
+    THIS_SESSION,
+    WAIT_BUDGET_MS,
+} from "./shots.mjs";
 
 const entries = Object.entries(SHOTS);
 
@@ -135,5 +149,100 @@ describe("shown", () => {
             "knossos · 1 file → 2 dependents",
         ];
         expect(shown(frames)).toEqual(frames.slice(2));
+    });
+});
+
+describe("NEVER_SHOWN", () => {
+    const re = new RegExp(NEVER_SHOWN);
+    it("matches the spinner's token counts", () => {
+        for (const text of [
+            "· Wibbling… (2s · ↓ 82 tokens)",
+            "✶ Churning… (12s · ↑ 1,204 tokens)",
+            "(40s · ↓1.2k tokens)",
+            "(1m 3s · 2.4k tokens)",
+        ])
+            expect(re.test(text), text).toBe(true);
+    });
+    it("leaves a plain count in the pane alone", () => {
+        for (const text of [
+            "budget: 12 tokens left",
+            "8,000 tokens per brief",
+            "tokens: 12",
+        ])
+            expect(re.test(text), text).toBe(false);
+    });
+});
+
+describe("checkStill", () => {
+    it("returns a clean still as it is", () => {
+        const frame = "knossos · 12 tokens in the brief";
+        expect(checkStill(frame, "band")).toBe(frame);
+    });
+    it("fails a still with the spinner's token count, naming it and keeping the frame", () => {
+        const frame = "\u001b[2m· Wibbling… (2s · ↓ 82 tokens)\u001b[0m";
+        let error = null;
+        try {
+            checkStill(frame, "changes-diff");
+        } catch (e) {
+            error = e;
+        }
+        expect(error?.message).toMatch(
+            /still changes-diff shows "↓ 82 tokens"/,
+        );
+        expect(error?.lastFrame).toBe("· Wibbling… (2s · ↓ 82 tokens)");
+    });
+});
+
+describe("keepPartial", () => {
+    const shot = { gif: true };
+    const view = { cols: 160, rows: 48, theme: "dark" };
+    const failed = (partial) =>
+        Object.assign(new Error('step "band" timed out'), {
+            lastFrame: "the last frame",
+            partial,
+        });
+    it("writes a cut shot's partial to its own dir only, never to --out, and says where", async () => {
+        const writes = [];
+        const lines = [];
+        const error = failed({ frames: ["a"], stills: {}, cut: true });
+        const dir = await keepPartial("hero", shot, error, {
+            view,
+            write: async (...args) => writes.push(args),
+            log: (line) => lines.push(line),
+        });
+        expect(writes).toHaveLength(1);
+        expect(writes[0][3]).toEqual({ out: null, view });
+        expect(dir).toMatch(/tools\/capture\/out\/hero$/);
+        expect(lines).toEqual([
+            `partial hero kept in ${dir} (not copied to --out)`,
+        ]);
+    });
+    it("writes nothing for a shot that failed before its cut", async () => {
+        const writes = [];
+        const error = failed({ frames: ["a"], stills: {}, cut: false });
+        expect(
+            await keepPartial("hero", shot, error, {
+                view,
+                write: async (...args) => writes.push(args),
+                log: () => {},
+            }),
+        ).toBeNull();
+        expect(writes).toEqual([]);
+    });
+    it("leaves the shot's own error as it was when keeping the partial fails too", async () => {
+        const lines = [];
+        const error = failed({ frames: ["a"], stills: {}, cut: true });
+        await expect(
+            keepPartial("hero", shot, error, {
+                view,
+                write: async () => {
+                    throw new Error("disk full");
+                },
+                log: (line) => lines.push(line),
+            }),
+        ).resolves.toBeNull();
+        expect(error.message).toBe('step "band" timed out');
+        expect(error.lastFrame).toBe("the last frame");
+        expect(lines).toEqual(["partial hero not kept: disk full"]);
     });
 });

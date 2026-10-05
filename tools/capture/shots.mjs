@@ -60,10 +60,12 @@ export const FIXTURE = {
 const lit = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * What no GIF frame may show: the token count Claude Code's spinner gives
- * mid-turn (`↓ 82 tokens`). A frame that shows it is left out of the GIF.
+ * What no capture may show: the token count Claude Code's spinner gives
+ * mid-turn (`↓ 82 tokens`, `↑ 1,204 tokens`, `1.2k tokens`). A GIF frame
+ * that shows it is left out; a still that shows it fails. A plain count
+ * such as the pane's own "12 tokens" is not the spinner's and stays.
  */
-export const NEVER_SHOWN = String.raw`\b\d[\d,.]*k? tokens\b`;
+export const NEVER_SHOWN = String.raw`(?:[↓↑]\s*\d[\d,]*(?:\.\d+)?k?|\b\d+(?:\.\d+)?k) tokens\b`;
 
 /** The GIF's frame interval: 8 frames a second. */
 export const FRAME_MS = 125;
