@@ -59,8 +59,7 @@ It names five cases and why each one belongs elsewhere:
 ## Writing a fact back
 
 `annotate_component` is the one way a session leaves something for the next one,
-and annotations are keyed by canonical name rather than by node id, so they
-survive a rescan. The skill sets three tests that all have to hold before a
+and annotations are keyed by canonical name, so they survive a rescan. The skill sets three tests that all have to hold before a
 session writes one: the fact cost real effort to learn, it is not visible by
 reading the component itself, and it will still be true in a month.
 
@@ -77,7 +76,6 @@ covers the mechanics.
 ## Where it lives, and when a change to it takes effect
 
 The skill is `skills/graph/SKILL.md` in the repository.
-`install-agent-plugin --execute` copies it into `.plugin/`, and Claude Code
-caches that copy by the version in the plugin's manifest. A change to
-`SKILL.md` without a release therefore needs an uninstall to force a fresh
-copy; see [updating the plugin](plugin.md#update).
+`install-agent-plugin --execute` copies it into `.plugin/`, so a change to
+`SKILL.md` reaches a session only after that command runs again; see
+[updating the plugin](plugin.md#update).

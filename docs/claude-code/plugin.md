@@ -115,9 +115,9 @@ own. Use it where the plugin is not also installed, so it loads once.
 - `skills/graph/SKILL.md`, the routing skill;
 - `types/index.d.ts`, the mod's types.
 
-The checkout itself is never registered. Claude Code copies a local marketplace
-into its plugin cache, so registering the repository root would copy the whole
-working tree with it: `vendor/`, `node_modules/`, build caches, the graph
+The checkout itself is never registered. Claude Code also keeps a copy of a
+local marketplace in its plugin cache, so registering the repository root would
+copy the whole working tree with it: `vendor/`, `node_modules/`, build caches, the graph
 database, and any stray config file. A directory holding only the plugin copies
 only the plugin.
 
@@ -129,21 +129,23 @@ command puts it back.
 
 ## Update
 
-Claude Code caches an installed plugin by the version in its manifest, and the
-install writes the running CLI's version there. After you update your checkout
-to a new release:
+Claude Code reads a plugin installed from a local directory in place:
+`claude plugin list --json` shows `.plugin/` as its `readFromFolder`. After you
+update your checkout, or change a hook script, the skill or the mod, rewrite
+`.plugin/`:
 
 ```sh
 knossos install-agent-plugin --execute
-claude plugin update knossos@knossos
 ```
 
-The first command rewrites `.plugin/`, the second replaces the cached copy.
-Restart Claude Code to apply it.
+The change takes effect at the next session start, or at once with
+`/reload-plugins`.
 
-Within one version, `claude plugin update` finds nothing to do. To pick up a
-change you made without a release (a hook script, the skill, the mod), force a
-fresh copy:
+If `claude plugin list --json` shows no `readFromFolder` for `knossos@knossos`,
+your Claude Code runs the copy in its plugin cache instead, cached by the
+version in the manifest (the install writes the running CLI's version there).
+Then a new release needs `claude plugin update knossos@knossos` and a restart,
+and a change within one version needs a fresh copy:
 
 ```sh
 claude plugin uninstall knossos@knossos --scope user

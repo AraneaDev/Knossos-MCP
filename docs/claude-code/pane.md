@@ -379,9 +379,10 @@ Issues gathers what needs fixing, one card each:
   reach. See [dead-code candidates](../concepts/dead-code-candidates.md).
 - **Complexity hotspots**: files ranked by their lines times their dependent
   files, with a bar of that product beside the two figures.
-- **Maintainability budget**: files with a PHP function longer than the
+- **Over budget**: files with a PHP function longer than the
   `max_php_function_lines` budget in `maintainability-budgets.json`, with how
-  many functions are over and the longest. It reads `✓ 0` when none is, and
+  many functions are over and the longest. Its note names the rule
+  (`functions over 205 lines` in this repository) and reads `✓ 0` when no file breaks it, and
   `no maintainability-budgets.json` without the file.
 
 A card with nothing to list is one line (`── ! Policy violations ──── ✓ 0 ──`).
@@ -757,8 +758,9 @@ scan it finishes reloads the pane.
   allowed root, and never creates a database.
 - **Stopping.** The watcher ends with the session and with a reload of the
   mod, and stops itself once the process that started it is gone. One that
-  ends on its own is started again after 30 seconds, at most three times. A
-  container install offers no watcher.
+  ends on its own is started again after 30 seconds, then 60, then 90. After
+  three restarts in a row it stays off; the count starts over once a watcher
+  comes up and leads or follows. A container install offers no watcher.
 - **Stuck scans.** Each scan may run five minutes. Past that it is stopped,
   and killed three seconds later. A follower reports the leader as stuck when
   its heartbeat is more than a minute old.
@@ -821,6 +823,9 @@ of the trend query does. None of them ever creates a database.
 Every other failure is silent by design. The band keeps its last figures with
 their real age, and a timeout or an empty answer is asked again at the next
 turn that edited files.
+
+Paths are compared after symbolic links are resolved, so a checkout you open
+through a linked directory is still recognised as the project.
 
 Each call through the wrapper is bounded: 60 seconds for `turn-brief` and the
 rescan, 30 for `dashboard` and `branch-diff`, and 15 for the rest. The watcher

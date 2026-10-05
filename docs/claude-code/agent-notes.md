@@ -5,12 +5,12 @@ help, so it keeps to the architecture while it works. There are four notes,
 each one short and said once, and one tool the model can call itself,
 `knossos_context`.
 
-| note                           | fires                                                 | arrives                                 |
-| ------------------------------ | ----------------------------------------------------- | --------------------------------------- |
-| [Read](#the-read-note)         | after a Read of a heavily depended-on or policed file | after the file's contents               |
-| [edit](#the-edit-note)         | after an edit of such a file the Read note missed     | after the edit's result, and as a toast |
-| [turn end](#the-turn-end-note) | after a turn that edited files, once it is scanned    | as a message before the next step       |
-| [commit](#the-commit-note)     | after a Bash call that made a commit                  | after the command's output              |
+| note                           | fires                                                                     | arrives                                 |
+| ------------------------------ | ------------------------------------------------------------------------- | --------------------------------------- |
+| [Read](#the-read-note)         | after a Read of a heavily depended-on or policed file                     | after the file's contents               |
+| [edit](#the-edit-note)         | after an edit of a file at the fan-in threshold that the Read note missed | after the edit's result, and as a toast |
+| [turn end](#the-turn-end-note) | after a turn that edited files, once it is scanned                        | as a message before the next step       |
+| [commit](#the-commit-note)     | after a Bash call that made a commit                                      | after the command's output              |
 
 No note costs a process of its own: the figures come from the last dashboard
 load and the turn's brief. `agentNotes` turns every note off, and
@@ -27,7 +27,8 @@ after the file:
 knossos: src/Query/ResultEnvelope.php (core) has 47 dependent files. Policy: core may not depend on php-worker, tests.
 ```
 
-The rules of a boundary are stated once per session. The next busy file read
+The rules of a boundary are stated once per loop: the main loop and each
+subagent get them once each. The next busy file read
 in `core` gets its count alone:
 
 ```text
@@ -68,8 +69,9 @@ a toast, even with `agentNotes` off:
 knossos: src/Router.php has 41 dependent files across 3 boundaries; run test_impact before finishing.
 ```
 
-The dependents' boundaries are counted rather than named, and `across N
-boundaries` appears only when there is more than one.
+The note counts the dependents' boundaries, and says `across N boundaries`
+only when there is more than one. Only the fan-in threshold triggers it: a
+quiet file in a policed boundary gets no edit note.
 
 ## The turn-end note
 
@@ -108,6 +110,12 @@ violation is reported once a session.
 - Only files the turn edited with Edit, Write or NotebookEdit count. A branch
   checkout, a formatter or a shell command never adds to the verdict, so
   switching branches does not hand the model a branch's worth of violations.
+- When the scan ledger cannot account for every scan since the turn began (a
+  scan that was not recorded, or one older than the ledger keeps), or an entry
+  was cut because it changed more than 2,000 files (a branch switch), the brief
+  still names the turn's files but leaves the policy unevaluated, and the note
+  has no policy part. See
+  [the scan ledger](../contribute/mod-internals.md#scan-ledger).
 - The check walks only the dependencies of the components declared in the
   edited files, so its cost follows the edit. It stops at 100 violations, at
   its edge budget, or after five seconds. When it stops early, the count is a
@@ -170,8 +178,8 @@ Up to three parts, each naming at most five items:
   cycle is named only when the graph listed every cycle it held when the
   session began; otherwise only the count that grew is said.
 
-The note speaks of the session's changes rather than the commit, since a commit
-need not hold them all. Nothing to say, no note. The same note is said once per
+The note speaks of the session's changes, since a commit need not hold them
+all. Nothing to say, no note. The same note is said once per
 loop.
 
 A commit is told by the project's HEAD. The mod reads it (`git rev-parse`)
@@ -254,6 +262,8 @@ and what to do instead:
 | no graph yet        | `knossos_context: knossos has no graph of this project yet; scan it with the knossos MCP tools first.`                                                             |
 | outside the project | `knossos_context: <path> is outside the project knossos scanned (<root>).`                                                                                         |
 | not in the graph    | `knossos_context: <path> is not in the graph (not a source file knossos scans, or not scanned yet).`                                                               |
+| not scanned         | `knossos_context: the project holding <path> has not been scanned.`                                                                                                |
+| binary gone         | `knossos_context: no knossos binary is installed.` (the binary disappeared during the session)                                                                     |
 | no answer           | `knossos_context: knossos did not answer for <path>; try again, or use the knossos MCP tools.`                                                                     |
 
 The tool reads `knossos file-context` through the wrapper when it is called,

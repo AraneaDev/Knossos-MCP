@@ -131,6 +131,57 @@ under 72,000 characters, under 10,000 nodes and under 16 deep, at every pane siz
 and surface, with the largest lists the dashboard sends. A change that pushes a
 view past the guard fails there, well before the engine's own bounds.
 
+## Scan ledger
+
+The turn brief, the Changes tab and the commit note all need to know what a
+scan changed, even when another writer scanned the edits first: the live
+watcher, the pane's rescan, another session. The `scan_ledger` table records
+that, in `src/Query/ScanLedger.php`.
+
+**Who records.** Every writer scans through `LedgeredScanner`: the turn brief,
+the pane's rescan, `knossos scan` (and so the watcher's scan processes) and the
+MCP `scan_project`. A first scan of a project, or a scan of a path that is not
+exactly a project's root, is passed through unrecorded, since there is no
+earlier graph of it to describe.
+
+**The write lease.** The scanner takes the project's write lease before it
+reads the graph, and holds it through the scan until the entry is recorded. No
+other writer can scan between the read of the snapshot a scan starts from and
+the scan, so each entry's starting snapshot is the one it really started from.
+
+**An entry** keeps the snapshot it started from, the one it produced, each
+changed file's content hash before it, and, for up to 20 changed files
+(`LedgeredScanner::MAX_CHECKED`), the policy violations each held before it.
+Read in order from a turn's starting snapshot, the first entry that changed a
+file says what that file was before the turn. That keeps the brief's changed,
+added and deleted files and its before-and-after policy check the turn's own,
+whoever scanned the edits.
+
+**Merged spans.** A watcher records a scan for every save, so the ledger keeps
+200 entries per project (`ScanLedger::KEPT`). Past that, the oldest are merged
+into one span, leaving 150 (`COMPACTED`). A span (`ScanLedgerSpan`) keeps:
+
+- where its first scan started and its last ended;
+- each file's hash before its first change, and the newest 20 scans that
+  changed it (`SCANS_PER_FILE`, the same 20 `SessionChangesService` names per
+  file);
+- a short key for each of up to 5,000 of its scans (`MAX_POINTS`), the newest,
+  so a session that began among them is still found.
+
+A span keeps no policy baselines. The merge runs in the same transaction as the
+recording that sets it off, under that writer's lease.
+
+**The 2,000-file cut.** An entry or a span that changed more than 2,000 files
+(`ScanLedger::MAX_FILES`), such as a branch switch, keeps no paths, only that
+it was cut. No chain passes through it.
+
+**When the policy goes unevaluated.** When the ledger cannot account for every
+scan since the turn began (one was not recorded, or is older than a span's
+5,000 keys reach), or the chain passes a cut entry, the turn brief still names
+the files but reports the policy as `not_evaluated` rather than guess. The
+model's note then has no policy part (see
+[notes for the model](../claude-code/agent-notes.md#how-the-policy-part-is-worked-out)).
+
 ## The tests
 
 Three layers cover the mod, each catching what the others cannot.

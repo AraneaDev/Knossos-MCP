@@ -79,8 +79,11 @@ are active, so appending a root that is already allowed widens nothing.
 ## What follows the verdict
 
 **The identity line**: `Knossos {project_id} ({name})`. When the path you
-started in resolved to an ancestor project, it says so:
-`…, rooted at {root}. {path} lies inside it and is not a scanned project of its own.`
+started in resolved to an ancestor project, it says so, in one of two forms:
+
+- `…, rooted at {root}. {path} lies inside it and is not a scanned project of its own.`
+- `…, rooted at {root}. {path} does not exist; this describes the project it would lie inside.`
+
 That matters for a repository nested inside a scanned one: everything below the
 line describes the ancestor.
 
@@ -134,8 +137,8 @@ state:
 | `fresh`                          | 1200 characters |
 
 A section is kept only while the running total, pointer included, still fits.
-One that does not fit is dropped whole, never cut mid-list, since a cut list
-reads as a complete one.
+One that does not fit is dropped whole, since a cut list reads as a complete
+one.
 
 The verdict, the identity line and the pointer are always printed, even past
 the budget. A long path can therefore push the brief over its budget. That is

@@ -4,9 +4,9 @@
  * arrow labelled with its kind and the file and line it is written at.
  *
  * Pure. A head card says which two were picked and how the search went (in
- * the warning colour when only the other way had a route); the chosen
- * route is the diagram; the other routes found are listed under it, each a
- * press that draws it instead. Every box is a row the marker walks and `o`
+ * the warning colour when only the other way had a route); every route
+ * found is listed under it, each a press that draws it instead; the chosen
+ * route is the diagram below that list. Every box is a row the marker walks and `o`
  * opens as its detail.
  */
 import type { PathBetween, RouteState } from '../../types'
