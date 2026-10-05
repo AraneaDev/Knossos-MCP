@@ -12,13 +12,17 @@
  * each step with the frame count reached, for timing the GIF.
  */
 import { execFile } from "node:child_process";
+import { constants } from "node:fs";
 import {
     copyFile,
     cp,
+    lstat,
     mkdir,
     mkdtemp,
     readdir,
     readFile,
+    readlink,
+    realpath,
     rm,
     writeFile,
 } from "node:fs/promises";
@@ -86,7 +90,7 @@ export const WORKTREE_NAME = "knossos";
  */
 export async function throwawayWorktree(
     repo,
-    { home, name = WORKTREE_NAME, runGit = git },
+    { home, name = WORKTREE_NAME, runGit = git, copy = cp },
 ) {
     const dir = path.join(home, name);
     registerCleanup(async () => {
@@ -98,34 +102,78 @@ export async function throwawayWorktree(
     });
     await mkdir(home, { recursive: true });
     await runGit(repo, "worktree", "add", "--detach", dir, "HEAD");
-    await copyInstalledPackages(repo, dir, runGit);
+    await copyInstalledPackages(repo, dir, runGit, copy);
     return dir;
 }
 
 /**
- * Copies each `node_modules` the checkout has installed into the worktree, at
- * the same place. A scan types a call into a package from that package's
- * declarations, so without them the stills would show a graph the checkout's
- * own scan does not have. A copy, not a link: a scan reads nothing outside
- * the root it was given, and a shot's edit must never reach the checkout.
+ * Copies each `node_modules` the checkout has, tracked by git or not, into
+ * the worktree at the same place. A scan types a call into a package from
+ * that package's declarations, so without them the stills would show a graph
+ * the checkout's own scan does not have. A copy, not a link: a scan reads
+ * nothing outside the root it was given, and a shot's edit must never reach
+ * the checkout. For the same reason a link inside the packages is copied only
+ * when it is relative and lands inside the checkout, so its copy lands inside
+ * the worktree; an absolute link (`npm link`) or one that climbs out is left
+ * behind.
  */
-async function copyInstalledPackages(repo, dir, runGit) {
-    const ignored = await runGit(
+async function copyInstalledPackages(repo, dir, runGit, copy) {
+    // Every untracked path, ignored or not, with each untracked directory
+    // listed once rather than file by file.
+    const untracked = await runGit(
         repo,
         "ls-files",
+        "-z",
         "--others",
-        "--ignored",
-        "--exclude-standard",
         "--directory",
     );
-    for (const entry of ignored.split("\n")) {
-        const relative = entry.replace(/\/$/, "");
-        if (path.basename(relative) !== "node_modules") continue;
-        await cp(path.join(repo, relative), path.join(dir, relative), {
+    const packages = [];
+    for (const entry of untracked.split("\0")) {
+        if (!entry.endsWith("/")) continue;
+        packages.push(...(await packageDirectories(repo, entry.slice(0, -1))));
+    }
+    const top = await realpath(repo);
+    for (const relative of packages)
+        await copy(path.join(repo, relative), path.join(dir, relative), {
             recursive: true,
             verbatimSymlinks: true,
+            mode: constants.COPYFILE_FICLONE,
+            filter: (source) => staysInside(source, top),
         });
-    }
+}
+
+/** The `node_modules` directories at or under `relative`, not inside one another. */
+async function packageDirectories(repo, relative) {
+    if (path.basename(relative) === "node_modules") return [relative];
+    const entries = await readdir(path.join(repo, relative), {
+        withFileTypes: true,
+    }).catch(() => []);
+    const found = [];
+    for (const entry of entries)
+        if (entry.isDirectory() && entry.name !== ".git")
+            found.push(
+                ...(await packageDirectories(
+                    repo,
+                    path.join(relative, entry.name),
+                )),
+            );
+    return found;
+}
+
+/** Anything but a link, or a relative link whose target lies inside `top`. */
+async function staysInside(source, top) {
+    const stats = await lstat(source);
+    if (!stats.isSymbolicLink()) return true;
+    const target = await readlink(source);
+    if (path.isAbsolute(target)) return false;
+    const resolved = path.resolve(await realpath(path.dirname(source)), target);
+    const inside = path.relative(top, resolved);
+    return (
+        inside !== "" &&
+        inside !== ".." &&
+        !inside.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(inside)
+    );
 }
 
 /** The branch origin's HEAD names (`origin/main` gives `main`), or main when there is none. */

@@ -1,12 +1,15 @@
 import { execFile } from "node:child_process";
 import {
+    cp,
     lstat,
     mkdir,
     mkdtemp,
     readdir,
     readFile,
+    readlink,
     rm,
     stat,
+    symlink,
     writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -251,6 +254,67 @@ const AUTHOR = {
     GIT_COMMITTER_EMAIL: "12177132+AraneaDev@users.noreply.github.com",
 };
 
+/**
+ * A checkout with installed packages in every place git can hold them, a
+ * relative `.bin` link, an absolute link and a relative link out of it.
+ */
+async function packagesFixture() {
+    const root = await mkdtemp(path.join(os.tmpdir(), "tree-"));
+    const repo = path.join(root, "Repo");
+    const outside = path.join(root, "outside");
+    const env = { ...process.env, ...AUTHOR };
+    const files = {
+        ".gitignore": "/node_modules/\n/out/\n",
+        "a.txt": "a",
+        "node_modules/@types/node/index.d.ts": "export {}\n",
+        "node_modules/pkg/bin.js": "bin\n",
+        "my worker/node_modules/pkg/index.js": "1\n",
+        "out/nested/node_modules/x/index.js": "x\n",
+        "out/shot.png": "png",
+    };
+    for (const [relative, contents] of Object.entries(files)) {
+        await mkdir(path.dirname(path.join(repo, relative)), {
+            recursive: true,
+        });
+        await writeFile(path.join(repo, relative), contents);
+    }
+    await mkdir(outside);
+    await writeFile(path.join(outside, "index.js"), "outside\n");
+    await mkdir(path.join(repo, "node_modules", ".bin"));
+    await symlink("../pkg/bin.js", path.join(repo, "node_modules/.bin/tool"));
+    await symlink(outside, path.join(repo, "node_modules/linked"));
+    await symlink("../../outside", path.join(repo, "node_modules/escape"));
+    await run("git", ["init", "-q", repo], { env });
+    await run("git", ["-C", repo, "add", ".gitignore", "a.txt"], { env });
+    await run("git", ["-C", repo, "commit", "-qm", "a"], { env });
+    return { root, repo, outside };
+}
+
+/** Everything the fixture installed is still there, links included. */
+async function expectOriginals(repo, outside) {
+    expect(await readFile(path.join(outside, "index.js"), "utf8")).toBe(
+        "outside\n",
+    );
+    expect(
+        await readFile(
+            path.join(repo, "node_modules/@types/node/index.d.ts"),
+            "utf8",
+        ),
+    ).toBe("export {}\n");
+    expect(
+        await readFile(
+            path.join(repo, "my worker/node_modules/pkg/index.js"),
+            "utf8",
+        ),
+    ).toBe("1\n");
+    expect(await readlink(path.join(repo, "node_modules/.bin/tool"))).toBe(
+        "../pkg/bin.js",
+    );
+    expect(await readlink(path.join(repo, "node_modules/linked"))).toBe(
+        outside,
+    );
+}
+
 describe("throwawayWorktree", () => {
     it("adds a detached worktree, and removes it when the work after it throws", async () => {
         const root = await mkdtemp(path.join(os.tmpdir(), "tree-"));
@@ -295,73 +359,109 @@ describe("throwawayWorktree", () => {
     // declarations. A worktree has none, so an object literal handed to a
     // Node API (`registerHooks({ resolve() {} })`) lost its contract and its
     // methods read as dead code the checkout's own graph does not report.
-    it("carries the checkout's installed packages, and nothing else it ignores", async () => {
-        const root = await mkdtemp(path.join(os.tmpdir(), "tree-"));
-        const repo = path.join(root, "Repo");
-        const env = { ...process.env, ...AUTHOR };
-        await mkdir(path.join(repo, "worker", "node_modules", "pkg"), {
-            recursive: true,
-        });
-        await mkdir(path.join(repo, "node_modules", "@types", "node"), {
-            recursive: true,
-        });
-        await mkdir(path.join(repo, "out"));
-        await run("git", ["init", "-q", repo], { env });
-        await writeFile(
-            path.join(repo, ".gitignore"),
-            "node_modules/\n/out/\n",
-        );
-        await writeFile(path.join(repo, "a.txt"), "a");
-        await writeFile(
-            path.join(repo, "node_modules", "@types", "node", "index.d.ts"),
-            "export {}\n",
-        );
-        await writeFile(
-            path.join(repo, "worker", "node_modules", "pkg", "index.js"),
-            "1\n",
-        );
-        await writeFile(path.join(repo, "out", "shot.png"), "png");
-        await run("git", ["-C", repo, "add", ".gitignore", "a.txt"], { env });
-        await run("git", ["-C", repo, "commit", "-qm", "a"], { env });
+    it("carries every installed node_modules, and no link that leaves the checkout", async () => {
+        const { root, repo, outside } = await packagesFixture();
         try {
             const dir = await throwawayWorktree(repo, {
                 home: path.join(root, "home"),
             });
+            const inTree = (relative) => path.join(dir, relative);
+            // Ignored at the root, untracked and not ignored, inside an
+            // ignored dir, and under a name with a space in it.
             expect(
                 await readFile(
-                    path.join(dir, "node_modules/@types/node/index.d.ts"),
+                    inTree("node_modules/@types/node/index.d.ts"),
                     "utf8",
                 ),
             ).toBe("export {}\n");
             expect(
                 await readFile(
-                    path.join(dir, "worker/node_modules/pkg/index.js"),
+                    inTree("my worker/node_modules/pkg/index.js"),
                     "utf8",
                 ),
             ).toBe("1\n");
-            // A real directory, not a link out of the worktree: a scan reads
-            // nothing outside the root it was given.
             expect(
-                (await lstat(path.join(dir, "node_modules"))).isSymbolicLink(),
-            ).toBe(false);
-            await expect(stat(path.join(dir, "out"))).rejects.toThrow(/ENOENT/);
-            // Removing the worktree removes its copy, never the checkout's packages.
+                await readFile(
+                    inTree("out/nested/node_modules/x/index.js"),
+                    "utf8",
+                ),
+            ).toBe("x\n");
+            await expect(stat(inTree("out/shot.png"))).rejects.toThrow(
+                /ENOENT/,
+            );
+            // A real directory: a scan reads nothing outside its root.
+            expect((await lstat(inTree("node_modules"))).isSymbolicLink()).toBe(
+                false,
+            );
+            // A relative link inside the tree stays a link to the copy.
+            expect(await readlink(inTree("node_modules/.bin/tool"))).toBe(
+                "../pkg/bin.js",
+            );
+            expect(
+                await readFile(inTree("node_modules/.bin/tool"), "utf8"),
+            ).toBe("bin\n");
+            // An absolute link, or a relative one out of the checkout, would
+            // let a scan or an edit reach outside the worktree.
+            await expect(lstat(inTree("node_modules/linked"))).rejects.toThrow(
+                /ENOENT/,
+            );
+            await expect(lstat(inTree("node_modules/escape"))).rejects.toThrow(
+                /ENOENT/,
+            );
             await runCleanups();
             await expect(stat(dir)).rejects.toThrow(/ENOENT/);
-            expect(
-                await readFile(
-                    path.join(repo, "node_modules/@types/node/index.d.ts"),
-                    "utf8",
-                ),
-            ).toBe("export {}\n");
-            expect(
-                await readFile(
-                    path.join(repo, "worker/node_modules/pkg/index.js"),
-                    "utf8",
-                ),
-            ).toBe("1\n");
+            await expectOriginals(repo, outside);
         } finally {
             await runCleanups();
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+    it("removes a link in the worktree, never what it points at", async () => {
+        const { root, repo, outside } = await packagesFixture();
+        try {
+            const dir = await throwawayWorktree(repo, {
+                home: path.join(root, "home"),
+            });
+            await symlink(
+                path.join(repo, "node_modules"),
+                path.join(dir, "back"),
+            );
+            await symlink(outside, path.join(dir, "node_modules", "planted"));
+            await runCleanups();
+            await expect(stat(dir)).rejects.toThrow(/ENOENT/);
+            await expectOriginals(repo, outside);
+        } finally {
+            await runCleanups();
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+    it("removes the worktree and leaves the originals when a copy fails halfway", async () => {
+        const { root, repo, outside } = await packagesFixture();
+        let copies = 0;
+        const copy = async (from, to, options) => {
+            copies += 1;
+            if (copies === 2) throw new Error("disk full");
+            await cp(from, to, options);
+        };
+        try {
+            let dir = null;
+            await expect(
+                (async () => {
+                    try {
+                        await throwawayWorktree(repo, {
+                            home: path.join(root, "home"),
+                            copy,
+                        });
+                    } finally {
+                        dir = path.join(root, "home", "knossos");
+                        await runCleanups();
+                    }
+                })(),
+            ).rejects.toThrow(/disk full/);
+            expect(copies).toBe(2);
+            await expect(stat(dir)).rejects.toThrow(/ENOENT/);
+            await expectOriginals(repo, outside);
+        } finally {
             await rm(root, { recursive: true, force: true });
         }
     });
