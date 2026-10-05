@@ -45,7 +45,7 @@ because they differ per language and the byte budget can differ per scan:
 
 The default is 400 files and 4 MB per request. TypeScript uses a much larger
 file cap (2,000), because it rebuilds and re-checks a whole `ts.Program` on every
-request (a cost set by the program, whatever the files the request named), so
+request (a cost set by the program, however many files the request named), so
 splitting its work repeats the expensive part. Its byte budget is 3 MB, and so is
 Rust's.
 
@@ -92,7 +92,7 @@ worker leaves a usable PHP and Python graph.
 - Every failure is repeated in the envelope's `warnings` as `CODE: message`, so
   a caller reading only the warnings still learns the answer is incomplete.
 - Cancellation is not a degradation. `KNOSSOS_SCAN_CANCELLED` still aborts the
-  entire scan, because stopping is the caller's decision and no fault.
+  entire scan, because the caller chose to stop, which is no fault of the scan.
 - A tree that changes mid-scan is not a degradation either. Discovery hashes
   every file and the language workers read those same paths again for
   themselves, so a write landing between the two reads leaves graph facts that

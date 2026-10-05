@@ -26,20 +26,20 @@ docker run --rm -i \
   knossos:dev scan /workspace --json
 ```
 
-The eventual `scan_project` path inside the container is `/workspace`, not the
-host path. `--network none` is recommended because scanning is local and never
+The eventual `scan_project` path inside the container is `/workspace`. The host path
+means nothing there. `--network none` is recommended because scanning is local and never
 needs dependency installation or network access.
 
 An agent cannot infer that mapping, so ask the server: `server_info` reports the
 roots it can actually reach and sets `containerised: true`, and a rejected path
-says so explicitly rather than leaving the host path looking merely wrong. A
+says so explicitly, so the host path does not just look wrong. A
 root that was configured on the host and is not mounted shows up under
 `unreachable_roots` instead of failing only when a scan is attempted.
 
 The roots file is read from inside the container, so it belongs on the `/data`
 volume (`/data/roots.json`) and must name container paths. Adding a project
-still means adding a mount, which is a `docker run` change: the file removes
-the restart, not the mount.
+still means adding a mount, which is a `docker run` change: the file saves
+the restart and leaves the mount to you.
 
 An MCP client can use `docker` as its server command and pass the `run` arguments
 above. The `-i` flag is required for MCP standard-input/output transport. Avoid
@@ -64,7 +64,7 @@ volume.
 Compose interpolates the entire file before applying `--profile` filtering, so
 `KNOSSOS_HTTP_BEARER_TOKEN` must resolve for every compose command, even ones
 that never touch the `http` profile. Compose loads `.env` automatically, so the
-smallest fix is to add only that variable. Use `>>` (append), not `>`, so an
+smallest fix is to add only that variable. Use `>>` (append) so an
 existing `.env` is not truncated:
 
 ```sh
@@ -145,8 +145,8 @@ docker run --rm \
   `knossos:dev`).
 
 The emitted hook script mounts the project directory at the **same path**
-inside the container as outside it, rather than at a fixed internal path such
-as `/workspace`. That is not cosmetic. Projects are keyed by
+inside the container as outside it, and never at a fixed internal path such
+as `/workspace`. The reason is practical. Projects are keyed by
 `root_realpath`, the resolved filesystem path recorded at scan time. A
 session that starts in `/home/me/project` but is scanned inside the
 container as `/workspace` would record `/workspace` as the root; the next

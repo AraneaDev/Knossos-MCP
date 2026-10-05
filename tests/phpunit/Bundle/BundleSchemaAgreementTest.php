@@ -61,6 +61,10 @@ final class BundleSchemaAgreementTest extends KnossosTestCase
             $pdo = SqliteConnection::open($database);
             (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
             $scan = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, 'Schema Source');
+            // The fixture scans clean, and a table with no rows proves nothing about its columns.
+            $scanId = (string) $pdo->query('SELECT active_scan_id FROM projects WHERE id = ' . $pdo->quote($scan->projectId))->fetchColumn();
+            $pdo->prepare('INSERT INTO diagnostics(id, project_id, scan_id, file_id, severity, code, message, start_line, end_line, owner_key) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)')
+                ->execute(['diag-schema', $scan->projectId, $scanId, 'warning', 'SCHEMA_PROBE', 'A diagnostic for the schema test.', 3, 4, 'owner:probe']);
             $bundle = json_decode((string) gzdecode((new GraphBundleService($pdo))->export($scan->projectId)), true, 128, JSON_THROW_ON_ERROR);
         } finally {
             @unlink($database);
@@ -70,7 +74,7 @@ final class BundleSchemaAgreementTest extends KnossosTestCase
         $this->assertSameKeys($schema['properties']['manifest']['properties'], $bundle['manifest'], 'manifest');
         $this->assertSameKeys($schema['properties']['payload']['properties'], $bundle['payload'], 'payload');
         $this->assertSameKeys($schema['properties']['payload']['properties']['scan']['properties'], $bundle['payload']['scan'], 'scan');
-        $checked = 0;
+        $checked = [];
         foreach ($schema['properties']['payload']['properties'] as $table => $declared) {
             if (($declared['type'] ?? null) !== 'array') {
                 continue;
@@ -81,10 +85,14 @@ final class BundleSchemaAgreementTest extends KnossosTestCase
                     $types = (array) $declared['items']['properties'][$column]['type'];
                     assertSame(true, in_array(self::jsonType($value), $types, true), $table . '.' . $column . ' is ' . self::jsonType($value) . ', the schema allows ' . implode('|', $types));
                 }
-                ++$checked;
+                $checked[$table] = ($checked[$table] ?? 0) + 1;
             }
         }
-        assertSame(true, $checked > 0);
+        $tables = array_keys(array_filter($schema['properties']['payload']['properties'], static fn(array $declared): bool => ($declared['type'] ?? null) === 'array'));
+        sort($tables);
+        $exercised = array_keys($checked);
+        sort($exercised);
+        assertSame($tables, $exercised, 'Every table must have at least one row checked; one with none passes without proving its columns.');
     }
 
     /**
