@@ -169,13 +169,22 @@ final class DocumentationTest extends KnossosTestCase
     /**
      * Run the link checker against a throwaway tree.
      *
+     * Every documentation root the checker reads is made, empty, unless `$without`
+     * names it, since a missing root is itself a failure.
+     *
      * @param array<string, string> $files path relative to the tree => contents
+     * @param list<string> $without documentation roots to leave out of the tree
      * @return array{0: int, 1: string, 2: string}
      */
-    private function checkDocumentationTree(array $files): array
+    private function checkDocumentationTree(array $files, array $without = []): array
     {
         $tree = sys_get_temp_dir() . '/knossos-doc-check-' . bin2hex(random_bytes(6));
         try {
+            foreach (array_diff(['docs', 'skills', 'plugins'], $without) as $directory) {
+                if (!is_dir($tree . '/' . $directory) && !mkdir($tree . '/' . $directory, 0o777, true) && !is_dir($tree . '/' . $directory)) {
+                    throw new RuntimeException('Unable to create ' . $tree . '/' . $directory);
+                }
+            }
             foreach ($files as $relative => $contents) {
                 $path = $tree . '/' . $relative;
                 if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0o777, true) && !is_dir(dirname($path))) {
@@ -270,6 +279,22 @@ final class DocumentationTest extends KnossosTestCase
 
             assertSame(1, $exit, $file);
             assertContains($file . ': missing link target docs/gone.md', $errors);
+        }
+    }
+
+    /**
+     * A documentation root the tree lacks fails the check by name. Skipping it
+     * quietly let CI pass with plugins/ never checked, because the quality image
+     * did not copy it.
+     */
+    #[Group('documentation')]
+    public function testLinkCheckFailsOnAMissingDocumentationRoot(): void
+    {
+        foreach (['docs', 'skills', 'plugins'] as $root) {
+            [$exit, , $errors] = $this->checkDocumentationTree(['README.md' => "# Home\n"], [$root]);
+
+            assertSame(1, $exit, $root);
+            assertContains('missing documentation root ' . $root . '/', $errors);
         }
     }
 

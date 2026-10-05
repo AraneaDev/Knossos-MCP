@@ -287,6 +287,7 @@ COPY knossos.json ./
 COPY Dockerfile ./
 COPY docker-compose.yml .env.example ./
 COPY docs ./docs
+COPY plugins ./plugins
 COPY benchmarks ./benchmarks
 COPY tests ./tests
 COPY workers/python/tests ./workers/python/tests

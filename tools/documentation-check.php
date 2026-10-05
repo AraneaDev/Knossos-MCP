@@ -27,14 +27,22 @@ $checkExternal = in_array('--external', $argv, true);
  * link syntax around it is still checked.
  */
 const UNFETCHED_HOSTS = ['img.shields.io', 'mcpobservatory.com'];
-$paths = array_merge(
-    array_values(array_filter([$root . '/README.md', $root . '/CONTRIBUTING.md'], 'is_file')),
-    documentationFiles($root, 'docs'),
-    documentationFiles($root, 'skills'),
-    documentationFiles($root, 'plugins'),
-);
-$headingSlugs = [];
+/**
+ * The directories whose Markdown is checked. Each must exist: a root missing
+ * from the tree fails the check by name, so an image that leaves one out (the
+ * quality image once left out plugins/) cannot pass without checking it.
+ */
+const DOCUMENTATION_ROOTS = ['docs', 'skills', 'plugins'];
 $failures = [];
+$paths = array_values(array_filter([$root . '/README.md', $root . '/CONTRIBUTING.md'], 'is_file'));
+foreach (DOCUMENTATION_ROOTS as $documentationRoot) {
+    if (!is_dir($root . '/' . $documentationRoot)) {
+        $failures[] = 'missing documentation root ' . $documentationRoot . '/';
+        continue;
+    }
+    $paths = array_merge($paths, documentationFiles($root, $documentationRoot));
+}
+$headingSlugs = [];
 $external = [];
 foreach ($paths as $path) {
     $contents = (string) file_get_contents($path);
@@ -135,9 +143,6 @@ printf(
 function documentationFiles(string $root, string $directory): array
 {
     $directory = $root . '/' . $directory;
-    if (!is_dir($directory)) {
-        return [];
-    }
     $files = [];
     $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, FilesystemIterator::SKIP_DOTS));
     foreach ($iterator as $file) {
