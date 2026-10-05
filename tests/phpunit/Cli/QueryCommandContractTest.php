@@ -131,6 +131,15 @@ final class QueryCommandContractTest extends KnossosTestCase
         );
     }
 
+    /** The help and the MCP tool both offer a ranking mode; the CLI must accept it (the service validates the value, as for the tool). */
+    #[Group('cli')]
+    public function testSuggestLocationAcceptsARankingMode(): void
+    {
+        assertSame(true, in_array('ranking-mode', (new QueryCommand())->allowedOptions('suggest-location'), true));
+        // The mode reaches the service, which looks the project up before it answers.
+        assertSame('Project not found: project', self::errorFrom('suggest-location', ['project', 'add a payment gateway'], ['ranking-mode' => ['semantic_if_available']]));
+    }
+
     /** Write a JSON value to a temporary file and return its path. */
     private static function temporaryJson(mixed $value): string
     {

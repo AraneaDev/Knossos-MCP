@@ -599,6 +599,27 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     #[Group('php-scanner')]
+    public function testPhpWorkerRegistersLaravelViewAndRedirectShortcutsWithTheirRealVerbs(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/laravel-resource',
+            'files' => ['routes/shortcuts.php'],
+            'frameworks' => ['laravel'],
+        ]));
+        $client->shutdown();
+        $routes = [];
+        foreach ($contributions[0]->nodes as $node) {
+            if ($node->kind === 'route') {
+                $routes[] = $node->displayName;
+            }
+        }
+        sort($routes);
+
+        assertSame(['ANY /here', 'ANY /old', 'GET|HEAD /welcome'], $routes);
+    }
+
+    #[Group('php-scanner')]
     public function testPhpWorkerExtractsLaravelContainerAndProviderFacts(): void
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/laravel';

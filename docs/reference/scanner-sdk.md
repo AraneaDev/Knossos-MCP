@@ -16,7 +16,7 @@ dependency graph remain independent from Knossos core.
   and contributions for PHP extension tests.
 - [`golden.json`](../../tests/Fixtures/scanner-sdk/golden.json) records lifecycle,
   required fields, notification name, and stable incompatibility errors.
-- `tools/scanner-conformance` runs `initialize` with capability negotiation, an empty scan, a one-file fixture scan whose contribution it validates (including the `content_hash` and `input_hashes` checks for the capabilities you declare), and `shutdown`.
+- `tools/scanner-conformance` runs `initialize` with capability negotiation, an empty scan, and `shutdown`. A worker that declares `content_hash` or `input_hashes` also gets a one-file fixture scan, whose contribution and hashes it checks.
 
 Run a worker conformance check with an argument-safe command after `--`:
 

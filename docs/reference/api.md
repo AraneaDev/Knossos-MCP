@@ -1,6 +1,6 @@
 # Language API reference
 
-This file is generated from enforced PHP interface docblocks and the isolated TypeScript and Python worker surfaces.
+This file is generated from enforced PHP interface docblocks and the isolated PHP, TypeScript, Python and Rust worker surfaces.
 
 ## PHP extension interfaces
 
@@ -80,6 +80,10 @@ This file is generated from enforced PHP interface docblocks and the isolated Ty
 | --- | --- | --- |
 | TypeScript | `TypeScriptScanner.scan` | Stream deterministic owned contributions for the requested source files |
 | TypeScript | `discoverConfigFiles` | Return sorted project-relative tsconfig paths below a validated root |
+| PHP | `WorkerServer.run` | The protocol loop: read a request, dispatch it, write the reply |
+| PHP | `PhpScanner.scan` | Parse the requested files and return their contributions and diagnostics |
+| Rust | `server::run` | Read requests until stdin ends or `shutdown` arrives, writing replies to `output` |
+| Rust | `server::handle` | Dispatch one request, returning its `result` value or an error message |
 | Python | `PythonAstFactCollector` | Coordinate one AST traversal and delegate fact enrichment |
 | Python | `scan` | Parse a bounded file set and emit one owned contribution per input |
 | Python | `handle` | Validate and dispatch one NDJSON JSON-RPC worker request |
