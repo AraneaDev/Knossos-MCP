@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/AraneaDev/knossos/compare/v0.17.5...v0.18.0) (2026-10-05)
+
+
+### Features
+
+* put the graph on screen in Claude Code, rename the project to Knossos, and rewrite the docs ([#135](https://github.com/AraneaDev/knossos/issues/135)) ([d0f7fb2](https://github.com/AraneaDev/knossos/commit/d0f7fb226201378c759f10c9664154c36159b4b2))
+
 ## [0.17.5](https://github.com/AraneaDev/Knossos-MCP/compare/v0.17.4...v0.17.5) (2026-09-24)
 
 
