@@ -235,121 +235,120 @@ describe("the executable module attribute", () => {
 // URL or path with the script node was started on. Without a shebang that
 // comparison is the only sign the file is entered by a shell, and a module that
 // carried neither was reported as reached only by its tests.
-describe("the ES-module main guard", () => {
-    const guarded = {
-        "src/url.mjs":
-            'import { pathToFileURL } from "node:url";\nexport function run() {}\nif (import.meta.url === pathToFileURL(process.argv[1]).href) run();\n',
-        "src/url-reversed.mjs":
-            'import { pathToFileURL } from "node:url";\nexport function run() {}\nif (pathToFileURL(process.argv[1]).href == import.meta.url) {\n    run();\n}\n',
-        "src/path.mjs":
-            'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/path-reversed.mjs":
-            'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (process.argv[1] === fileURLToPath(import.meta.url)) run();\n',
-        "src/realpath-url.mjs":
-            'import { realpathSync } from "node:fs";\nimport { pathToFileURL } from "node:url";\nexport function run() {}\nif (import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) run();\n',
-        "src/realpath-path.mjs":
-            'import fs from "node:fs";\nimport url from "node:url";\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === fs.realpathSync(process.argv[1])) run();\n',
-        "src/meta-main.mjs":
-            "export function run() {}\nif (import.meta.main) run();\n",
-        // The conversions are bound by import, under any local name.
-        "src/aliased.mjs":
-            'import { fileURLToPath as toPath } from "url";\nexport function run() {}\nif (toPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/namespace.mjs":
-            'import * as nodeUrl from "node:url";\nimport * as nodeFs from "fs";\nexport function run() {}\nif (nodeUrl.pathToFileURL(nodeFs.realpathSync(process.argv[1])).href === import.meta.url) run();\n',
-        // `process` imported from its own module is the global under a binding.
-        "src/process-import.mjs":
-            'import process from "node:process";\nimport { fileURLToPath } from "node:url";\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/main.cjs":
-            "function run() {}\nif (require.main === module) run();\n",
-        // Assigning `module.exports` or `exports.x` gives the file a binder
-        // symbol for `module`; that is still CommonJS's own `module`.
-        "src/exports-module.cjs":
-            "module.exports = {};\nfunction run() {}\nif (require.main === module) run();\n",
-        "src/exports-member.cjs":
-            "exports.x = 1;\nfunction run() {}\nif (require.main === module) run();\n",
-        // A `process` declared in a scope that does not hold the guard.
-        "src/parameter.mjs":
-            'import { fileURLToPath } from "node:url";\nexport function run(process) {\n    return process;\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/catch-binding.mjs":
-            'import { fileURLToPath } from "node:url";\nexport function run() {}\ntry {\n    run();\n} catch (process) {\n    run(process);\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/nested-scope.mjs":
-            'import { fileURLToPath } from "node:url";\nexport function run() {\n    const process = { argv: [] };\n    return process;\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        // An ambient declaration describes the global; it binds nothing new.
-        "src/ambient-const.mts":
-            'import { fileURLToPath } from "node:url";\ndeclare const process: { argv: string[] };\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/ambient-namespace.mts":
-            'import { fileURLToPath } from "node:url";\ndeclare namespace process {\n    const argv: string[];\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/ambient-module.mts":
-            'import { fileURLToPath } from "node:url";\ndeclare module "x" {\n    const process: { argv: string[] };\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/ambient-require.cts":
-            "declare function require(id: string): unknown;\ndeclare class module {}\nfunction run() {}\nif (require.main === module) run();\n",
-        // The url module through `require`, whole or destructured.
-        "src/required.js":
-            'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst { fileURLToPath: toPath } = require("node:url");\nexport function run() {}\nif (toPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/required-node.js":
-            'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst url = require("node:url");\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/required-plain.js":
-            'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst { fileURLToPath } = require("url");\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/required-whole.js":
-            'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst url = require("url");\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-    };
-    const unguarded = {
-        // A URL is never equal to a path, so this guard never fires.
-        "src/mixed.mjs":
-            "export function run() {}\nif (import.meta.url === process.argv[1]) run();\n",
-        // argv[2] is the first argument, not the script.
-        "src/argument.mjs":
-            'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[2]) run();\n',
-        "src/negated.mjs":
-            'import { pathToFileURL } from "node:url";\nexport function run() {}\nif (import.meta.url !== pathToFileURL(process.argv[1]).href) run();\n',
-        "src/nested.mjs":
-            'import { pathToFileURL } from "node:url";\nexport function run() {\n    if (import.meta.url === pathToFileURL(process.argv[1]).href) return 1;\n    return 0;\n}\n',
-        "src/self.mjs":
-            "export function run() {}\nif (import.meta.url === import.meta.url) run();\n",
-        // A local `process` is not the one node fills in.
-        "src/shadowed-process.mjs":
-            'import { fileURLToPath } from "node:url";\nconst process = { argv: ["node", fileURLToPath(import.meta.url)] };\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        // A method of that name on anything but the url module.
-        "src/foreign-method.mjs":
-            'import * as foo from "./helpers.mjs";\nexport function run() {}\nif (foo.fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        "src/helpers.mjs":
-            "export function fileURLToPath(url) {\n    return url;\n}\n",
-        // The project's own function of that name.
-        "src/own-realpath.mjs":
-            'import { fileURLToPath } from "node:url";\nfunction realpathSync(path) {\n    return path;\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) run();\n',
-        // Not imported at all: node has no global of that name.
-        "src/unbound.mjs":
-            "export function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n",
-        // A local `module` or `require` is not CommonJS's.
-        "src/shadowed-module.cjs":
-            "const module = require.main;\nfunction run() {}\nif (require.main === module) run();\n",
-        "src/shadowed-require.cjs":
-            "function require() {\n    return null;\n}\nfunction run() {}\nif (module === require.main) run();\n",
-        // A `var` in a block is hoisted to the file's scope, where the guard is.
-        "src/hoisted-var.mjs":
-            'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (run) {\n    var process = { argv: [] };\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-        // A module other than url, through `require`.
-        "src/required-other.js":
-            'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst { fileURLToPath } = require("./helpers.mjs");\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
-    };
+const GUARDED = {
+    "src/url.mjs":
+        'import { pathToFileURL } from "node:url";\nexport function run() {}\nif (import.meta.url === pathToFileURL(process.argv[1]).href) run();\n',
+    "src/url-reversed.mjs":
+        'import { pathToFileURL } from "node:url";\nexport function run() {}\nif (pathToFileURL(process.argv[1]).href == import.meta.url) {\n    run();\n}\n',
+    "src/path.mjs":
+        'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/path-reversed.mjs":
+        'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (process.argv[1] === fileURLToPath(import.meta.url)) run();\n',
+    "src/realpath-url.mjs":
+        'import { realpathSync } from "node:fs";\nimport { pathToFileURL } from "node:url";\nexport function run() {}\nif (import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) run();\n',
+    "src/realpath-path.mjs":
+        'import fs from "node:fs";\nimport url from "node:url";\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === fs.realpathSync(process.argv[1])) run();\n',
+    "src/meta-main.mjs":
+        "export function run() {}\nif (import.meta.main) run();\n",
+    // The conversions are bound by import, under any local name.
+    "src/aliased.mjs":
+        'import { fileURLToPath as toPath } from "url";\nexport function run() {}\nif (toPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/namespace.mjs":
+        'import * as nodeUrl from "node:url";\nimport * as nodeFs from "fs";\nexport function run() {}\nif (nodeUrl.pathToFileURL(nodeFs.realpathSync(process.argv[1])).href === import.meta.url) run();\n',
+    // `process` imported from its own module is the global under a binding.
+    "src/process-import.mjs":
+        'import process from "node:process";\nimport { fileURLToPath } from "node:url";\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/main.cjs": "function run() {}\nif (require.main === module) run();\n",
+    // Assigning `module.exports` or `exports.x` gives the file a binder
+    // symbol for `module`; that is still CommonJS's own `module`.
+    "src/exports-module.cjs":
+        "module.exports = {};\nfunction run() {}\nif (require.main === module) run();\n",
+    "src/exports-member.cjs":
+        "exports.x = 1;\nfunction run() {}\nif (require.main === module) run();\n",
+    // A `process` declared in a scope that does not hold the guard.
+    "src/parameter.mjs":
+        'import { fileURLToPath } from "node:url";\nexport function run(process) {\n    return process;\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/catch-binding.mjs":
+        'import { fileURLToPath } from "node:url";\nexport function run() {}\ntry {\n    run();\n} catch (process) {\n    run(process);\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/nested-scope.mjs":
+        'import { fileURLToPath } from "node:url";\nexport function run() {\n    const process = { argv: [] };\n    return process;\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    // An ambient declaration describes the global; it binds nothing new.
+    "src/ambient-const.mts":
+        'import { fileURLToPath } from "node:url";\ndeclare const process: { argv: string[] };\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/ambient-namespace.mts":
+        'import { fileURLToPath } from "node:url";\ndeclare namespace process {\n    const argv: string[];\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/ambient-module.mts":
+        'import { fileURLToPath } from "node:url";\ndeclare module "x" {\n    const process: { argv: string[] };\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/ambient-require.cts":
+        "declare function require(id: string): unknown;\ndeclare class module {}\nfunction run() {}\nif (require.main === module) run();\n",
+    // The url module through `require`, whole or destructured.
+    "src/required.js":
+        'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst { fileURLToPath: toPath } = require("node:url");\nexport function run() {}\nif (toPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/required-node.js":
+        'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst url = require("node:url");\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/required-plain.js":
+        'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst { fileURLToPath } = require("url");\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/required-whole.js":
+        'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst url = require("url");\nexport function run() {}\nif (url.fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+};
+const UNGUARDED = {
+    // A URL is never equal to a path, so this guard never fires.
+    "src/mixed.mjs":
+        "export function run() {}\nif (import.meta.url === process.argv[1]) run();\n",
+    // argv[2] is the first argument, not the script.
+    "src/argument.mjs":
+        'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[2]) run();\n',
+    "src/negated.mjs":
+        'import { pathToFileURL } from "node:url";\nexport function run() {}\nif (import.meta.url !== pathToFileURL(process.argv[1]).href) run();\n',
+    "src/nested.mjs":
+        'import { pathToFileURL } from "node:url";\nexport function run() {\n    if (import.meta.url === pathToFileURL(process.argv[1]).href) return 1;\n    return 0;\n}\n',
+    "src/self.mjs":
+        "export function run() {}\nif (import.meta.url === import.meta.url) run();\n",
+    // A local `process` is not the one node fills in.
+    "src/shadowed-process.mjs":
+        'import { fileURLToPath } from "node:url";\nconst process = { argv: ["node", fileURLToPath(import.meta.url)] };\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    // A method of that name on anything but the url module.
+    "src/foreign-method.mjs":
+        'import * as foo from "./helpers.mjs";\nexport function run() {}\nif (foo.fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/helpers.mjs":
+        "export function fileURLToPath(url) {\n    return url;\n}\n",
+    // The project's own function of that name.
+    "src/own-realpath.mjs":
+        'import { fileURLToPath } from "node:url";\nfunction realpathSync(path) {\n    return path;\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) run();\n',
+    // Not imported at all: node has no global of that name.
+    "src/unbound.mjs":
+        "export function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n",
+    // A local `module` or `require` is not CommonJS's.
+    "src/shadowed-module.cjs":
+        "const module = require.main;\nfunction run() {}\nif (require.main === module) run();\n",
+    "src/shadowed-require.cjs":
+        "function require() {\n    return null;\n}\nfunction run() {}\nif (module === require.main) run();\n",
+    // A `var` in a block is hoisted to the file's scope, where the guard is.
+    "src/hoisted-var.mjs":
+        'import { fileURLToPath } from "node:url";\nexport function run() {}\nif (run) {\n    var process = { argv: [] };\n}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    // A module other than url, through `require`.
+    "src/required-other.js":
+        'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst { fileURLToPath } = require("./helpers.mjs");\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+};
 
+describe("the ES-module main guard", () => {
     it("marks each form executable and leaves look-alikes alone", () => {
         const root = fixture({
             "package.json": '{"name":"esm-main-guard","type":"module"}',
-            ...guarded,
-            ...unguarded,
+            ...GUARDED,
+            ...UNGUARDED,
         });
         const { byOwner } = scanned(root, [
-            ...Object.keys(guarded),
-            ...Object.keys(unguarded),
+            ...Object.keys(GUARDED),
+            ...Object.keys(UNGUARDED),
         ]);
         const executableOf = (owner) =>
             byOwner.get(owner).nodes.find((node) => node.kind === "module")
                 .attributes.executable;
 
         const expected = Object.fromEntries([
-            ...Object.keys(guarded).map((owner) => [owner, true]),
-            ...Object.keys(unguarded).map((owner) => [owner, false]),
+            ...Object.keys(GUARDED).map((owner) => [owner, true]),
+            ...Object.keys(UNGUARDED).map((owner) => [owner, false]),
         ]);
         expect(
             Object.fromEntries(
