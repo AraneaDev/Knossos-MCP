@@ -2743,6 +2743,9 @@ describe('knossos mod', () => {
       expect(text).toContain('Router::unused')
       expect(text).toContain('src/Http/Router.php')
       expect((await ui.find({ key: 'pol-0' }))?.text).toMatch(/^›/)
+      // The marker walks the diagnostics after the violations, then the dead code.
+      await ui.press({ key: 'down' })
+      expect((await ui.find({ key: 'diag-0' }))?.text).toMatch(/^›/)
       await ui.press({ key: 'down' })
       expect((await ui.find({ key: 'dead-0' }))?.text).toMatch(/^›/)
       await ui.press({ key: 'tab:overview' })
