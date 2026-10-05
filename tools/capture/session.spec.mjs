@@ -13,7 +13,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
     copyData,
     exitGroup,
@@ -85,9 +85,20 @@ describe("cleanup", () => {
             seen.push("b");
             throw new Error("x");
         });
-        await runCleanups();
-        await runCleanups();
+        // The failed step is reported, and the report is this test's to check.
+        const stderr = vi
+            .spyOn(process.stderr, "write")
+            .mockImplementation(() => true);
+        let written;
+        try {
+            await runCleanups();
+            await runCleanups();
+            written = stderr.mock.calls.map(([chunk]) => String(chunk));
+        } finally {
+            stderr.mockRestore();
+        }
         expect(seen).toEqual(["b", "a"]);
+        expect(written).toEqual(["cleanup: x\n"]);
     });
 });
 
