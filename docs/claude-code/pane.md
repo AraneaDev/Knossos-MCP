@@ -370,20 +370,24 @@ cycle.
 
 ## Issues
 
-Issues gathers what needs fixing, one card each:
+![The Issues tab on this repository: no policy violations, no diagnostics, no function over the 205-line budget, one dead-code candidate, and the complexity hotspots ranked by lines times dependents](../images/claude-code/issues.png)
+
+The Issues tab on this repository, where the only finding left is one dead-code candidate.
+
+Issues gathers what needs fixing, one card each, in the order a pane this wide stacks them:
 
 - **Policy violations**: each declared policy violation, with the offending
   file and line.
 - **Diagnostics**: the scan's errors and warnings.
-- **Dead code**: the first fifty dead-code candidates. `◇` marks one only tests
-  reach. See [dead-code candidates](../concepts/dead-code-candidates.md).
-- **Complexity hotspots**: files ranked by their lines times their dependent
-  files, with a bar of that product beside the two figures.
 - **Over budget**: files with a PHP function longer than the
   `max_php_function_lines` budget in `maintainability-budgets.json`, with how
   many functions are over and the longest. Its note names the rule
   (`functions over 205 lines` in this repository) and reads `✓ 0` when no file breaks it, and
   `no maintainability-budgets.json` without the file.
+- **Dead code**: the first fifty dead-code candidates. `◇` marks one only tests
+  reach. See [dead-code candidates](../concepts/dead-code-candidates.md).
+- **Complexity hotspots**: files ranked by their lines times their dependent
+  files, with a bar of that product beside the two figures.
 
 A card with nothing to list is one line (`── ! Policy violations ──── ✓ 0 ──`).
 The tab's badge counts violations, errors and warnings. `o` on a hotspot or a
