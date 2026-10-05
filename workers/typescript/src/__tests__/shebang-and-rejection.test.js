@@ -279,6 +279,12 @@ const GUARDED = {
         'import { fileURLToPath } from "node:url";\ndeclare namespace process {\n    const argv: string[];\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
     "src/ambient-module.mts":
         'import { fileURLToPath } from "node:url";\ndeclare module "x" {\n    const process: { argv: string[] };\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/ambient-declaration-file.d.mts":
+        'import { fileURLToPath } from "node:url";\ndeclare const process: { argv: string[] };\nexport function run(): void;\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/ambient-global.mts":
+        'import { fileURLToPath } from "node:url";\ndeclare global {\n    const process: { argv: string[] };\n}\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
+    "src/ambient-exported.mts":
+        'import { fileURLToPath } from "node:url";\nexport declare const process: { argv: string[] };\nexport function run() {}\nif (fileURLToPath(import.meta.url) === process.argv[1]) run();\n',
     "src/ambient-require.cts":
         "declare function require(id: string): unknown;\ndeclare class module {}\nfunction run() {}\nif (require.main === module) run();\n",
     // The url module through `require`, whole or destructured.
