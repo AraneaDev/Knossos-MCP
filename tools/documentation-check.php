@@ -28,6 +28,12 @@ $checkExternal = in_array('--external', $argv, true);
  */
 const UNFETCHED_HOSTS = ['img.shields.io', 'mcpobservatory.com'];
 /**
+ * The longest a single URL may be waited on across its retries, in seconds, and
+ * how many retries it gets.
+ */
+const RATE_LIMIT_MAX_WAIT = 30;
+const RATE_LIMIT_MAX_RETRIES = 2;
+/**
  * The directories whose Markdown is checked. Each must exist: a root missing
  * from the tree fails the check by name, so an image that leaves one out (the
  * quality image once left out plugins/) cannot pass without checking it.
@@ -93,19 +99,23 @@ $fetched = array_values(array_filter(array_keys($external), static function (str
 
     return !in_array($host, UNFETCHED_HOSTS, true);
 }));
+$warnings = [];
 if ($checkExternal) {
     foreach ($fetched as $url) {
-        $process = proc_open(['curl', '--silent', '--show-error', '--location', '--fail', '--head', '--max-time', '20', $url], [1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']], $pipes);
-        if (!is_resource($process)) {
+        $outcome = checkExternalUrl($url);
+        if ($outcome['status'] === 'unavailable') {
             $failures[] = 'unable to start external link checker';
             break;
         }
-        $error = stream_get_contents($pipes[2]);
-        fclose($pipes[2]);
-        if (proc_close($process) !== 0) {
-            $failures[] = 'external link failed: ' . $url . ' (' . trim((string) $error) . ')';
+        if ($outcome['status'] === 'failed') {
+            $failures[] = 'external link failed: ' . $url . ' (' . $outcome['detail'] . ')';
+        } elseif ($outcome['status'] === 'rate-limited') {
+            $warnings[] = 'warning: external link rate-limited and not checked: ' . $url . ' (' . $outcome['detail'] . ')';
         }
     }
+}
+foreach ($warnings as $warning) {
+    fwrite(STDERR, $warning . PHP_EOL);
 }
 if ($failures !== []) {
     fwrite(STDERR, implode(PHP_EOL, $failures) . PHP_EOL);
@@ -228,4 +238,66 @@ function linesOutsideFences(string $contents): array
     }
 
     return $kept;
+}
+
+/**
+ * Fetch one external URL's headers and say whether the link is alive.
+ *
+ * A 429, or a 503 that sends Retry-After, means "try later", so it is retried
+ * (at most RATE_LIMIT_MAX_RETRIES times, honouring Retry-After, never waiting
+ * more than RATE_LIMIT_MAX_WAIT seconds in total). If it persists the URL is
+ * reported as `rate-limited`, which the caller warns about instead of failing:
+ * GitHub answers a shared CI runner with 429 on a page that is perfectly fine.
+ * A 404, a 410, any other 4xx/5xx, a DNS failure or a TLS failure is `failed`.
+ *
+ * The curl binary can be replaced with KNOSSOS_CURL, so tests never touch the
+ * network.
+ *
+ * @return array{status: 'ok'|'failed'|'rate-limited'|'unavailable', detail: string}
+ */
+function checkExternalUrl(string $url): array
+{
+    $curl = getenv('KNOSSOS_CURL');
+    $curl = is_string($curl) && $curl !== '' ? $curl : 'curl';
+    $waited = 0;
+    for ($attempt = 0;; ++$attempt) {
+        // No --fail: it turns every HTTP error into exit 22 and hides which one.
+        // The headers go to stdout so Retry-After is readable, the code follows.
+        $process = proc_open(
+            [$curl, '--silent', '--show-error', '--location', '--head', '--max-time', '20', '--dump-header', '-', '--output', '/dev/null', '--write-out', "\n%{http_code}", $url],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+        );
+        if (!is_resource($process)) {
+            return ['status' => 'unavailable', 'detail' => ''];
+        }
+        $stdout = (string) stream_get_contents($pipes[1]);
+        $error = trim((string) stream_get_contents($pipes[2]));
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($process);
+        $status = (int) substr(strrchr("\n" . $stdout, "\n"), 1);
+        if ($exit !== 0 || $status === 0) {
+            return ['status' => 'failed', 'detail' => $error !== '' ? $error : 'curl exit ' . $exit];
+        }
+        if ($status < 400) {
+            return ['status' => 'ok', 'detail' => ''];
+        }
+        $retryAfter = null;
+        // --location prints one header block per hop; only the last one counts.
+        $blocks = preg_split('/\r?\n\r?\n/', trim((string) substr($stdout, 0, (int) strrpos($stdout, "\n"))));
+        $lastBlock = is_array($blocks) ? (string) end($blocks) : '';
+        if (preg_match('/^retry-after:\s*(\d+)\s*$/mi', $lastBlock, $header) === 1) {
+            $retryAfter = (int) $header[1];
+        }
+        if ($status !== 429 && !($status === 503 && $retryAfter !== null)) {
+            return ['status' => 'failed', 'detail' => 'HTTP ' . $status . ($error !== '' ? ': ' . $error : '')];
+        }
+        $delay = $retryAfter ?? (1 << $attempt);
+        if ($attempt >= RATE_LIMIT_MAX_RETRIES || $waited + $delay > RATE_LIMIT_MAX_WAIT) {
+            return ['status' => 'rate-limited', 'detail' => 'HTTP ' . $status . ' after ' . ($attempt + 1) . ' attempt(s)'];
+        }
+        sleep($delay);
+        $waited += $delay;
+    }
 }

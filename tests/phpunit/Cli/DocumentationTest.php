@@ -383,4 +383,103 @@ final class DocumentationTest extends KnossosTestCase
         self::assertNotEmpty($badgeHosts, 'README.md declares no badges, so this guard has nothing to protect.');
         self::assertSame([], array_values(array_diff($badgeHosts, $excluded)));
     }
+
+    /**
+     * Run the external link check against one link, with a fake curl.
+     *
+     * The fake answers each call with the next status in `$statuses`, repeating
+     * the last one, and a `Retry-After: 0` header when `$retryAfter` is set. It
+     * records how many times it was called. Nothing here touches the network.
+     *
+     * @param list<int> $statuses
+     * @return array{0: int, 1: string, 2: string, 3: int} exit, stdout, stderr, curl calls
+     */
+    private function checkExternalLinkWithFakeCurl(array $statuses, bool $retryAfter = true): array
+    {
+        $directory = sys_get_temp_dir() . '/knossos-fake-curl-' . bin2hex(random_bytes(6));
+        mkdir($directory, 0o777, true);
+        $script = $directory . '/curl';
+        $header = $retryAfter ? 'Retry-After: 0\r\n' : '';
+        file_put_contents($script, "#!/bin/sh\n"
+            . 'dir=' . escapeshellarg($directory) . "\n"
+            . 'echo x >> "$dir/calls"' . "\n"
+            . 'n=$(wc -l < "$dir/calls")' . "\n"
+            . 'set -- ' . implode(' ', $statuses) . "\n"
+            . 'if [ "$n" -gt "$#" ]; then n=$#; fi' . "\n"
+            . 'eval code=\\${$n}' . "\n"
+            . 'printf "HTTP/2 %s\r\n' . $header . '\r\n\n%s" "$code" "$code"' . "\n");
+        chmod($script, 0o755);
+        $previous = getenv('KNOSSOS_CURL');
+        putenv('KNOSSOS_CURL=' . $script);
+        try {
+            $tree = sys_get_temp_dir() . '/knossos-doc-check-' . bin2hex(random_bytes(6));
+            foreach (['docs', 'skills', 'plugins'] as $root) {
+                mkdir($tree . '/' . $root, 0o777, true);
+            }
+            file_put_contents($tree . '/README.md', "[page](https://example.test/page)\n");
+            try {
+                [$exit, $stdout, $stderr] = $this->runFixtureCommandOutput([PHP_BINARY, self::repositoryRoot() . '/tools/documentation-check.php', '--external', '--root=' . $tree]);
+            } finally {
+                $this->removeTree($tree);
+            }
+            $calls = is_file($directory . '/calls') ? count(file($directory . '/calls')) : 0;
+
+            return [$exit, $stdout, $stderr, $calls];
+        } finally {
+            putenv($previous === false ? 'KNOSSOS_CURL' : 'KNOSSOS_CURL=' . $previous);
+            $this->removeTree($directory);
+        }
+    }
+
+    #[Group('documentation')]
+    public function testExternalLinkIsRetriedAfterARateLimitAndPasses(): void
+    {
+        [$exit, $stdout, $stderr, $calls] = $this->checkExternalLinkWithFakeCurl([429, 200]);
+
+        self::assertSame(0, $exit, $stderr);
+        self::assertSame(2, $calls);
+        self::assertStringContainsString('Documentation links passed', $stdout);
+        self::assertStringNotContainsString('warning', $stderr);
+    }
+
+    #[Group('documentation')]
+    public function testAPersistentRateLimitWarnsNamingTheUrlAndDoesNotFail(): void
+    {
+        [$exit, , $stderr, $calls] = $this->checkExternalLinkWithFakeCurl([429]);
+
+        self::assertSame(0, $exit, $stderr);
+        // The first try plus two retries, then it gives up.
+        self::assertSame(3, $calls);
+        self::assertStringContainsString('https://example.test/page', $stderr);
+        self::assertStringContainsString('rate-limited and not checked', $stderr);
+    }
+
+    #[Group('documentation')]
+    public function testAServiceUnavailableWithRetryAfterIsTreatedAsARateLimit(): void
+    {
+        [$exit, , $stderr, $calls] = $this->checkExternalLinkWithFakeCurl([503, 200]);
+
+        self::assertSame(0, $exit, $stderr);
+        self::assertSame(2, $calls);
+    }
+
+    #[Group('documentation')]
+    public function testADeadExternalLinkStillFailsAndIsNotRetried(): void
+    {
+        [$exit, , $stderr, $calls] = $this->checkExternalLinkWithFakeCurl([404]);
+
+        self::assertSame(1, $exit);
+        self::assertSame(1, $calls);
+        self::assertStringContainsString('external link failed: https://example.test/page (HTTP 404', $stderr);
+    }
+
+    #[Group('documentation')]
+    public function testAServiceUnavailableWithoutRetryAfterStillFails(): void
+    {
+        [$exit, , $stderr, $calls] = $this->checkExternalLinkWithFakeCurl([503], false);
+
+        self::assertSame(1, $exit);
+        self::assertSame(1, $calls);
+        self::assertStringContainsString('HTTP 503', $stderr);
+    }
 }

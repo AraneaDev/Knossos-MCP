@@ -131,6 +131,16 @@ check whenever `KNOSSOS_EXTERNAL_LINKS` is unset, under `set -e`, so it also fai
 the `quality` check on `main` and a local `tools/quality full`, which is the
 pre-push hook, and blocks the push.
 
+A dead link means a 404, a 410, any other error status, a DNS failure or a TLS
+failure. A rate limit is not a dead link: GitHub answers a shared CI runner with
+HTTP 429 on pages that are fine. The checker retries a 429, and a 503 that sends
+`Retry-After`, at most twice, waiting as long as `Retry-After` says and never more
+than 30 seconds in total for one URL. If the limit persists, it prints
+`warning: external link rate-limited and not checked: <url>` and the check still
+passes. I chose retry-then-warn over adding `github.com` to the skipped hosts,
+because most GitHub links are answered normally and a skip would stop catching
+the ones that really die. The tests replace curl with the `KNOSSOS_CURL` variable.
+
 Pull requests set `KNOSSOS_EXTERNAL_LINKS=0`, because whether a web server is
 answering right now is not a property of the change under review. Set it to `0`
 yourself to skip the fetch locally. The badge hosts `img.shields.io` and
