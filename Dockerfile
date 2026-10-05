@@ -274,6 +274,11 @@ RUN composer install \
     --optimize-autoloader
 
 COPY .editorconfig .hadolint.yaml .trivyignore .php-cs-fixer.dist.php .prettierignore .markdownlint-cli2.jsonc ./
+# DockerIgnoreTest holds .dockerignore to every directory .gitignore anchors at
+# the root, and CI runs it in this image, so both files have to be here for the
+# check to run at all. Only this stage copies them: the runtime image ships
+# exactly what it did before.
+COPY .gitignore .dockerignore ./
 COPY eslint.config.js phpstan.neon pyproject.toml .pre-commit-config.yaml .coveragerc ./
 COPY phpunit.xml infection.json5 ./
 COPY README.md CONTRIBUTING.md CHANGELOG.md LICENSE ./
