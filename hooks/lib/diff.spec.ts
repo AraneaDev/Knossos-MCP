@@ -305,3 +305,16 @@ describe('the full detail of a long change', () => {
     })
   }
 })
+
+describe('a page of very large opened hunks', () => {
+  it('is cut to the element in one pass, so a page of twelve 20,000-line hunks draws well inside a frame budget', () => {
+    const hunk = (h: number) => `@@ -${h * 100_000 + 1},0 +${h * 100_000 + 1},20000 @@\n${Array.from({ length: 20_000 }, (_, i) => `+h${h} line ${i}`).join('\n')}`
+    const diff = `${Array.from({ length: 12 }, (_, h) => hunk(h)).join('\n')}\n`
+    const view = diffView(SHOWN, done(answer({ diff })), { status: 'ok', rev: REV }, { name: SHOWN.name, rev: REV, snapshot: 's1', open: Array.from({ length: 12 }, (_, i) => i), from: 0 })!
+    const started = performance.now()
+    const rows = diffRows(view, 200)
+    // Far under a second even on a slow CI machine; the quadratic cut took about a minute.
+    expect(performance.now() - started).toBeLessThan(200)
+    for (const r of rows.filter(r => r.code !== undefined)) expect(r.code!.source.length).toBeLessThanOrEqual(10_000)
+  })
+})

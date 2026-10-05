@@ -68,21 +68,43 @@ export function parseHunks(diff: string): Hunk[] {
   return hunks
 }
 
-/** The hunk header for `lines` starting where `hunk` does: its counts are the lines it holds, so a folded hunk still parses. */
-function header(hunk: Hunk, lines: string[]): string {
-  const old = lines.filter(l => !l.startsWith('+')).length
-  const now = lines.filter(l => !l.startsWith('-')).length
+/**
+ * The hunk header for `old` lines of the old side and `now` of the new,
+ * starting where `hunk` does: its counts are the lines it holds, so a folded
+ * hunk still parses. `sides` says which sides `hunk` itself has lines on.
+ */
+function header(hunk: Hunk, old: number, now: number, sides: { old: boolean; now: boolean }): string {
   // A side the fold left empty starts at the line before, as git writes an empty side; one empty already stays put.
-  const oldStart = old === 0 && hunk.lines.some(l => !l.startsWith('+')) ? Math.max(0, hunk.oldStart - 1) : hunk.oldStart
-  const newStart = now === 0 && hunk.lines.some(l => !l.startsWith('-')) ? Math.max(0, hunk.newStart - 1) : hunk.newStart
+  const oldStart = old === 0 && sides.old ? Math.max(0, hunk.oldStart - 1) : hunk.oldStart
+  const newStart = now === 0 && sides.now ? Math.max(0, hunk.newStart - 1) : hunk.newStart
   return `@@ -${oldStart},${old} +${newStart},${now} @@${hunk.heading === '' ? '' : ` ${hunk.heading}`}`
 }
 
-/** The text one hunk's element draws: its header and the lines shown, within the element's limit. */
+/**
+ * The text one hunk's element draws: its header and as many of the lines
+ * shown as fit the element's limit (one at least). One pass over the lines,
+ * counting each side and the length as it goes, so a hunk of any size costs
+ * what its lines cost once.
+ */
 export function hunkSource(hunk: Hunk, shown: string[]): string {
-  let lines = shown
-  while (lines.length > 1 && [header(hunk, lines), ...lines].join('\n').length > SOURCE_MAX) lines = lines.slice(0, -1)
-  return [header(hunk, lines), ...lines].join('\n')
+  const sides = { old: hunk.lines.some(l => !l.startsWith('+')), now: hunk.lines.some(l => !l.startsWith('-')) }
+  let old = 0
+  let now = 0
+  let length = 0
+  let kept = 0
+  for (const line of shown) {
+    const nextOld = old + (line.startsWith('+') ? 0 : 1)
+    const nextNow = now + (line.startsWith('-') ? 0 : 1)
+    // The header, then each line after a newline.
+    const total = header(hunk, nextOld, nextNow, sides).length + length + 1 + line.length
+    if (kept > 0 && total > SOURCE_MAX) break
+    old = nextOld
+    now = nextNow
+    length += 1 + line.length
+    kept++
+  }
+  const lines = shown.slice(0, kept)
+  return [header(hunk, old, now, sides), ...lines].join('\n')
 }
 
 /** The lines of `hunk` shown, and how many are folded away. */
