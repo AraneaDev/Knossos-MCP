@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/AraneaDev/knossos/compare/v0.18.0...v0.18.1) (2026-10-05)
+
+
+### Fixes
+
+* **tools:** retry a rate-limited link and warn rather than fail on a persistent 429 ([#138](https://github.com/AraneaDev/knossos/issues/138)) ([aa003f5](https://github.com/AraneaDev/knossos/commit/aa003f56fffad0dce60cb13763458df3b1278ebb))
+
 ## [0.18.0](https://github.com/AraneaDev/knossos/compare/v0.17.5...v0.18.0) (2026-10-05)
 
 
