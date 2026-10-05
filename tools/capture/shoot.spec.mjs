@@ -284,8 +284,15 @@ async function packagesFixture() {
     await symlink("../pkg/bin.js", path.join(repo, "node_modules/.bin/tool"));
     await symlink(outside, path.join(repo, "node_modules/linked"));
     await symlink("../../outside", path.join(repo, "node_modules/escape"));
+    // Relative hops that each look local but end outside: through the link
+    // above, and through a tracked directory link git recreates in a worktree.
+    await symlink("escape", path.join(repo, "node_modules/hop"));
+    await symlink("../outside", path.join(repo, "lib"));
+    await symlink("../lib/index.js", path.join(repo, "node_modules/viadir"));
     await run("git", ["init", "-q", repo], { env });
-    await run("git", ["-C", repo, "add", ".gitignore", "a.txt"], { env });
+    await run("git", ["-C", repo, "add", ".gitignore", "a.txt", "lib"], {
+        env,
+    });
     await run("git", ["-C", repo, "commit", "-qm", "a"], { env });
     return { root, repo, outside };
 }
@@ -405,9 +412,10 @@ describe("throwawayWorktree", () => {
             await expect(lstat(inTree("node_modules/linked"))).rejects.toThrow(
                 /ENOENT/,
             );
-            await expect(lstat(inTree("node_modules/escape"))).rejects.toThrow(
-                /ENOENT/,
-            );
+            for (const link of ["escape", "hop", "viadir"])
+                await expect(
+                    lstat(inTree(`node_modules/${link}`)),
+                ).rejects.toThrow(/ENOENT/);
             await runCleanups();
             await expect(stat(dir)).rejects.toThrow(/ENOENT/);
             await expectOriginals(repo, outside);

@@ -160,20 +160,56 @@ async function packageDirectories(repo, relative) {
     return found;
 }
 
-/** Anything but a link, or a relative link whose target lies inside `top`. */
+/**
+ * Anything but a link, or a link that reaches a real file or directory inside
+ * `top` through relative links only. Every link on the way counts, a link in
+ * the path's directories included: in the worktree each lands where it does
+ * here, so one absolute hop, or one that climbs out, takes the copy outside.
+ */
 async function staysInside(source, top) {
-    const stats = await lstat(source);
-    if (!stats.isSymbolicLink()) return true;
-    const target = await readlink(source);
-    if (path.isAbsolute(target)) return false;
-    const resolved = path.resolve(await realpath(path.dirname(source)), target);
-    const inside = path.relative(top, resolved);
-    return (
-        inside !== "" &&
-        inside !== ".." &&
-        !inside.startsWith(`..${path.sep}`) &&
-        !path.isAbsolute(inside)
+    if (!(await lstat(source)).isSymbolicLink()) return true;
+    const directory = await realpath(path.dirname(source));
+    return reachesInside(
+        path.join(directory, path.basename(source)),
+        top,
+        MAX_LINK_HOPS,
     );
+}
+
+const MAX_LINK_HOPS = 40;
+
+/** Walks `absolute` one component at a time from `top`, following each link. */
+async function reachesInside(absolute, top, hops) {
+    const relative = path.relative(top, absolute);
+    if (
+        relative === ".." ||
+        relative.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relative)
+    )
+        return false;
+    const parts = relative === "" ? [] : relative.split(path.sep);
+    let current = top;
+    for (const [index, part] of parts.entries()) {
+        const next = path.join(current, part);
+        const stats = await lstat(next).catch(() => null);
+        // A dangling link reaches nothing here, but its copy could reach
+        // whatever the worktree holds at that name.
+        if (stats === null) return false;
+        if (stats.isSymbolicLink()) {
+            const target = await readlink(next);
+            if (path.isAbsolute(target) || hops === 0) return false;
+            return reachesInside(
+                path.join(
+                    path.resolve(current, target),
+                    ...parts.slice(index + 1),
+                ),
+                top,
+                hops - 1,
+            );
+        }
+        current = next;
+    }
+    return true;
 }
 
 /** The branch origin's HEAD names (`origin/main` gives `main`), or main when there is none. */
