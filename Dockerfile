@@ -276,7 +276,7 @@ RUN composer install \
 COPY .editorconfig .hadolint.yaml .trivyignore .php-cs-fixer.dist.php .prettierignore .markdownlint-cli2.jsonc ./
 COPY eslint.config.js phpstan.neon pyproject.toml .pre-commit-config.yaml .coveragerc ./
 COPY phpunit.xml infection.json5 ./
-COPY README.md CONTRIBUTING.md LICENSE ./
+COPY README.md CONTRIBUTING.md CHANGELOG.md LICENSE ./
 COPY version.txt release-please-config.json .release-please-manifest.json ./
 COPY coverage-budgets.json ./
 COPY maintainability-budgets.json ./
