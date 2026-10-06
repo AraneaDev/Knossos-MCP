@@ -30,8 +30,9 @@ final readonly class DiagnosticsQueryService extends AbstractArchitectureQuerySe
             $parameters['severity'] = $severity;
         }
         if ($pathPrefix !== null && $pathPrefix !== '') {
-            $where .= " AND f.relative_path LIKE :prefix ESCAPE '\\'";
-            $parameters['prefix'] = addcslashes($pathPrefix, '%_\\') . '%';
+            // Compared as bytes: LIKE would fold ASCII case and read `_` and `%` as wildcards.
+            $where .= ' AND substr(f.relative_path, 1, length(:prefix)) = :prefix';
+            $parameters['prefix'] = $pathPrefix;
         }
         $count = $this->pdo->prepare("SELECT COUNT(*) FROM diagnostics d LEFT JOIN files f ON f.id = d.file_id WHERE {$where}");
         $count->execute($parameters);

@@ -56,6 +56,30 @@ final class ProjectListCommandTest extends KnossosTestCase
         self::assertStringContainsString('1 annotated intentional', $text);
     }
 
+    /**
+     * A search cut short by its time budget says so and exits 2: a partial
+     * list printed as the whole one would read as "nothing else is dead".
+     */
+    public function testDeadCodeSaysWhenItsTimeBudgetCutTheListShort(): void
+    {
+        [, $repository, $ids] = $this->storeFixture(null, $this->pdo());
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $time = 0;
+        $clock = static function () use (&$time): int {
+            $time += 2_000_000;
+            return $time;
+        };
+        $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $this->database);
+        ob_start();
+        try {
+            $exit = (new ProjectListCommand($clock))->run('dead-code', [$ids['project']], ['candidate-timeout' => ['1']], $context);
+        } finally {
+            $text = (string) ob_get_clean();
+        }
+        self::assertSame(2, $exit);
+        self::assertStringContainsString('Incomplete: the search ran out of its 1 ms', $text);
+    }
+
     public function testDiagnosticsAreListedWholeAndFilteredBySeverity(): void
     {
         $pdo = $this->pdo();
@@ -95,6 +119,49 @@ final class ProjectListCommandTest extends KnossosTestCase
     private function scanInto(string $root): void
     {
         (new \Knossos\Scan\ProjectScanService($this->pdo(), self::repositoryRoot(), [$root]))->scan($root);
+    }
+
+    public function testPoliciesNamesAConfigurationItCannotRead(): void
+    {
+        [, , $root] = $this->scanTempFixture('turn-brief');
+        try {
+            $this->scanInto($root);
+            file_put_contents($root . '/knossos.json', '{ not json');
+            try {
+                $this->runList('policies', [$root], [], json: false);
+                self::fail('A broken knossos.json was read.');
+            } catch (\InvalidArgumentException $error) {
+                self::assertStringContainsString($root, $error->getMessage());
+                self::assertStringContainsString('knossos.json', $error->getMessage());
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Past the deepest page the query serves, the listing stops and says so
+     * rather than failing after printing nothing.
+     */
+    public function testDiagnosticsStopAtTheDeepestPageAndSaySo(): void
+    {
+        $pdo = $this->pdo();
+        [, $repository, $ids] = $this->storeFixture(null, $pdo);
+        $pdo->prepare(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100150) "
+            . "INSERT INTO diagnostics (id, project_id, scan_id, file_id, severity, code, message, start_line, end_line, owner_key) "
+            . "SELECT 'd' || i, ?, ?, ?, 'warning', 'W', 'w', i, i, 'test' FROM n",
+        )->execute([$ids['project'], $ids['scan'], $ids['file']]);
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $this->database);
+        ob_start();
+        try {
+            $exit = (new ProjectListCommand())->run('diagnostics', [$ids['project']], [], $context);
+        } finally {
+            $text = (string) ob_get_clean();
+        }
+        self::assertSame(2, $exit);
+        self::assertStringContainsString('Incomplete: listed the first 100100 of 100150', $text);
     }
 
     private function pdo(): PDO

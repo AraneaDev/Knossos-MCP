@@ -30,6 +30,9 @@ final class DiagnosticsQueryServiceTest extends KnossosTestCase
         self::assertSame(['TS2322'], array_column($queries->listDiagnostics($ids['project'], severity: 'error')->data['diagnostics'], 'code'));
         self::assertSame(['TS2322', 'TS6133'], array_column($queries->listDiagnostics($ids['project'], pathPrefix: 'src/')->data['diagnostics'], 'code'));
         self::assertSame([], $queries->listDiagnostics($ids['project'], pathPrefix: 'nowhere/')->data['diagnostics']);
+        // A prefix is a path, and paths are case-sensitive.
+        self::assertSame([], $queries->listDiagnostics($ids['project'], pathPrefix: 'SRC/')->data['diagnostics']);
+        self::assertSame([], $queries->listDiagnostics($ids['project'], pathPrefix: 's_c/')->data['diagnostics']);
         $page = $queries->listDiagnostics($ids['project'], limit: 2);
         self::assertSame([2, true], [$page->data['pagination']['next_offset'], $page->truncated]);
         $this->expectException(InvalidArgumentException::class);

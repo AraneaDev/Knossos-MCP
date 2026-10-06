@@ -227,15 +227,15 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
     private static function declaredPolicies(string $root): array
     {
         try {
-            $policies = ProjectConfigurationLoader::load($root, [$root])->policies;
+            $configuration = ProjectConfigurationLoader::load($root, [$root]);
         } catch (Throwable $error) {
-            throw new InvalidArgumentException(sprintf('The policies in %s/knossos.json could not be read: %s', $root, $error->getMessage()), 0, $error);
+            throw new InvalidArgumentException(sprintf('The policies in %s/knossos.json (or knossos.jsonc) could not be read: %s', $root, $error->getMessage()), 0, $error);
         }
-        if ($policies === []) {
-            throw new InvalidArgumentException(sprintf('%s declares no policies in knossos.json; pass policies to check.', $root));
+        if ($configuration->policies === []) {
+            throw new InvalidArgumentException(sprintf('%s declares no policies; pass policies to check.', $configuration->path ?? $root . '/knossos.json'));
         }
 
-        return $policies;
+        return $configuration->policies;
     }
 
     /**

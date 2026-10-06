@@ -53,7 +53,7 @@ Usage:
                               [--include-tests] [--candidate-confidence=LEVEL]
                               [--candidate-offset=N] [--candidate-timeout=MS] [--json]
   knossos dead-code <path|project-id> [--reachability=unreferenced|test-only]
-                    [--db=PATH] [--json]
+                    [--candidate-timeout=MS] [--db=PATH] [--json]
   knossos diagnostics <path|project-id> [--severity=error|warning|info]
                       [--path=PREFIX] [--db=PATH] [--json]
   knossos policies <path|project-id> [--db=PATH] [--json]

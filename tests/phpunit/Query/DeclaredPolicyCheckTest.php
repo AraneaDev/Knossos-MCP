@@ -24,6 +24,11 @@ final class DeclaredPolicyCheckTest extends KnossosTestCase
                 ['name' => 'Edge', 'path_prefix' => 'src/Edge/'],
             ], 'policies' => [['id' => 'core-alone', 'from_boundary' => 'Core', 'deny_targets' => ['Edge']]]]));
             self::assertSame(['core-alone'], array_column($queries->checkArchitecture($projectId, null)->data['policies_evaluated'], 'id'));
+            // The file is named as it is spelled.
+            unlink($root . '/knossos.json');
+            file_put_contents($root . '/knossos.jsonc', "// rules\n{\"version\": 1}");
+            $this->assertRefused($queries, $projectId, 'knossos.jsonc declares no policies');
+            unlink($root . '/knossos.jsonc');
             // A broken file is said to be broken, never read as declaring nothing.
             file_put_contents($root . '/knossos.json', '{ not json');
             $this->assertRefused($queries, $projectId, 'could not be read');
