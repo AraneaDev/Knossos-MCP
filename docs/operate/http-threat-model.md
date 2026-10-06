@@ -61,6 +61,12 @@ and [HTTP authorization specification](https://modelcontextprotocol.io/specifica
 | SSE/session stream abuse        | SSE and GET streams are unsupported and return 405; sessions carry lifecycle only.                                                                                                                                              | Clients requiring server notifications, resumability, or SSE must use another compliant deployment adapter.                                                   |
 | Path/project-code attack        | Existing allowed-root canonicalization, read-only mounts, no target execution, worker isolation, and stable diagnostics apply unchanged.                                                                                        | Git history may expose author emails in results to an already authorized client.                                                                              |
 
+Allowed roots bound what the server reads from disk as well as what it scans.
+`file_context`, `change_impact`, `changed_files_impact`, `test_impact`,
+`review_diff` and `architecture_context` with `include_source` refuse a
+project whose root lies outside them with `KNOSSOS_UNSAFE_PATH`. Tools that
+answer from the graph alone still answer for every project in the database.
+
 ## Running locally
 
 Native:
