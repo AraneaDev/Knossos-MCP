@@ -6,12 +6,12 @@ namespace Knossos\Cli\Command;
 
 use Closure;
 use InvalidArgumentException;
-use Throwable;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\ProjectReference;
 use Knossos\Configuration\ProjectConfigurationLoader;
 use Knossos\Query\ArchitectureQueryService;
+use Throwable;
 
 /**
  * The lists behind the pane's counts, whole: every dead-code candidate, every
