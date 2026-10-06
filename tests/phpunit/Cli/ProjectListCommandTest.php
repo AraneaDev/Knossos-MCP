@@ -140,20 +140,23 @@ final class ProjectListCommandTest extends KnossosTestCase
     }
 
     /**
-     * Past the deepest page the query serves, the listing stops and says so
-     * rather than failing after printing nothing.
+     * A listing stops at 10,000 diagnostics and says how many there are: a
+     * project with more is better narrowed by severity or path than printed,
+     * and holding every row at once ran a project with 100,000 of them out
+     * of PHP's default 128 MB.
      */
-    public function testDiagnosticsStopAtTheDeepestPageAndSaySo(): void
+    public function testDiagnosticsStopAtTenThousandAndSaySo(): void
     {
         $pdo = $this->pdo();
         [, $repository, $ids] = $this->storeFixture(null, $pdo);
         $pdo->prepare(
-            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100150) "
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10050) "
             . "INSERT INTO diagnostics (id, project_id, scan_id, file_id, severity, code, message, start_line, end_line, owner_key) "
             . "SELECT 'd' || i, ?, ?, ?, 'warning', 'W', 'w', i, i, 'test' FROM n",
         )->execute([$ids['project'], $ids['scan'], $ids['file']]);
         $repository->completeScan($ids['project'], $ids['scan']);
         $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $this->database);
+        $before = memory_get_usage();
         ob_start();
         try {
             $exit = (new ProjectListCommand())->run('diagnostics', [$ids['project']], [], $context);
@@ -161,7 +164,8 @@ final class ProjectListCommandTest extends KnossosTestCase
             $text = (string) ob_get_clean();
         }
         self::assertSame(2, $exit);
-        self::assertStringContainsString('Incomplete: listed the first 100100 of 100150', $text);
+        self::assertStringContainsString('Incomplete: listed the first 10000 of 10050', $text);
+        self::assertLessThan(32 * 1024 * 1024, memory_get_peak_usage() - $before);
     }
 
     private function pdo(): PDO

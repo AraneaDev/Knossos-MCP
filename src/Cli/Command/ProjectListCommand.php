@@ -22,6 +22,13 @@ final class ProjectListCommand implements CliCommand
     /** Candidates asked for per page: the most `architectureHealth` returns. */
     private const PAGE = 100;
 
+    /**
+     * The most diagnostics one listing holds. A project with more is better
+     * narrowed by severity or path than printed whole, and every row held at
+     * once ran a 100,000-diagnostic project out of PHP's default 128 MB.
+     */
+    private const LISTED = 10_000;
+
     /** The whole candidate search's time budget by default, across every page, in milliseconds. */
     private const CANDIDATE_TIMEOUT_MS = 60_000;
 
@@ -110,12 +117,12 @@ final class ProjectListCommand implements CliCommand
         $prefix = $context->options->single($options, 'path');
         $items = [];
         $offset = 0;
-        // The query serves pages up to offset 100000; past the last of them the list stops and says so.
+        // Up to LISTED; past that the list stops and says how to narrow it.
         do {
             $page = $queries->listDiagnostics($projectId, $severity, $prefix, 100, $offset);
             array_push($items, ...$page->data['diagnostics']);
             $offset = $page->data['pagination']['next_offset'];
-        } while ($offset !== null && $offset <= 100_000);
+        } while ($offset !== null && $offset < self::LISTED);
         $total = (int) $page->data['total'];
         $lines = array_map(
             static fn(array $d): string => sprintf('%s%s %s %s %s', $d['path'] ?? '(project)', $d['line'] === null ? '' : ':' . $d['line'], $d['code'], $d['severity'], $d['message']),
