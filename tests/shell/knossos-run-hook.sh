@@ -148,6 +148,12 @@ expect_silent_success 'file-detail with an absolute path' \
 expect_output 'file-context passes the file under the project' "file-context|$ABS_PROJ/src/My File.php|--json|" \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context "$STUBS/proj" 'src/My File.php'
 expect_silent_success 'file-context with an absolute path' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context /tmp /etc/passwd
+for path in '..' '../x.php' 'src/../../etc/passwd' 'src/..'; do
+    expect_silent_success "file-detail refuses $path" \
+        env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail "$STUBS/proj" "$path"
+    expect_silent_success "file-context refuses $path" \
+        env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context "$STUBS/proj" "$path"
+done
 expect_silent_success 'file-context with a file that reads as an option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context /tmp --db=/elsewhere
 expect_silent_success 'file-context without a file' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context /tmp
 # graph-search: what was typed into the finder, one printable line and nothing else.
