@@ -2,7 +2,10 @@
 
 `architecture_health` (CLI: `architecture-health`) reports
 `dead_code_candidates` alongside its hubs and hotspots: components with no
-inbound edge among the selected edge kinds.
+inbound edge among the selected edge kinds. It returns one page of them;
+`knossos dead-code <path|project-id>` lists every candidate, with
+`--reachability=unreferenced|test-only` to narrow it, and ends with what it
+left out (annotated, suppressed, reached by convention).
 
 These are **candidates, not findings**. They rest on what [the graph and its evidence](graph-and-evidence.md) can and cannot see. A zero in-degree is only the absence of static evidence: reflection, configuration, templates, registry
 arrays, callbacks, dispatch tables, and framework conventions all reference code

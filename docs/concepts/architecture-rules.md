@@ -38,13 +38,20 @@ dependency relationship counts. At most 50 policies can be evaluated at once.
 ]
 ```
 
-CLI usage reads the declaration from a bounded JSON file:
+Without a file, the CLI checks the policies the project declares in
+`knossos.json`, and refuses to run when it declares none or the file cannot be
+read. `--policies` reads them from a bounded JSON file instead. The project is
+a path inside it or its ID:
 
 ```sh
-knossos check-architecture PROJECT_ID --policies=policies.json --json
+knossos check-architecture . --json
+knossos check-architecture . --policies=policies.json --json
+knossos policies .
 ```
 
-The equivalent MCP tool accepts the JSON array as `policies`. Optional
+`knossos policies` shows the boundaries and policies the project declares. The
+equivalent MCP tool accepts the JSON array as `policies`, and without it checks
+the declared ones too. Optional
 `min_confidence`, `limit`, `max_edges`, and `timeout_ms` inputs control the
 evaluation. Boundary names that resolve to both explicit and inferred
 boundaries are rejected; use the stable ID returned by `list_boundaries`.

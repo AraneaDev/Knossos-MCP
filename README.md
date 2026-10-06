@@ -266,12 +266,17 @@ schema is in the [MCP tool reference](docs/reference/mcp-tools.md).
 
 ## CLI and CI
 
-Every query is also a CLI command, with `--json` for scripts:
+Every query is also a CLI command, with `--json` for scripts. A project is named by a path
+inside it or by its ID, and the CLI reads the same graph as the server (`~/.knossos` after
+`tools/install`):
 
 ```sh
-knossos impact-analysis <project-id> 'App\Billing\Invoice'
-knossos review-diff <project-id> --base-ref=main --policies=architecture-policies.json
-knossos quality-gate <project-id> <baseline-snapshot> --budgets=knossos-budgets.json --sarif --json
+knossos impact-analysis . 'App\Billing\Invoice'
+knossos review-diff . --base-ref=main --policies=architecture-policies.json
+knossos quality-gate . <baseline-snapshot> --budgets=knossos-budgets.json --sarif --json
+knossos dead-code .
+knossos diagnostics . --severity=error
+knossos check-architecture .
 knossos watch /absolute/path/to/project
 ```
 
