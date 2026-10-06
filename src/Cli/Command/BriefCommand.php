@@ -9,8 +9,10 @@ use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Cli\ProjectDatabaseLocator;
+use Knossos\Cli\ProjectReference;
 use Knossos\Query\{BoundaryCouplingsService, BranchDiffService, ComponentDetailService, DashboardService, FileContextService, FileDetailService, GraphSearchService, PaneQueries, RescanService, SessionChangesService, TurnBriefService};
 use Knossos\Runtime\RuntimeFactory;
+use Knossos\Store\SqliteConnection;
 use Throwable;
 
 /**
@@ -78,6 +80,10 @@ final class BriefCommand implements CliCommand
             $context->options->validate($options, $this->knownOptions($command));
             [$path, $name] = $this->target($command, $positionals);
             $databasePath = (new ProjectDatabaseLocator())->locate($path, $options, $context);
+            if (is_file($databasePath) && !file_exists($path)) {
+                // A project id in place of the path: answer for that project's root.
+                $path = (new ProjectReference(SqliteConnection::open($databasePath), $databasePath))->byId($path)['root'] ?? $path;
+            }
             $result = is_file($databasePath)
                 ? $this->answer($command, $path, $name, $databasePath, $options, $context)
                 : ['status' => 'unscanned', 'path' => realpath($path) ?: $path];

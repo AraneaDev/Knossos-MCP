@@ -7,6 +7,7 @@ namespace Knossos\Cli\Command;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\ProjectDatabaseLocator;
+use Knossos\Cli\ProjectReference;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\SessionBriefRenderer;
 use Knossos\Query\SessionBriefService;
@@ -57,6 +58,10 @@ final class SessionCommand implements CliCommand
         try {
             $path = (string) ($positionals[0] ?? getcwd());
             $databasePath = (new ProjectDatabaseLocator())->locate($path, $options, $context);
+            if (is_file($databasePath) && !file_exists($path)) {
+                // A project id in place of the path: brief that project's root.
+                $path = (new ProjectReference(SqliteConnection::open($databasePath), $databasePath))->byId($path)['root'] ?? $path;
+            }
             // The existence check is the whole read-only guarantee. Opening a
             // path that is not there creates it; migrating it writes to it.
             // Neither may happen on a path that runs before a session starts,

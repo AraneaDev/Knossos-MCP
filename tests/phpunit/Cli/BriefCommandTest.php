@@ -74,13 +74,39 @@ final class BriefCommandTest extends KnossosTestCase
      * @param array<string, list<string>> $options
      * @return array{0: int, 1: array<string, mixed>}
      */
-    private function runJson(string $command, array $positionals, array $options): array
+    private function runJson(string $command, array $positionals, array $options, ?CliCommandContext $context = null): array
     {
         ob_start();
-        $status = (new BriefCommand())->run($command, $positionals, $options + ['json' => ['true']], $this->context());
+        $status = (new BriefCommand())->run($command, $positionals, $options + ['json' => ['true']], $context ?? $this->context());
         $decoded = json_decode((string) ob_get_clean(), true, flags: JSON_THROW_ON_ERROR);
 
         return [$status, $decoded];
+    }
+
+    /**
+     * A brief command takes a project id in place of the path, and answers
+     * for that project's root. An unknown path still answers `unscanned`,
+     * which the pane reads.
+     */
+    #[Group('cli')]
+    public function testADashboardTakesAProjectIdAndAnUnknownPathStaysUnscanned(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        // An id is no path to walk up from: the database comes from the data directory.
+        $dataDir = getenv('KNOSSOS_DATA_DIR');
+        putenv('KNOSSOS_DATA_DIR=' . $root . '/.knossos');
+        try {
+            $database = $root . '/.knossos/knossos.sqlite';
+            $projectId = (string) SqliteConnection::open($database)->query('SELECT id FROM projects')->fetchColumn();
+            $unpinned = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), null);
+            [, $byId] = $this->runJson('dashboard', [$projectId], [], $unpinned);
+            assertSame(['ok', $projectId], [$byId['status'], $byId['project_id'] ?? null]);
+            [, $unknown] = $this->runJson('dashboard', ['/nowhere/at/all'], [], $unpinned);
+            assertSame('unscanned', $unknown['status']);
+        } finally {
+            putenv($dataDir === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $dataDir);
+            $this->removeTempTree($root);
+        }
     }
 
     /** A copy of the fixture scanned into its own on-disk database, with a roots file allowing it. */

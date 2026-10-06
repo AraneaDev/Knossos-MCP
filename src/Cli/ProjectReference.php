@@ -40,12 +40,22 @@ final readonly class ProjectReference
      */
     public function find(string $argument): ?array
     {
+        $row = $this->byId($argument) ?? (new ProjectPathResolver($this->pdo))->resolve($argument);
+
+        return is_array($row) ? ['id' => (string) $row['id'], 'root' => (string) ($row['root'] ?? $row['root_realpath'])] : null;
+    }
+
+    /**
+     * The project whose id is exactly `$id`, or null. Asked alone where a
+     * path that is not on disk must stay a path, as the briefs report it.
+     *
+     * @return array{id: string, root: string}|null
+     */
+    public function byId(string $id): ?array
+    {
         $statement = $this->pdo->prepare('SELECT id, root_realpath FROM projects WHERE id = :id');
-        $statement->execute(['id' => $argument]);
+        $statement->execute(['id' => $id]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if ($row === false) {
-            $row = (new ProjectPathResolver($this->pdo))->resolve($argument);
-        }
 
         return is_array($row) ? ['id' => (string) $row['id'], 'root' => (string) $row['root_realpath']] : null;
     }

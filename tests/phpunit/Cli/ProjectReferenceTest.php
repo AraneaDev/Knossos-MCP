@@ -26,6 +26,9 @@ final class ProjectReferenceTest extends KnossosTestCase
             mkdir($root . '/project_x');
             self::assertSame($expected, $reference->resolve($root . '/project_x'));
             self::assertNull($reference->find('/nowhere/at/all'));
+            // Only an exact id: a path inside the project is no id.
+            self::assertSame($expected, $reference->byId($projectId));
+            self::assertNull($reference->byId($root . '/src/gone'));
             try {
                 $reference->resolve('project_nope');
                 self::fail('An unknown argument resolved.');
