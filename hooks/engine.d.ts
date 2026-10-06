@@ -9,8 +9,24 @@
 declare module 'claude-code' {
   export type ConfigRow = any
   export type Elements = any
-  export type EngineInterface = any
-  export type Register = any
+  type Call = (...args: any[]) => any
+  type Noun = Record<string, Call>
+  export type EngineInterface = {
+    clock: Noun
+    ui: Noun
+    session: Noun
+    process: Noun
+    fs: Noun
+    store: Noun
+    config: Noun
+    command: Noun
+    prompt: Noun
+    plugin: { root: string }
+  }
+  export type Handler = (...args: any[]) => any
+  export type On = (event: string, optionsOrHandler: Handler | object, handler?: Handler) => void
+  export type Register = (on: On, options: PluginOptions) => any
+  export type RenderPropsOf = Record<string, any>
   export type RenderElement = any
   export type RenderNode = any
   export type RenderSurface = any
@@ -20,9 +36,28 @@ declare module 'claude-code' {
   export type Timer = any
   export type UiPane = any
   export type UiPressArgument = any
-  export function atom<T>(initial: T, options?: any): any
+  export type Cell<T> = { readonly value?: T }
+  export function atom<T>(key: object, initial: T): Cell<T>
   export function read(...args: any[]): any
-  export function update(...args: any[]): any
+  export function update<T>(engine: unknown, cell: Cell<T>, change: (value: T) => T): any
+}
+
+declare module 'claude-code/testing' {
+  export type TestNode = { children: unknown[]; [member: string]: any }
+  export type Mounted = {
+    find: (query?: object) => Promise<TestNode | undefined>
+    findAll: (query?: object) => Promise<TestNode[]>
+    [member: string]: any
+  }
+  export type Engine = {
+    ui: { mount: (...args: any[]) => Promise<Mounted>; [member: string]: any }
+    [member: string]: any
+  }
+  export type TestBody = (engine: Engine, on: import('claude-code').On) => any
+  export const describe: (name: string, body: () => void) => void
+  export const test: (name: string, optionsOrBody: object | TestBody, body?: TestBody) => void
+  export const expect: any
+  export const mock: any
 }
 
 // The engine also declares these as globals: JSX compiles to bare `h(...)`

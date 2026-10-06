@@ -6,6 +6,6 @@
     "jsxFactory": "h",
     "jsxFragmentFactory": "Fragment"
   },
-  "include": ["engine.d.ts", "lib/**/*.ts", "mod/**/*.ts", "mod/**/*.tsx"],
+  "include": ["engine.d.ts", "register.tsx", "register.test.ts", "lib/**/*.ts", "mod/**/*.ts", "mod/**/*.tsx"],
   "exclude": []
 }

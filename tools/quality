@@ -91,7 +91,7 @@ run_mod_checks() (
             > "$stage/tsconfig.json"
         "$root/node_modules/.bin/tsc" -p "$stage/tsconfig.json"
     else
-        printf 'knossos mod: Claude Code API types not found; strict type-check of hooks/register.tsx NOT run\n' >&2
+        printf 'knossos mod: Claude Code API types not found; register.tsx checked against hooks/engine.d.ts only (typecheck:mod)\n' >&2
     fi
 )
 
