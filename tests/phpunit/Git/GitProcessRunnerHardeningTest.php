@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Git;
 
 use Knossos\Git\GitProcessRunner;
+use Knossos\Git\ProcessGitHistoryProvider;
 use Knossos\Tests\Phpunit\Support\Processes;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
@@ -24,6 +25,10 @@ final class GitProcessRunnerHardeningTest extends TestCase
         self::assertContains('core.fsmonitor=false', GitProcessRunner::FORCED_CONFIG);
         self::assertContains('core.hooksPath=/dev/nonexistent', GitProcessRunner::FORCED_CONFIG);
         self::assertContains('diff.external=', GitProcessRunner::FORCED_CONFIG);
+        self::assertContains('log.showSignature=false', GitProcessRunner::FORCED_CONFIG);
+        foreach (['gpg.program', 'gpg.openpgp.program', 'gpg.ssh.program', 'gpg.x509.program'] as $key) {
+            self::assertContains($key . '=/dev/nonexistent', GitProcessRunner::FORCED_CONFIG);
+        }
     }
 
     /** The child environment is an explicit allow-list, never the parent's. */
@@ -67,7 +72,19 @@ final class GitProcessRunnerHardeningTest extends TestCase
             $lines = explode("\n", $output, 2);
             $argv = explode("\037", $lines[0]);
             self::assertSame(
-                ['ARGV', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/nonexistent', '-c', 'diff.external=', '-c', 'protocol.version=2', 'diff'],
+                [
+                    'ARGV',
+                    '-c', 'core.fsmonitor=false',
+                    '-c', 'core.hooksPath=/dev/nonexistent',
+                    '-c', 'diff.external=',
+                    '-c', 'protocol.version=2',
+                    '-c', 'log.showSignature=false',
+                    '-c', 'gpg.program=/dev/nonexistent',
+                    '-c', 'gpg.openpgp.program=/dev/nonexistent',
+                    '-c', 'gpg.ssh.program=/dev/nonexistent',
+                    '-c', 'gpg.x509.program=/dev/nonexistent',
+                    'diff',
+                ],
                 $argv,
                 'The forced config overrides must precede the caller\'s subcommand.',
             );
@@ -210,6 +227,56 @@ final class GitProcessRunnerHardeningTest extends TestCase
         } finally {
             self::runQuiet(['rm', '-rf', $root]);
             @unlink($canary);
+        }
+    }
+
+    /**
+     * `log.showSignature` makes `git log` and `git show` verify each signed
+     * commit by running `gpg.program`, and both keys come from the
+     * repository's own config. A history query over such a repository must
+     * not run that program. Skipped where git is unavailable.
+     */
+    public function testPlantedGpgProgramIsNotExecutedByHistory(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $root = sys_get_temp_dir() . '/knossos-git-hardening-gpg-' . bin2hex(random_bytes(8));
+        $canary = $root . '.canary';
+        $program = $root . '.gpg';
+        $object = $root . '.commit';
+        mkdir($root, 0o700, true);
+        try {
+            self::runQuiet([$git, 'init', '-q', $root]);
+            file_put_contents($root . '/a.txt', "hi\n");
+            self::runQuiet([$git, '-C', $root, 'add', 'a.txt']);
+            self::runQuiet([$git, '-C', $root, '-c', 'user.email=a@b', '-c', 'user.name=a', 'commit', '-qm', 'init']);
+            $tree = trim((string) shell_exec(escapeshellarg($git) . ' -C ' . escapeshellarg($root) . ' rev-parse "HEAD^{tree}"'));
+            $now = time();
+            // A commit carrying a signature header: what makes git call gpg.program.
+            file_put_contents($object, sprintf(
+                "tree %s\nauthor a <a@b> %d +0000\ncommitter a <a@b> %d +0000\n"
+                . "gpgsig -----BEGIN PGP SIGNATURE-----\n \n AAAA\n -----END PGP SIGNATURE-----\n\nsigned\n",
+                $tree,
+                $now,
+                $now,
+            ));
+            $commit = trim((string) shell_exec(escapeshellarg($git) . ' -C ' . escapeshellarg($root) . ' hash-object -t commit -w ' . escapeshellarg($object)));
+            self::runQuiet([$git, '-C', $root, 'update-ref', 'HEAD', $commit]);
+            file_put_contents($program, sprintf("#!/bin/sh\ntouch %s\nexit 1\n", escapeshellarg($canary)));
+            chmod($program, 0o700);
+            self::runQuiet([$git, '-C', $root, 'config', 'log.showSignature', 'true']);
+            self::runQuiet([$git, '-C', $root, 'config', 'gpg.program', $program]);
+
+            (new ProcessGitHistoryProvider())->history($root, 3650, 10, 5000);
+
+            self::assertFileDoesNotExist($canary, 'gpg.program was executed by a read-only history query.');
+        } finally {
+            self::runQuiet(['rm', '-rf', $root]);
+            @unlink($canary);
+            @unlink($program);
+            @unlink($object);
         }
     }
 

@@ -60,6 +60,10 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
      * run time by {@see self::driverOverrides()} instead, since a fixed list
      * cannot anticipate a repository's own `.gitattributes`.
      *
+     * Signature verification is switched off and every signing program is
+     * pointed at nothing, because `log.showSignature` makes `log` and `show`
+     * run whatever `gpg.program` (or its ssh and x509 variants) names.
+     *
      * Public so tests can assert the set is complete without reconstructing it,
      * and so a future call site cannot quietly build a command that skips them.
      *
@@ -70,6 +74,11 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
         'core.hooksPath=/dev/nonexistent',
         'diff.external=',
         'protocol.version=2',
+        'log.showSignature=false',
+        'gpg.program=/dev/nonexistent',
+        'gpg.openpgp.program=/dev/nonexistent',
+        'gpg.ssh.program=/dev/nonexistent',
+        'gpg.x509.program=/dev/nonexistent',
     ];
 
     /**
