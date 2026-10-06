@@ -72,6 +72,10 @@ final class QueryCommand implements CliCommand
     /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
+        // Every command but list-projects names its project first: read the graph that holds it.
+        if ($command !== 'list-projects' && isset($positionals[0])) {
+            $context = $context->forTarget($positionals[0], $options);
+        }
         return match ($command) {
             'list-projects' => $this->listProjects($options, $context),
             'list-snapshots' => $this->listSnapshots($positionals, $options, $context),

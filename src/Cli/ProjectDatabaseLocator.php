@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Knossos\Cli;
 
 use Knossos\Runtime\RuntimeFactory;
+use Knossos\Store\SqliteConnection;
+use Throwable;
 
 /**
  * Decides which graph a path-addressed brief command reads.
@@ -37,8 +39,13 @@ final readonly class ProjectDatabaseLocator
      * Precedence is unchanged where it was ever explicit: `--db` first,
      * `KNOSSOS_DATA_DIR` second (a container installation depends on it, and
      * the runtime already knows how to join it), then the installation's
-     * graph in `~/.knossos` when it exists (where `tools/install` points the
-     * server and the hooks), and only then the target path.
+     * graph in `~/.knossos` (where `tools/install` points the server and the
+     * hooks) when it holds the target's project or nothing nearer exists,
+     * and otherwise the graph nearest the target. A project scanned into its
+     * own `.knossos` is never hidden behind a home graph that never saw it.
+     *
+     * `$target` is a path, or a project id: an id (a bare word not on disk)
+     * has no place there, so the walk for it starts at the working directory.
      *
      * @param array<string, list<string>> $options
      */
@@ -49,7 +56,28 @@ final readonly class ProjectDatabaseLocator
             || (is_string($dataDirectory) && $dataDirectory !== '')) {
             return $context->databasePath();
         }
-        return RuntimeFactory::homeDatabasePath() ?? $this->nearestDatabase($target);
+        // A bare word that is not on disk is an id; anything with a slash is a path, there or not.
+        $isId = !str_contains($target, '/') && !file_exists($target);
+        $nearest = $this->nearestDatabase($isId ? (getcwd() ?: $target) : $target);
+        $home = RuntimeFactory::homeDatabasePath();
+        if ($home !== null && (!is_file($nearest) || self::holds($home, $target))) {
+            return $home;
+        }
+
+        return $nearest;
+    }
+
+    /**
+     * Whether the graph at `$database` knows the project `$target` names.
+     * Read only, and false for a file that is no graph at all.
+     */
+    private static function holds(string $database, string $target): bool
+    {
+        try {
+            return (new ProjectReference(SqliteConnection::open($database), $database))->find($target) !== null;
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     /**

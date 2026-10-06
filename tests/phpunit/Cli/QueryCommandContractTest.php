@@ -193,6 +193,53 @@ final class QueryCommandContractTest extends KnossosTestCase
         return $path;
     }
 
+    /**
+     * With nothing pinned, a project's own `.knossos` is found from the
+     * argument or, for an id, from the working directory, as the briefs find
+     * it. A command that finds no graph says so; it never creates one.
+     */
+    #[Group('cli')]
+    public function testAnUnpinnedQueryFindsTheGraphNearestItsArgumentAndCreatesNone(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-nearest-' . bin2hex(random_bytes(4));
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/turn-brief', $root);
+        $root = (string) realpath($root);
+        mkdir($root . '/.knossos', 0700);
+        mkdir($root . '/src/Core/deep', 0700);
+        $runtime = new RuntimeFactory(self::repositoryRoot());
+        $projectId = (new ProjectScanService($runtime->database($root . '/.knossos/knossos.sqlite'), self::repositoryRoot(), [$root]))->scan($root)->projectId;
+        $dataDir = getenv('KNOSSOS_DATA_DIR');
+        putenv('KNOSSOS_DATA_DIR');
+        $cwd = (string) getcwd();
+        chdir($root . '/src/Core/deep');
+        try {
+            foreach (['../..', $projectId] as $argument) {
+                $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), $runtime, null);
+                ob_start();
+                try {
+                    (new QueryCommand())->run('architecture-summary', [$argument], ['json' => ['1']], $context);
+                } finally {
+                    $out = json_decode((string) ob_get_clean(), true, 512, JSON_THROW_ON_ERROR);
+                }
+                assertSame($projectId, $out['project_id'], $argument);
+            }
+            assertSame(false, is_dir($root . '/src/Core/deep/.knossos'));
+            chdir(sys_get_temp_dir());
+            $unpinned = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), $runtime, null);
+            try {
+                (new QueryCommand())->run('architecture-summary', [$projectId], [], $unpinned);
+                self::fail('A graph that is not there answered.');
+            } catch (InvalidArgumentException $error) {
+                assertSame(true, str_starts_with($error->getMessage(), 'Project not found: ' . $projectId), $error->getMessage());
+            }
+            assertSame(false, is_file(sys_get_temp_dir() . '/.knossos/knossos.sqlite'));
+        } finally {
+            chdir($cwd);
+            putenv($dataDir === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $dataDir);
+            $this->removeTempTree($root);
+        }
+    }
+
     /** The project argument is a path as readily as an id; an unknown one names the database read. */
     #[Group('cli')]
     public function testAQueryCommandTakesAPathAsWellAsAnId(): void

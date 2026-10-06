@@ -40,6 +40,7 @@ final class ProjectListCommand implements CliCommand
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         $argument = $positionals[0] ?? throw new InvalidArgumentException(sprintf('Usage: knossos %s <path|project-id> [options]', $command));
+        $context = $context->forTarget($argument, $options);
         $project = (new ProjectReference($context->database(), $context->databasePath()))->resolve($argument);
 
         return match ($command) {

@@ -28,6 +28,27 @@ final class CliCommandContext
         private readonly ?string $databasePath,
     ) {}
 
+    /**
+     * This invocation, reading the graph that holds `$target` (a path or a
+     * project id) when no database was named: located as the briefs locate
+     * theirs. A located graph that does not exist is refused here, so a
+     * query never creates an empty database where none was.
+     *
+     * @param array<string, list<string>> $options
+     */
+    public function forTarget(string $target, array $options): self
+    {
+        if ($this->databasePath !== null) {
+            return $this;
+        }
+        $located = (new ProjectDatabaseLocator())->locate($target, $options, $this);
+        if (!is_file($located)) {
+            throw new \InvalidArgumentException(sprintf('Project not found: %s (database: %s)', $target, $located));
+        }
+
+        return new self($this->options, $this->input, $this->runtime, $located);
+    }
+
     /** The graph connection, opened and migrated on first call. */
     public function database(): PDO
     {
