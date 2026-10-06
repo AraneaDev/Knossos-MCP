@@ -64,6 +64,11 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
      * pointed at nothing, because `log.showSignature` makes `log` and `show`
      * run whatever `gpg.program` (or its ssh and x509 variants) names.
      *
+     * `core.sshCommand` is pointed at nothing as a second line behind the
+     * environment's ban on lazy fetching ({@see self::ENVIRONMENT}): a partial
+     * clone fetches a missing object from its promisor remote on first read,
+     * and over ssh that fetch runs the program the repository's config names.
+     *
      * Public so tests can assert the set is complete without reconstructing it,
      * and so a future call site cannot quietly build a command that skips them.
      *
@@ -79,6 +84,7 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
         'gpg.openpgp.program=/dev/nonexistent',
         'gpg.ssh.program=/dev/nonexistent',
         'gpg.x509.program=/dev/nonexistent',
+        'core.sshCommand=/dev/nonexistent',
     ];
 
     /**
@@ -94,6 +100,16 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
      * rather than an empty string: PHP's proc_open drops env entries whose
      * value is empty, so an empty string would not reach the child at all.
      *
+     * GIT_NO_LAZY_FETCH and GIT_ALLOW_PROTOCOL stop a partial clone from
+     * fetching a missing object from its promisor remote when a read touches
+     * it. That fetch runs the repository's own transport program
+     * (`core.sshCommand` over ssh, `remote.<name>.uploadpack` over a local
+     * path or `file://` URL), and a repository-level `protocol.<name>.allow`
+     * outranks a `-c protocol.allow=never`. GIT_ALLOW_PROTOCOL replaces every
+     * `protocol.*.allow` setting; `none` names no real protocol, so every
+     * transport is refused. Each one closes the hole on its own, so a Git too
+     * old for GIT_NO_LAZY_FETCH stays covered by the other.
+     *
      * @var array<string, string>
      */
     public const ENVIRONMENT = [
@@ -103,6 +119,8 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
         'GIT_TERMINAL_PROMPT' => '0',
         'GIT_ASKPASS' => '/dev/nonexistent',
         'GIT_OPTIONAL_LOCKS' => '0',
+        'GIT_NO_LAZY_FETCH' => '1',
+        'GIT_ALLOW_PROTOCOL' => 'none',
     ];
 
     /**
