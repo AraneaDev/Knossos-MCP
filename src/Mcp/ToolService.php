@@ -171,6 +171,20 @@ final readonly class ToolService
      * @param array<string, mixed> $arguments
      * @param array{properties: list<string>, required: list<string>} $schema
      */
+    private static function validateKeys(array $arguments, array $schema): void
+    {
+        $required = array_diff($schema['required'], ['verbosity', 'max_chars', 'refresh_if_stale']);
+        foreach ($required as $key) {
+            if (!array_key_exists($key, $arguments)) {
+                throw new ToolInputException(sprintf('Missing required argument: %s', $key));
+            }
+        }
+        $unknown = array_diff(array_keys($arguments), $schema['properties']);
+        if ($unknown !== []) {
+            throw new ToolInputException(sprintf('Unknown argument: %s', reset($unknown)));
+        }
+    }
+
     /** @param array<string, mixed> $arguments */
     private function assertWithinRoots(string $name, array $arguments): void
     {
@@ -190,20 +204,6 @@ final readonly class ToolService
             return;
         }
         (new RootGuard($this->environment->roots))->resolve($root);
-    }
-
-    private static function validateKeys(array $arguments, array $schema): void
-    {
-        $required = array_diff($schema['required'], ['verbosity', 'max_chars', 'refresh_if_stale']);
-        foreach ($required as $key) {
-            if (!array_key_exists($key, $arguments)) {
-                throw new ToolInputException(sprintf('Missing required argument: %s', $key));
-            }
-        }
-        $unknown = array_diff(array_keys($arguments), $schema['properties']);
-        if ($unknown !== []) {
-            throw new ToolInputException(sprintf('Unknown argument: %s', reset($unknown)));
-        }
     }
 
     /**
