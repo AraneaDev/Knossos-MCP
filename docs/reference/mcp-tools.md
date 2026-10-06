@@ -235,7 +235,7 @@ List durable agent annotations recorded on components, optionally filtered by co
 | `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `component` | string | no | minLength=1 |
-| `kind` | string | no | enum=intended_boundary, confirmed_dead, false_positive, note |
+| `kind` | string | no | enum=intended_boundary, confirmed_dead, false_positive, intentional, note |
 | `limit` | integer | no | minimum=1; maximum=100; default=100 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
@@ -520,13 +520,13 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `annotate_component`
 
-Record a durable annotation on a component (intended_boundary, confirmed_dead, false_positive, note) that survives rescans. false_positive annotations remove the component from dead-code candidates. Preview by default; pass execute to apply.
+Record a durable annotation on a component (intended_boundary, confirmed_dead, false_positive, intentional, note) that survives rescans. false_positive (flagged wrongly) and intentional (true, and meant: a parked route, a test-only helper) remove the component from dead-code candidates. Preview by default; pass execute to apply.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `project_id` | string | yes | minLength=1 |
 | `component` | string | yes | minLength=1 |
-| `kind` | string | yes | enum=intended_boundary, confirmed_dead, false_positive, note |
+| `kind` | string | yes | enum=intended_boundary, confirmed_dead, false_positive, intentional, note |
 | `value` | string | no | maxLength=2000; default="" |
 | `remove` | boolean | no | default=false |
 | `execute` | boolean | no | default=false |

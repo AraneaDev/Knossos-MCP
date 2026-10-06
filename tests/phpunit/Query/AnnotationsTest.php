@@ -122,6 +122,35 @@ final class AnnotationsTest extends KnossosTestCase
         }
     }
 
+    /**
+     * `intentional` is for a finding that is true and meant: a route parked
+     * on purpose, a helper only tests use by design. It leaves the report as
+     * a false positive does, so the real findings are not buried under it on
+     * every scan, but it is counted apart: the graph was right.
+     */
+    #[Group('query')]
+    public function testAnIntentionalAnnotationLeavesTheReportAndIsCountedApart(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        foreach (['App\\Parked', 'App\\Both'] as $index => $name) {
+            $node = \Knossos\Store\StableId::symbol($ids['project'], 'php', 'class', $name);
+            $repository->saveNode($node, $ids['project'], 'php', 'class', $name, 'Orphan' . $index, null, $ids['file'], 50 + $index, 60 + $index, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        $queries->annotateComponent($ids['project'], 'App\\Parked', 'intentional', 'route parked until the MVP', execute: true);
+        // On one component a false positive wins: the graph was wrong there.
+        $queries->annotateComponent($ids['project'], 'App\\Both', 'intentional', 'kept', execute: true);
+        $queries->annotateComponent($ids['project'], 'App\\Both', 'false_positive', 'built by the container', execute: true);
+
+        $data = $queries->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+        assertSame([false, false], [in_array('App\\Parked', $names, true), in_array('App\\Both', $names, true)]);
+        assertSame([1, 1], [$data['bounds']['annotated_intentional'], $data['bounds']['annotated_false_positives']]);
+        assertSame(['App\\Both', 'App\\Parked'], array_column($queries->listAnnotations($ids['project'], kind: 'intentional')->data['annotations'], 'canonical_name'));
+    }
+
     #[Group('query')]
     public function testFalsePositiveTakesPrecedenceOverConfirmedDeadOnSameComponent(): void
     {

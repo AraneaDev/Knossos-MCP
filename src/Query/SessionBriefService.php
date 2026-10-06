@@ -272,8 +272,8 @@ final readonly class SessionBriefService
     /**
      * What earlier sessions wrote down.
      *
-     * Only `note`: the other three kinds (`intended_boundary`, `false_positive`,
-     * `confirmed_dead`) exist to change how other read surfaces behave, and are
+     * Only `note`: the other kinds (`intended_boundary`, `false_positive`,
+     * `intentional`, `confirmed_dead`) exist to change how other read surfaces behave, and are
      * not orientation material.
      *
      * @return list<string>

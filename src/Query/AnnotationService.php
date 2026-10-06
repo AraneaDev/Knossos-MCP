@@ -13,7 +13,7 @@ use InvalidArgumentException;
  */
 final readonly class AnnotationService extends AbstractArchitectureQueryService
 {
-    public const KINDS = ['intended_boundary', 'confirmed_dead', 'false_positive', 'note'];
+    public const KINDS = ['intended_boundary', 'confirmed_dead', 'false_positive', 'intentional', 'note'];
     /** Record or remove a durable annotation, previewing unless executing. */
 
     public function annotateComponent(string $projectId, string $component, string $kind, string $value = '', bool $remove = false, bool $execute = false): ResultEnvelope

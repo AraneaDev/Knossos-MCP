@@ -70,6 +70,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $suppressedCount = 0;
         $annotationsByName = $facts->componentAnnotations();
         $annotatedFalsePositives = 0;
+        $annotatedIntentional = 0;
         $memberReachability = $this->containerMemberReachability($projectId, $provisional, $edgeKinds, $minConfidenceRank);
         foreach ($provisional as $id => $candidate) {
             if (self::isSuppressed((string) $candidate['row']['canonical_name'], $suppressions)) {
@@ -79,6 +80,12 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             $annotation = $annotationsByName[(string) $candidate['row']['canonical_name']] ?? null;
             if ($annotation !== null && $annotation['kind'] === 'false_positive') {
                 ++$annotatedFalsePositives;
+                continue;
+            }
+            // True and meant (a parked route, a test-only helper): left out so
+            // it does not bury the real findings, but counted apart.
+            if ($annotation !== null && $annotation['kind'] === 'intentional') {
+                ++$annotatedIntentional;
                 continue;
             }
             $context = $inheritance[$id] ?? [
@@ -193,6 +200,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 'type_declarations' => $excludedTypeDeclarations,
                 'suppressed' => $suppressedCount,
                 'annotated_false_positives' => $annotatedFalsePositives,
+                'annotated_intentional' => $annotatedIntentional,
             ],
         ];
     }

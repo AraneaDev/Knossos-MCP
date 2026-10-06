@@ -205,10 +205,15 @@ knossos list-annotations project_... --json
 - `false_positive`: this component was flagged wrongly. `architecture_health`
   leaves it out of its dead-code candidates and counts it under
   `annotated_false_positives`.
+- `intentional`: the finding is true and meant, such as a route parked on
+  purpose or a helper only tests use by design. `architecture_health` leaves it
+  out of its dead-code candidates and counts it under `annotated_intentional`.
+  On one component, `false_positive` wins over `intentional`, which wins over
+  `confirmed_dead`.
 - `note`: a free-form remark. The [session brief](../claude-code/session-brief.md)
   lists the most recent notes at the start of a session.
 
-`false_positive`, `confirmed_dead` and `note` change what another tool shows.
+`false_positive`, `intentional`, `confirmed_dead` and `note` change what another tool shows.
 `intended_boundary` is recorded and listed, and no tool reads it.
 
 ### Survival across rescans

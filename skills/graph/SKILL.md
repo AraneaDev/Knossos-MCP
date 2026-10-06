@@ -64,7 +64,9 @@ Not worth writing, and actively harmful because they bury the ones above:
 - Speculation, or anything you have not verified.
 
 Mechanics: the tool previews by default. Pass `execute: true` to actually write.
-`kind` is `note` for free-form facts. The other three kinds change how other
-read surfaces behave, so use them only for their actual meaning:
+`kind` is `note` for free-form facts. The other kinds change how other read
+surfaces behave, so use them only for their actual meaning:
 `intended_boundary` marks a deliberate placement, `false_positive` stops a
-component being re-flagged, `confirmed_dead` records verified unused code.
+component being re-flagged because the graph was wrong, `intentional` stops it
+because the finding is true and meant (a parked route, a test-only helper),
+`confirmed_dead` records verified unused code.

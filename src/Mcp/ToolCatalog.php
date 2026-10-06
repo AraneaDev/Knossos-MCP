@@ -338,7 +338,7 @@ final readonly class ToolCatalog
                         ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'component' => ['type' => 'string', 'minLength' => 1],
-                        'kind' => ['type' => 'string', 'enum' => ['intended_boundary', 'confirmed_dead', 'false_positive', 'note']],
+                        'kind' => ['type' => 'string', 'enum' => ['intended_boundary', 'confirmed_dead', 'false_positive', 'intentional', 'note']],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
                         'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
                     ],
@@ -681,11 +681,11 @@ final readonly class ToolCatalog
         return [
             [
                 'name' => 'annotate_component', 'title' => 'Annotate component',
-                'description' => 'Record a durable annotation on a component (intended_boundary, confirmed_dead, false_positive, note) that survives rescans. false_positive annotations remove the component from dead-code candidates. Preview by default; pass execute to apply.',
+                'description' => 'Record a durable annotation on a component (intended_boundary, confirmed_dead, false_positive, intentional, note) that survives rescans. false_positive (flagged wrongly) and intentional (true, and meant: a parked route, a test-only helper) remove the component from dead-code candidates. Preview by default; pass execute to apply.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'component' => ['type' => 'string', 'minLength' => 1],
-                    'kind' => ['type' => 'string', 'enum' => ['intended_boundary', 'confirmed_dead', 'false_positive', 'note']],
+                    'kind' => ['type' => 'string', 'enum' => ['intended_boundary', 'confirmed_dead', 'false_positive', 'intentional', 'note']],
                     'value' => ['type' => 'string', 'maxLength' => 2000, 'default' => ''],
                     'remove' => ['type' => 'boolean', 'default' => false],
                     'execute' => ['type' => 'boolean', 'default' => false],

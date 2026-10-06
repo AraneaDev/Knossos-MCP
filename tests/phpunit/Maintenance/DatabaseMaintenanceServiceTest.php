@@ -827,6 +827,9 @@ final class DatabaseMaintenanceServiceTest extends TestCase
 
     public function testAVacuumWithNothingToFreeReportsNothing(): void
     {
+        // A migration that rebuilds a table frees the old one's pages, so a
+        // fresh database is not empty of them; one vacuum makes it so.
+        $this->makeService()->maintain('vacuum', true);
         $this->pdo->query('PRAGMA wal_checkpoint(TRUNCATE)')->fetchAll();
 
         $data = $this->makeService()->maintain('vacuum', true)->data;

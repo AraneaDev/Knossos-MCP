@@ -373,7 +373,7 @@ export class TypeScriptScanner {
             ];
             tally(
                 this.#scanProgram(
-                    `${directory}\0<fallback>`,
+                    `${directory}${FALLBACK_KEY}`,
                     programConfig(
                         request,
                         directory,
@@ -435,6 +435,7 @@ export class TypeScriptScanner {
                 maxFileBytes,
                 owner,
                 owners ?? new Map(),
+                key.endsWith(FALLBACK_KEY),
             );
         } catch (error) {
             if (!isStackOverflow(error)) throw error;
@@ -543,6 +544,7 @@ export class TypeScriptScanner {
         maxFileBytes,
         owner,
         owners,
+        fallback,
     ) {
         const checker = program.getTypeChecker();
         const diagnosticsByFile = diagnosticsForProgram(
@@ -550,6 +552,18 @@ export class TypeScriptScanner {
             root,
             maxFileBytes,
         );
+        // No tsconfig includes these files, and the fallback inherits no
+        // `types` or `lib`: a missing global or type library is its gap.
+        if (fallback) {
+            for (const [relative, items] of diagnosticsByFile) {
+                diagnosticsByFile.set(
+                    relative,
+                    items.filter(
+                        (item) => !UNKNOWN_GLOBAL_CODES.has(item.code),
+                    ),
+                );
+            }
+        }
 
         for (const sourceFile of program.getSourceFiles()) {
             const relative = relativeInside(root, sourceFile.fileName);
@@ -707,7 +721,8 @@ class TypeScriptLanguageFactCollector {
                 executable:
                     startsWithShebang(this.sourceFile.text) ||
                     hasMainGuard(this.sourceFile, this.checker) ||
-                    isClassicScript(this.sourceFile),
+                    isClassicScript(this.sourceFile) ||
+                    runsOnLoad(this.sourceFile),
             },
         );
     }
@@ -3072,6 +3087,84 @@ function isClassicScript(sourceFile) {
         sourceFile.commonJsModuleIndicator === undefined
     );
 }
+
+/**
+ * A module that exports nothing and calls something when it loads: run, not
+ * imported (`node scripts/seed.js` ending in `seed();`, or a bundler entry
+ * awaiting its start). A file with no module syntax at all is left to
+ * {@link isClassicScript}; one that exports, in either module system, can be
+ * imported, whatever it calls on load.
+ */
+function runsOnLoad(sourceFile) {
+    if (
+        sourceFile.externalModuleIndicator === undefined &&
+        sourceFile.commonJsModuleIndicator === undefined
+    ) {
+        return false;
+    }
+    return (
+        !exportsAnything(sourceFile) &&
+        sourceFile.statements.some(
+            (statement) =>
+                ts.isExpressionStatement(statement) &&
+                isCall(statement.expression),
+        )
+    );
+}
+
+/** A call, once `await`, `void` and parentheses around it are taken off. */
+function isCall(expression) {
+    let inner = expression;
+    while (
+        ts.isAwaitExpression(inner) ||
+        ts.isVoidExpression(inner) ||
+        ts.isParenthesizedExpression(inner)
+    ) {
+        inner = inner.expression;
+    }
+    return ts.isCallExpression(inner);
+}
+
+/**
+ * Whether the file exports: an `export` of any form, or `module.exports` or
+ * `exports` named anywhere in it (a UMD wrapper assigns them inside a
+ * function), so a CommonJS export is never missed.
+ */
+function exportsAnything(sourceFile) {
+    const exported = sourceFile.statements.some(
+        (statement) =>
+            ts.isExportDeclaration(statement) ||
+            ts.isExportAssignment(statement) ||
+            (ts.canHaveModifiers(statement) &&
+                (ts.getModifiers(statement) ?? []).some(
+                    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+                )),
+    );
+    if (exported) {
+        return true;
+    }
+    const namesExports = (node) =>
+        (ts.isIdentifier(node) && node.text === "exports") ||
+        ts.forEachChild(node, namesExports) === true;
+    return ts.forEachChild(sourceFile, namesExports) === true;
+}
+
+/** How a fallback program's cache key ends: no tsconfig includes its files. */
+const FALLBACK_KEY = "\0<fallback>";
+
+/**
+ * The errors that say a global name or a type library is missing: "Cannot
+ * find name", the hints to install `@types/node` or a test runner's types or
+ * to change `lib`, and a `types` entry that is not installed. Under a
+ * tsconfig they are real; in a fallback program they describe the `types`
+ * and `lib` it does not inherit. A missing module stays: the fallback does
+ * inherit how modules resolve.
+ */
+const UNKNOWN_GLOBAL_CODES = new Set(
+    [
+        2304, 2503, 2552, 2580, 2581, 2582, 2583, 2584, 2591, 2592, 2593, 2688,
+    ].map((code) => `TS${code}`),
+);
 
 /** What a `require` specifier may leave off, in the order it is tried. */
 const REQUIRE_SUFFIXES = [

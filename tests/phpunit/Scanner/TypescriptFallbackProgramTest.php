@@ -59,6 +59,42 @@ final class TypescriptFallbackProgramTest extends KnossosTestCase
      * incremental scan of the importer alone reported the import as a missing
      * module; the request's declaration files are offered to that program.
      */
+    /**
+     * A file no tsconfig includes is read with the resolution options of the
+     * config nearest to it, but not its `types` or `lib`: which globals and
+     * type libraries the project loads is unknown there. An error that a
+     * name or type library is missing (`__dirname`, `node:path`, a
+     * `/// <reference types>`) describes that gap, not the file, and is left
+     * out. A missing module, a type error and a grammar error stay.
+     */
+    public function testAFileInNoTsconfigLeavesOutOnlyTheGlobalsItCannotKnow(): void
+    {
+        $client = $this->typescriptWorkerClient();
+        try {
+            $contributions = iterator_to_array($client->scan([
+                'root' => self::repositoryRoot() . '/tests/Fixtures/fallback-diagnostics',
+                'files' => ['src/app.ts', 'visual/broken.ts', 'visual/fixtures.ts', 'visual/vite.visual.config.ts'],
+                'config_files' => ['tsconfig.json'],
+            ]), false);
+        } finally {
+            $client->shutdown();
+        }
+        $codes = [];
+        foreach ($contributions as $contribution) {
+            self::assertInstanceOf(ScanContribution::class, $contribution);
+            foreach ($contribution->diagnostics as $diagnostic) {
+                $codes[$diagnostic->evidence?->relativePath ?? ""][] = $diagnostic->code;
+            }
+        }
+        ksort($codes);
+
+        self::assertSame([
+            'src/app.ts' => ['TS2322'],
+            'visual/broken.ts' => ['TS2307', 'TS2322'],
+            'visual/fixtures.ts' => ['TS1117'],
+        ], $codes);
+    }
+
     public function testAnAmbientModuleResolvesWhenOnlyItsImporterIsScanned(): void
     {
         $client = $this->typescriptWorkerClient();
