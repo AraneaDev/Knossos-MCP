@@ -248,7 +248,7 @@ final readonly class ToolService
         } catch (\Throwable $error) {
             // No snapshot: a failed attempt leaves a scan row behind, and that
             // row is itself part of the staleness verdict.
-            return [[sprintf('refresh_if_stale: rescan failed (%s); serving the last complete graph.', $error->getMessage())], null];
+            return [[sprintf('refresh_if_stale: rescan failed (%s); serving the last complete graph.', ToolErrorMapper::publicMessage($error))], null];
         }
     }
 

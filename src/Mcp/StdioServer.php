@@ -239,25 +239,7 @@ final class StdioServer
                 }
                 $response = $this->toolError($id, 'KNOSSOS_SCAN_CANCELLED', $cancelled->getMessage());
             } catch (Throwable $error) {
-                $code = match (true) {
-                    $error instanceof \Knossos\Scan\ScanBusyException => 'KNOSSOS_SCAN_BUSY',
-                    // Mapped so the message survives: the generic branch below
-                    // replaces it, and the file this exception names is the
-                    // whole of what the caller needs to act on.
-                    $error instanceof \Knossos\Scan\ScanSnapshotChangedException => 'KNOSSOS_SCAN_SNAPSHOT_CHANGED',
-                    $error instanceof \Knossos\Scanner\Worker\WorkerException => $error->diagnosticCode,
-                    $error instanceof \Knossos\Discovery\DiscoveryException => 'KNOSSOS_UNSAFE_PATH',
-                    $error instanceof \InvalidArgumentException => 'KNOSSOS_INVALID_ARGUMENT',
-                    default => 'KNOSSOS_TOOL_ERROR',
-                };
-                if ($code === 'KNOSSOS_TOOL_ERROR') {
-                    // Unexpected failure: log the raw detail, return a generic
-                    // message so internals never leak to the client.
-                    error_log('knossos tool error: ' . $error->getMessage());
-                    $response = $this->toolError($id, $code, 'An unexpected error occurred while running the tool.');
-                } else {
-                    $response = $this->toolError($id, $code, $error->getMessage());
-                }
+                $response = $this->toolError($id, ToolErrorMapper::code($error), ToolErrorMapper::publicMessage($error));
             }
             unset($this->cancelledRequests[(string) $id]);
             return $response;
