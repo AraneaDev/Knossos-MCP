@@ -93,7 +93,7 @@ final class RootsCommandReportTest extends KnossosTestCase
 
     /** A new roots file's directory is created owner-only, as the runtime creates it. */
     #[Group('cli')]
-    public function testANewRootsDirectoryIsCreatedWithOrdinaryPermissions(): void
+    public function testANewRootsDirectoryIsCreatedOwnerOnly(): void
     {
         $nested = $this->tempDir . '/fresh/place/roots.json';
 
