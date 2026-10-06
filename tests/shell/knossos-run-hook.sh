@@ -335,6 +335,14 @@ expect_silent_success 'container component-detail without a name' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp
 expect_output 'container file-context passes the file under the project' "img:1|file-context|$ABS_PROJ/src/A.php|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-context "$STUBS/proj" src/A.php
+# The same `..` guard as the local wrapper. The two cases above prove a valid
+# path reaches docker through this harness, so silence here is the guard's.
+for path in '..' '../x.php' 'src/../../etc/passwd' 'src/..'; do
+    expect_silent_success "container file-detail refuses $path" \
+        env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail "$STUBS/proj" "$path"
+    expect_silent_success "container file-context refuses $path" \
+        env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-context "$STUBS/proj" "$path"
+done
 expect_output 'container graph-search passes what was typed' "img:1|graph-search|$ABS_PROJ|--query=dash|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" graph-search "$STUBS/proj" --query=dash
 expect_silent_success 'container graph-search refuses another option' \
