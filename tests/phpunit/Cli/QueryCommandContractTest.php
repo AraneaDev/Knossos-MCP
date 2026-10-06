@@ -81,6 +81,11 @@ final class QueryCommandContractTest extends KnossosTestCase
         // integer, so supply the ones a command accepts, with valid content.
         $policies = self::temporaryJson([['id' => 'p', 'from_boundary' => 'core', 'deny_targets' => ['tests']]]);
         $budgets = self::temporaryJson(['new_cycles' => 0]);
+        // The project argument is resolved before any option is read, so it
+        // has to name a project; one row is enough, with no snapshot behind it.
+        $database = sys_get_temp_dir() . '/knossos-stale-bounds-' . bin2hex(random_bytes(4)) . '.sqlite';
+        (new RuntimeFactory(self::repositoryRoot()))->database($database)
+            ->exec("INSERT INTO projects (id, name, root_realpath, created_at, updated_at) VALUES ('p1', 'p1', '/p1', 'now', 'now')");
         $checked = 0;
         try {
             foreach (self::COMMANDS as $command) {
@@ -101,14 +106,14 @@ final class QueryCommandContractTest extends KnossosTestCase
                     foreach ([$maximum + 1, $minimum - 1] as $outside) {
                         assertSame(
                             $expected,
-                            self::errorFrom($command, ['p1', 'p2', 'p3'], [...$files, $option => [(string) $outside]]),
+                            self::errorFrom($command, ['p1', 'p2', 'p3'], [...$files, $option => [(string) $outside]], $database),
                             sprintf('%s --%s=%d must be refused with the advertised bounds.', $command, $option, $outside),
                         );
                     }
                     foreach ([$maximum, $minimum] as $inside) {
                         assertNotSame(
                             $expected,
-                            self::errorFrom($command, ['p1', 'p2', 'p3'], [...$files, $option => [(string) $inside]]),
+                            self::errorFrom($command, ['p1', 'p2', 'p3'], [...$files, $option => [(string) $inside]], $database),
                             sprintf('%s --%s=%d is advertised as legal and must not be refused as out of range.', $command, $option, $inside),
                         );
                     }
@@ -118,6 +123,7 @@ final class QueryCommandContractTest extends KnossosTestCase
         } finally {
             @unlink($policies);
             @unlink($budgets);
+            @unlink($database);
         }
         assertSame(true, $checked >= 25, sprintf('Expected to check at least 25 bounded CLI options, checked %d.', $checked));
     }
@@ -187,15 +193,35 @@ final class QueryCommandContractTest extends KnossosTestCase
         return $path;
     }
 
+    /** The project argument is a path as readily as an id; an unknown one names the database read. */
+    #[Group('cli')]
+    public function testAQueryCommandTakesAPathAsWellAsAnId(): void
+    {
+        [, $projectId, $root] = $this->scanTempFixture('turn-brief');
+        $database = sys_get_temp_dir() . '/knossos-stale-cli-' . bin2hex(random_bytes(4)) . '.sqlite';
+        try {
+            (new ProjectScanService((new RuntimeFactory(self::repositoryRoot()))->database($database), self::repositoryRoot(), [$root]))->scan($root);
+            $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $database);
+            ob_start();
+            (new QueryCommand())->run('architecture-summary', [$root . '/src'], ['json' => ['1']], $context);
+            $out = json_decode((string) ob_get_clean(), true, 512, JSON_THROW_ON_ERROR);
+            assertSame($projectId, $out['project_id']);
+            assertSame('Project not found: /nowhere (database: ' . $database . ')', self::errorFrom('architecture-summary', ['/nowhere'], [], $database));
+        } finally {
+            @unlink($database);
+            $this->removeTempTree($root);
+        }
+    }
+
     /**
      * The message a command fails with, or null when it completes.
      *
      * @param list<string> $positionals
      * @param array<string, list<string>> $options
      */
-    private static function errorFrom(string $command, array $positionals, array $options = []): ?string
+    private static function errorFrom(string $command, array $positionals, array $options = [], string $database = ':memory:'): ?string
     {
-        $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), ':memory:');
+        $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $database);
         ob_start();
         try {
             (new QueryCommand())->run($command, $positionals, $options, $context);

@@ -7,6 +7,7 @@ namespace Knossos\Cli\Command;
 use InvalidArgumentException;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
+use Knossos\Cli\ProjectReference;
 use Knossos\Git\ProcessGitHistoryProvider;
 use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Query\ArchitecturePolicyQueryService;
@@ -138,7 +139,7 @@ final class QueryCommand implements CliCommand
      */
     private function listSnapshots(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos list-snapshots <project-id> [--limit=N] [--offset=N]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos list-snapshots <path|project-id> [--limit=N] [--offset=N]'), $c);
         $result = $this->queries($c)->listSnapshots($project, $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'offset', 0, 0, 100_000));
         return $this->result($result, $o, $c);
     }
@@ -150,7 +151,7 @@ final class QueryCommand implements CliCommand
      */
     private function snapshotDiff(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos snapshot-diff <project-id> <from-snapshot> [to-snapshot]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos snapshot-diff <path|project-id> <from-snapshot> [to-snapshot]'), $c);
         $from = $p[1] ?? throw new InvalidArgumentException('A source snapshot is required.');
         $result = $this->queries($c)->snapshotDiff($project, $from, $p[2] ?? 'active', $c->options->integer($o, 'max-changes', 25, 1, 1000));
         return $this->result($result, $o, $c);
@@ -163,7 +164,7 @@ final class QueryCommand implements CliCommand
      */
     private function qualityGate(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos quality-gate <project-id> <baseline-snapshot> --budgets=FILE');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos quality-gate <path|project-id> <baseline-snapshot> --budgets=FILE'), $c);
         $baseline = $p[1] ?? throw new InvalidArgumentException('A baseline snapshot is required.');
         $budget = $c->options->single($o, 'budgets') ?? throw new InvalidArgumentException('--budgets=FILE is required.');
         $policies = $c->options->single($o, 'policies');
@@ -179,7 +180,7 @@ final class QueryCommand implements CliCommand
      */
     private function architectureTrends(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-trends <project-id> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-trends <path|project-id> [options]'), $c);
         $result = $this->queries($c)->architectureTrends($project, $c->options->integer($o, 'limit', 10, 2, 20), $c->options->single($o, 'release-from'));
         $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->data['release_notes']['markdown'] ?? $result->summary);
         return 0;
@@ -192,7 +193,7 @@ final class QueryCommand implements CliCommand
      */
     private function findComponent(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos find-component <project-id> <name> [--limit=N] [--json]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos find-component <path|project-id> <name> [--limit=N] [--json]'), $c);
         $name = $p[1] ?? throw new InvalidArgumentException('A component name is required.');
         return $this->result($this->queries($c)->findComponent($project, $name, $c->options->integer($o, 'limit', 20, 1, 100)), $o, $c);
     }
@@ -204,7 +205,7 @@ final class QueryCommand implements CliCommand
      */
     private function inspectComponent(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos inspect-component <project-id> <component> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos inspect-component <path|project-id> <component> [options]'), $c);
         $component = $p[1] ?? throw new InvalidArgumentException('A component ID or name is required.');
         $result = $this->queries($c)->inspectComponent($project, $component, $c->options->integer($o, 'max-relationships', 25, 1, 100), $c->options->integer($o, 'max-children', 25, 1, 100), $c->options->single($o, 'min-confidence') ?? 'possible');
         return $this->result($result, $o, $c);
@@ -217,7 +218,7 @@ final class QueryCommand implements CliCommand
      */
     private function listUsages(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos list-usages <project-id> <symbol> [--edge-kind=K]... [--min-confidence=L] [--limit=N] [--json]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos list-usages <path|project-id> <symbol> [--edge-kind=K]... [--min-confidence=L] [--limit=N] [--json]'), $c);
         $symbol = $p[1] ?? throw new InvalidArgumentException('A symbol is required.');
         $result = $this->queries($c)->listUsages($project, $symbol, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 100, 1, 500));
         return $this->result($result, $o, $c);
@@ -230,7 +231,7 @@ final class QueryCommand implements CliCommand
      */
     private function architectureSummary(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-summary <project-id> [--json]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-summary <path|project-id> [--json]'), $c);
         $result = $this->queries($c)->architectureSummary($project, $c->options->integer($o, 'limit', 50, 1, 100));
         $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->summary);
         return 0;
@@ -243,7 +244,7 @@ final class QueryCommand implements CliCommand
      */
     private function explainFlow(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos explain-flow <project-id> <from> <to> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos explain-flow <path|project-id> <from> <to> [options]'), $c);
         $from = $p[1] ?? throw new InvalidArgumentException('A flow source is required.');
         $to = $p[2] ?? throw new InvalidArgumentException('A flow target is required.');
         $result = $this->queries($c)->explainFlow($project, $from, $to, $c->options->integer($o, 'max-depth', 6, 1, 8), $c->options->integer($o, 'max-paths', 5, 1, 20), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
@@ -257,7 +258,7 @@ final class QueryCommand implements CliCommand
      */
     private function impactAnalysis(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos impact-analysis <project-id> <symbol> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos impact-analysis <path|project-id> <symbol> [options]'), $c);
         $symbol = $p[1] ?? throw new InvalidArgumentException('An impact target is required.');
         $result = $this->queries($c)->impactAnalysis($project, $symbol, $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
         return $this->result($result, $o, $c);
@@ -270,7 +271,7 @@ final class QueryCommand implements CliCommand
      */
     private function dependencyCycles(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos dependency-cycles <project-id> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos dependency-cycles <path|project-id> [options]'), $c);
         $result = $this->queries($c)->dependencyCycles($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 100_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), $c->options->flag($o, 'include-self-loops'));
         return $this->result($result, $o, $c);
     }
@@ -282,7 +283,7 @@ final class QueryCommand implements CliCommand
      */
     private function architectureHealth(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-health <project-id> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-health <path|project-id> [options]'), $c);
         $result = $this->queries($c)->architectureHealth($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 100_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), $c->options->flag($o, 'include-external'), $c->options->flag($o, 'include-tests'), $c->options->single($o, 'candidate-confidence') ?? 'possible', $c->options->integer($o, 'candidate-offset', 0, 0, 100_000), $c->options->integer($o, 'candidate-timeout', 5000, 1, 60_000));
         return $this->result($result, $o, $c);
     }
@@ -294,7 +295,7 @@ final class QueryCommand implements CliCommand
      */
     private function checkArchitecture(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos check-architecture <project-id> --policies=FILE [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos check-architecture <path|project-id> --policies=FILE [options]'), $c);
         $path = $c->options->single($o, 'policies') ?? throw new InvalidArgumentException('--policies=FILE is required.');
         $result = $this->queries($c)->checkArchitecture($project, $c->input->policies($path), $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 100, 1, 100), $c->options->integer($o, 'max-edges', ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
         $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->summary);
@@ -311,7 +312,7 @@ final class QueryCommand implements CliCommand
      */
     private function suggestLocation(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos suggest-location <project-id> <feature-description> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos suggest-location <path|project-id> <feature-description> [options]'), $c);
         $description = $p[1] ?? throw new InvalidArgumentException('A feature description is required.');
         $result = $this->queries($c)->suggestLocation($project, $description, $c->options->integer($o, 'limit', 5, 1, 20), $c->options->integer($o, 'max-members', 20_000, 1, 50_000), $c->options->integer($o, 'max-edges', 100_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), $c->options->single($o, 'ranking-mode') ?? 'deterministic');
         return $this->result($result, $o, $c);
@@ -324,7 +325,7 @@ final class QueryCommand implements CliCommand
      */
     private function changeImpact(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos change-impact <project-id> <symbol> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos change-impact <path|project-id> <symbol> [options]'), $c);
         $symbol = $p[1] ?? throw new InvalidArgumentException('An impact target is required.');
         $queries = new ArchitectureQueryService($c->database(), gitHistory: new ProcessGitHistoryProvider());
         $result = $queries->changeImpact($project, $symbol, $c->options->integer($o, 'since-days', 90, 1, 3650), $c->options->integer($o, 'max-commits', 500, 1, 5000), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
@@ -338,7 +339,7 @@ final class QueryCommand implements CliCommand
      */
     private function changedFilesImpact(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos changed-files-impact <project-id> [files...] [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos changed-files-impact <path|project-id> [files...] [options]'), $c);
         $queries = new ArchitectureQueryService($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
         $result = $queries->changedFilesImpact($project, array_slice($p, 1), $c->options->flag($o, 'working-tree'), $c->options->single($o, 'base-ref'), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
         return $this->result($result, $o, $c);
@@ -351,7 +352,7 @@ final class QueryCommand implements CliCommand
      */
     private function testImpact(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos test-impact <project-id> [files...] [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos test-impact <path|project-id> [files...] [options]'), $c);
         $queries = new ArchitectureQueryService($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
         $result = $queries->testImpact($project, array_slice($p, 1), isset($o['working-tree']), $c->options->single($o, 'base-ref'), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
         return $this->result($result, $o, $c);
@@ -364,7 +365,7 @@ final class QueryCommand implements CliCommand
      */
     private function reviewDiff(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos review-diff <project-id> [FILE...] [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos review-diff <path|project-id> [FILE...] [options]'), $c);
         $policies = $c->options->single($o, 'policies');
         $budgets = $c->options->single($o, 'budgets');
         $queries = new ArchitectureQueryService($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
@@ -390,7 +391,7 @@ final class QueryCommand implements CliCommand
      */
     private function architectureContext(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-context <project-id> [files...] --task=TEXT [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-context <path|project-id> [files...] --task=TEXT [options]'), $c);
         $result = $this->queries($c)->architectureContext($project, $c->options->single($o, 'task') ?? '', array_slice($p, 1), $c->options->integer($o, 'max-chars', 30_000, 4000, 100_000), $c->options->integer($o, 'timeout-ms', 1500, 1, 5000), isset($o['include-source']));
         return $this->result($result, $o, $c);
     }
@@ -402,7 +403,7 @@ final class QueryCommand implements CliCommand
      */
     private function exportDiagram(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos export-diagram <project-id> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos export-diagram <path|project-id> [options]'), $c);
         $result = $this->queries($c)->exportDiagram($project, $c->options->single($o, 'format') ?? 'mermaid', $c->options->single($o, 'boundary'), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->single($o, 'direction') ?? 'LR', $c->options->integer($o, 'max-nodes', 200, 1, 400), $c->options->integer($o, 'max-edges', 500, 1, 1000));
         $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->data['diagram']);
         return 0;
@@ -415,7 +416,7 @@ final class QueryCommand implements CliCommand
      */
     private function exportAgentBrief(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos export-agent-brief <project-id> [--max-chars=N] [--out=FILE] [--json]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos export-agent-brief <path|project-id> [--max-chars=N] [--out=FILE] [--json]'), $c);
         $result = $this->queries($c)->exportAgentBrief($project, $c->options->integer($o, 'max-chars', 4000, 1000, 20_000));
         $out = $c->options->single($o, 'out');
         if ($out !== null && file_put_contents($out, $result->data['markdown']) === false) {
@@ -432,7 +433,7 @@ final class QueryCommand implements CliCommand
      */
     private function listBoundaries(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos list-boundaries <project-id> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos list-boundaries <path|project-id> [options]'), $c);
         $result = $this->queries($c)->listBoundaries($project, $c->options->single($o, 'source'), $c->options->integer($o, 'limit', 50, 1, 100), $c->options->integer($o, 'offset', 0, 0, 100_000));
         return $this->result($result, $o, $c);
     }
@@ -444,7 +445,7 @@ final class QueryCommand implements CliCommand
      */
     private function searchArchitecture(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos search-architecture <project-id> <query> [options]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos search-architecture <path|project-id> <query> [options]'), $c);
         $query = $p[1] ?? throw new InvalidArgumentException('A search query is required.');
         $result = $this->queries($c)->searchArchitecture($project, $query, $o['kind'] ?? [], $o['role'] ?? [], $o['boundary'] ?? [], $o['confidence'] ?? [], $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'offset', 0, 0, 100_000));
         return $this->result($result, $o, $c);
@@ -457,7 +458,7 @@ final class QueryCommand implements CliCommand
      */
     private function fileMetrics(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos file-metrics <project-id> [--path=SUBSTR] [--language=LANG] [--sort-by=path|line_count] [--order=asc|desc] [--limit=N] [--offset=N]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos file-metrics <path|project-id> [--path=SUBSTR] [--language=LANG] [--sort-by=path|line_count] [--order=asc|desc] [--limit=N] [--offset=N]'), $c);
         $result = $this->queries($c)->fileMetrics(
             $project,
             $c->options->single($o, 'path'),
@@ -477,7 +478,7 @@ final class QueryCommand implements CliCommand
      */
     private function annotateComponent(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos annotate-component <project-id> <component> <kind> [value] [--remove] [--execute] [--json]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos annotate-component <path|project-id> <component> <kind> [value] [--remove] [--execute] [--json]'), $c);
         $component = $p[1] ?? throw new InvalidArgumentException('A component is required.');
         $kind = $p[2] ?? throw new InvalidArgumentException('A kind is required.');
         $result = $this->queries($c)->annotateComponent($project, $component, $kind, $p[3] ?? '', isset($o['remove']), isset($o['execute']));
@@ -491,12 +492,17 @@ final class QueryCommand implements CliCommand
      */
     private function listAnnotations(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos list-annotations <project-id> [--component=NAME] [--kind=KIND] [--limit=N] [--offset=N] [--json]');
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos list-annotations <path|project-id> [--component=NAME] [--kind=KIND] [--limit=N] [--offset=N] [--json]'), $c);
         $result = $this->queries($c)->listAnnotations($project, $c->options->single($o, 'component'), $c->options->single($o, 'kind'), $c->options->integer($o, 'limit', 100, 1, 100), $c->options->integer($o, 'offset', 0, 0, 100_000));
         return $this->result($result, $o, $c);
     }
-    /** The query facade for this invocation. */
+    /** The project id a `<path|project-id>` argument names, in this invocation's database. */
+    private function project(string $argument, CliCommandContext $context): string
+    {
+        return (new ProjectReference($context->database(), $context->databasePath()))->resolve($argument)['id'];
+    }
 
+    /** The query facade for this invocation. */
     private function queries(CliCommandContext $context): ArchitectureQueryService
     {
         return new ArchitectureQueryService($context->database());
