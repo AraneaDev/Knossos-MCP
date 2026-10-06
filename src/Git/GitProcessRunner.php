@@ -106,9 +106,12 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
      * (`core.sshCommand` over ssh, `remote.<name>.uploadpack` over a local
      * path or `file://` URL), and a repository-level `protocol.<name>.allow`
      * outranks a `-c protocol.allow=never`. GIT_ALLOW_PROTOCOL replaces every
-     * `protocol.*.allow` setting; `none` names no real protocol, so every
-     * transport is refused. Each one closes the hole on its own, so a Git too
-     * old for GIT_NO_LAZY_FETCH stays covered by the other.
+     * `protocol.*.allow` setting, and `:` is an empty allow-list, so every
+     * transport is refused. A word such as `none` would not do: it allow-lists
+     * a transport of that name, which a `none::<address>` URL reaches through
+     * a `git-remote-none` helper found on PATH. Each variable closes the hole
+     * on its own, so a Git too old for GIT_NO_LAZY_FETCH stays covered by the
+     * other.
      *
      * @var array<string, string>
      */
@@ -120,7 +123,7 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
         'GIT_ASKPASS' => '/dev/nonexistent',
         'GIT_OPTIONAL_LOCKS' => '0',
         'GIT_NO_LAZY_FETCH' => '1',
-        'GIT_ALLOW_PROTOCOL' => 'none',
+        'GIT_ALLOW_PROTOCOL' => ':',
     ];
 
     /**

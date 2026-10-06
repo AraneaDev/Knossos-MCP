@@ -40,7 +40,7 @@ final class GitProcessRunnerHardeningTest extends TestCase
         self::assertSame('/dev/null', GitProcessRunner::ENVIRONMENT['GIT_CONFIG_GLOBAL']);
         self::assertSame('0', GitProcessRunner::ENVIRONMENT['GIT_TERMINAL_PROMPT']);
         self::assertSame('1', GitProcessRunner::ENVIRONMENT['GIT_NO_LAZY_FETCH']);
-        self::assertSame('none', GitProcessRunner::ENVIRONMENT['GIT_ALLOW_PROTOCOL']);
+        self::assertSame(':', GitProcessRunner::ENVIRONMENT['GIT_ALLOW_PROTOCOL']);
         self::assertArrayNotHasKey('KNOSSOS_HTTP_BEARER_TOKEN', GitProcessRunner::ENVIRONMENT);
     }
 
@@ -102,7 +102,7 @@ final class GitProcessRunnerHardeningTest extends TestCase
             self::assertStringContainsString('GIT_ASKPASS=/dev/nonexistent', $env);
             self::assertStringContainsString('GIT_OPTIONAL_LOCKS=0', $env);
             self::assertStringContainsString('GIT_NO_LAZY_FETCH=1', $env);
-            self::assertStringContainsString('GIT_ALLOW_PROTOCOL=none', $env);
+            self::assertContains('GIT_ALLOW_PROTOCOL=:', explode("\n", $env));
             self::assertStringContainsString('PATH=', $env);
             self::assertStringNotContainsString($secretName, $env, 'A parent-only variable must not reach the child.');
         } finally {
@@ -362,6 +362,42 @@ final class GitProcessRunnerHardeningTest extends TestCase
             self::assertFileDoesNotExist($fixture['canary'], 'remote.origin.uploadpack was executed by a lazy fetch over a ' . $variant . ' remote.');
         } finally {
             self::removePartialCloneFixture($fixture);
+        }
+    }
+
+    /**
+     * A URL of the form `none::<address>` asks Git for a remote helper named
+     * `git-remote-none`, looked up on PATH. The transport allow-list must
+     * refuse every transport, including one with that name, so a helper of
+     * that name on the inherited PATH must not run. The allow-list is probed
+     * directly rather than through a lazy fetch, so the lazy-fetch switch
+     * cannot hide it. Skipped where git is unavailable.
+     */
+    public function testTheTransportAllowListRefusesAHelperNamedNone(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $bin = sys_get_temp_dir() . '/knossos-git-hardening-helper-' . bin2hex(random_bytes(8));
+        $canary = $bin . '.canary';
+        mkdir($bin, 0o700, true);
+        file_put_contents($bin . '/git-remote-none', sprintf("#!/bin/sh\ntouch %s\nexit 1\n", escapeshellarg($canary)));
+        chmod($bin . '/git-remote-none', 0o700);
+        $previous = getenv('PATH');
+        putenv('PATH=' . $bin . ':' . (is_string($previous) && $previous !== '' ? $previous : '/usr/bin:/bin'));
+        try {
+            try {
+                (new GitProcessRunner())->run([$git, 'ls-remote', 'none::x'], 5000, 'allow-list probe');
+            } catch (\RuntimeException) {
+                // The transport is refused, so the command fails; only the canary matters.
+            }
+
+            self::assertFileDoesNotExist($canary, 'git-remote-none was executed although every transport is refused.');
+        } finally {
+            putenv($previous === false ? 'PATH' : 'PATH=' . $previous);
+            self::runQuiet(['rm', '-rf', $bin]);
+            @unlink($canary);
         }
     }
 
