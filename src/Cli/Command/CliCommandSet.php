@@ -35,6 +35,7 @@ final readonly class CliCommandSet
             new WatchCommand(),
             new BundleCommand(),
             new QueryCommand(),
+            new ProjectListCommand(),
             new SessionCommand(),
             new BriefCommand(),
             new SessionDiffCommand(),

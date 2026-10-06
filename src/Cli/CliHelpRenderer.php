@@ -85,6 +85,8 @@ Usage:
                               [--max-edges=N] [--timeout-ms=N] [--include-external]
                               [--include-tests] [--candidate-confidence=LEVEL]
                               [--candidate-offset=N] [--candidate-timeout=MS] [--json]
+  knossos dead-code <path|project-id> [--reachability=unreferenced|test-only]
+                    [--db=PATH] [--json]
   knossos check-architecture <path|project-id> --policies=FILE [--limit=N]
                              [--min-confidence=LEVEL] [--max-edges=N]
                              [--timeout-ms=N] [--json]
