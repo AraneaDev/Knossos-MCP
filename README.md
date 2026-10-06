@@ -93,8 +93,8 @@ that allows this project, scans it, and registers the MCP server with Claude Cod
 Re-run it from another project to add that one.
 
 Then install the plugin, which carries the pane, the notes, the session brief and the routing
-skill. Its hooks run the `knossos` on your path, and must read the data directory your server
-uses:
+skill. Its hooks run the `knossos` of the checkout that installed the plugin (falling back to
+the one on your path), and must read the data directory your server uses:
 
 ```sh
 ln -s /absolute/path/to/knossos/bin/knossos ~/.local/bin/knossos

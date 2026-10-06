@@ -82,9 +82,13 @@ The hooks look for `knossos` in a fixed, short order:
 A project's own `bin/knossos` is never run: opening a repository must not
 execute code it ships.
 
-Every failure is silent by design, so a session in a project outside your
-Knossos checkout simply gets no brief, with nothing to say why. One symlink
-into a directory on that list makes it work everywhere:
+An installed plugin finds `knossos` in every project through the path the
+installer wrote in, so it needs nothing else. The exception is a
+`--plugin-dir` session from a checkout that never ran the installer: its
+scripts still hold the placeholder, so they fall through to `PATH` and the
+fixed locations. Every failure is silent by design, so such a session simply
+gets no brief, with nothing to say why. One symlink into a directory on that
+list makes it work:
 
 ```sh
 ln -s /absolute/path/to/knossos/bin/knossos ~/.local/bin/knossos
@@ -115,7 +119,7 @@ own. Use it where the plugin is not also installed, so it loads once.
 - `hooks/register.tsx`, `hooks/lib/*.ts` and `hooks/mod/*`, the mod, each file
   named one by one so no spec or config beside them is copied;
 - `hooks/scripts/`, the hook and wrapper scripts and their shared library, with
-  the data directory written in;
+  the data directory and the path of the `knossos` binary written in;
 - `skills/graph/SKILL.md`, the routing skill;
 - `types/index.d.ts`, the mod's types.
 
