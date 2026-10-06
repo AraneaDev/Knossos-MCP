@@ -87,6 +87,7 @@ final class PluginCommand implements CliCommand
         '/hooks/lib/overview.ts',
         '/hooks/lib/palette.ts',
         '/hooks/lib/paths.ts',
+        '/hooks/lib/printable.ts',
         '/hooks/lib/raster.ts',
         '/hooks/lib/rings.ts',
         '/hooks/lib/route.ts',
