@@ -833,8 +833,9 @@ final class PluginCommandTest extends KnossosTestCase
     #[Group('cli')]
     public function testHostileValuesReachTheContainerRunWrapperVerbatim(): void
     {
-        $root = sys_get_temp_dir();
-        $result = $this->runHostileContainerScript('knossos-run.sh', 'turn-brief ' . escapeshellarg($root));
+        // The project is the directory the script starts in, never one that
+        // holds the stub docker: the wrapper drops PATH entries inside the project.
+        $result = $this->runHostileContainerScript('knossos-run.sh', 'turn-brief .');
 
         $hostile = substr(strstr($result['output'], 'HOSTILE=') ?: '', 8);
         assertSame(true, $hostile !== '');

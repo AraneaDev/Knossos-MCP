@@ -109,8 +109,13 @@ rm -rf "$proj" "$home"
 # leaves a marker if it runs. KNOSSOS_BIN is a trusted stub in the timeout
 # cases and unset in the knossos ones, which also start inside the project so
 # the lookup of dirname, before the hook enters it, is covered too.
+#
+# An absolute entry that points into the project (a tool manager adds
+# `<project>/node_modules/.bin` that way) finds the same programs, whether it
+# names the project directly or reaches it through a symbolic link.
 planted="$(mktemp -d)"
 mkdir -p "$planted/bare" "$planted/trusted" "$planted/dockerbin"
+ln -s "$planted/proj/node_modules/.bin" "$planted/linked-bin"
 ln -s "$(command -v dirname)" "$planted/bare/dirname"
 printf '#!/bin/sh\nexit 0\n' > "$planted/trusted/knossos"
 printf '#!/bin/sh\nexit 0\n' > "$planted/dockerbin/docker"
@@ -121,7 +126,7 @@ expect_no_planted_run() {
     proj="$planted/proj"
     rm -rf "$proj"
     mkdir -p "$proj/node_modules/.bin"
-    for tool in knossos timeout gtimeout docker dirname; do
+    for tool in knossos timeout gtimeout docker dirname tr; do
         for dir in "$proj" "$proj/node_modules/.bin"; do
             printf '#!/bin/sh\n: > "%s/RAN"\n' "$proj" > "$dir/$tool"
             chmod +x "$dir/$tool"
@@ -136,7 +141,7 @@ expect_no_planted_run() {
         printf 'ok   %s\n' "$label"
     fi
 }
-for entry in node_modules/.bin . ''; do
+for entry in node_modules/.bin . '' "$planted/proj/node_modules/.bin" "$planted/linked-bin"; do
     expect_no_planted_run "PATH entry '$entry' never finds the project's knossos" \
         env -u KNOSSOS_BIN PATH="$entry:$planted/bare" HOME="$planted" CLAUDE_PROJECT_DIR="$planted/proj" "$SH_BIN" -c "cd '$planted/proj' && exec '$SH_BIN' '$HOOK'"
     expect_no_planted_run "PATH entry '$entry' never finds the project's timeout" \
