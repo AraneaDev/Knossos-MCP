@@ -35,6 +35,7 @@ final readonly class ArchitectureQueryService
     private StalenessProbe $stalenessProbe;
     private AgentBriefService $briefQueries;
     private AnnotationService $annotationQueries;
+    private FileContextQueryService $fileContextQueries;
     private RefreshPolicy $refreshPolicy;
 
     public function __construct(
@@ -75,6 +76,7 @@ final readonly class ArchitectureQueryService
         $this->stalenessProbe = new StalenessProbe($pdo, $wallClock, $driftOracle);
         $this->briefQueries = new AgentBriefService($pdo, $clock, $this->topologyQueries);
         $this->annotationQueries = new AnnotationService($pdo, $clock);
+        $this->fileContextQueries = new FileContextQueryService($pdo, $clock);
     }
 
     /**
@@ -467,6 +469,12 @@ final readonly class ArchitectureQueryService
     public function annotateComponent(string $projectId, string $component, string $kind, string $value = '', bool $remove = false, bool $execute = false): ResultEnvelope
     {
         return $this->annotationQueries->annotateComponent($projectId, $component, $kind, $value, $remove, $execute);
+    }
+
+    /** {@see FileContextQueryService::fileContext()} */
+    public function fileContext(string $projectId, string $path): ResultEnvelope
+    {
+        return $this->fileContextQueries->fileContext($projectId, $path);
     }
 
     /** {@see AnnotationService::listAnnotations()} */

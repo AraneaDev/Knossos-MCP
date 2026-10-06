@@ -313,6 +313,22 @@ final readonly class ToolCatalog
             ],
             self::fileMetricsDefinition(),
             [
+                'name' => 'file_context',
+                'title' => 'File context',
+                'description' => 'One file\'s architectural context in one short answer: its boundary and the declared rules that bind it, how many files depend on it (and the closest few), the tests that reach it, and its latest commits. Call it before editing a file you have not read about, instead of grepping for its callers.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        ...self::commonReadProperties(),
+                        'project_id' => ['type' => 'string', 'minLength' => 1],
+                        'path' => ['type' => 'string', 'minLength' => 1, 'description' => 'The file, relative to the project root or absolute under it.'],
+                    ],
+                    'required' => ['project_id', 'path'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
+            [
                 'name' => 'list_annotations',
                 'title' => 'List annotations',
                 'description' => 'List durable agent annotations recorded on components, optionally filtered by component or kind. Use to review or audit prior annotate_component calls.',

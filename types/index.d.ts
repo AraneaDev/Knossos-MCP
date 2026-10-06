@@ -390,24 +390,6 @@ export type BranchDiff = {
 export type BranchState = { snapshot: string | null; phase: 'loading' | 'done'; answer: BranchDiff | null }
 
 /**
- * The `file-context` subcommand's answer: one file's boundary, dependents,
- * the tests that reach it and its latest commits, each cut to a few.
- */
-export type FileContext = {
-  status: 'ok' | 'unscanned' | 'not-found' | 'error' | 'no-binary'
-  file: {
-    path: string
-    language: string
-    lines: number | null
-    boundary: string | null
-    components: number
-    dependents: { count: number; boundaries: string[]; top: string[] }
-    tests: { items: { path: string; distance: number }[]; more: boolean }
-    commits: { rev: string; at: number; subject: string }[]
-  } | null
-}
-
-/**
  * The `churn` subcommand's answer: the files changed most in the last `days`
  * days (by commits, at most `commits` read, ending at `head`) times the
  * files depending on each, the highest score first. `no-git` when git is not

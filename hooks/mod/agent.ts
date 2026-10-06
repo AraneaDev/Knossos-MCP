@@ -1,51 +1,15 @@
 /**
  * What the model is told: the note on a Read or an edit, the note after a
- * turn and after a commit, how a note is delivered, and the answer of the
- * model's own `knossos_context` tool.
+ * turn and after a commit, and how a note is delivered.
  */
-import { commitNote, contextAnswer, REFLOG_READ, stillReported } from '../lib/agent'
-import { parseFileContext } from '../lib/envelopes'
+import { commitNote, REFLOG_READ, stillReported } from '../lib/agent'
 import type { TurnBrief } from '../lib/envelopes'
-import { refusedRoot } from '../lib/layout'
-import { boundOf, editNote, fanInIndex, freshViolations, readNote, ruleText, testsNote, violationKey, violationNote } from '../lib/notes'
+import { editNote, fanInIndex, freshViolations, readNote, testsNote, violationKey, violationNote } from '../lib/notes'
 import { declaredOf } from '../lib/palette'
 import { relativise } from '../lib/paths'
-import { keepEdit, placed, shownChanges, wrapper } from './port'
+import { keepEdit, placed, shownChanges } from './port'
 import type { Port } from './port'
 import { mod, ownChange, takeNoteSlot } from './state'
-
-/** The wrapper bounds file-context at 15 s. */
-const CONTEXT_TIMEOUT_MS = 20_000
-
-/**
- * The `knossos_context` tool's answer for `asked` (a path, relative to the
- * project or absolute): `file-context` for it, the rules the dashboard says
- * bind it, and how this session changed it. Bounded and compact; never
- * throws, whatever the wrapper does.
- */
-export async function answerContext(io: Port, asked: unknown): Promise<string> {
-  if (typeof asked !== 'string' || asked.trim() === '') return 'knossos_context: give the file as `path`, relative to the project root or absolute.'
-  // Advice the model can act on: a missing binary and a refused root are not cured by a scan.
-  if (mod.disabled) return 'knossos_context: no knossos binary was found in this session, so there is no graph to answer from; read the file and grep for its callers instead.'
-  const d = await io.state.dashboard.read()
-  if (d?.status !== 'ok' || d.project_root === null) {
-    const refused = refusedRoot(await io.state.brief.read(), await io.state.rescan.read())
-    if (refused !== null) return `knossos_context: knossos may not scan ${refused.root}: it is not an allowed root. Ask the person to allow it (the knossos band offers the command), then call this again.`
-    return 'knossos_context: knossos has no graph of this project yet; scan it with the knossos MCP tools first.'
-  }
-  const root = d.project_root
-  const placedPath = asked.startsWith('/') ? await placed(io, asked) : asked.replace(/^\.\//, '')
-  const relative = placedPath.startsWith('/') ? relativise(root, placedPath) : placedPath
-  if (relative === null || relative === '' || relative.split('/').includes('..')) return `knossos_context: ${asked} is outside the project knossos scanned (${root}).`
-  const context = parseFileContext(await wrapper(io, 'file-context', [relative], CONTEXT_TIMEOUT_MS, root))
-  if (context?.status === 'no-binary') return 'knossos_context: no knossos binary is installed.'
-  const { bound, unsure } = boundOf(relative, d.policy)
-  const rules = (d.policy?.rules ?? []).filter(r => bound.includes(r.from)).map(ruleText)
-  // Only a change of this session's own: one made outside it since it began is not the session's doing.
-  const shown = await shownChanges(io, root)
-  const session = ownChange(shown, relative) ? (shown.files[relative]?.status ?? null) : null
-  return contextAnswer(asked, context, rules, unsure, session)
-}
 
 /** How long git may take to name HEAD or print its reflog around a shell command. */
 const GIT_PROBE_TIMEOUT_MS = 2_000

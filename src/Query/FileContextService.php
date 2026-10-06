@@ -9,8 +9,8 @@ use PDO;
 use Throwable;
 
 /**
- * One file's context in one answer, for the `knossos_context` tool the Claude
- * Code mod gives the model: where the file sits (its boundary), what depends
+ * One file's context in one answer, for the `file_context` MCP tool and the
+ * `file-context` command: where the file sits (its boundary), what depends
  * on it (the count and the most connected few), the tests that reach it, and
  * its latest commits.
  *
@@ -18,8 +18,8 @@ use Throwable;
  * {@see ArchitectureQueryService::testImpact()} (tests), each list cut to a
  * few; the commits come from git alone, bounded in count and time, and are
  * simply absent where git is not there or does not answer. Read-only, never
- * scans. The rules a boundary is bound by are the mod's to add: it holds the
- * declared policies already.
+ * scans. The rules a boundary is bound by are added by
+ * {@see FileContextQueryService}.
  */
 final readonly class FileContextService
 {

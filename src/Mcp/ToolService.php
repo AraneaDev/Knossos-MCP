@@ -274,6 +274,7 @@ final readonly class ToolService
             'architecture_summary' => $this->summary($arguments),
             'export_agent_brief' => $this->exportAgentBrief($arguments),
             'file_metrics' => $this->fileMetrics($arguments),
+            'file_context' => $this->fileContext($arguments),
             'explain_flow' => $this->flow($arguments),
             'impact_analysis' => $this->impact($arguments),
             'dependency_cycles' => $this->cycles($arguments),
@@ -616,6 +617,16 @@ final readonly class ToolService
             self::integer($arguments, 'limit', 50, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
         );
+    }
+
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::fileContext()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    private function fileContext(array $arguments): ResultEnvelope
+    {
+        return $this->queries->fileContext(self::string($arguments, 'project_id'), self::string($arguments, 'path'));
     }
 
     /**

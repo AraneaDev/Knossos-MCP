@@ -19,6 +19,7 @@ the same structure by reading the same files.
 | decide where a new file belongs              | `suggest_location`                                         |
 | eyeball a diff for architectural risk        | `review_diff`                                              |
 | work out what a class is and what it touches | `find_component`, then `inspect_component`                 |
+| read a file's callers before editing it      | `file_context`, boundary, rules, dependents, tests         |
 
 Every project-scoped tool needs a `project_id`. The session brief puts it in
 context already. If it is not there, `list_projects` returns it.

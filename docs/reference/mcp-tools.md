@@ -210,6 +210,20 @@ Find the largest or longest files. Use to spot refactor targets without shelling
 
 Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
+## `file_context`
+
+One file's architectural context in one short answer: its boundary and the declared rules that bind it, how many files depend on it (and the closest few), the tests that reach it, and its latest commits. Call it before editing a file you have not read about, instead of grepping for its callers.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
+| `refresh_if_stale` | boolean | no | default=true |
+| `project_id` | string | yes | minLength=1 |
+| `path` | string | yes | minLength=1 |
+
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
+
 ## `list_annotations`
 
 List durable agent annotations recorded on components, optionally filtered by component or kind. Use to review or audit prior annotate_component calls.

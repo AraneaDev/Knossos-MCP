@@ -26,7 +26,7 @@
 relationships between them, each with the file and line that proves it. In Claude Code,
 `/knossos` opens that graph as a live pane beside your session, and the agent gets a short note
 at the moment it reads, edits or commits a file that matters: how much depends on it, which
-rules bind it, and which tests reach it. The same graph answers 33 MCP tools and a CLI, for
+rules bind it, and which tests reach it. The same graph answers 34 MCP tools and a CLI, for
 Claude Code, Codex or any MCP client.
 
 Facts that static analysis cannot prove are labelled with their confidence and origin.
@@ -54,9 +54,9 @@ tabs and a search, then an edit, the band summing up the change, and its diff in
 - **Notes for the agent**: when the agent reads a heavily depended-on or policed file, edits
   one, ends a turn or makes a commit, it gets one short line about what that file or change
   carries. Each note is said once and never blocks a tool call
-- **`knossos_context`**: one tool call for a file's boundary and the rules that bind it, its
-  dependents, the tests that reach it, its latest commits and whether this session changed it
-- **33 MCP tools**: impact analysis, call sites, flows between components, cycles, hubs,
+- **`file_context`**: one tool call for a file's boundary and the rules that bind it, its
+  dependents, the tests that reach it and its latest commits
+- **34 MCP tools**: impact analysis, call sites, flows between components, cycles, hubs,
   dead-code candidates, change review, test impact, snapshots and trends. Every tool except
   `server_info` has an equivalent CLI command
 - **Evidence on every fact**: each relationship points back to a file and a line, and a path is
@@ -217,19 +217,42 @@ After a commit, for example:
 knossos: this session's changes carry 1 changed file no test reaches (src/Kernel.php); 1 dependency cycle new since the session began (Router → Kernel). Check them before you push.
 ```
 
-And the agent can ask about one file with `knossos_context` before it edits it:
+And the agent can ask about one file with `file_context` before it edits it, in one call
+instead of a grep for its callers:
 
-```text
-src/Query/ResultEnvelope.php: boundary core, PHP, 111 lines, 15 components.
-Dependents: 47 files in composer:araneadev/knossos (+node:knossos-quality, python:root), core, namespace:Knossos, tests; closest: tests/phpunit/Query/ResultEnvelopeTest.php, src/Mcp/ToolService.php, src/Query/ArchitectureQueryService.php, tests/phpunit/Mcp/MaxCharsTest.php, tests/phpunit/Protocol/ProtocolTest.php, and 42 more.
-Rules: core may not depend on php-worker, typescript-worker, python-worker, rust-worker, tooling, tests.
-Tests that reach it: tests/phpunit/Mcp/BoundaryLegendTest.php (1 hop), tests/phpunit/Mcp/ComponentLegendTest.php (1 hop), tests/phpunit/Mcp/MaxCharsTest.php (1 hop), tests/phpunit/Mcp/McpTest.php (1 hop), tests/phpunit/Mcp/RefreshIfStaleTest.php (1 hop), and more.
-Latest commits: 4e7027a 2026-07-30 feat(quality): enforce docstring coverage, and fix what running Knossos over Knossos found (#26); 2e6541c 2026-07-23 feat(mcp): opt-in refresh_if_stale rescans stale graphs before answering read tools; b63a610 2026-07-19 feat(envelope): add optional staleness, next_steps, meta enrichment fields.
-This session has not changed it.
+```json
+{
+    "path": "src/Query/ResultEnvelope.php",
+    "boundary": "core",
+    "dependents": {
+        "count": 48,
+        "top": [
+            "tests/phpunit/Query/ResultEnvelopeTest.php",
+            "src/Mcp/ToolService.php",
+            "..."
+        ]
+    },
+    "tests": {
+        "items": [
+            {
+                "path": "tests/phpunit/Mcp/BoundaryLegendTest.php",
+                "distance": 1
+            },
+            "..."
+        ],
+        "more": true
+    },
+    "commits": [
+        {
+            "rev": "4e7027a",
+            "subject": "feat(quality): enforce docstring coverage, ..."
+        }
+    ]
+}
 ```
 
 Every note, its exact wording and its limits are in [notes for the model](docs/claude-code/agent-notes.md).
-Over MCP, in any client, the 33 tools answer questions such as:
+Over MCP, in any client, the 34 tools answer questions such as:
 
 - What depends, directly or transitively, on `UserRepository`?
 - What are the exact call sites of `ScannerClient::scan`?

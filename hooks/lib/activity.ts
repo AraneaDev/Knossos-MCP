@@ -35,8 +35,8 @@ export const WAITING_TOOLS: ReadonlySet<string> = new Set([
 /**
  * Tools that only read: a call to one changes no file, so the time it runs is
  * not the session at work on the project, and a change another writer made
- * meanwhile is not the session's. The mod's own `knossos_context` tool is
- * matched by its name in whatever plugin namespace the engine lists it.
+ * meanwhile is not the session's. The server's `file_context` tool is
+ * matched by its name under whatever name the server is registered.
  */
 export const READING_TOOLS: ReadonlySet<string> = new Set(['Read', 'Grep', 'Glob'])
 
@@ -59,7 +59,7 @@ export type Activity = { running: Map<string, number>; spans: { start: number; e
 export const noActivity = (): Activity => ({ running: new Map(), spans: [] })
 
 /** Whether a call to `tool` counts as the session at work: one that can write, not one that waits or only reads. */
-export const counts = (tool: string): boolean => !WAITING_TOOLS.has(tool) && !READING_TOOLS.has(tool) && tool !== 'knossos_context' && !tool.endsWith('__knossos_context')
+export const counts = (tool: string): boolean => !WAITING_TOOLS.has(tool) && !READING_TOOLS.has(tool) && !tool.endsWith('__file_context')
 
 /** A call `id` started at `now`. */
 export function begin(activity: Activity, id: string, now: number): void {
