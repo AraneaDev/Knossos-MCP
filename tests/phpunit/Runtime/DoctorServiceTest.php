@@ -431,6 +431,10 @@ final class DoctorServiceTest extends KnossosTestCase
         [$runtime, $pattern, $minimum] = $floors['node'];
 
         self::assertSame('24', $minimum);
+        foreach (['package.json', 'workers/typescript/package.json'] as $manifest) {
+            $package = json_decode((string) file_get_contents(dirname(__DIR__, 3) . '/' . $manifest), true, flags: JSON_THROW_ON_ERROR);
+            self::assertSame('>=' . $minimum, $package['engines']['node'], $manifest);
+        }
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('Node 24 or newer is required');
         (new RuntimeVersionRequirement($runtime, $pattern, $minimum))->verify('v22.11.0');
