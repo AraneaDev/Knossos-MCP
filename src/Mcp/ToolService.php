@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Mcp;
 
 use InvalidArgumentException;
+use Knossos\Discovery\RootGuard;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Query\ArchitecturePolicyQueryService;
 use Knossos\Query\ArchitectureQueryService;
@@ -31,6 +32,14 @@ final readonly class ToolService
      * answer; callers who want more pass max_chars explicitly, up to 100000.
      */
     private const DEFAULT_MAX_CHARS = 30_000;
+
+    /**
+     * Tools whose answer reads the project's files or runs git in its root.
+     * The database is shared with the CLI and can hold projects from anywhere
+     * on the machine, so these are confined to the server's allowed roots the
+     * same way a scan is. Graph-only tools answer for every project.
+     */
+    private const DISK_TOOLS = ['file_context', 'change_impact', 'changed_files_impact', 'test_impact', 'review_diff'];
 
     public function __construct(
         // The interface rather than ProjectScanService: scan() is the only
@@ -129,6 +138,7 @@ final readonly class ToolService
         // Validate the request's keys before any (potentially expensive) rescan
         // so a malformed request cannot trigger a refresh it will never use.
         self::validateKeys($arguments, $schema);
+        $this->assertWithinRoots($name, $arguments);
 
         $refreshWarnings = [];
         $probed = null;
@@ -173,6 +183,31 @@ final readonly class ToolService
         if ($unknown !== []) {
             throw new ToolInputException(sprintf('Unknown argument: %s', reset($unknown)));
         }
+    }
+
+    /**
+     * Refuses a tool that reads disk or git when its project lies outside the allowed roots.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    private function assertWithinRoots(string $name, array $arguments): void
+    {
+        if ($this->environment === null) {
+            return;
+        }
+        $readsDisk = in_array($name, self::DISK_TOOLS, true)
+            || ($name === 'architecture_context' && ($arguments['include_source'] ?? false) === true);
+        $projectId = self::normalized($arguments['project_id'] ?? null);
+        if (!$readsDisk || $projectId === '') {
+            return;
+        }
+        $root = $this->queries->projectRoot($projectId);
+        // A missing root is the tool's own answer to give; reporting it as
+        // "outside the roots" would send the caller to fix the wrong thing.
+        if ($root === null || !RootGuard::exists($root)) {
+            return;
+        }
+        (new RootGuard($this->environment->roots))->resolve($root);
     }
 
     /**
@@ -248,7 +283,7 @@ final readonly class ToolService
         } catch (\Throwable $error) {
             // No snapshot: a failed attempt leaves a scan row behind, and that
             // row is itself part of the staleness verdict.
-            return [[sprintf('refresh_if_stale: rescan failed (%s); serving the last complete graph.', $error->getMessage())], null];
+            return [[sprintf('refresh_if_stale: rescan failed (%s); serving the last complete graph.', ToolErrorMapper::publicMessage($error))], null];
         }
     }
 

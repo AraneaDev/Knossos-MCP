@@ -710,4 +710,50 @@ final class RefreshIfStaleTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    /** A rescan that fails unexpectedly is reported without its raw exception text, which is logged instead. */
+    #[Group('mcp')]
+    public function testAFailedRescanDoesNotLeakTheExceptionText(): void
+    {
+        [, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $file = $root . '/src/CheckoutService.php';
+            file_put_contents($file, "\n// drift\n", FILE_APPEND);
+            touch($file, filemtime($file) + 60);
+            $tools = new ToolService(
+                new class () implements \Knossos\Scan\ProjectScanner {
+                    public function scan(
+                        string $root,
+                        ?string $name = null,
+                        ?int $maxFiles = null,
+                        ?int $maxFileBytes = null,
+                        ?array $explicitBoundaries = null,
+                        ?string $mode = null,
+                        ?\Knossos\Scan\CancellationToken $cancellation = null,
+                        ?int $snapshotRetention = null,
+                        ?int $workerTimeoutMs = null,
+                        ?int $workerMemoryMb = null,
+                    ): ResultEnvelope {
+                        throw new \RuntimeException('SQLSTATE[HY000]: /srv/internal/knossos.sqlite is locked');
+                    }
+                },
+                new ArchitectureQueryService($pdo),
+                new DatabaseMaintenanceService($pdo, ':memory:'),
+                new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
+            );
+
+            $result = null;
+            $logged = $this->errorLogOf(function () use ($tools, $projectId, &$result): void {
+                $result = $tools->call('architecture_summary', ['project_id' => $projectId, 'refresh_if_stale' => true]);
+            });
+
+            $joined = implode(' ', $result->warnings);
+            assertSame(true, str_contains($joined, 'refresh_if_stale: rescan failed'));
+            assertSame(false, str_contains($joined, 'SQLSTATE'));
+            assertSame(false, str_contains($joined, '/srv/internal'));
+            assertSame(true, str_contains($logged, 'SQLSTATE[HY000]'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }

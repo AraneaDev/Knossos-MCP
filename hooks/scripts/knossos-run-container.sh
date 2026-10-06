@@ -43,6 +43,50 @@
 # as /work would never match a session starting in /home/me/project.
 set -u
 
+# The directory the hook works in, resolved below to its physical path.
+KNOSSOS_PATH_PROJECT=${2:-}
+# Only absolute PATH entries that lie outside the project survive. The hook
+# runs inside the project, so a relative entry (`node_modules/.bin`, `.`, or an
+# empty one, which means the working directory) would resolve dirname, tr,
+# timeout, knossos or docker to a program the repository ships. So would an
+# absolute entry that points into the project, such as the
+# `<project>/node_modules/.bin` a tool manager adds, whether it names the
+# project directly or reaches it through a symbolic link. Each entry is
+# therefore compared by its physical path. One that does not resolve holds no
+# program to run and is compared as written. Builtins only, done first, before
+# any program is looked up.
+KNOSSOS_PATH_PROJECT=$(CDPATH='' cd -P -- "${KNOSSOS_PATH_PROJECT:-/}" 2>/dev/null && pwd -P) || KNOSSOS_PATH_PROJECT=''
+# The filesystem root holds every entry, so it is no directory to filter by.
+case $KNOSSOS_PATH_PROJECT in
+    /) KNOSSOS_PATH_PROJECT='' ;;
+esac
+KNOSSOS_SAFE_PATH=''
+KNOSSOS_SAVED_IFS=$IFS
+IFS=:
+set -f
+for KNOSSOS_PATH_ENTRY in ${PATH:-}; do
+    case $KNOSSOS_PATH_ENTRY in
+        /*) ;;
+        *) continue ;;
+    esac
+    KNOSSOS_PATH_REAL=$(CDPATH='' cd -P -- "$KNOSSOS_PATH_ENTRY" 2>/dev/null && pwd -P) || KNOSSOS_PATH_REAL=$KNOSSOS_PATH_ENTRY
+    case $KNOSSOS_PATH_PROJECT in
+        '') ;;
+        *)
+            case $KNOSSOS_PATH_REAL/ in
+                "$KNOSSOS_PATH_PROJECT"/*) continue ;;
+            esac
+            ;;
+    esac
+    KNOSSOS_SAFE_PATH="${KNOSSOS_SAFE_PATH:+$KNOSSOS_SAFE_PATH:}$KNOSSOS_PATH_ENTRY"
+done
+set +f
+IFS=$KNOSSOS_SAVED_IFS
+# An empty PATH would itself mean the working directory, so it never stays empty.
+PATH=${KNOSSOS_SAFE_PATH:-/usr/bin:/bin}
+export PATH
+unset KNOSSOS_SAFE_PATH KNOSSOS_SAVED_IFS KNOSSOS_PATH_ENTRY KNOSSOS_PATH_REAL KNOSSOS_PATH_PROJECT
+
 [ "$#" -ge 2 ] || exit 0
 SUBCOMMAND=$1
 PROJECT_DIR=$2
@@ -79,10 +123,10 @@ if [ "$SUBCOMMAND" = component-detail ]; then
 fi
 # file-detail takes exactly one file, relative to the project directory: an
 # option such as `--db=...` would point the read at another graph, and an
-# absolute path would read outside the directory the call names.
+# absolute path or a `..` step would read outside the directory the call names.
 if [ "$SUBCOMMAND" = file-detail ] || [ "$SUBCOMMAND" = file-context ]; then
     [ "$#" -eq 1 ] || exit 0
-    case "$1" in -* | /* | '') exit 0 ;; esac
+    case "$1" in -* | /* | '' | .. | ../* | */../* | */..) exit 0 ;; esac
 fi
 # Whether "$1" is one line of text of at most $2 characters: no control
 # character, counted by its characters. Read byte by byte (LC_ALL=C), so a

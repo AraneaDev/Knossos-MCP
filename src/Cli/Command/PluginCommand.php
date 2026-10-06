@@ -87,6 +87,7 @@ final class PluginCommand implements CliCommand
         '/hooks/lib/overview.ts',
         '/hooks/lib/palette.ts',
         '/hooks/lib/paths.ts',
+        '/hooks/lib/printable.ts',
         '/hooks/lib/raster.ts',
         '/hooks/lib/rings.ts',
         '/hooks/lib/route.ts',
@@ -206,11 +207,15 @@ final class PluginCommand implements CliCommand
             $scripts['hooks/scripts/' . $script] = $this->read($root . '/hooks/scripts/' . $script);
         }
         // Sourced by both scripts above, so it ships with them. The data
-        // location is baked in here, once, because a hook cannot ask the MCP
-        // server which directory it was started with.
+        // location and the binary are baked in here, once: a hook cannot ask
+        // the MCP server which directory it was started with, and must never
+        // go looking for a binary inside the project it serves.
         $scripts[self::LIBRARY_SCRIPT] = strtr(
             $this->read($root . '/' . self::LIBRARY_SCRIPT),
-            ['__KNOSSOS_DATA_DIR__' => $this->singleQuoted($dataDir, 'data-dir')],
+            [
+                '__KNOSSOS_DATA_DIR__' => $this->singleQuoted($dataDir, 'data-dir'),
+                '__KNOSSOS_BIN__' => $this->singleQuoted($root . '/bin/knossos', 'installation root'),
+            ],
         );
         $this->materialise($root, $pluginDirectory, $scripts, prune: true);
         foreach ($commands as $line) {

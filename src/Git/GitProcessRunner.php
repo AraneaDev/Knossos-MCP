@@ -60,6 +60,15 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
      * run time by {@see self::driverOverrides()} instead, since a fixed list
      * cannot anticipate a repository's own `.gitattributes`.
      *
+     * Signature verification is switched off and every signing program is
+     * pointed at nothing, because `log.showSignature` makes `log` and `show`
+     * run whatever `gpg.program` (or its ssh and x509 variants) names.
+     *
+     * `core.sshCommand` is pointed at nothing as a second line behind the
+     * environment's ban on lazy fetching ({@see self::ENVIRONMENT}): a partial
+     * clone fetches a missing object from its promisor remote on first read,
+     * and over ssh that fetch runs the program the repository's config names.
+     *
      * Public so tests can assert the set is complete without reconstructing it,
      * and so a future call site cannot quietly build a command that skips them.
      *
@@ -70,6 +79,12 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
         'core.hooksPath=/dev/nonexistent',
         'diff.external=',
         'protocol.version=2',
+        'log.showSignature=false',
+        'gpg.program=/dev/nonexistent',
+        'gpg.openpgp.program=/dev/nonexistent',
+        'gpg.ssh.program=/dev/nonexistent',
+        'gpg.x509.program=/dev/nonexistent',
+        'core.sshCommand=/dev/nonexistent',
     ];
 
     /**
@@ -85,6 +100,19 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
      * rather than an empty string: PHP's proc_open drops env entries whose
      * value is empty, so an empty string would not reach the child at all.
      *
+     * GIT_NO_LAZY_FETCH and GIT_ALLOW_PROTOCOL stop a partial clone from
+     * fetching a missing object from its promisor remote when a read touches
+     * it. That fetch runs the repository's own transport program
+     * (`core.sshCommand` over ssh, `remote.<name>.uploadpack` over a local
+     * path or `file://` URL), and a repository-level `protocol.<name>.allow`
+     * outranks a `-c protocol.allow=never`. GIT_ALLOW_PROTOCOL replaces every
+     * `protocol.*.allow` setting, and `:` is an empty allow-list, so every
+     * transport is refused. A word such as `none` would not do: it allow-lists
+     * a transport of that name, which a `none::<address>` URL reaches through
+     * a `git-remote-none` helper found on PATH. Each variable closes the hole
+     * on its own, so a Git too old for GIT_NO_LAZY_FETCH stays covered by the
+     * other.
+     *
      * @var array<string, string>
      */
     public const ENVIRONMENT = [
@@ -94,6 +122,8 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
         'GIT_TERMINAL_PROMPT' => '0',
         'GIT_ASKPASS' => '/dev/nonexistent',
         'GIT_OPTIONAL_LOCKS' => '0',
+        'GIT_NO_LAZY_FETCH' => '1',
+        'GIT_ALLOW_PROTOCOL' => ':',
     ];
 
     /**

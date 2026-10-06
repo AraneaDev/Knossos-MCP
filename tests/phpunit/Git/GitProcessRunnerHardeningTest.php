@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Git;
 
 use Knossos\Git\GitProcessRunner;
+use Knossos\Git\ProcessGitHistoryProvider;
 use Knossos\Tests\Phpunit\Support\Processes;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -24,6 +26,11 @@ final class GitProcessRunnerHardeningTest extends TestCase
         self::assertContains('core.fsmonitor=false', GitProcessRunner::FORCED_CONFIG);
         self::assertContains('core.hooksPath=/dev/nonexistent', GitProcessRunner::FORCED_CONFIG);
         self::assertContains('diff.external=', GitProcessRunner::FORCED_CONFIG);
+        self::assertContains('log.showSignature=false', GitProcessRunner::FORCED_CONFIG);
+        self::assertContains('core.sshCommand=/dev/nonexistent', GitProcessRunner::FORCED_CONFIG);
+        foreach (['gpg.program', 'gpg.openpgp.program', 'gpg.ssh.program', 'gpg.x509.program'] as $key) {
+            self::assertContains($key . '=/dev/nonexistent', GitProcessRunner::FORCED_CONFIG);
+        }
     }
 
     /** The child environment is an explicit allow-list, never the parent's. */
@@ -32,6 +39,8 @@ final class GitProcessRunnerHardeningTest extends TestCase
         self::assertSame('1', GitProcessRunner::ENVIRONMENT['GIT_CONFIG_NOSYSTEM']);
         self::assertSame('/dev/null', GitProcessRunner::ENVIRONMENT['GIT_CONFIG_GLOBAL']);
         self::assertSame('0', GitProcessRunner::ENVIRONMENT['GIT_TERMINAL_PROMPT']);
+        self::assertSame('1', GitProcessRunner::ENVIRONMENT['GIT_NO_LAZY_FETCH']);
+        self::assertSame(':', GitProcessRunner::ENVIRONMENT['GIT_ALLOW_PROTOCOL']);
         self::assertArrayNotHasKey('KNOSSOS_HTTP_BEARER_TOKEN', GitProcessRunner::ENVIRONMENT);
     }
 
@@ -67,7 +76,20 @@ final class GitProcessRunnerHardeningTest extends TestCase
             $lines = explode("\n", $output, 2);
             $argv = explode("\037", $lines[0]);
             self::assertSame(
-                ['ARGV', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/nonexistent', '-c', 'diff.external=', '-c', 'protocol.version=2', 'diff'],
+                [
+                    'ARGV',
+                    '-c', 'core.fsmonitor=false',
+                    '-c', 'core.hooksPath=/dev/nonexistent',
+                    '-c', 'diff.external=',
+                    '-c', 'protocol.version=2',
+                    '-c', 'log.showSignature=false',
+                    '-c', 'gpg.program=/dev/nonexistent',
+                    '-c', 'gpg.openpgp.program=/dev/nonexistent',
+                    '-c', 'gpg.ssh.program=/dev/nonexistent',
+                    '-c', 'gpg.x509.program=/dev/nonexistent',
+                    '-c', 'core.sshCommand=/dev/nonexistent',
+                    'diff',
+                ],
                 $argv,
                 'The forced config overrides must precede the caller\'s subcommand.',
             );
@@ -79,6 +101,8 @@ final class GitProcessRunnerHardeningTest extends TestCase
             self::assertStringContainsString('GIT_TERMINAL_PROMPT=0', $env);
             self::assertStringContainsString('GIT_ASKPASS=/dev/nonexistent', $env);
             self::assertStringContainsString('GIT_OPTIONAL_LOCKS=0', $env);
+            self::assertStringContainsString('GIT_NO_LAZY_FETCH=1', $env);
+            self::assertContains('GIT_ALLOW_PROTOCOL=:', explode("\n", $env));
             self::assertStringContainsString('PATH=', $env);
             self::assertStringNotContainsString($secretName, $env, 'A parent-only variable must not reach the child.');
         } finally {
@@ -211,6 +235,231 @@ final class GitProcessRunnerHardeningTest extends TestCase
             self::runQuiet(['rm', '-rf', $root]);
             @unlink($canary);
         }
+    }
+
+    /**
+     * `log.showSignature` makes `git log` and `git show` verify each signed
+     * commit by running `gpg.program`, and both keys come from the
+     * repository's own config. A history query over such a repository must
+     * not run that program. Skipped where git is unavailable.
+     */
+    public function testPlantedGpgProgramIsNotExecutedByHistory(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $root = sys_get_temp_dir() . '/knossos-git-hardening-gpg-' . bin2hex(random_bytes(8));
+        $canary = $root . '.canary';
+        $program = $root . '.gpg';
+        $object = $root . '.commit';
+        mkdir($root, 0o700, true);
+        try {
+            self::runQuiet([$git, 'init', '-q', $root]);
+            file_put_contents($root . '/a.txt', "hi\n");
+            self::runQuiet([$git, '-C', $root, 'add', 'a.txt']);
+            self::runQuiet([$git, '-C', $root, '-c', 'user.email=a@b', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'init']);
+            $tree = trim((string) shell_exec(escapeshellarg($git) . ' -C ' . escapeshellarg($root) . ' rev-parse "HEAD^{tree}"'));
+            $now = time();
+            // A commit carrying a signature header: what makes git call gpg.program.
+            file_put_contents($object, sprintf(
+                "tree %s\nauthor a <a@b> %d +0000\ncommitter a <a@b> %d +0000\n"
+                . "gpgsig -----BEGIN PGP SIGNATURE-----\n \n AAAA\n -----END PGP SIGNATURE-----\n\nsigned\n",
+                $tree,
+                $now,
+                $now,
+            ));
+            $commit = trim((string) shell_exec(escapeshellarg($git) . ' -C ' . escapeshellarg($root) . ' hash-object -t commit -w ' . escapeshellarg($object)));
+            self::runQuiet([$git, '-C', $root, 'update-ref', 'HEAD', $commit]);
+            file_put_contents($program, sprintf("#!/bin/sh\ntouch %s\nexit 1\n", escapeshellarg($canary)));
+            chmod($program, 0o700);
+            self::runQuiet([$git, '-C', $root, 'config', 'log.showSignature', 'true']);
+            self::runQuiet([$git, '-C', $root, 'config', 'gpg.program', $program]);
+
+            (new ProcessGitHistoryProvider())->history($root, 3650, 10, 5000);
+
+            self::assertFileDoesNotExist($canary, 'gpg.program was executed by a read-only history query.');
+        } finally {
+            self::runQuiet(['rm', '-rf', $root]);
+            @unlink($canary);
+            @unlink($program);
+            @unlink($object);
+        }
+    }
+
+    /**
+     * A partial clone fetches a missing blob from its promisor remote the
+     * moment a command reads it, and that fetch runs the transport program
+     * the repository's own config names: `core.sshCommand` for an ssh URL.
+     * A repository-level `protocol.ssh.allow=always` would beat a `-c
+     * protocol.allow=never`, so the fetch has to be refused by environment.
+     * Reading the blob through the runner must not run that program.
+     * Skipped where git is unavailable.
+     */
+    public function testLazyFetchOverSshDoesNotRunTheRepositorySshCommand(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $fixture = self::partialCloneFixture($git, 'ssh');
+        try {
+            try {
+                (new GitProcessRunner())->run([$git, '-C', $fixture['root'], 'show', 'HEAD:b.txt'], 5000, 'lazy fetch probe');
+            } catch (\RuntimeException) {
+                // The blob is missing and must stay missing; only the canary matters.
+            }
+
+            self::assertFileDoesNotExist($fixture['canary'], 'core.sshCommand was executed by a lazy fetch.');
+        } finally {
+            self::removePartialCloneFixture($fixture);
+        }
+    }
+
+    /**
+     * The same lazy fetch reached through the session diff, which probes the
+     * blob with `cat-file -e` and then diffs it. Skipped where git is
+     * unavailable.
+     */
+    public function testSessionDiffOverAPartialCloneDoesNotRunTheRepositorySshCommand(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $fixture = self::partialCloneFixture($git, 'ssh', 'a.txt');
+        try {
+            file_put_contents($fixture['root'] . '/a.txt', "changed\n");
+
+            (new \Knossos\Query\SessionDiffService())->diff($fixture['root'], $fixture['commit'], 'a.txt');
+
+            self::assertFileDoesNotExist($fixture['canary'], 'core.sshCommand was executed by a session diff.');
+        } finally {
+            self::removePartialCloneFixture($fixture);
+        }
+    }
+
+    /**
+     * A promisor remote reached by local path or `file://` URL runs
+     * `remote.<name>.uploadpack` instead of an ssh program, so blocking ssh
+     * alone leaves this variant open. Skipped where git is unavailable.
+     */
+    #[DataProvider('localRemoteVariants')]
+    public function testLazyFetchOverALocalRemoteDoesNotRunTheRepositoryUploadPack(string $variant): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $fixture = self::partialCloneFixture($git, $variant);
+        try {
+            try {
+                (new GitProcessRunner())->run([$git, '-C', $fixture['root'], 'show', 'HEAD:b.txt'], 5000, 'lazy fetch probe');
+            } catch (\RuntimeException) {
+                // The blob is missing and must stay missing; only the canary matters.
+            }
+
+            self::assertFileDoesNotExist($fixture['canary'], 'remote.origin.uploadpack was executed by a lazy fetch over a ' . $variant . ' remote.');
+        } finally {
+            self::removePartialCloneFixture($fixture);
+        }
+    }
+
+    /**
+     * A URL of the form `none::<address>` asks Git for a remote helper named
+     * `git-remote-none`, looked up on PATH. The transport allow-list must
+     * refuse every transport, including one with that name, so a helper of
+     * that name on the inherited PATH must not run. The allow-list is probed
+     * directly rather than through a lazy fetch, so the lazy-fetch switch
+     * cannot hide it. Skipped where git is unavailable.
+     */
+    public function testTheTransportAllowListRefusesAHelperNamedNone(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $bin = sys_get_temp_dir() . '/knossos-git-hardening-helper-' . bin2hex(random_bytes(8));
+        $canary = $bin . '.canary';
+        mkdir($bin, 0o700, true);
+        file_put_contents($bin . '/git-remote-none', sprintf("#!/bin/sh\ntouch %s\nexit 1\n", escapeshellarg($canary)));
+        chmod($bin . '/git-remote-none', 0o700);
+        $previous = getenv('PATH');
+        putenv('PATH=' . $bin . ':' . (is_string($previous) && $previous !== '' ? $previous : '/usr/bin:/bin'));
+        try {
+            try {
+                (new GitProcessRunner())->run([$git, 'ls-remote', 'none::x'], 5000, 'allow-list probe');
+            } catch (\RuntimeException) {
+                // The transport is refused, so the command fails; only the canary matters.
+            }
+
+            self::assertFileDoesNotExist($canary, 'git-remote-none was executed although every transport is refused.');
+        } finally {
+            putenv($previous === false ? 'PATH' : 'PATH=' . $previous);
+            self::runQuiet(['rm', '-rf', $bin]);
+            @unlink($canary);
+        }
+    }
+
+    /** @return array<string, array{string}> */
+    public static function localRemoteVariants(): array
+    {
+        return ['plain path' => ['path'], 'file:// URL' => ['file']];
+    }
+
+    /**
+     * A committed repository dressed as a partial clone: one blob deleted from
+     * the object store, `origin` marked as its promisor, and the transport
+     * program for `$transport` pointed at a script that creates the canary.
+     *
+     * @return array{root: string, canary: string, program: string, remote: string, commit: string}
+     */
+    private static function partialCloneFixture(string $git, string $transport, string $missing = 'b.txt'): array
+    {
+        $root = sys_get_temp_dir() . '/knossos-git-hardening-promisor-' . bin2hex(random_bytes(8));
+        $fixture = ['root' => $root, 'canary' => $root . '.canary', 'program' => $root . '.transport', 'remote' => $root . '.remote', 'commit' => ''];
+        mkdir($root, 0o700, true);
+        mkdir($fixture['remote'], 0o700, true);
+        self::runQuiet([$git, 'init', '-q', $root]);
+        file_put_contents($root . '/a.txt', "a\n");
+        file_put_contents($root . '/b.txt', "b\n");
+        self::runQuiet([$git, '-C', $root, 'add', 'a.txt', 'b.txt']);
+        self::runQuiet([$git, '-C', $root, '-c', 'user.email=a@b', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'init']);
+        $fixture['commit'] = trim((string) shell_exec(escapeshellarg($git) . ' -C ' . escapeshellarg($root) . ' rev-parse HEAD'));
+        $blob = trim((string) shell_exec(escapeshellarg($git) . ' -C ' . escapeshellarg($root) . ' rev-parse ' . escapeshellarg('HEAD:' . $missing)));
+        @unlink($root . '/.git/objects/' . substr($blob, 0, 2) . '/' . substr($blob, 2));
+        file_put_contents($fixture['program'], sprintf("#!/bin/sh\ntouch %s\nexit 1\n", escapeshellarg($fixture['canary'])));
+        chmod($fixture['program'], 0o700);
+        $config = [
+            'extensions.partialClone' => 'origin',
+            'remote.origin.promisor' => 'true',
+        ];
+        if ($transport === 'ssh') {
+            $config += [
+                'remote.origin.url' => 'ssh://promisor.invalid/repo',
+                'core.sshCommand' => $fixture['program'],
+                'protocol.ssh.allow' => 'always',
+            ];
+        } else {
+            $config += [
+                'remote.origin.url' => ($transport === 'file' ? 'file://' : '') . $fixture['remote'],
+                'remote.origin.uploadpack' => $fixture['program'],
+                'protocol.file.allow' => 'always',
+            ];
+        }
+        foreach ($config as $key => $value) {
+            self::runQuiet([$git, '-C', $root, 'config', $key, $value]);
+        }
+
+        return $fixture;
+    }
+
+    /** @param array{root: string, canary: string, program: string, remote: string, commit: string} $fixture */
+    private static function removePartialCloneFixture(array $fixture): void
+    {
+        self::runQuiet(['rm', '-rf', $fixture['root'], $fixture['remote']]);
+        @unlink($fixture['canary']);
+        @unlink($fixture['program']);
     }
 
     /**

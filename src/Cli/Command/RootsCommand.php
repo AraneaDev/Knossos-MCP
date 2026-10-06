@@ -285,7 +285,8 @@ final class RootsCommand implements CliCommand
     private static function writeRoots(string $configPath, array $roots): void
     {
         $directory = dirname($configPath);
-        if (!is_dir($directory) && !@mkdir($directory, 0o755, true)) {
+        // Owner-only, as RuntimeFactory creates it: the graph that will live here is the project's structure.
+        if (!is_dir($directory) && !@mkdir($directory, 0o700, true)) {
             throw new InvalidArgumentException(sprintf('Unable to create %s.', $directory));
         }
         // Captured before the temporary file is even written: rename() carries

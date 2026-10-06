@@ -6,6 +6,50 @@
 # a session start costs more than the brief was ever worth.
 set -u
 
+# The directory the hook works in, resolved below to its physical path.
+KNOSSOS_PATH_PROJECT=${CLAUDE_PROJECT_DIR:-$PWD}
+# Only absolute PATH entries that lie outside the project survive. The hook
+# runs inside the project, so a relative entry (`node_modules/.bin`, `.`, or an
+# empty one, which means the working directory) would resolve dirname, tr,
+# timeout, knossos or docker to a program the repository ships. So would an
+# absolute entry that points into the project, such as the
+# `<project>/node_modules/.bin` a tool manager adds, whether it names the
+# project directly or reaches it through a symbolic link. Each entry is
+# therefore compared by its physical path. One that does not resolve holds no
+# program to run and is compared as written. Builtins only, done first, before
+# any program is looked up.
+KNOSSOS_PATH_PROJECT=$(CDPATH='' cd -P -- "${KNOSSOS_PATH_PROJECT:-/}" 2>/dev/null && pwd -P) || KNOSSOS_PATH_PROJECT=''
+# The filesystem root holds every entry, so it is no directory to filter by.
+case $KNOSSOS_PATH_PROJECT in
+    /) KNOSSOS_PATH_PROJECT='' ;;
+esac
+KNOSSOS_SAFE_PATH=''
+KNOSSOS_SAVED_IFS=$IFS
+IFS=:
+set -f
+for KNOSSOS_PATH_ENTRY in ${PATH:-}; do
+    case $KNOSSOS_PATH_ENTRY in
+        /*) ;;
+        *) continue ;;
+    esac
+    KNOSSOS_PATH_REAL=$(CDPATH='' cd -P -- "$KNOSSOS_PATH_ENTRY" 2>/dev/null && pwd -P) || KNOSSOS_PATH_REAL=$KNOSSOS_PATH_ENTRY
+    case $KNOSSOS_PATH_PROJECT in
+        '') ;;
+        *)
+            case $KNOSSOS_PATH_REAL/ in
+                "$KNOSSOS_PATH_PROJECT"/*) continue ;;
+            esac
+            ;;
+    esac
+    KNOSSOS_SAFE_PATH="${KNOSSOS_SAFE_PATH:+$KNOSSOS_SAFE_PATH:}$KNOSSOS_PATH_ENTRY"
+done
+set +f
+IFS=$KNOSSOS_SAVED_IFS
+# An empty PATH would itself mean the working directory, so it never stays empty.
+PATH=${KNOSSOS_SAFE_PATH:-/usr/bin:/bin}
+export PATH
+unset KNOSSOS_SAFE_PATH KNOSSOS_SAVED_IFS KNOSSOS_PATH_ENTRY KNOSSOS_PATH_REAL KNOSSOS_PATH_PROJECT
+
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 
 # Resolved to an absolute path before the cd below: $0 may be relative to the

@@ -46,8 +46,8 @@ NO_BINARY='{"status":"no-binary"}'
 mkdir -p "$STUBS/bare"
 ln -s "$(command -v dirname)" "$STUBS/bare/dirname"
 # The one failure the wrapper reports: the mod turns itself off on it.
-expect_output 'missing binary says so' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" dashboard /tmp
-expect_output 'missing binary says so for a turn brief' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" turn-brief /tmp
+expect_output 'missing binary says so' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" dashboard "$STUBS/proj"
+expect_output 'missing binary says so for a turn brief' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" turn-brief "$STUBS/proj"
 expect_silent_success 'failing binary' env KNOSSOS_BIN="$STUBS/failing" /bin/sh "$RUN" dashboard /tmp
 expect_silent_success 'hanging binary' env KNOSSOS_BIN="$STUBS/hanging" KNOSSOS_RUN_TIMEOUT=1 /bin/sh "$RUN" dashboard /tmp
 expect_silent_success 'unknown subcommand' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" bogus /tmp
@@ -56,7 +56,7 @@ expect_output 'scan runs the rescan command on the project' "rescan|$ABS_PROJ|--
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" scan "$STUBS/proj"
 expect_silent_success 'scan refuses an option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" scan "$STUBS/proj" --db=/tmp/other.sqlite
 expect_silent_success 'scan refuses a second argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" scan "$STUBS/proj" extra
-expect_output 'missing binary says so for a scan' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" scan /tmp
+expect_output 'missing binary says so for a scan' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" scan "$STUBS/proj"
 expect_silent_success 'failing binary on a scan' env KNOSSOS_BIN="$STUBS/failing" /bin/sh "$RUN" scan /tmp
 # allow-root: the root alone, always with --execute, and only into a roots file the installation (or the environment) names.
 expect_output 'allow-root grants the root with --execute' "allow-root|$ABS_PROJ|--execute|--json|" \
@@ -118,7 +118,7 @@ expect_output 'component-detail passes the name intact' "component-detail|$ABS_P
 expect_output 'component-detail passes an unmatched component through' '{"status":"not-found"}' \
     env KNOSSOS_BIN="$STUBS/unmatched" /bin/sh "$RUN" component-detail /tmp Nope
 expect_output 'component-detail with a missing binary says so' "$NO_BINARY" \
-    env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" component-detail /tmp Router
+    env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" component-detail "$STUBS/proj" Router
 expect_silent_success 'component-detail without a name' \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" component-detail /tmp
 expect_silent_success 'component-detail with two names' \
@@ -134,7 +134,7 @@ expect_silent_success 'the old inspect subcommand is gone' \
 expect_output 'file-detail passes the file under the project, spaces intact' "file-detail|$ABS_PROJ/src/My File.php|--json|" \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail "$STUBS/proj" 'src/My File.php'
 expect_output 'file-detail with a missing binary says so' "$NO_BINARY" \
-    env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" file-detail /tmp a.php
+    env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" file-detail "$STUBS/proj" a.php
 expect_silent_success 'file-detail without a file' \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail /tmp
 expect_silent_success 'file-detail with two files' \
@@ -148,6 +148,12 @@ expect_silent_success 'file-detail with an absolute path' \
 expect_output 'file-context passes the file under the project' "file-context|$ABS_PROJ/src/My File.php|--json|" \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context "$STUBS/proj" 'src/My File.php'
 expect_silent_success 'file-context with an absolute path' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context /tmp /etc/passwd
+for path in '..' '../x.php' 'src/../../etc/passwd' 'src/..'; do
+    expect_silent_success "file-detail refuses $path" \
+        env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail "$STUBS/proj" "$path"
+    expect_silent_success "file-context refuses $path" \
+        env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context "$STUBS/proj" "$path"
+done
 expect_silent_success 'file-context with a file that reads as an option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context /tmp --db=/elsewhere
 expect_silent_success 'file-context without a file' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-context /tmp
 # graph-search: what was typed into the finder, one printable line and nothing else.
@@ -212,7 +218,7 @@ expect_silent_success 'watch refuses another option' env KNOSSOS_BIN="$STUBS/ech
 expect_silent_success 'watch refuses a poll interval that is not a number' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --poll-ms=1e3
 expect_silent_success 'watch refuses an empty poll interval' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --poll-ms=
 expect_silent_success 'watch refuses a second argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --poll-ms=1 extra
-expect_output 'missing binary says so for a watch' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" watch /tmp
+expect_output 'missing binary says so for a watch' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" watch "$STUBS/proj"
 # session-changes: what changed since the session began, read from the scan ledger, with nothing but that snapshot.
 expect_output 'session-changes reads since the snapshot it names' "session-changes|$ABS_PROJ|--since=scan_ab12|--json|" \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj" --since=scan_ab12
@@ -245,7 +251,7 @@ for bad in '--file=/etc/passwd' '--file=../x' '--file=src/../../x' '--file=..' '
 done
 expect_silent_success 'session-diff refuses a third argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-diff "$STUBS/proj" "--rev=$REV" --file=a.php extra
 expect_silent_success 'session-diff refuses the file before the commit' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-diff "$STUBS/proj" --file=a.php "--rev=$REV"
-expect_output 'missing binary says so for a session diff' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" session-diff /tmp "--rev=$REV" --file=a.php
+expect_output 'missing binary says so for a session diff' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" session-diff "$STUBS/proj" "--rev=$REV" --file=a.php
 # The real binary against a real repository: the head it names is the one git has, and a file's diff comes back.
 if command -v git >/dev/null 2>&1 && command -v php >/dev/null 2>&1; then
     REPO="$STUBS/repo"
@@ -310,25 +316,33 @@ expect_output 'container dashboard keeps its arguments' "img:1|dashboard|$ABS_PR
 expect_output 'container with a relative project directory mounts and passes the absolute path' "img:1|dashboard|$ABS_PROJ|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh -c "cd '$STUBS' && /bin/sh '$STUBS/container/knossos-run.sh' dashboard proj"
 expect_silent_success 'container component-detail with a name that reads as an option' \
-    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp -x
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail "$STUBS/proj" -x
 expect_output 'container scan runs the rescan command' "img:1|rescan|$ABS_PROJ|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" scan "$STUBS/proj"
 expect_silent_success 'container scan refuses an option' \
-    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" scan /tmp --db=/x
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" scan "$STUBS/proj" --db=/x
 expect_output 'container allow-root grants the root with --execute' "img:1|allow-root|$ABS_PROJ|--execute|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" allow-root "$STUBS/proj"
 expect_silent_success 'container allow-root refuses an option' \
-    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" allow-root /tmp --db=/x
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" allow-root "$STUBS/proj" --db=/x
 expect_output 'container file-detail passes the file under the project' "img:1|file-detail|$ABS_PROJ/src/A.php|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail "$STUBS/proj" src/A.php
 expect_silent_success 'container offers no watcher' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" watch "$STUBS/proj"
 expect_silent_success 'container file-detail with an absolute path' \
-    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail /tmp /etc/passwd
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail "$STUBS/proj" /etc/passwd
 expect_silent_success 'container component-detail without a name' \
-    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail "$STUBS/proj"
 expect_output 'container file-context passes the file under the project' "img:1|file-context|$ABS_PROJ/src/A.php|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-context "$STUBS/proj" src/A.php
+# The same `..` guard as the local wrapper. The two cases above prove a valid
+# path reaches docker through this harness, so silence here is the guard's.
+for path in '..' '../x.php' 'src/../../etc/passwd' 'src/..'; do
+    expect_silent_success "container file-detail refuses $path" \
+        env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail "$STUBS/proj" "$path"
+    expect_silent_success "container file-context refuses $path" \
+        env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-context "$STUBS/proj" "$path"
+done
 expect_output 'container graph-search passes what was typed' "img:1|graph-search|$ABS_PROJ|--query=dash|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" graph-search "$STUBS/proj" --query=dash
 expect_silent_success 'container graph-search refuses another option' \
@@ -367,23 +381,81 @@ done
 expect_silent_success 'container session-diff refuses a commit that is not hex' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-diff "$STUBS/proj" --rev=HEAD~1xxxxxxxxx --file=a.php
 expect_output 'container without docker says so' "$NO_BINARY" \
-    env PATH="$STUBS/bare" /bin/sh "$STUBS/container/knossos-run.sh" dashboard /tmp
+    env PATH="$STUBS/bare" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj"
 printf '#!/bin/sh\nexit 1\n' > "$STUBS/dockerbin-failing"; mkdir -p "$STUBS/dockerfail"; mv "$STUBS/dockerbin-failing" "$STUBS/dockerfail/docker"; chmod +x "$STUBS/dockerfail/docker"
 expect_silent_success 'container with a failing docker stays silent' \
-    env PATH="$STUBS/dockerfail:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard /tmp
+    env PATH="$STUBS/dockerfail:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj"
 
 # The dashboard's own bound is 30 s and the others' as before: a stand-in
 # timeout tool prints the limit it was given instead of running anything.
 mkdir -p "$STUBS/timeoutbin"
 # shellcheck disable=SC2016 # $1 belongs to the stub, not to this script
 printf '#!/bin/sh\nprintf "%%s" "$1"\n' > "$STUBS/timeoutbin/timeout"; chmod +x "$STUBS/timeoutbin/timeout"
-expect_output 'dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" dashboard /tmp
-expect_output 'turn-brief is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" turn-brief /tmp
-expect_output 'scan is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" scan /tmp
-expect_output 'allow-root is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" KNOSSOS_ROOTS_FILE=/tmp/roots.json PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" allow-root /tmp
-expect_output 'component-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" component-detail /tmp X
-expect_output 'file-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" file-detail /tmp a.php
-expect_output 'container session-diff is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-diff /tmp "--rev=$REV" --file=a.php
-expect_output 'container dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard /tmp
+expect_output 'dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" dashboard "$STUBS/proj"
+expect_output 'turn-brief is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" turn-brief "$STUBS/proj"
+expect_output 'scan is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" scan "$STUBS/proj"
+expect_output 'allow-root is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" KNOSSOS_ROOTS_FILE=/tmp/roots.json PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" allow-root "$STUBS/proj"
+expect_output 'component-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" component-detail "$STUBS/proj" X
+expect_output 'file-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" file-detail "$STUBS/proj" a.php
+expect_output 'container session-diff is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-diff "$STUBS/proj" "--rev=$REV" --file=a.php
+expect_output 'container dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj"
+
+# The wrapper, like the SessionStart hook, never runs a project's own bin/knossos.
+proj="$(mktemp -d)"
+home="$(mktemp -d)"
+mkdir -p "$proj/bin"
+printf '#!/bin/sh\n: > "%s/RAN"\n' "$proj" > "$proj/bin/knossos"
+chmod +x "$proj/bin/knossos"
+env -u KNOSSOS_BIN PATH="$STUBS/bare" HOME="$home" /bin/sh "$RUN" dashboard "$proj" >/dev/null 2>&1
+if [ -e "$proj/RAN" ]; then
+    printf 'FAIL project-local binary was executed by the wrapper\n'
+    failures=$((failures + 1))
+else
+    printf 'ok   wrapper never executes a project-local binary\n'
+fi
+rm -rf "$proj" "$home"
+
+# A PATH entry that is not absolute resolves against the directory the
+# wrapper has entered, which is the project: `node_modules/.bin`, `.` or an
+# empty entry would find a program the repository ships. Each planted program
+# leaves a marker if it runs. KNOSSOS_BIN is a trusted stub in the timeout
+# cases and unset in the knossos ones; `tr` stays reachable through bare so
+# the cases that reach it are not cut short.
+#
+# An absolute entry that points into the project (a tool manager adds
+# `<project>/node_modules/.bin` that way) finds the same programs, whether it
+# names the project directly or reaches it through a symbolic link.
+ln -s "$(command -v tr)" "$STUBS/bare/tr" 2>/dev/null
+ln -s "$STUBS/planted/node_modules/.bin" "$STUBS/linked-bin"
+expect_no_planted_run() {
+    label=$1; shift
+    proj="$STUBS/planted"
+    rm -rf "$proj"
+    mkdir -p "$proj/node_modules/.bin"
+    for tool in knossos timeout gtimeout docker tr dirname; do
+        for dir in "$proj" "$proj/node_modules/.bin"; do
+            printf '#!/bin/sh\n: > "%s/RAN"\n' "$proj" > "$dir/$tool"
+            chmod +x "$dir/$tool"
+        done
+    done
+    "$@" >/dev/null 2>&1
+    if [ -e "$proj/RAN" ]; then
+        printf 'FAIL %s: a program the project ships was executed\n' "$label"; failures=$((failures + 1))
+    else
+        printf 'ok   %s\n' "$label"
+    fi
+}
+for entry in node_modules/.bin . '' "$STUBS/planted/node_modules/.bin" "$STUBS/linked-bin"; do
+    expect_no_planted_run "PATH entry '$entry' never finds the project's knossos" \
+        env -u KNOSSOS_BIN PATH="$entry:$STUBS/bare" HOME="$STUBS" /bin/sh "$RUN" dashboard "$STUBS/planted"
+    expect_no_planted_run "PATH entry '$entry' never finds the project's timeout" \
+        env KNOSSOS_BIN="$STUBS/echoing" PATH="$entry:$STUBS/bare" HOME="$STUBS" /bin/sh "$RUN" dashboard "$STUBS/planted"
+    expect_no_planted_run "PATH entry '$entry' never finds the project's tr" \
+        env KNOSSOS_BIN="$STUBS/echoing" PATH="$entry:$STUBS/bare" HOME="$STUBS" /bin/sh -c "cd '$STUBS/planted' && /bin/sh '$RUN' graph-search . --query=x"
+    expect_no_planted_run "container: PATH entry '$entry' never finds the project's docker" \
+        env PATH="$entry:$STUBS/bare" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/planted"
+    expect_no_planted_run "container: PATH entry '$entry' never finds the project's timeout" \
+        env PATH="$entry:$STUBS/dockerbin:$STUBS/bare" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/planted"
+done
 
 [ "$failures" -eq 0 ] || exit 1
