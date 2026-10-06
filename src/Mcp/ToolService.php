@@ -185,7 +185,11 @@ final readonly class ToolService
         }
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Refuses a tool that reads disk or git when its project lies outside the allowed roots.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function assertWithinRoots(string $name, array $arguments): void
     {
         if ($this->environment === null) {

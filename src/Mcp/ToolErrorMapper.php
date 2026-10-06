@@ -24,6 +24,7 @@ final class ToolErrorMapper
 
     private function __construct() {}
 
+    /** The stable error code a client is given for this failure. */
     public static function code(Throwable $error): string
     {
         return match (true) {
