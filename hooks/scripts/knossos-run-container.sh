@@ -99,7 +99,7 @@ if [ "$SUBCOMMAND" = component-detail ]; then
 fi
 # file-detail takes exactly one file, relative to the project directory: an
 # option such as `--db=...` would point the read at another graph, and an
-# absolute path or a `..\` step would read outside the directory the call names.
+# absolute path or a `..` step would read outside the directory the call names.
 if [ "$SUBCOMMAND" = file-detail ] || [ "$SUBCOMMAND" = file-context ]; then
     [ "$#" -eq 1 ] || exit 0
     case "$1" in -* | /* | '' | .. | ../* | */../* | */..) exit 0 ;; esac
