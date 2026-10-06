@@ -218,7 +218,8 @@ knossos: this session's changes carry 1 changed file no test reaches (src/Kernel
 ```
 
 And the agent can ask about one file with `file_context` before it edits it, in one call
-instead of a grep for its callers:
+instead of a grep for its callers. The answer's `data.file`, shortened (the declared rules
+that bind the file arrive beside it, in `data.policies`):
 
 ```json
 {

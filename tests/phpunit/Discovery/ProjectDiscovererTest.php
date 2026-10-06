@@ -2291,6 +2291,32 @@ TOML);
         ], $units[0]->metadata['entry_points']);
     }
 
+    /**
+     * A nested config's alias may climb out of its own directory and stay in
+     * the project (`../shared/stub.ts`); the path is resolved against the
+     * config's directory. One that leaves the project names nothing here.
+     */
+    public function testDiscoverResolvesAnAliasThatClimbsOutOfTheConfigsDirectory(): void
+    {
+        mkdir($this->root . '/frontend', 0700, true);
+        file_put_contents($this->root . '/frontend/vite.config.ts', implode("\n", [
+            'export default defineConfig({',
+            '  resolve: {',
+            '    alias: [',
+            "      { find: '@stub', replacement: resolve(__dirname, '../shared/stub.ts') },",
+            "      { find: '@gone', replacement: resolve(__dirname, '../../outside.ts') },",
+            '    ],',
+            '  },',
+            '})',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $units = array_values(array_filter($discoverer->discover($this->root)->units, fn($u): bool => $u->kind === 'tool_config'));
+        $this->assertNotEmpty($units);
+        assertSame(['shared/stub.ts'], $units[0]->metadata['entry_points']);
+    }
+
     public function testDiscoverIgnoresPathsAConfigExcludesRatherThanLoads(): void
     {
         file_put_contents($this->root . '/vitest.config.ts', implode("\n", [

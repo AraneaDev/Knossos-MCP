@@ -123,7 +123,10 @@ final class QueryCommandContractTest extends KnossosTestCase
         } finally {
             @unlink($policies);
             @unlink($budgets);
-            @unlink($database);
+            // WAL mode leaves -wal and -shm beside the database.
+            foreach ([$database, $database . '-wal', $database . '-shm'] as $file) {
+                @unlink($file);
+            }
         }
         assertSame(true, $checked >= 25, sprintf('Expected to check at least 25 bounded CLI options, checked %d.', $checked));
     }
@@ -255,7 +258,10 @@ final class QueryCommandContractTest extends KnossosTestCase
             assertSame($projectId, $out['project_id']);
             assertSame('Project not found: /nowhere (database: ' . $database . ')', self::errorFrom('architecture-summary', ['/nowhere'], [], $database));
         } finally {
-            @unlink($database);
+            // WAL mode leaves -wal and -shm beside the database.
+            foreach ([$database, $database . '-wal', $database . '-shm'] as $file) {
+                @unlink($file);
+            }
             $this->removeTempTree($root);
         }
     }

@@ -52,6 +52,27 @@ final class FileContextToolTest extends KnossosTestCase
         }
     }
 
+    /**
+     * A link inside the project to a file in another scanned project answers
+     * nothing: the file is that project's, and its rules are not this one's.
+     */
+    #[Group('mcp')]
+    public function testALinkToAnotherProjectsFileIsNotAnsweredForThisOne(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('turn-brief');
+        $other = sys_get_temp_dir() . '/knossos-stale-other-' . bin2hex(random_bytes(4));
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/turn-brief', $other);
+        try {
+            (new ProjectScanService($pdo, self::repositoryRoot(), [$other]))->scan($other);
+            symlink($other . '/src/Core/Greeter.php', $root . '/src/Linked.php');
+            $answer = self::tools($pdo, $root)->call('file_context', ['project_id' => $projectId, 'path' => 'src/Linked.php']);
+            self::assertSame([$projectId, 'not-found', null], [$answer->projectId, $answer->data['status'], $answer->data['file']]);
+        } finally {
+            $this->removeTempTree($other);
+            $this->removeTempTree($root);
+        }
+    }
+
     private function assertRejected(ToolService $tools, string $projectId, string $path): void
     {
         try {

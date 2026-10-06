@@ -1545,7 +1545,6 @@ final readonly class ProjectDiscoverer
             && preg_match_all('/\.(?:js|ts|typeScript|react|preact|vue)\(\s*[\'"`]([^\'"`]+)[\'"`]/', $contents, $calls) > 0) {
             array_push($values, ...$calls[1]);
         }
-        array_push($values, ...self::anchoredConfigPaths($contents));
         // Cypress loads these unless its config names others or turns them off.
         if (basename($configPath) === 'cypress.json') {
             foreach (['pluginsFile' => 'cypress/plugins/index', 'supportFile' => 'cypress/support/index'] as $key => $default) {
@@ -1556,6 +1555,15 @@ final readonly class ProjectDiscoverer
         }
         $paths = [];
         $globs = [];
+        // Anchored to the config's own directory, so `../shared/stub.ts` is resolved
+        // there first; only a path that then leaves the project is dropped.
+        foreach (self::anchoredConfigPaths($contents) as $anchored) {
+            $resolved = self::withinProject($directory === '' ? $anchored : $directory . '/' . $anchored);
+            $path = $resolved === null ? null : self::entryPointPath($resolved, '');
+            if ($path !== null) {
+                $paths[$path] = true;
+            }
+        }
         foreach ($values as $token) {
             // A `command` is a shell line; any other value is one path,
             // which a split on whitespace leaves whole.
@@ -1614,6 +1622,30 @@ final readonly class ProjectDiscoverer
         }
 
         return $paths;
+    }
+
+    /**
+     * `$path` with its `.` and `..` segments folded, or null when it climbs
+     * above the project root.
+     */
+    private static function withinProject(string $path): ?string
+    {
+        $segments = [];
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                if ($segments === []) {
+                    return null;
+                }
+                array_pop($segments);
+                continue;
+            }
+            $segments[] = $segment;
+        }
+
+        return $segments === [] ? null : implode('/', $segments);
     }
 
     /**

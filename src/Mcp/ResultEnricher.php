@@ -74,6 +74,7 @@ final readonly class ResultEnricher
         $enriched = $base->with(staleness: $staleness, nextSteps: $steps);
 
         $dropped = [];
+        $trimmedLists = [];
         $met = true;
         $data = $enriched->data;
         $evidence = $enriched->evidence;
@@ -103,8 +104,12 @@ final readonly class ResultEnricher
                     self::popTail($data, $evidence, $victim);
                     $dropped[$label] = ($dropped[$label] ?? 0) + 1;
                 }
+                if (count($victim) === 1 && $victim[0] !== self::EVIDENCE_KEY) {
+                    $trimmedLists[$victim[0]] = true;
+                }
             }
         }
+        self::resumeAfterTrim($data, array_keys($trimmedLists));
 
         $budgetUnmet = $maxChars !== null && !$met;
         $truncated = $enriched->truncated || $dropped !== [];
@@ -339,6 +344,29 @@ final readonly class ResultEnricher
             $ref = &$ref[$segment];
         }
         array_pop($ref[$path[count($path) - 1]]);
+    }
+
+    /**
+     * Points a page's cursor at the first item a trim left out. A paginated
+     * answer carries `pagination.offset` beside its one list; once that list
+     * is cut to fit `max_chars`, the cursor the query set would skip what was
+     * cut. Only a top-level list of `$data` can be the paged one.
+     *
+     * @param array<string, mixed> $data
+     * @param list<int|string> $trimmed the top-level lists the trim shortened
+     */
+    private static function resumeAfterTrim(array &$data, array $trimmed): void
+    {
+        $pagination = $data['pagination'] ?? null;
+        if ($trimmed === [] || !is_array($pagination) || !is_int($pagination['offset'] ?? null)) {
+            return;
+        }
+        foreach ($trimmed as $key) {
+            if (is_array($data[$key] ?? null) && array_is_list($data[$key])) {
+                $data['pagination']['next_offset'] = $pagination['offset'] + count($data[$key]);
+                return;
+            }
+        }
     }
 
     /**

@@ -25,8 +25,11 @@ final readonly class FileContextQueryService extends AbstractArchitectureQuerySe
         $relative = self::relative($root, $path);
         $context = (new FileContextService($this->pdo))->context($root . '/' . $relative);
         $file = $context['file'];
-        if ($context['status'] !== 'ok' || !is_array($file)) {
-            return new ResultEnvelope($projectId, $project['active_scan_id'], sprintf('%s is not in the graph: not a source file Knossos scans, or not scanned yet.', $relative), ['status' => $context['status'], 'path' => $relative, 'file' => null, 'policies' => []]);
+        // A link to another project's file resolves to that project: it is not this one's to answer.
+        if ($context['status'] !== 'ok' || !is_array($file) || $context['project_id'] !== $projectId) {
+            $status = $context['status'] === 'ok' ? 'not-found' : $context['status'];
+
+            return new ResultEnvelope($projectId, $project['active_scan_id'], sprintf('%s is not in the graph: not a source file Knossos scans, or not scanned yet.', $relative), ['status' => $status, 'path' => $relative, 'file' => null, 'policies' => []]);
         }
         $boundary = $file['boundary'];
         $policies = $boundary === null ? [] : array_values(array_filter(
