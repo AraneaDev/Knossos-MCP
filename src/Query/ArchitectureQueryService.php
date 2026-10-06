@@ -261,7 +261,7 @@ final readonly class ArchitectureQueryService
      */
     public function checkArchitecture(
         string $projectId,
-        array $policies,
+        ?array $policies,
         string $minConfidence = 'possible',
         int $limit = 100,
         int $maxEdges = ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES,

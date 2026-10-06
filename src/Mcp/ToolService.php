@@ -732,8 +732,9 @@ final readonly class ToolService
      */
     private function check(array $arguments): ResultEnvelope
     {
-        $policies = $arguments['policies'];
-        if (!is_array($policies) || !array_is_list($policies)) {
+        // Absent, the project's declared policies are checked.
+        $policies = $arguments['policies'] ?? null;
+        if ($policies !== null && (!is_array($policies) || !array_is_list($policies))) {
             throw new InvalidArgumentException('policies must be a list.');
         }
         return $this->queries->checkArchitecture(

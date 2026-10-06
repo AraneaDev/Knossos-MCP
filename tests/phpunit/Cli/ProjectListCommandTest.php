@@ -72,6 +72,31 @@ final class ProjectListCommandTest extends KnossosTestCase
         self::assertSame(['TS6133'], array_column($warnings['diagnostics'], 'code'));
     }
 
+    public function testPoliciesShowsWhatTheProjectDeclaresOrThatItDeclaresNone(): void
+    {
+        [, $projectId, $root] = $this->scanTempFixture('turn-brief');
+        try {
+            $this->scanInto($root);
+            $none = $this->runList('policies', [$root], [], json: false);
+            self::assertStringContainsString('No policies declared in ', $none);
+            file_put_contents($root . '/knossos.json', json_encode(['version' => 1, 'boundaries' => [
+                ['name' => 'Core', 'path_prefix' => 'src/Core/'],
+                ['name' => 'Edge', 'path_prefix' => 'src/Edge/'],
+            ], 'policies' => [['id' => 'core-alone', 'from_boundary' => 'Core', 'deny_targets' => ['Edge']]]]));
+            self::assertStringContainsString('core-alone: Core may not depend on Edge', $this->runList('policies', [$root], [], json: false));
+            $json = $this->runList('policies', [$root], ['json' => ['1']]);
+            self::assertSame([2, 1], [count($json['boundaries']), count($json['policies'])]);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Scans `$root` into this test's own database file, so the command reads it there. */
+    private function scanInto(string $root): void
+    {
+        (new \Knossos\Scan\ProjectScanService($this->pdo(), self::repositoryRoot(), [$root]))->scan($root);
+    }
+
     private function pdo(): PDO
     {
         return (new RuntimeFactory(self::repositoryRoot()))->database($this->database);

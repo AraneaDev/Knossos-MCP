@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use InvalidArgumentException;
+use Knossos\Configuration\ProjectConfigurationLoader;
+use Throwable;
 
 /**
  * Evaluates declared architecture policies and budgets against the graph.
@@ -39,14 +41,19 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
      * the edge and time limits (and `truncated`) speak for that scope rather
      * than for the whole project. Empty checks every edge.
      *
-     * @param list<array<string, mixed>> $policies
+     * Null `$policies` checks the ones the project declares in its
+     * `knossos.json`, read live; a project that declares none, or whose file
+     * cannot be read, is refused rather than reported as having no violations.
+     *
+     * @param list<array<string, mixed>>|null $policies
      * @param list<string> $sourceFiles
      */
-    public function checkArchitecture(string $projectId, array $policies, string $minConfidence = 'possible', int $limit = 100, int $maxEdges = self::DEFAULT_MAX_EDGES, int $timeoutMs = 1000, array $sourceFiles = []): ResultEnvelope
+    public function checkArchitecture(string $projectId, ?array $policies, string $minConfidence = 'possible', int $limit = 100, int $maxEdges = self::DEFAULT_MAX_EDGES, int $timeoutMs = 1000, array $sourceFiles = []): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
         $confidenceRank = $this->confidenceQueryBounds($maxEdges, $timeoutMs, $minConfidence);
+        $policies ??= self::declaredPolicies((string) $project['root_realpath']);
         if (!array_is_list($policies) || $policies === [] || count($policies) > 50) {
             throw new InvalidArgumentException('policies must contain between 1 and 50 declarations.');
         }
@@ -209,6 +216,26 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
             ['Policy violations are static graph findings; runtime behavior and dynamic dependencies may differ.'],
             $truncated,
         );
+    }
+
+    /**
+     * The policies `$root/knossos.json` declares; refused when there are none
+     * or the file cannot be read, so a broken file never reads as no rules.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function declaredPolicies(string $root): array
+    {
+        try {
+            $policies = ProjectConfigurationLoader::load($root, [$root])->policies;
+        } catch (Throwable $error) {
+            throw new InvalidArgumentException(sprintf('The policies in %s/knossos.json could not be read: %s', $root, $error->getMessage()), 0, $error);
+        }
+        if ($policies === []) {
+            throw new InvalidArgumentException(sprintf('%s declares no policies in knossos.json; pass policies to check.', $root));
+        }
+
+        return $policies;
     }
 
     /**

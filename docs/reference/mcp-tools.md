@@ -343,7 +343,7 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `check_architecture`
 
-Verify declared boundary rules still hold. Use to confirm a change did not introduce a forbidden cross-boundary dependency.
+Verify declared boundary rules still hold. Use to confirm a change did not introduce a forbidden cross-boundary dependency. Without `policies`, checks the ones the project declares in knossos.json.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -351,7 +351,7 @@ Verify declared boundary rules still hold. Use to confirm a change did not intro
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
 | `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
-| `policies` | array | yes | maxItems=50 |
+| `policies` | array | no | maxItems=50 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `limit` | integer | no | minimum=1; maximum=100; default=100 |
 | `max_edges` | integer | no | minimum=1; maximum=100000; default=100000 |

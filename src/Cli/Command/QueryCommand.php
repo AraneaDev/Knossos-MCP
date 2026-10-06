@@ -295,9 +295,10 @@ final class QueryCommand implements CliCommand
      */
     private function checkArchitecture(array $p, array $o, CliCommandContext $c): int
     {
-        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos check-architecture <path|project-id> --policies=FILE [options]'), $c);
-        $path = $c->options->single($o, 'policies') ?? throw new InvalidArgumentException('--policies=FILE is required.');
-        $result = $this->queries($c)->checkArchitecture($project, $c->input->policies($path), $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 100, 1, 100), $c->options->integer($o, 'max-edges', ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
+        $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos check-architecture <path|project-id> [--policies=FILE] [options]'), $c);
+        // Without a file, the policies the project declares in knossos.json.
+        $path = $c->options->single($o, 'policies');
+        $result = $this->queries($c)->checkArchitecture($project, $path === null ? null : $c->input->policies($path), $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 100, 1, 100), $c->options->integer($o, 'max-edges', ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
         $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->summary);
         // Exit non-zero when declared-policy violations exist so the "check"
         // command can gate CI on its own result, mirroring quality-gate. The

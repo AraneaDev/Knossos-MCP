@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\ProjectReference;
+use Knossos\Configuration\ProjectConfigurationLoader;
 use Knossos\Query\ArchitectureQueryService;
 
 /**
@@ -44,8 +45,42 @@ final class ProjectListCommand implements CliCommand
         return match ($command) {
             'dead-code' => $this->deadCode($project['id'], $options, $context),
             'diagnostics' => $this->diagnostics($project['id'], $options, $context),
+            'policies' => $this->policies($project['root'], $project['id'], $options, $context),
             default => throw new InvalidArgumentException(sprintf('Unknown command: %s', $command)),
         };
+    }
+
+    /**
+     * The boundaries and policies the project declares, read live.
+     *
+     * @param array<string, list<string>> $options
+     */
+    private function policies(string $root, string $projectId, array $options, CliCommandContext $context): int
+    {
+        $configuration = ProjectConfigurationLoader::load($root, [$root]);
+        $file = $configuration->path ?? $root . '/knossos.json';
+        $lines = [];
+        foreach ($configuration->policies as $policy) {
+            $deny = $policy['deny_targets'] ?? [];
+            $allow = $policy['allow_targets'] ?? [];
+            $lines[] = sprintf(
+                '%s: %s%s%s',
+                $policy['id'],
+                $policy['from_boundary'],
+                $deny === [] ? '' : ' may not depend on ' . implode(', ', $deny),
+                $allow === [] ? '' : ' may depend only on ' . implode(', ', $allow),
+            );
+        }
+        if ($lines === []) {
+            $lines[] = 'No policies declared in ' . $file . '.';
+        }
+        $context->output(
+            ['project_id' => $projectId, 'file' => $file, 'boundaries' => $configuration->boundaries, 'policies' => $configuration->policies],
+            $context->options->flag($options, 'json'),
+            implode("\n", $lines),
+        );
+
+        return 0;
     }
 
     /**

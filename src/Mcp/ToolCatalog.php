@@ -471,7 +471,7 @@ final readonly class ToolCatalog
             [
                 'name' => 'check_architecture',
                 'title' => 'Check architecture policies',
-                'description' => 'Verify declared boundary rules still hold. Use to confirm a change did not introduce a forbidden cross-boundary dependency.',
+                'description' => 'Verify declared boundary rules still hold. Use to confirm a change did not introduce a forbidden cross-boundary dependency. Without `policies`, checks the ones the project declares in knossos.json.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -486,7 +486,7 @@ final readonly class ToolCatalog
                         'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 100000],
                         'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1000],
                     ],
-                    'required' => ['project_id', 'policies'],
+                    'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
                 'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],

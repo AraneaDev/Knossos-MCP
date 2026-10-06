@@ -75,6 +75,13 @@ final class McpTest extends KnossosTestCase
         assertThrows(fn() => $tools->call('architecture_summary', ['project_id' => $ids['project'], 'limit' => 'many']), InvalidArgumentException::class);
         assertThrows(fn() => $tools->call('explain_flow', ['project_id' => $ids['project'], 'from' => 'Checkout', 'to' => 'Invoice', 'edge_kinds' => [1]]), InvalidArgumentException::class);
         assertThrows(fn() => $tools->call('check_architecture', ['project_id' => $ids['project'], 'policies' => 'invalid']), InvalidArgumentException::class);
+        // Without policies the declared ones are checked; this fixture has none to read, and says so.
+        try {
+            $tools->call('check_architecture', ['project_id' => $ids['project']]);
+            self::fail('check_architecture ran with no policies to check.');
+        } catch (InvalidArgumentException $error) {
+            assertSame(true, str_contains($error->getMessage(), 'knossos.json'), $error->getMessage());
+        }
         assertThrows(fn() => $tools->call('list_projects', ['include_roots' => 'yes']), InvalidArgumentException::class);
     }
 
