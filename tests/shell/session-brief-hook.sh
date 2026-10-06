@@ -103,5 +103,50 @@ else
 fi
 rm -rf "$proj" "$home"
 
+# A PATH entry that is not absolute resolves against the directory the hook
+# has entered, which is the project: `node_modules/.bin`, `.` or an empty
+# entry would find a program the repository ships. Each planted program
+# leaves a marker if it runs. KNOSSOS_BIN is a trusted stub in the timeout
+# cases and unset in the knossos ones, which also start inside the project so
+# the lookup of dirname, before the hook enters it, is covered too.
+planted="$(mktemp -d)"
+mkdir -p "$planted/bare" "$planted/trusted" "$planted/dockerbin"
+ln -s "$(command -v dirname)" "$planted/bare/dirname"
+printf '#!/bin/sh\nexit 0\n' > "$planted/trusted/knossos"
+printf '#!/bin/sh\nexit 0\n' > "$planted/dockerbin/docker"
+chmod +x "$planted/trusted/knossos" "$planted/dockerbin/docker"
+sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|/srv/data|" "${HOOK%/*}/session-brief-container.sh" > "$planted/container.sh"
+expect_no_planted_run() {
+    label=$1; shift
+    proj="$planted/proj"
+    rm -rf "$proj"
+    mkdir -p "$proj/node_modules/.bin"
+    for tool in knossos timeout gtimeout docker dirname; do
+        for dir in "$proj" "$proj/node_modules/.bin"; do
+            printf '#!/bin/sh\n: > "%s/RAN"\n' "$proj" > "$dir/$tool"
+            chmod +x "$dir/$tool"
+        done
+    done
+    output="$("$@" 2>/dev/null)"
+    status=$?
+    if [ -e "$proj/RAN" ] || [ "$status" -ne 0 ] || [ -n "$output" ]; then
+        printf 'FAIL %s: ran=%s status=%s output=%s\n' "$label" "$([ -e "$proj/RAN" ] && echo yes || echo no)" "$status" "$output"
+        failures=$((failures + 1))
+    else
+        printf 'ok   %s\n' "$label"
+    fi
+}
+for entry in node_modules/.bin . ''; do
+    expect_no_planted_run "PATH entry '$entry' never finds the project's knossos" \
+        env -u KNOSSOS_BIN PATH="$entry:$planted/bare" HOME="$planted" CLAUDE_PROJECT_DIR="$planted/proj" "$SH_BIN" -c "cd '$planted/proj' && exec '$SH_BIN' '$HOOK'"
+    expect_no_planted_run "PATH entry '$entry' never finds the project's timeout" \
+        env KNOSSOS_BIN="$planted/trusted/knossos" PATH="$entry:$planted/bare" HOME="$planted" CLAUDE_PROJECT_DIR="$planted/proj" "$SH_BIN" "$HOOK"
+    expect_no_planted_run "container hook: PATH entry '$entry' never finds the project's docker" \
+        env PATH="$entry:$planted/bare" CLAUDE_PROJECT_DIR="$planted/proj" "$SH_BIN" "$planted/container.sh"
+    expect_no_planted_run "container hook: PATH entry '$entry' never finds the project's timeout" \
+        env PATH="$entry:$planted/dockerbin:$planted/bare" CLAUDE_PROJECT_DIR="$planted/proj" "$SH_BIN" "$planted/container.sh"
+done
+rm -rf "$planted"
+
 [ "$failures" -eq 0 ] || exit 1
 printf 'all hook failure modes silent\n'

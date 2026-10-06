@@ -10,6 +10,26 @@
 # also named as git's safe directory: the container's user does not own it.
 set -u
 
+# Only absolute PATH entries survive. The hook runs inside the project, so a
+# relative entry (`node_modules/.bin`, `.`, or an empty one, which means the
+# working directory) would resolve dirname, tr, timeout, knossos or docker to
+# a program the repository ships. Done first, before any program is looked up.
+KNOSSOS_SAFE_PATH=''
+KNOSSOS_SAVED_IFS=$IFS
+IFS=:
+set -f
+for KNOSSOS_PATH_ENTRY in ${PATH:-}; do
+    case $KNOSSOS_PATH_ENTRY in
+        /*) KNOSSOS_SAFE_PATH="${KNOSSOS_SAFE_PATH:+$KNOSSOS_SAFE_PATH:}$KNOSSOS_PATH_ENTRY" ;;
+    esac
+done
+set +f
+IFS=$KNOSSOS_SAVED_IFS
+# An empty PATH would itself mean the working directory, so it never stays empty.
+PATH=${KNOSSOS_SAFE_PATH:-/usr/bin:/bin}
+export PATH
+unset KNOSSOS_SAFE_PATH KNOSSOS_SAVED_IFS KNOSSOS_PATH_ENTRY
+
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 IMAGE='__KNOSSOS_IMAGE__'
 DATA='__KNOSSOS_DATA__'

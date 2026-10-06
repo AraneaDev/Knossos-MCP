@@ -407,4 +407,42 @@ else
 fi
 rm -rf "$proj" "$home"
 
+# A PATH entry that is not absolute resolves against the directory the
+# wrapper has entered, which is the project: `node_modules/.bin`, `.` or an
+# empty entry would find a program the repository ships. Each planted program
+# leaves a marker if it runs. KNOSSOS_BIN is a trusted stub in the timeout
+# cases and unset in the knossos ones; `tr` stays reachable through bare so
+# the cases that reach it are not cut short.
+ln -s "$(command -v tr)" "$STUBS/bare/tr" 2>/dev/null
+expect_no_planted_run() {
+    label=$1; shift
+    proj="$STUBS/planted"
+    rm -rf "$proj"
+    mkdir -p "$proj/node_modules/.bin"
+    for tool in knossos timeout gtimeout docker tr dirname; do
+        for dir in "$proj" "$proj/node_modules/.bin"; do
+            printf '#!/bin/sh\n: > "%s/RAN"\n' "$proj" > "$dir/$tool"
+            chmod +x "$dir/$tool"
+        done
+    done
+    "$@" >/dev/null 2>&1
+    if [ -e "$proj/RAN" ]; then
+        printf 'FAIL %s: a program the project ships was executed\n' "$label"; failures=$((failures + 1))
+    else
+        printf 'ok   %s\n' "$label"
+    fi
+}
+for entry in node_modules/.bin . ''; do
+    expect_no_planted_run "PATH entry '$entry' never finds the project's knossos" \
+        env -u KNOSSOS_BIN PATH="$entry:$STUBS/bare" HOME="$STUBS" /bin/sh "$RUN" dashboard "$STUBS/planted"
+    expect_no_planted_run "PATH entry '$entry' never finds the project's timeout" \
+        env KNOSSOS_BIN="$STUBS/echoing" PATH="$entry:$STUBS/bare" HOME="$STUBS" /bin/sh "$RUN" dashboard "$STUBS/planted"
+    expect_no_planted_run "PATH entry '$entry' never finds the project's tr" \
+        env KNOSSOS_BIN="$STUBS/echoing" PATH="$entry:$STUBS/bare" HOME="$STUBS" /bin/sh -c "cd '$STUBS/planted' && /bin/sh '$RUN' graph-search . --query=x"
+    expect_no_planted_run "container: PATH entry '$entry' never finds the project's docker" \
+        env PATH="$entry:$STUBS/bare" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/planted"
+    expect_no_planted_run "container: PATH entry '$entry' never finds the project's timeout" \
+        env PATH="$entry:$STUBS/dockerbin:$STUBS/bare" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/planted"
+done
+
 [ "$failures" -eq 0 ] || exit 1
