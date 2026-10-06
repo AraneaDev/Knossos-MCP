@@ -177,6 +177,8 @@ describe('parseSessionHead', () => {
     expect(parseSessionHead('{')).toBeUndefined()
     expect(parseSessionHead(JSON.stringify({ status: 'ok', rev: 'HEAD' }))).toBeUndefined()
     expect(parseSessionHead(JSON.stringify({ status: 'ok', rev, branch: 'a\u001bb' }))).toEqual({ rev, branch: null })
+    expect(parseSessionHead(JSON.stringify({ status: 'ok', rev, branch: 'a\tb' }))).toEqual({ rev, branch: null })
+    expect(parseSessionHead(JSON.stringify({ status: 'ok', rev, branch: 'a\nb' }))).toEqual({ rev, branch: null })
   })
 })
 

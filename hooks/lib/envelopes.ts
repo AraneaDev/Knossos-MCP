@@ -148,8 +148,10 @@ export function parseSessionHead(stdout: string): GitHead | undefined {
   if (parsed?.status === 'no-git') return null
   if (parsed?.status !== 'ok' || typeof parsed.rev !== 'string' || !/^[0-9a-f]{7,64}$/.test(parsed.rev)) return undefined
   // A branch name that carried a control character is not printed: the
-  // parser has already made it inert, and a name with a hole in it would only mislead.
-  const branch = typeof parsed.branch === 'string' && parsed.branch !== '' && !parsed.branch.includes('�') ? parsed.branch : null
+  // parser has already made most of them inert, and a name with a hole in it
+  // would only mislead. Tab and newline pass that parser unchanged, and either
+  // one would break the line the name is drawn on, so they are refused here.
+  const branch = typeof parsed.branch === 'string' && parsed.branch !== '' && !/[\t\n�]/.test(parsed.branch) ? parsed.branch : null
   return { rev: parsed.rev, branch }
 }
 
