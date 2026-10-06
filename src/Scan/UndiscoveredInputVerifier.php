@@ -111,7 +111,7 @@ final class UndiscoveredInputVerifier
         if ($resolved === false || !RootGuard::contains($root, $resolved)) {
             return null;
         }
-        $handle = RegularFileOpener::open($resolved);
+        $handle = RegularFileOpener::open($resolved, $maxFileBytes);
         if (!is_resource($handle)) {
             return null;
         }
@@ -133,7 +133,7 @@ final class UndiscoveredInputVerifier
         if (realpath($absolute) !== $absolute) {
             return false;
         }
-        $handle = RegularFileOpener::open($absolute);
+        $handle = RegularFileOpener::open($absolute, $maxFileBytes);
         if (!is_resource($handle)) {
             return false;
         }

@@ -58,4 +58,29 @@ final class RegularFileOpenerHelperTest extends KnossosTestCase
         self::assertNull($handle);
         self::assertLessThan(2_000_000_000, hrtime(true) - $started);
     }
+
+    /** With a cap, the helper stops copying one byte past it, so the caller still sees "too large". */
+    public function testTheHelperStopsCopyingOneBytePastTheCap(): void
+    {
+        $file = $this->directory . '/big.txt';
+        file_put_contents($file, str_repeat('x', 10_000));
+        $method = new ReflectionMethod(RegularFileOpener::class, 'openWithHelper');
+
+        $handle = $method->invoke(null, $file, 5_000_000_000, 100);
+
+        self::assertIsResource($handle);
+        self::assertSame(101, strlen((string) stream_get_contents($handle)));
+    }
+
+    /** The public entry point honours the cap whichever path it takes. */
+    public function testOpenHonoursTheCapOnEveryPath(): void
+    {
+        $file = $this->directory . '/big.txt';
+        file_put_contents($file, str_repeat('y', 10_000));
+
+        $handle = RegularFileOpener::open($file, 100);
+
+        self::assertIsResource($handle);
+        self::assertLessThanOrEqual(101, strlen((string) stream_get_contents($handle, 101)));
+    }
 }

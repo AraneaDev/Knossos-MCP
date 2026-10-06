@@ -34,10 +34,12 @@ final class RegularFileOpener
     /**
      * Open a regular file, or return null for a missing, replaced, or refused
      * path. The returned resource is positioned at the beginning of the file.
+     * With a cap, the helper path holds at most $maxBytes + 1 bytes, so a caller
+     * comparing against the cap still detects an oversized file.
      *
      * @return resource|null
      */
-    public static function open(string $path): mixed
+    public static function open(string $path, ?int $maxBytes = null): mixed
     {
         clearstatcache(true, $path);
         if (!self::isRegular(@stat($path))) {
@@ -45,7 +47,7 @@ final class RegularFileOpener
         }
 
         $handle = PHP_OS_FAMILY === 'Linux' ? self::openWithFfi($path) : null;
-        $handle ??= self::openWithHelper($path);
+        $handle ??= self::openWithHelper($path, self::OPEN_DEADLINE_NS, $maxBytes);
         if (!is_resource($handle)) {
             return null;
         }
@@ -103,6 +105,12 @@ final class RegularFileOpener
         return $handle;
     }
 
+    /** Whether this host opens files through a helper process instead of libc via FFI. */
+    public static function usesHelper(): bool
+    {
+        return PHP_OS_FAMILY !== 'Linux' || self::libc() === null;
+    }
+
     /** Resolve the libc FFI binding once, if this PHP build permits it. */
     private static function libc(): ?object
     {
@@ -131,20 +139,21 @@ final class RegularFileOpener
      *
      * @return resource|null
      */
-    private static function openWithHelper(string $path, int $deadlineNs = self::OPEN_DEADLINE_NS): mixed
+    private static function openWithHelper(string $path, int $deadlineNs = self::OPEN_DEADLINE_NS, ?int $maxBytes = null): mixed
     {
         $helper = <<<'PHP'
 $handle = @fopen($argv[1] ?? '', 'rb');
 if (!is_resource($handle) || !is_array($stat = @fstat($handle)) || (($stat['mode'] ?? 0) & 0o170000) !== 0o100000) {
     exit(1);
 }
-if (@fwrite(STDOUT, "\x01") !== 1 || @stream_copy_to_stream($handle, STDOUT) === false) {
+$limit = ($argv[2] ?? '') === '' ? -1 : ((int) $argv[2]) + 1;
+if (@fwrite(STDOUT, "\x01") !== 1 || @stream_copy_to_stream($handle, STDOUT, $limit) === false) {
     exit(2);
 }
 PHP;
         $pipes = [];
         $process = @proc_open(
-            [PHP_BINARY, '-r', $helper, $path],
+            [PHP_BINARY, '-r', $helper, $path, $maxBytes === null ? '' : (string) $maxBytes],
             [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']],
             $pipes,
         );

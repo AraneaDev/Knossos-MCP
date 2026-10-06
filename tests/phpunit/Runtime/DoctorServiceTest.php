@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Runtime;
 
+use Knossos\Filesystem\RegularFileOpener;
 use Knossos\Runtime\DoctorService;
 use Knossos\Runtime\RuntimeVersionRequirement;
 use Knossos\Store\SqliteConnection;
@@ -123,7 +124,7 @@ final class DoctorServiceTest extends KnossosTestCase
             $this->assertContains($check['status'], ['ok', 'error', 'skipped']);
         }
 
-        // The 14 checks fired when databasePath is ':memory:' (data.writable
+        // The 15 checks fired when databasePath is ':memory:' (data.writable
         // is conditional and excluded in this mode) — verifies both shape
         // AND the exact set of named checks in a single run() call.
         $names = array_column($result['checks'], 'name');
@@ -133,11 +134,20 @@ final class DoctorServiceTest extends KnossosTestCase
             'node.version', 'git.version', 'python.version',
             'sqlite.integrity', 'sqlite.foreign_keys', 'sqlite.migrations',
             'worker.php', 'worker.typescript', 'worker.python', 'worker.rust',
+            'filesystem.opener',
         ];
         foreach ($expected as $name) {
             $this->assertContains($name, $names, "missing check: {$name}");
         }
-        assertSame(14, count($names));
+        assertSame(15, count($names));
+    }
+
+    /** The doctor says which file opener this host uses, so a slow helper-per-file scan is visible. */
+    public function testDoctorReportsTheFileOpenerPath(): void
+    {
+        $check = $this->findCheck((new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run(), 'filesystem.opener');
+
+        self::assertSame(RegularFileOpener::usesHelper() ? 'skipped' : 'ok', $check['status']);
     }
 
     public function testRunSkipsDataWritableWhenDatabasePathIsInMemory(): void
