@@ -28,8 +28,13 @@ expect_silent_success() {
 # about to set, so a bare "sh" would make env fail to launch the hook at all
 # rather than exercising the hook's own missing-binary handling.
 SH_BIN="$(command -v sh)"
+# A PATH entry that does not resolve is dropped and an all-dropped PATH falls
+# back to /usr/bin:/bin, so "nothing on PATH" is an existing empty directory.
+EMPTY_DIR="$(mktemp -d)"
+# The project is a sibling directory: /tmp itself would contain the empty one.
+EMPTY_PROJ="$(mktemp -d)"
 expect_silent_success "missing binary" \
-    env KNOSSOS_BIN=/nonexistent/knossos PATH=/nonexistent CLAUDE_PROJECT_DIR=/tmp "$SH_BIN" "$HOOK"
+    env KNOSSOS_BIN=/nonexistent/knossos PATH="$EMPTY_DIR" CLAUDE_PROJECT_DIR="$EMPTY_PROJ" "$SH_BIN" "$HOOK"
 
 # Binary exists but fails.
 tmp="$(mktemp -d)"
@@ -51,9 +56,9 @@ expect_silent_success "hanging binary" \
 printf '#!/bin/sh\nexit 3\n' > "$tmp/knossos"
 chmod +x "$tmp/knossos"
 expect_silent_success "no timeout binary available" \
-    env KNOSSOS_BIN="$tmp/knossos" PATH=/nonexistent CLAUDE_PROJECT_DIR=/tmp "$SH_BIN" "$HOOK"
+    env KNOSSOS_BIN="$tmp/knossos" PATH="$EMPTY_DIR" CLAUDE_PROJECT_DIR="$EMPTY_PROJ" "$SH_BIN" "$HOOK"
 
-rm -rf "$tmp"
+rm -rf "$tmp" "$EMPTY_DIR" "$EMPTY_PROJ"
 # A hook installed without its library must still be silent.
 NOLIB=$(mktemp -d)
 cp "$HOOK" "$NOLIB/session-brief.sh"
@@ -151,6 +156,31 @@ for entry in node_modules/.bin . '' "$planted/proj/node_modules/.bin" "$planted/
     expect_no_planted_run "container hook: PATH entry '$entry' never finds the project's timeout" \
         env PATH="$entry:$planted/dockerbin:$planted/bare" CLAUDE_PROJECT_DIR="$planted/proj" "$SH_BIN" "$planted/container.sh"
 done
+
+# A CLAUDE_PROJECT_DIR that does not resolve must not switch the project
+# filter off: the hook runs inside the project, so the working directory
+# stands in for it and the project's own bin directory is still dropped.
+expect_no_planted_run "unresolvable CLAUDE_PROJECT_DIR still drops the project's bin" \
+    env PATH="$planted/proj/node_modules/.bin:$planted/dockerbin:$planted/bare" KNOSSOS_BIN="$planted/trusted/knossos" HOME="$planted" CLAUDE_PROJECT_DIR="$planted/no-such-dir" "$SH_BIN" -c "cd '$planted/proj' && exec '$SH_BIN' '$HOOK'"
+
+# An entry that does not resolve is dropped rather than kept as written: a
+# symbolic link to a directory that does not exist yet would otherwise sit on
+# PATH until something creates it. The trusted stub records the PATH it was
+# started with; the dangling entry must be gone while a resolving entry is
+# kept, which proves the filter ran and did not simply empty PATH.
+mkdir -p "$planted/pathdump"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\nprintf "%%s" "$PATH" > "%s/seen"\n' "$planted" > "$planted/pathdump/knossos"
+chmod +x "$planted/pathdump/knossos"
+ln -s "$planted/proj/future" "$planted/dangling"
+CLAUDE_PROJECT_DIR="$planted/proj" KNOSSOS_BIN="$planted/pathdump/knossos" PATH="$planted/dangling:$planted/bare" "$SH_BIN" "$HOOK" >/dev/null 2>&1
+seen="$(cat "$planted/seen" 2>/dev/null)"
+if [ "$seen" = "$planted/bare" ]; then
+    printf 'ok   a PATH entry that does not resolve is dropped\n'
+else
+    printf 'FAIL a PATH entry that does not resolve is dropped: PATH=%s\n' "$seen"
+    failures=$((failures + 1))
+fi
 rm -rf "$planted"
 
 [ "$failures" -eq 0 ] || exit 1

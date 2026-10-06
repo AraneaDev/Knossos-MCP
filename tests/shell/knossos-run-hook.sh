@@ -458,4 +458,21 @@ for entry in node_modules/.bin . '' "$STUBS/planted/node_modules/.bin" "$STUBS/l
         env PATH="$entry:$STUBS/dockerbin:$STUBS/bare" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/planted"
 done
 
+# An entry that does not resolve is dropped rather than kept as written. The
+# stub records the PATH it was started with: the dangling link must be gone
+# while the resolving entry stays, so the filter ran and did not empty PATH.
+mkdir -p "$STUBS/pathdump"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\nprintf "%%s" "$PATH" > "%s/seen"\n' "$STUBS" > "$STUBS/pathdump/knossos"
+chmod +x "$STUBS/pathdump/knossos"
+ln -s "$STUBS/planted/future" "$STUBS/dangling"
+rm -f "$STUBS/seen"
+env KNOSSOS_BIN="$STUBS/pathdump/knossos" PATH="$STUBS/dangling:$STUBS/bare" HOME="$STUBS" /bin/sh "$RUN" dashboard "$STUBS/planted" >/dev/null 2>&1
+seen="$(cat "$STUBS/seen" 2>/dev/null)"
+if [ "$seen" = "$STUBS/bare" ]; then
+    printf 'ok   a PATH entry that does not resolve is dropped\n'
+else
+    printf 'FAIL a PATH entry that does not resolve is dropped: PATH=%s\n' "$seen"; failures=$((failures + 1))
+fi
+
 [ "$failures" -eq 0 ] || exit 1
