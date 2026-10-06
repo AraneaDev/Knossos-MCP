@@ -251,6 +251,8 @@ if [ "$profile" = "full" ] && in_lane release; then
         docker build --target runtime -t knossos:quality-runtime .
     fi
     docker run --rm knossos:quality-runtime doctor --json
+    docker run --rm --entrypoint sh knossos:quality-runtime -c 'test ! -w /opt/knossos/bin/knossos && test ! -w /opt/knossos/src && test -w /data' \
+        || { echo 'runtime image: the code tree must not be writable by the runtime user' >&2; exit 1; }
     tools/release-lifecycle
     tools/supply-chain
     tools/benchmark

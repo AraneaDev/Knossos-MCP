@@ -118,7 +118,7 @@ RUN chmod 0755 \
     /opt/knossos/workers/python/bin/worker.py \
     /opt/knossos/workers/rust/bin/knossos-rust-worker \
     && mkdir -p /data \
-    && chown -R www-data:www-data /data /opt/knossos \
+    && chown -R www-data:www-data /data \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
