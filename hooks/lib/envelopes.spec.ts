@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { countLabel, detailLines, fileDetailLines, parseAllowRoot, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseRescan, parseSessionHead, parseTurnBrief, rescanReason } from './envelopes'
 
 describe('envelopes', () => {
+  it('a path carrying an escape sequence is drawn inert', () =>
+    expect(
+      (parseTurnBrief('{"status":"unscanned","path":"/r\\u001b]52;c;Zm9v\\u0007","changed_files":[],"added_files":[],"deleted_files":[],"impact":{},"tests":[],"policy":{"status":"not_evaluated","total":0,"violations":[]},"project_root":null,"scanned_at":null,"roots_file":null}') as { path?: string } | null)?.path,
+    ).toBe('/r�]52;c;Zm9v�'))
   it('empty stdout is no data', () => expect(parseTurnBrief('')).toBeNull())
   it('garbage is no data', () => expect(parseTurnBrief('PHP Warning: x')).toBeNull())
   it('an object without a known status is no data', () => expect(parseDashboard('{"x":1}')).toBeNull())

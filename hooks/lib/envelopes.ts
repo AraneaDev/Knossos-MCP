@@ -1,4 +1,5 @@
 import type { AllowRoot, Annotate, BlastRadius, BoundaryCouplings, BoundaryRef, BranchDiff, BranchItem, Churn, ComponentDetail, Dashboard, FanIn, FileDetail, GitHead, GraphSearch, Listed, PathBetween, Related, Rescan, SessionDiff, SessionLedger, SessionRev, TurnBrief, Violation } from '../../types'
+import { printableDeep } from './printable'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
@@ -30,7 +31,7 @@ function parse(
   objects: string[],
 ): Record<string, unknown> | null {
   try {
-    const value: unknown = JSON.parse(stdout)
+    const value: unknown = printableDeep(JSON.parse(stdout))
     if (typeof value !== 'object' || value === null) return null
     const status = (value as { status?: unknown }).status
     if (typeof status !== 'string' || !statuses.has(status)) return null
@@ -146,9 +147,9 @@ export function parseSessionHead(stdout: string): GitHead | undefined {
   const parsed = parse(stdout, new Set(['ok', 'no-git']), [], []) as { status: string; rev?: unknown; branch?: unknown } | null
   if (parsed?.status === 'no-git') return null
   if (parsed?.status !== 'ok' || typeof parsed.rev !== 'string' || !/^[0-9a-f]{7,64}$/.test(parsed.rev)) return undefined
-  // A branch name with a control character in it is not printed: it could move the terminal's cursor.
-  const printable = (name: string) => [...name].every(ch => (ch.codePointAt(0) ?? 0) >= 0x20 && ch !== '\u007f')
-  const branch = typeof parsed.branch === 'string' && parsed.branch !== '' && printable(parsed.branch) ? parsed.branch : null
+  // A branch name that carried a control character is not printed: the
+  // parser has already made it inert, and a name with a hole in it would only mislead.
+  const branch = typeof parsed.branch === 'string' && parsed.branch !== '' && !parsed.branch.includes('�') ? parsed.branch : null
   return { rev: parsed.rev, branch }
 }
 
@@ -259,7 +260,7 @@ export function rescanReason(rescan: Rescan | null): string {
 export function parseAllowRoot(stdout: string): AllowRoot | null {
   let value: unknown
   try {
-    value = JSON.parse(stdout)
+    value = printableDeep(JSON.parse(stdout))
   } catch {
     return null
   }
