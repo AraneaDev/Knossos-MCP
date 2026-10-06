@@ -39,9 +39,11 @@ KNOSSOS_PATH_PROJECT=${2:-}
 # absolute entry that points into the project, such as the
 # `<project>/node_modules/.bin` a tool manager adds, whether it names the
 # project directly or reaches it through a symbolic link. Each entry is
-# therefore compared by its physical path. One that does not resolve holds no
-# program to run and is compared as written. Builtins only, done first, before
-# any program is looked up.
+# therefore compared by its physical path. One that does not resolve is dropped:
+# it names no directory to compare, and a dangling link could start to resolve
+# into the project later. A project that itself holds a bin directory on PATH
+# (the project is $HOME) drops that entry on purpose. Builtins only, done
+# first, before any program is looked up.
 KNOSSOS_PATH_PROJECT=$(CDPATH='' cd -P -- "${KNOSSOS_PATH_PROJECT:-/}" 2>/dev/null && pwd -P) || KNOSSOS_PATH_PROJECT=''
 # The filesystem root holds every entry, so it is no directory to filter by.
 case $KNOSSOS_PATH_PROJECT in
@@ -56,7 +58,7 @@ for KNOSSOS_PATH_ENTRY in ${PATH:-}; do
         /*) ;;
         *) continue ;;
     esac
-    KNOSSOS_PATH_REAL=$(CDPATH='' cd -P -- "$KNOSSOS_PATH_ENTRY" 2>/dev/null && pwd -P) || KNOSSOS_PATH_REAL=$KNOSSOS_PATH_ENTRY
+    KNOSSOS_PATH_REAL=$(CDPATH='' cd -P -- "$KNOSSOS_PATH_ENTRY" 2>/dev/null && pwd -P) || continue
     case $KNOSSOS_PATH_PROJECT in
         '') ;;
         *)
