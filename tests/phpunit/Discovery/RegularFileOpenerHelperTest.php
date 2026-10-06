@@ -81,6 +81,8 @@ final class RegularFileOpenerHelperTest extends KnossosTestCase
         $handle = RegularFileOpener::open($file, 100);
 
         self::assertIsResource($handle);
-        self::assertLessThanOrEqual(101, strlen((string) stream_get_contents($handle, 101)));
+        // The helper path holds cap + 1 bytes; the FFI path returns the real descriptor.
+        $expected = RegularFileOpener::usesHelper() ? 101 : 10_000;
+        self::assertSame($expected, strlen((string) stream_get_contents($handle)));
     }
 }

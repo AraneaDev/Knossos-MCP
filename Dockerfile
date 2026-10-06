@@ -45,13 +45,13 @@ LABEL org.opencontainers.image.title="Knossos" \
 # both. CI passes the date here, so the first build each day runs the upgrade again and
 # the rest of that day still hit the cache. Every RUN after an ARG sees it, so a changed
 # value is a cache miss from here on.
-# The ffi extension's own ini (docker-php-ext-ffi.ini) only loads it; the CLI default ffi.enable=preload
-# refuses FFI::cdef, so the enabling line lives in a separate file the extension install cannot overwrite.
 ARG APT_REFRESH=unset
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install --no-install-recommends -y git libatomic1 libffi-dev libsqlite3-dev python3 unzip \
     && docker-php-ext-install pdo_sqlite ffi \
+    # docker-php-ext-ffi.ini only loads the extension; the CLI default ffi.enable=preload refuses
+    # FFI::cdef, so the enabling line goes in a separate file the extension install cannot overwrite.
     && printf 'ffi.enable=true\n' > /usr/local/etc/php/conf.d/zz-ffi-enable.ini \
     && apt-get purge -y --auto-remove libffi-dev libsqlite3-dev libc6-dev $PHPIZE_DEPS \
     && apt-get install --no-install-recommends -y libffi8 \

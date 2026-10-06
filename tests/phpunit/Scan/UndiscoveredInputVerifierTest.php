@@ -144,6 +144,18 @@ final class UndiscoveredInputVerifierTest extends KnossosTestCase
         $this->assertFails(['big.ts' => hash('sha256', str_repeat('x', 11))], 'big.ts', 10);
     }
 
+    /** The helper copies only cap + 1 bytes, which is still enough to see that the file is too large. */
+    public function testAFileOverTheCapIsStillTooLargeThroughTheHelperPath(): void
+    {
+        file_put_contents($this->root . '/big.ts', str_repeat('x', 11));
+
+        $this->throughTheHelper(function (): void {
+            $this->assertFails(['big.ts' => hash('sha256', str_repeat('x', 11))], 'big.ts', 10);
+            $this->assertFails(['big.ts' => hash('sha256', str_repeat('x', 10))], 'big.ts', 10);
+            $this->verify(['big.ts' => null], 10);
+        });
+    }
+
     public function testAFileExactlyAtTheCapIsCompared(): void
     {
         file_put_contents($this->root . '/big.ts', str_repeat('x', 10));
@@ -272,5 +284,22 @@ final class UndiscoveredInputVerifierTest extends KnossosTestCase
     private function hashOf(string $relativePath): string
     {
         return hash('sha256', (string) file_get_contents($this->root . '/' . $relativePath));
+    }
+
+    /** Run the callback with the FFI binding marked unavailable, so open() takes the helper process. */
+    private function throughTheHelper(callable $run): void
+    {
+        $opener = new \ReflectionClass(\Knossos\Filesystem\RegularFileOpener::class);
+        $attempted = $opener->getProperty('ffiAttempted');
+        $libc = $opener->getProperty('libc');
+        $before = [$attempted->getValue(), $libc->getValue()];
+        $attempted->setValue(null, true);
+        $libc->setValue(null, null);
+        try {
+            $run();
+        } finally {
+            $attempted->setValue(null, $before[0]);
+            $libc->setValue(null, $before[1]);
+        }
     }
 }
