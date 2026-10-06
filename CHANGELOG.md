@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/AraneaDev/knossos/compare/v0.18.1...v0.19.0) (2026-10-06)
+
+
+### Features
+
+* list dead code, diagnostics and policies from the CLI, and stop the plugin hiding the MCP server ([#140](https://github.com/AraneaDev/knossos/issues/140)) ([c932d48](https://github.com/AraneaDev/knossos/commit/c932d48424508b5f4f9ee94b041645b9d9f25f08))
+
 ## [0.18.1](https://github.com/AraneaDev/knossos/compare/v0.18.0...v0.18.1) (2026-10-05)
 
 
