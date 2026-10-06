@@ -20,8 +20,12 @@ foreach ($files as $relative) {
             $errors[] = "$relative is invalid JSON: {$error->getMessage()}";
         }
     }
-    if (in_array($extension, ['php', 'js', 'py', 'md', 'json', 'jsonc', 'yaml', 'yml', 'sh'], true)) {
-        $contents = (string) file_get_contents($path);
+    $contents = (string) file_get_contents($path);
+    // A NUL byte in the first 8 KiB marks a binary file: its bytes are not
+    // text, so CR and secret-shaped matches in it are noise. Every other file is
+    // scanned whatever its extension, so TypeScript, Rust, TOML and extensionless
+    // scripts get the same checks as the formats that used to be allowlisted.
+    if (!str_contains(substr($contents, 0, 8192), "\0")) {
         if (str_contains($contents, "\r")) {
             $errors[] = "$relative contains CR line endings";
         }
@@ -88,9 +92,23 @@ printf("Repository JSON, size, line-ending, and secret checks passed: %d files.\
  */
 function repositoryFiles(string $root): array
 {
-    $skippedDirectories = ['.git', 'node_modules', 'vendor', 'coverage', '.knossos', '.mypy_cache', '.ruff_cache'];
+    // Only these two are pruned at any depth. Every other generated directory is
+    // a root-relative prefix, so a fixture folder that merely happens to be named
+    // `vendor` or `coverage` is still scanned.
+    $skippedDirectories = ['.git', 'node_modules'];
     // Matched by full relative path, not bare basename -- see the docblock above.
-    $skippedPathPrefixes = ['workers/rust/target/', 'workers/rust/bin/'];
+    $skippedPathPrefixes = [
+        'vendor/',
+        'coverage/',
+        '.knossos/',
+        '.mypy_cache/',
+        '.ruff_cache/',
+        'workers/rust/target/',
+        'workers/rust/bin/',
+        'workers/php/vendor/',
+        'workers/python/bin/__pycache__/',
+        'workers/python/tests/__pycache__/',
+    ];
     $paths = [];
     // Pruned during the walk rather than filtered afterwards. Collecting first
     // and discarding later still OPENS every skipped directory, and one of

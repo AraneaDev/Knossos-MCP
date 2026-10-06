@@ -132,4 +132,67 @@ final class RepositoryCheckTest extends KnossosTestCase
             @unlink($fixture);
         }
     }
+
+    /** A secret in a TypeScript file is found: the extension is not an allowlist. */
+    #[Group('documentation')]
+    public function testSecretsAreFoundInEveryTextFile(): void
+    {
+        $this->assertSecretIsFound('repository-check-scan', 'key.ts');
+    }
+
+    /** A folder that is merely named vendor, below the root, is scanned like any other. */
+    #[Group('documentation')]
+    public function testNestedFoldersNamedVendorAreScanned(): void
+    {
+        $this->assertSecretIsFound('repository-check-nested', 'vendor/key.ts');
+    }
+
+    private function assertSecretIsFound(string $name, string $relative): void
+    {
+        $root = self::repositoryRoot();
+        $dir = $root . '/tests/Fixtures/' . $name;
+        self::assertDirectoryDoesNotExist($dir);
+        $file = $dir . '/' . $relative;
+        mkdir(dirname($file), 0o755, true);
+
+        try {
+            // Split so this file never matches the check it exercises.
+            file_put_contents($file, "const k = `-----BEGIN RSA " . "PRIVATE KEY-----`\n");
+            [$ignoreExit] = $this->runFixtureCommandOutput(['git', '-C', $root, 'check-ignore', '-q', $file]);
+            if ($ignoreExit === 0) {
+                self::markTestSkipped('git ignores the fixture path here, so the walk is not what decides.');
+            }
+            [$exit, , $errors] = $this->runFixtureCommandOutput([PHP_BINARY, $root . '/tools/repository-check.php']);
+
+            self::assertNotSame(0, $exit);
+            assertContains("tests/Fixtures/$name/$relative contains a private key", $errors);
+        } finally {
+            @unlink($file);
+            if (dirname($file) !== $dir) {
+                @rmdir(dirname($file));
+            }
+            @rmdir($dir);
+        }
+    }
+
+    /** A binary file is not text and is never flagged for line endings. */
+    #[Group('documentation')]
+    public function testBinaryFilesAreSkipped(): void
+    {
+        $root = self::repositoryRoot();
+        $dir = $root . '/tests/Fixtures/repository-check-binary';
+        self::assertDirectoryDoesNotExist($dir);
+        mkdir($dir, 0o755, true);
+        $file = $dir . '/image.png';
+
+        try {
+            file_put_contents($file, "\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+            [, , $errors] = $this->runFixtureCommandOutput([PHP_BINARY, $root . '/tools/repository-check.php']);
+
+            self::assertStringNotContainsString('repository-check-binary', $errors);
+        } finally {
+            @unlink($file);
+            @rmdir($dir);
+        }
+    }
 }
