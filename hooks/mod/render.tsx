@@ -309,7 +309,7 @@ function drawCards(ui: Elements[RenderSurface], rows: Row[], columns: number) {
         )
         break
       }
-      x += [...s.text].length
+      x += cells(s.text)
     }
   }
   return cards
@@ -370,7 +370,7 @@ export async function drawBand(io: Port, resolve: () => Elements[RenderSurface],
   const color = model.tone === 'alert' ? 'error' : model.tone === 'warn' ? 'warning' : 'inactive'
   // The text gives way to the buttons, each drawn `[ label ]` and a space: a cut line still names what happened.
   const labels = [...(model.showDetails ? ['details'] : []), ...(model.copy === undefined ? [] : ['copy']), 'hide']
-  const room = Math.max(1, props.bodyColumns - labels.reduce((n, l) => n + l.length + 5, 0) - 1)
+  const room = Math.max(1, props.bodyColumns - labels.reduce((n, l) => n + cells(l) + 5, 0) - 1)
   const copy = model.copy
   return (
     <Box key="band" width={props.bodyColumns} overflow="hidden">

@@ -3,9 +3,10 @@
  * rows, cutting text to a width, bars, and the table that fits itself to the
  * columns it has. Pure; nothing here reads state.
  *
- * Widths are counted in code points. Every glyph the pane draws (blocks,
- * bullets, arrows, the ellipsis) is one cell wide, and names come from source
- * identifiers, so a code point is a cell.
+ * Widths are display columns, measured per grapheme: East Asian wide and
+ * emoji graphemes take two, a grapheme of only combining marks none, the
+ * rest one. Text is cut only between graphemes, so a cut never splits an
+ * emoji sequence or strips a mark from its base.
  *
  * Bars are thin rules (`━`, in half cells) on a faint dotted track, so a
  * column of them reads as a set of gauges rather than a block of colour.
@@ -115,7 +116,22 @@ const KIND_MAX = 12
 /** The selection marker, the hotspot mark and a space. */
 export const MARK = 3
 
-export const cells = (text: string): number => [...text].length
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+const WIDE =
+  /[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]|[\u{1f300}-\u{1faff}\u{20000}-\u{3fffd}]|\p{Extended_Pictographic}/u
+const MARKS_ONLY = /^\p{M}+$/u
+
+/** Display columns a grapheme takes in a terminal. */
+const graphemeCells = (g: string): number => (MARKS_ONLY.test(g) ? 0 : WIDE.test(g) ? 2 : 1)
+
+/** The graphemes of a string, in order. */
+const split = (text: string): string[] => Array.from(graphemes.segment(text), s => s.segment)
+
+/** Text of printable ASCII only: one cell a code unit, no grapheme to split. */
+const ASCII = /^[\x20-\x7e]*$/
+
+export const cells = (text: string): number => (ASCII.test(text) ? text.length : cellsOf(text))
+const cellsOf = (text: string): number => split(text).reduce((n, g) => n + graphemeCells(g), 0)
 export const rowWidth = (row: Row): number => row.segments.reduce((n, s) => n + cells(s.text), 0)
 /**
  * The rows `row` takes on screen: any row one, and a diff element one per
@@ -133,18 +149,40 @@ export const rowHeight = (row: Row): number => (row.code === undefined ? 1 : row
 export const rowsHeight = (rows: readonly Row[]): number => rows.reduce((n, row) => n + rowHeight(row), 0)
 export const segmentsWidth = (segments: Segment[]): number => segments.reduce((n, s) => n + cells(s.text), 0)
 
+/** The leading graphemes that fit in `room` cells, joined. */
+function head(chars: string[], room: number): string {
+  let used = 0
+  let out = ''
+  for (const g of chars) {
+    used += graphemeCells(g)
+    if (used > room) break
+    out += g
+  }
+  return out
+}
+
+/** The trailing graphemes that fit in `room` cells, joined. */
+function tail(chars: string[], room: number): string {
+  let used = 0
+  let out = ''
+  for (let i = chars.length - 1; i >= 0; i--) {
+    used += graphemeCells(chars[i])
+    if (used > room) break
+    out = chars[i] + out
+  }
+  return out
+}
+
 /** `text` cut to `width` cells, the last one an ellipsis when anything was cut. */
 export function fit(text: string, width: number): string {
   if (width <= 0) return ''
-  const chars = [...text]
-  return chars.length <= width ? text : `${chars.slice(0, width - 1).join('')}…`
+  return cells(text) <= width ? text : `${head(split(text), width - 1)}…`
 }
 
 /** `text` cut to `width` cells from the front, the first one an ellipsis: a path keeps its file name. */
 export function fitStart(text: string, width: number): string {
   if (width <= 0) return ''
-  const chars = [...text]
-  return chars.length <= width ? text : `…${chars.slice(chars.length - width + 1).join('')}`
+  return cells(text) <= width ? text : `…${tail(split(text), width - 1)}`
 }
 
 /**
@@ -192,10 +230,10 @@ function middleCut(dir: string, room: number): string {
   if (last !== undefined && folders.length > 1 && cells(`…/${last}/`) <= room) return `…/${last}/`
   if (folders.length > 1 && cells(`${folders[0]}/…/`) <= room) return `${folders[0]}/…/`
   if (room < 4) return '…/'
-  const chars = [...dir]
+  const chars = split(dir)
   const left = Math.ceil((room - 1) / 2)
   const right = room - 1 - left
-  return `${chars.slice(0, left).join('')}…${right > 0 ? chars.slice(chars.length - right).join('') : ''}`
+  return `${head(chars, left)}…${right > 0 ? tail(chars, right) : ''}`
 }
 
 export const spaces = (n: number): string => ' '.repeat(Math.max(0, n))
