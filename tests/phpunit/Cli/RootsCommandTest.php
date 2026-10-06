@@ -452,4 +452,36 @@ final class RootsCommandTest extends KnossosTestCase
 
         assertSame($before, (string) file_get_contents($this->rootsFile()));
     }
+
+    /** The directory that will hold the graph is created owner-only, as the runtime creates it. */
+    #[Group('cli')]
+    public function testANewDataDirectoryIsOwnerOnly(): void
+    {
+        $previousData = getenv('KNOSSOS_DATA_DIR');
+        $previousFile = getenv('KNOSSOS_ROOTS_FILE');
+        putenv('KNOSSOS_DATA_DIR');
+        putenv('KNOSSOS_ROOTS_FILE');
+        try {
+            $project = $this->tempDir . '/project';
+            mkdir($project);
+            $context = new CliCommandContext(
+                new CliOptionParser(),
+                new CliInputLoader(),
+                new RuntimeFactory(self::repositoryRoot()),
+                $this->tempDir . '/fresh/knossos.sqlite',
+            );
+
+            ob_start();
+            try {
+                (new RootsCommand())->run('allow-root', [$project], ['execute' => ['true']], $context);
+            } finally {
+                ob_end_clean();
+            }
+
+            assertSame('0700', substr(sprintf('%o', fileperms($this->tempDir . '/fresh')), -4));
+        } finally {
+            putenv(is_string($previousData) ? 'KNOSSOS_DATA_DIR=' . $previousData : 'KNOSSOS_DATA_DIR');
+            putenv(is_string($previousFile) ? 'KNOSSOS_ROOTS_FILE=' . $previousFile : 'KNOSSOS_ROOTS_FILE');
+        }
+    }
 }

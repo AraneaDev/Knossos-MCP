@@ -91,7 +91,7 @@ final class RootsCommandReportTest extends KnossosTestCase
         assertSame('working-directory', $this->runWithoutDatabase(['KNOSSOS_ROOTS_FILE' => '', 'KNOSSOS_DATA_DIR' => ''])['roots_file_source']);
     }
 
-    /** A new roots file's directory is created readable by everyone and writable by its owner. */
+    /** A new roots file's directory is created owner-only, as the runtime creates it. */
     #[Group('cli')]
     public function testANewRootsDirectoryIsCreatedWithOrdinaryPermissions(): void
     {
@@ -100,7 +100,7 @@ final class RootsCommandReportTest extends KnossosTestCase
         $this->runWithoutDatabase(['KNOSSOS_ROOTS_FILE' => $nested], execute: true);
 
         clearstatcache();
-        assertSame(0o755, fileperms(dirname($nested)) & 0o777);
+        assertSame(0o700, fileperms(dirname($nested)) & 0o777);
         assertSame(true, is_file($nested));
     }
 
