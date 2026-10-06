@@ -53,7 +53,9 @@ architecture pane in Claude Code, also install
 in any shell you type `knossos` from. `tools/install` defaults it to
 `~/.knossos` and writes it into the registration it creates.
 
-Unpinned, it falls back to `<cwd>/.knossos`, and that fallback is per-caller.
+Unpinned, it reads `~/.knossos/knossos.sqlite` when that file exists, which is
+where `tools/install` puts the graph. Without one it falls back to
+`<cwd>/.knossos`, and that fallback is per-caller.
 The consequences are quiet:
 
 - Two servers, one registered with the variable and one without, build **two

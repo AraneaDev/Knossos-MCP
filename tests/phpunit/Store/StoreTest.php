@@ -23,11 +23,46 @@ final class StoreTest extends KnossosTestCase
         $pdo = SqliteConnection::open(':memory:');
         $runner = new MigrationRunner($pdo, self::repositoryRoot() . '/migrations');
 
-        assertSame(['001_initial_graph', '002_classifications', '003_boundary_memberships', '004_contribution_cache', '005_scan_locks', '006_http_sessions', '007_scan_snapshots', '008_occurrence_edges', '009_file_line_count', '010_language_scoped_node_uniqueness', '011_annotations', '012_add_missing_indexes', '013_edges_fk_child_indexes', '014_scan_git_head', '015_scan_duration', '016_scan_dirty_paths', '017_scan_unit_inputs', '018_snapshot_metrics', '019_scan_ledger'], $runner->migrate());
+        assertSame(['001_initial_graph', '002_classifications', '003_boundary_memberships', '004_contribution_cache', '005_scan_locks', '006_http_sessions', '007_scan_snapshots', '008_occurrence_edges', '009_file_line_count', '010_language_scoped_node_uniqueness', '011_annotations', '012_add_missing_indexes', '013_edges_fk_child_indexes', '014_scan_git_head', '015_scan_duration', '016_scan_dirty_paths', '017_scan_unit_inputs', '018_snapshot_metrics', '019_scan_ledger', '020_intentional_annotations'], $runner->migrate());
         assertSame([], $runner->migrate());
         assertSame('1', (string) $pdo->query('PRAGMA foreign_keys')->fetchColumn());
         $edgeSchema = (string) $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'edges'")->fetchColumn();
         assertSame(false, str_contains($edgeSchema, 'UNIQUE (project_id, kind, source_id, target_id, owner_key)'));
+    }
+
+    /**
+     * Migration 020 rebuilds `annotations` to admit the `intentional` kind.
+     * The rows already recorded survive it, the new kind is accepted, an
+     * unknown one is still refused, and removing the project still removes
+     * its annotations.
+     */
+    #[Group('store')]
+    public function testTheIntentionalAnnotationMigrationKeepsEveryRecordedAnnotation(): void
+    {
+        $directory = sys_get_temp_dir() . '/knossos-stale-annotation-migration-' . bin2hex(random_bytes(6));
+        mkdir($directory, 0700);
+        foreach (glob(self::repositoryRoot() . '/migrations/0*.sql') ?: [] as $migration) {
+            if (!str_starts_with(basename($migration), '020_')) {
+                copy($migration, $directory . '/' . basename($migration));
+            }
+        }
+        try {
+            [$pdo, , $ids] = $this->storeFixture($directory);
+            $pdo->prepare("INSERT INTO annotations (project_id, canonical_name, kind, value, created_at, updated_at) VALUES (?, 'App\\Orphan', 'false_positive', 'built by DI', 'now', 'now')")
+                ->execute([$ids['project']]);
+
+            copy(self::repositoryRoot() . '/migrations/020_intentional_annotations.sql', $directory . '/020_intentional_annotations.sql');
+            assertSame(['020_intentional_annotations'], (new MigrationRunner($pdo, $directory))->migrate());
+
+            assertSame([['App\\Orphan', 'false_positive', 'built by DI']], $pdo->query('SELECT canonical_name, kind, value FROM annotations')->fetchAll(\PDO::FETCH_NUM));
+            $insert = $pdo->prepare("INSERT INTO annotations (project_id, canonical_name, kind, created_at, updated_at) VALUES (?, 'App\\Parked', ?, 'now', 'now')");
+            $insert->execute([$ids['project'], 'intentional']);
+            assertThrows(fn() => $insert->execute([$ids['project'], 'bogus']), \PDOException::class);
+            $pdo->prepare('DELETE FROM projects WHERE id = ?')->execute([$ids['project']]);
+            assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM annotations')->fetchColumn());
+        } finally {
+            $this->removeTempTree($directory);
+        }
     }
 
     #[Group('store')]

@@ -274,6 +274,8 @@ final readonly class ToolService
             'architecture_summary' => $this->summary($arguments),
             'export_agent_brief' => $this->exportAgentBrief($arguments),
             'file_metrics' => $this->fileMetrics($arguments),
+            'file_context' => $this->fileContext($arguments),
+            'list_diagnostics' => $this->listDiagnostics($arguments),
             'explain_flow' => $this->flow($arguments),
             'impact_analysis' => $this->impact($arguments),
             'dependency_cycles' => $this->cycles($arguments),
@@ -619,6 +621,32 @@ final readonly class ToolService
     }
 
     /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listDiagnostics()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    private function listDiagnostics(array $arguments): ResultEnvelope
+    {
+        return $this->queries->listDiagnostics(
+            self::string($arguments, 'project_id'),
+            array_key_exists('severity', $arguments) ? self::string($arguments, 'severity') : null,
+            array_key_exists('path_prefix', $arguments) ? self::string($arguments, 'path_prefix') : null,
+            self::integer($arguments, 'limit', 100, 1, 100),
+            self::integer($arguments, 'offset', 0, 0, 100_000),
+        );
+    }
+
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::fileContext()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    private function fileContext(array $arguments): ResultEnvelope
+    {
+        return $this->queries->fileContext(self::string($arguments, 'project_id'), self::string($arguments, 'path'));
+    }
+
+    /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::explainFlow()}.
      *
      * @param array<string, mixed> $arguments
@@ -704,8 +732,9 @@ final readonly class ToolService
      */
     private function check(array $arguments): ResultEnvelope
     {
-        $policies = $arguments['policies'];
-        if (!is_array($policies) || !array_is_list($policies)) {
+        // Absent, the project's declared policies are checked.
+        $policies = $arguments['policies'] ?? null;
+        if ($policies !== null && (!is_array($policies) || !array_is_list($policies))) {
             throw new InvalidArgumentException('policies must be a list.');
         }
         return $this->queries->checkArchitecture(

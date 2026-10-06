@@ -5,7 +5,7 @@ describe("the session's activity", () => {
   it('counts every tool that can write, in any loop, and none that only waits or only reads', () => {
     for (const tool of ['Bash', 'Edit', 'Write', 'NotebookEdit', 'mcp__knossos__scan_project']) expect(counts(tool)).toBe(true)
     for (const tool of WAITING_TOOLS) expect(counts(tool)).toBe(false)
-    for (const tool of ['Read', 'Grep', 'Glob', 'mcp__knossos__knossos_context', 'mcp__plugin_knossos_knossos__knossos_context']) expect(counts(tool), tool).toBe(false)
+    for (const tool of ['Read', 'Grep', 'Glob', 'mcp__knossos__file_context']) expect(counts(tool), tool).toBe(false)
   })
 
   it('is active while a call runs and over the span it ran, and idle around it', () => {

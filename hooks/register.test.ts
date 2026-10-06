@@ -79,7 +79,6 @@ function world(
     /** What `graph-search` (the finder), `branch-diff` (the Branch tab) and `file-context` (the model's tool) answer. */
     search?: Answer[]
     branch?: Answer[]
-    context?: Answer[]
     /** What `churn` (the Churn tab), `blast-radius` (a detail's rings), `path-between` (a route) and `annotate` (a note) answer. */
     churn?: Answer[]
     rings?: Answer[]
@@ -91,8 +90,6 @@ function world(
     watch?: object[][]
     /** How long each Bash call runs on the mocked clock (a command that takes a while). */
     bashMs?: number
-    /** The prefix the engine gives a registered tool's full name (`mcp__knossos__` otherwise). */
-    toolPrefix?: string
     /** What a Bash call prints, by its command (`ran Bash` otherwise). */
     bashOutput?: (command: string) => string
     /**
@@ -143,7 +140,6 @@ function world(
     couplings: answers.couplings ?? [{ stdout: '' }],
     search: answers.search ?? [{ stdout: '' }],
     branch: answers.branch ?? [{ stdout: '' }],
-    context: answers.context ?? [{ stdout: '' }],
     churn: answers.churn ?? [{ stdout: '' }],
     rings: answers.rings ?? [{ stdout: '' }],
     route: answers.route ?? [{ stdout: '' }],
@@ -182,7 +178,7 @@ function world(
   const tools: string[] = []
   on('tool.register', (_$, e) => {
     tools.push(e.name)
-    return { value: { tool: `${answers.toolPrefix ?? 'mcp__knossos__'}${e.name}` } }
+    return { value: { tool: `mcp__knossos__${e.name}` } }
   })
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
@@ -304,9 +300,7 @@ function world(
                           ? queues.search
                           : sub === 'branch-diff'
                             ? queues.branch
-                            : sub === 'file-context'
-                              ? queues.context
-                              : sub === 'churn'
+                            : sub === 'churn'
                                 ? queues.churn
                                 : sub === 'blast-radius'
                                   ? queues.rings
@@ -348,12 +342,11 @@ function world(
   const couplingRuns = () => calls.filter(c => c[2] === 'boundary-couplings')
   const searchRuns = () => calls.filter(c => c[2] === 'graph-search')
   const branchRuns = () => calls.filter(c => c[2] === 'branch-diff')
-  const contextRuns = () => calls.filter(c => c[2] === 'file-context')
   const churnRuns = () => calls.filter(c => c[2] === 'churn')
   const ringRuns = () => calls.filter(c => c[2] === 'blast-radius')
   const routeRuns = () => calls.filter(c => c[2] === 'path-between')
   const noteRuns = () => calls.filter(c => c[2] === 'annotate')
-  return { churnRuns, ringRuns, routeRuns, noteRuns, tools, searchRuns, branchRuns, contextRuns, couplingRuns, store, switchSession, headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  return { churnRuns, ringRuns, routeRuns, noteRuns, tools, searchRuns, branchRuns, couplingRuns, store, switchSession, headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -1322,32 +1315,16 @@ describe('knossos mod', () => {
     await ui.unmount()
   })
 
-  test('knossos_context says what to do instead when there is no binary, and which root to allow when it is refused', async ($, on) => {
-    const ask = async () => String(((await $.tool.call({ tool: 'mcp__knossos__knossos_context', path: 'src/Router.php' })) as { result?: unknown }).result)
-    const w = world(on, { dashboard: [{ stdout: '{"status":"unscanned"}' }], brief: [{ stdout: brief({ status: 'not-allowed', refused_root: ROOT, roots_file: '/data/roots.json', changed_files: [], impact: {} }) }, { stdout: '{"status":"no-binary"}' }] })
+  test('the mod registers no tool for the model: a second tool host named knossos would hide the MCP server and its tools', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
     await $.session.start(START)
     await w.clock.settle()
-    await edit($, `${ROOT}/src/Router.php`)
     await $.turn.complete(TURN)
     await w.clock.settle()
-    expect(await ask()).toBe(`knossos_context: knossos may not scan ${ROOT}: it is not an allowed root. Ask the person to allow it (the knossos band offers the command), then call this again.`)
-    // The binary gone: no scan would help.
-    await edit($, `${ROOT}/src/Router.php`)
-    await $.turn.complete(TURN)
-    await w.clock.settle()
-    expect(await ask()).toContain('no knossos binary was found')
-  })
-
-  test('knossos_context answers under the name its registration returned', async ($, on) => {
-    const w = world(on, { dashboard: [{ stdout: '{"status":"unscanned"}' }], toolPrefix: 'mcp__plugin_knossos_knossos__' })
-    await $.session.start(START)
-    await w.clock.settle()
-    expect(w.tools).toEqual(['knossos_context'])
-    const answered = await $.tool.call({ tool: 'mcp__plugin_knossos_knossos__knossos_context', path: 'src/Router.php' } as never)
-    expect(String((answered as { result?: unknown }).result)).toContain('knossos_context: knossos has no graph of this project yet')
-    // The name the mod would have guessed is not the tool's: the call goes on to whatever answers it.
-    const guessed = await $.tool.call({ tool: 'mcp__knossos__knossos_context', path: 'src/Router.php' } as never)
-    expect((guessed as { text?: string }).text).toBe('ran mcp__knossos__knossos_context')
+    expect(w.tools).toEqual([])
+    // The server's own file_context goes on to whatever answers it.
+    const passed = await $.tool.call({ tool: 'mcp__knossos__file_context', path: 'src/Router.php' } as never)
+    expect((passed as { text?: string }).text).toBe('ran mcp__knossos__file_context')
   })
 
   test('a search typed just before the binary goes missing never runs', async ($, on) => {
@@ -1868,48 +1845,6 @@ describe('knossos mod', () => {
     expect(turnNotes(w)).toHaveLength(0)
   })
 
-  test('the knossos_context tool answers one file in one compact call: boundary, rules, dependents, tests, commits and this session', async ($, on) => {
-    const context = JSON.stringify({
-      status: 'ok',
-      path: `${ROOT}/src/Router.php`,
-      project_id: 'p1',
-      snapshot_id: 's1',
-      file: {
-        path: 'src/Router.php',
-        language: 'php',
-        lines: 120,
-        boundary: 'core',
-        components: 4,
-        dependents: { count: 41, boundaries: ['Http'], top: ['src/Kernel.php'] },
-        tests: { items: [{ path: 'tests/RouterTest.php', distance: 1 }], more: false },
-        commits: [{ rev: 'abc1234', at: 1_791_115_340, subject: 'feat: route' }],
-      },
-    })
-    const w = world(on, { dashboard: [{ stdout: policedDashboard() }], context: [{ stdout: context }], brief: [{ stdout: brief() }] })
-    await $.session.start(START)
-    await w.clock.settle()
-    await edit($, `${ROOT}/src/Router.php`)
-    await $.turn.complete(TURN)
-    await w.clock.settle()
-    for (const asked of ['src/Router.php', `${ROOT}/src/Router.php`]) {
-      const answer = await $.tool.call({ tool: 'mcp__knossos__knossos_context', path: asked })
-      const text = String((answer as { result?: unknown }).result)
-      expect(text).toContain('src/Router.php: boundary core, PHP, 120 lines, 4 components.')
-      expect(text).toContain('Rules: core may not depend on workers, tests.')
-      expect(text).toContain('Dependents: 41 files in Http; closest: src/Kernel.php, and 40 more.')
-      expect(text).toContain('Tests that reach it: tests/RouterTest.php (1 hop).')
-      expect(text).toContain('This session changed it.')
-      expect(text.length).toBeLessThanOrEqual(2_000)
-    }
-    // Read through the wrapper by the path under the project, and only that.
-    expect(w.contextRuns().map(r => r.slice(4))).toEqual([['src/Router.php'], ['src/Router.php']])
-    // Registered for the model when the session started, once.
-    expect(w.tools).toEqual(['knossos_context'])
-    const outside = await $.tool.call({ tool: 'mcp__knossos__knossos_context', path: '/etc/passwd' })
-    expect(String((outside as { result?: unknown }).result)).toContain('is outside the project')
-    expect(w.contextRuns()).toHaveLength(2)
-  })
-
   test('a git commit in any loop gets one note of what it carries: violations, untested files, new cycles; said once, and never with notes off', async ($, on) => {
     const violation = { policy_id: 'core-alone', source: 'App\\Router', target: 'App\\Worker', source_boundaries: [], target_boundaries: [] }
     const turn = brief({
@@ -2020,7 +1955,7 @@ describe('knossos mod', () => {
     expect(w.calls.filter(c => c[0] === 'git').length).toBeGreaterThan(0)
   })
 
-  test("a commit note and knossos_context speak only of this session's changes, and a commit note names new cycles only against a whole list", async ($, on) => {
+  test("a commit note speaks only of this session's changes, and names new cycles only against a whole list", async ($, on) => {
     const violation = { policy_id: 'core-alone', source: 'App\\Router', target: 'App\\Worker', source_boundaries: [], target_boundaries: [] }
     const turn = brief({
       changed_files: ['src/Router.php'],
@@ -2030,11 +1965,10 @@ describe('knossos mod', () => {
     // The graph as the session began lists 10 of its 12 cycles; the later one holds 13, one listed it did not list before.
     const cycles = (count: number, extra: string[][]) => ({ count, truncated: true, truncation_reasons: [], largest: [...Array.from({ length: 10 }, (_, i) => ({ size: 2, members: [`A${i}`, `B${i}`] })), ...extra.map(members => ({ size: members.length, members }))].slice(0, 10) })
     const first = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), cycles: cycles(12, []) })
-    const kernelContext = JSON.stringify({ status: 'ok', path: `${ROOT}/src/Kernel.php`, project_id: 'p1', snapshot_id: 's1', file: { path: 'src/Kernel.php', language: 'php', lines: 40, boundary: 'core', components: 1, dependents: { count: 3, boundaries: [], top: [] }, tests: { items: [], more: false }, commits: [] } })
     const later = JSON.stringify({ ...(JSON.parse(policedDashboard()) as object), snapshot_id: 's2', cycles: { ...cycles(13, []), largest: [{ size: 2, members: ['New', 'Cycle'] }, ...cycles(13, []).largest.slice(0, 9)] } })
     // Since the session began: the Router changed by this session, the Kernel by someone else.
     const ledger = JSON.stringify({ status: 'ok', since: 's1', complete: true, files: { 'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'core', tests: 0 }, 'src/Kernel.php': { status: 'changed', dependents: 3, boundaries: [], boundary: 'core', tests: 0 } }, files_truncated: false, tests: [], tests_truncated: false })
-    const w = world(on, { dashboard: [{ stdout: first }, { stdout: later }], brief: [{ stdout: turn }], ledger: [{ stdout: ledger }], bashOutput: committing, git: committed, watch: [[{ event: 'ready', project_id: 'p1', snapshot_id: 's1', files: 3, scanned: false }]], context: [{ stdout: kernelContext }] })
+    const w = world(on, { dashboard: [{ stdout: first }, { stdout: later }], brief: [{ stdout: turn }], ledger: [{ stdout: ledger }], bashOutput: committing, git: committed, watch: [[{ event: 'ready', project_id: 'p1', snapshot_id: 's1', files: 3, scanned: false }]] })
     await $.session.start(START)
     await w.clock.settle()
     await edit($, `${ROOT}/src/Router.php`)
@@ -2045,9 +1979,6 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const said = (await bash($, 'git commit -m route')).context ?? []
     expect(said).toEqual(["knossos: this session's changes carry 1 changed file no test reaches (src/Router.php); 1 dependency cycle new since the session began. Check them before you push."])
-    // The Kernel changed since the session began, but not by it.
-    const answer = String((await $.tool.call({ tool: 'mcp__knossos__knossos_context', path: 'src/Kernel.php' }) as { result?: unknown }).result)
-    expect(answer).toContain('This session has not changed it.')
   })
 
   test('a violation the policy check no longer reports is not carried by the commit note', async ($, on) => {

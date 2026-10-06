@@ -9,7 +9,6 @@ import type { PluginOptions, Timer } from 'claude-code'
 import type { Dashboard, SessionChanges } from '../../types'
 import { noActivity } from '../lib/activity'
 import type { Activity } from '../lib/activity'
-import { CONTEXT_TOOL } from '../lib/agent'
 import { watchPollMsOf } from '../lib/live'
 import { SingleFlight } from '../lib/scheduler'
 
@@ -186,9 +185,6 @@ export const mod = {
   peekNone: null as string | null,
   /** Whether a pane too large to draw however few rows it gave was logged: once a load. */
   tooLargeLogged: false,
-  /** The model's `knossos_context` tool by the full name its registration returned (null: not registered), and whether a refused registration was logged. */
-  contextTool: null as string | null,
-  toolFailureLogged: false,
   /** Commit notes already given, by loop and text: the same note is never said twice. */
   commitNoted: new Set<string>(),
   /** Whether a scan's new cycles and violations are toasted (userConfig `notifications`), and the ones already said. */
@@ -291,8 +287,6 @@ export function reset(options: PluginOptions): void {
   mod.tooLargeLogged = false
   mod.loadTimers.forEach(timer => timer.cancel())
   mod.loadTimers = new Map()
-  mod.contextTool = null
-  mod.toolFailureLogged = false
   mod.commitNoted = new Set()
   mod.alertsOn = options.notifications !== false
   mod.toasted = new Set()
@@ -300,13 +294,6 @@ export function reset(options: PluginOptions): void {
 
 /** The most notes the model reads after tool results in one turn of one loop; past it, notes wait for the next turn. */
 const NOTES_PER_TURN = 3
-
-/**
- * The model's tool as the engine lists it (`mcp__<plugin>__<name>`), until a
- * registration names it: the name `$.tool.register` returns is the one its
- * calls carry ({@link mod}`.contextTool`).
- */
-export const CONTEXT_TOOL_NAME = `mcp__knossos__${CONTEXT_TOOL}`
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 export function editedPath(e: object): string | null {

@@ -68,9 +68,9 @@ graph already encodes, or describing the current branch, buries the one that
 records why a boundary is process-enforced rather than conventional.
 
 The tool previews by default and needs `execute: true` to write. `kind` is
-`note` for a free-form fact; `intended_boundary`, `false_positive` and
-`confirmed_dead` each change how other read surfaces behave, so they mean only
-what they say. [Agent integration](../agents/agent-integration.md#component-annotations)
+`note` for a free-form fact; `intended_boundary`, `false_positive`,
+`intentional` and `confirmed_dead` each change how other read surfaces behave,
+so they mean only what they say. [Agent integration](../agents/agent-integration.md#component-annotations)
 covers the mechanics.
 
 ## Where it lives, and when a change to it takes effect

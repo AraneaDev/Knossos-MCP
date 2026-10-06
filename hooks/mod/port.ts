@@ -47,7 +47,6 @@ export type Port = {
   store: Pick<Engine['store'], 'get' | 'set'>
   config: Pick<Engine['config'], 'list'>
   command: Pick<Engine['command'], 'register'>
-  tool: Pick<Engine['tool'], 'register'>
   prompt: Pick<Engine['prompt'], 'submit'>
   plugin: { root: string }
   state: Cells
@@ -122,7 +121,7 @@ export async function light(io: Port, keys: string[], now: number): Promise<void
  * session began, whoever changed it, each file labelled by whether the
  * session's own edits made it; otherwise what the turn briefs reported, with
  * why. The notes after a turn never read this: they stay the turns' own. The
- * note after a commit and the `knossos_context` answer do, and keep only the
+ * note after a commit does, and keeps only the
  * files whose origin is this session ({@link ownChange}).
  */
 export async function shownChanges(io: Port, root: string | null): Promise<SessionChanges> {

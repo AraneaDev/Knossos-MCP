@@ -353,7 +353,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $deadCandidates = $found['candidates'];
         $excluded = $found['excluded'] + [
             'inherited' => 0, 'contracts' => 0, 'constructors' => 0, 'entry_scripts' => 0,
-            'type_declarations' => 0, 'suppressed' => 0, 'annotated_false_positives' => 0,
+            'type_declarations' => 0, 'suppressed' => 0, 'annotated_false_positives' => 0, 'annotated_intentional' => 0,
         ];
         $excludedConventionDiscovered = $found['convention_excluded'];
         $rank = static function (array &$items): void {
@@ -432,6 +432,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'excluded_convention_discovered' => $excludedConventionDiscovered,
                     'suppressed_candidates' => $excluded['suppressed'],
                     'annotated_false_positives' => $excluded['annotated_false_positives'],
+                    'annotated_intentional' => $excluded['annotated_intentional'],
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
                 ],
             ],

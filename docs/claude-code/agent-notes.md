@@ -2,8 +2,8 @@
 
 The [Claude Code mod](pane.md) tells the model a few facts at the moment they
 help, so it keeps to the architecture while it works. There are four notes,
-each one short and said once, and one tool the model can call itself,
-`knossos_context`.
+each one short and said once. For one file's context on demand, the model
+calls the MCP server's [`file_context`](#one-files-context) tool.
 
 | note                           | fires                                                                     | arrives                                 |
 | ------------------------------ | ------------------------------------------------------------------------- | --------------------------------------- |
@@ -212,61 +212,15 @@ what the command printed decides.
 - A new session in the same process (after `/clear`) starts the notes over:
   its model never read the old ones.
 
-## `knossos_context`
+## One file's context
 
-The mod registers one tool the model calls itself. It is listed as
-`mcp__knossos__knossos_context`, and the model reads this description when it
-decides whether to call it:
+The model asks for one file's context with the MCP server's `file_context`
+tool (`mcp__knossos__file_context`): the file's boundary and the declared
+rules whose source is that boundary, how many files depend on it and the
+closest five, the tests that reach it, and its three latest commits. The
+[MCP tool reference](../reference/mcp-tools.md#file_context) has its input and
+output.
 
-```text
-One file's architectural context from the Knossos graph, in one short answer: its boundary and the rules that bind it, how many files depend on it (and the closest few), the tests that reach it, its latest commits, and whether this session changed it. Call it before editing a file you have not read about, instead of grepping for its callers.
-```
-
-**Input.** One argument, required, and nothing else:
-
-```json
-{ "path": "src/Query/ResultEnvelope.php" }
-```
-
-`path` is relative to the project root or absolute.
-
-**Output.** A few lines of text, at most 2,000 characters (cut with
-`… (cut short)` past that). Each list names five, then counts the rest:
-
-```text
-src/Query/ResultEnvelope.php: boundary core, PHP, 111 lines, 15 components.
-Dependents: 47 files in composer:araneadev/knossos (+node:knossos-quality, python:root), core, namespace:Knossos, tests; closest: tests/phpunit/Query/ResultEnvelopeTest.php, src/Mcp/ToolService.php, src/Query/ArchitectureQueryService.php, tests/phpunit/Mcp/MaxCharsTest.php, tests/phpunit/Protocol/ProtocolTest.php, and 42 more.
-Rules: core may not depend on php-worker, typescript-worker, python-worker, rust-worker, tooling, tests.
-Tests that reach it: tests/phpunit/Mcp/BoundaryLegendTest.php (1 hop), tests/phpunit/Mcp/ComponentLegendTest.php (1 hop), tests/phpunit/Mcp/MaxCharsTest.php (1 hop), tests/phpunit/Mcp/McpTest.php (1 hop), tests/phpunit/Mcp/RefreshIfStaleTest.php (1 hop), and more.
-Latest commits: 4e7027a 2026-07-30 feat(quality): enforce docstring coverage, and fix what running Knossos over Knossos found (#26); 2e6541c 2026-07-23 feat(mcp): opt-in refresh_if_stale rescans stale graphs before answering read tools; b63a610 2026-07-19 feat(envelope): add optional staleness, next_steps, meta enrichment fields.
-This session has not changed it.
-```
-
-| line                   | what it says                                                                                        |
-| ---------------------- | --------------------------------------------------------------------------------------------------- |
-| first                  | the file's boundary (or `no boundary`), language, lines and components                              |
-| `Dependents:`          | how many files depend on it, in which boundaries, and the closest; or `no other file depends on it` |
-| `Rules:`               | the declared rules that bind it, `no declared rule binds it`, or that a cap leaves it open          |
-| `Tests that reach it:` | the nearest test files with their hops; `no test reaches it`, or that the search was cut short      |
-| `Latest commits:`      | its three latest commits, when git answers                                                          |
-| last                   | whether this session added, changed or deleted it; a change made outside the session does not count |
-
-When there is no file to answer about, the answer is one sentence that says so
-and what to do instead:
-
-| case                | answer                                                                                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| no `path`           | ``knossos_context: give the file as `path`, relative to the project root or absolute.``                                                                            |
-| no knossos binary   | `knossos_context: no knossos binary was found in this session, so there is no graph to answer from; read the file and grep for its callers instead.`               |
-| root not allowed    | `knossos_context: knossos may not scan <root>: it is not an allowed root. Ask the person to allow it (the knossos band offers the command), then call this again.` |
-| no graph yet        | `knossos_context: knossos has no graph of this project yet; scan it with the knossos MCP tools first.`                                                             |
-| outside the project | `knossos_context: <path> is outside the project knossos scanned (<root>).`                                                                                         |
-| not in the graph    | `knossos_context: <path> is not in the graph (not a source file knossos scans, or not scanned yet).`                                                               |
-| not scanned         | `knossos_context: the project holding <path> has not been scanned.`                                                                                                |
-| binary gone         | `knossos_context: no knossos binary is installed.` (the binary disappeared during the session)                                                                     |
-| no answer           | `knossos_context: knossos did not answer for <path>; try again, or use the knossos MCP tools.`                                                                     |
-
-The tool reads `knossos file-context` through the wrapper when it is called,
-never while the pane draws, within 15 seconds. It is registered when the
-session starts, with the same retries as `/knossos`, whatever `agentNotes`
-says: the model asks for it.
+The mod registers no tool of its own. Claude Code serves a tool a plugin
+registers under the plugin's name, `knossos`, and keeps one server per name,
+so such a tool would hide the Knossos MCP server and every tool it has.

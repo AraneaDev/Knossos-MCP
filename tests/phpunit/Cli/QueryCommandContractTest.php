@@ -81,6 +81,11 @@ final class QueryCommandContractTest extends KnossosTestCase
         // integer, so supply the ones a command accepts, with valid content.
         $policies = self::temporaryJson([['id' => 'p', 'from_boundary' => 'core', 'deny_targets' => ['tests']]]);
         $budgets = self::temporaryJson(['new_cycles' => 0]);
+        // The project argument is resolved before any option is read, so it
+        // has to name a project; one row is enough, with no snapshot behind it.
+        $database = sys_get_temp_dir() . '/knossos-stale-bounds-' . bin2hex(random_bytes(4)) . '.sqlite';
+        (new RuntimeFactory(self::repositoryRoot()))->database($database)
+            ->exec("INSERT INTO projects (id, name, root_realpath, created_at, updated_at) VALUES ('p1', 'p1', '/p1', 'now', 'now')");
         $checked = 0;
         try {
             foreach (self::COMMANDS as $command) {
@@ -101,14 +106,14 @@ final class QueryCommandContractTest extends KnossosTestCase
                     foreach ([$maximum + 1, $minimum - 1] as $outside) {
                         assertSame(
                             $expected,
-                            self::errorFrom($command, ['p1', 'p2', 'p3'], [...$files, $option => [(string) $outside]]),
+                            self::errorFrom($command, ['p1', 'p2', 'p3'], [...$files, $option => [(string) $outside]], $database),
                             sprintf('%s --%s=%d must be refused with the advertised bounds.', $command, $option, $outside),
                         );
                     }
                     foreach ([$maximum, $minimum] as $inside) {
                         assertNotSame(
                             $expected,
-                            self::errorFrom($command, ['p1', 'p2', 'p3'], [...$files, $option => [(string) $inside]]),
+                            self::errorFrom($command, ['p1', 'p2', 'p3'], [...$files, $option => [(string) $inside]], $database),
                             sprintf('%s --%s=%d is advertised as legal and must not be refused as out of range.', $command, $option, $inside),
                         );
                     }
@@ -118,6 +123,10 @@ final class QueryCommandContractTest extends KnossosTestCase
         } finally {
             @unlink($policies);
             @unlink($budgets);
+            // WAL mode leaves -wal and -shm beside the database.
+            foreach ([$database, $database . '-wal', $database . '-shm'] as $file) {
+                @unlink($file);
+            }
         }
         assertSame(true, $checked >= 25, sprintf('Expected to check at least 25 bounded CLI options, checked %d.', $checked));
     }
@@ -188,14 +197,84 @@ final class QueryCommandContractTest extends KnossosTestCase
     }
 
     /**
+     * With nothing pinned, a project's own `.knossos` is found from the
+     * argument or, for an id, from the working directory, as the briefs find
+     * it. A command that finds no graph says so; it never creates one.
+     */
+    #[Group('cli')]
+    public function testAnUnpinnedQueryFindsTheGraphNearestItsArgumentAndCreatesNone(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-nearest-' . bin2hex(random_bytes(4));
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/turn-brief', $root);
+        $root = (string) realpath($root);
+        mkdir($root . '/.knossos', 0700);
+        mkdir($root . '/src/Core/deep', 0700);
+        $runtime = new RuntimeFactory(self::repositoryRoot());
+        $projectId = (new ProjectScanService($runtime->database($root . '/.knossos/knossos.sqlite'), self::repositoryRoot(), [$root]))->scan($root)->projectId;
+        $dataDir = getenv('KNOSSOS_DATA_DIR');
+        putenv('KNOSSOS_DATA_DIR');
+        $cwd = (string) getcwd();
+        chdir($root . '/src/Core/deep');
+        try {
+            foreach (['../..', $projectId] as $argument) {
+                $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), $runtime, null);
+                ob_start();
+                try {
+                    (new QueryCommand())->run('architecture-summary', [$argument], ['json' => ['1']], $context);
+                } finally {
+                    $out = json_decode((string) ob_get_clean(), true, 512, JSON_THROW_ON_ERROR);
+                }
+                assertSame($projectId, $out['project_id'], $argument);
+            }
+            assertSame(false, is_dir($root . '/src/Core/deep/.knossos'));
+            chdir(sys_get_temp_dir());
+            $unpinned = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), $runtime, null);
+            try {
+                (new QueryCommand())->run('architecture-summary', [$projectId], [], $unpinned);
+                self::fail('A graph that is not there answered.');
+            } catch (InvalidArgumentException $error) {
+                assertSame(true, str_starts_with($error->getMessage(), 'Project not found: ' . $projectId), $error->getMessage());
+            }
+            assertSame(false, is_file(sys_get_temp_dir() . '/.knossos/knossos.sqlite'));
+        } finally {
+            chdir($cwd);
+            putenv($dataDir === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $dataDir);
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The project argument is a path as readily as an id; an unknown one names the database read. */
+    #[Group('cli')]
+    public function testAQueryCommandTakesAPathAsWellAsAnId(): void
+    {
+        [, $projectId, $root] = $this->scanTempFixture('turn-brief');
+        $database = sys_get_temp_dir() . '/knossos-stale-cli-' . bin2hex(random_bytes(4)) . '.sqlite';
+        try {
+            (new ProjectScanService((new RuntimeFactory(self::repositoryRoot()))->database($database), self::repositoryRoot(), [$root]))->scan($root);
+            $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $database);
+            ob_start();
+            (new QueryCommand())->run('architecture-summary', [$root . '/src'], ['json' => ['1']], $context);
+            $out = json_decode((string) ob_get_clean(), true, 512, JSON_THROW_ON_ERROR);
+            assertSame($projectId, $out['project_id']);
+            assertSame('Project not found: /nowhere (database: ' . $database . ')', self::errorFrom('architecture-summary', ['/nowhere'], [], $database));
+        } finally {
+            // WAL mode leaves -wal and -shm beside the database.
+            foreach ([$database, $database . '-wal', $database . '-shm'] as $file) {
+                @unlink($file);
+            }
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * The message a command fails with, or null when it completes.
      *
      * @param list<string> $positionals
      * @param array<string, list<string>> $options
      */
-    private static function errorFrom(string $command, array $positionals, array $options = []): ?string
+    private static function errorFrom(string $command, array $positionals, array $options = [], string $database = ':memory:'): ?string
     {
-        $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), ':memory:');
+        $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $database);
         ob_start();
         try {
             (new QueryCommand())->run($command, $positionals, $options, $context);

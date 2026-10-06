@@ -1,4 +1,4 @@
-import type { AllowRoot, Annotate, BlastRadius, BoundaryCouplings, BoundaryRef, BranchDiff, BranchItem, Churn, ComponentDetail, Dashboard, FanIn, FileContext, FileDetail, GitHead, GraphSearch, Listed, PathBetween, Related, Rescan, SessionDiff, SessionLedger, SessionRev, TurnBrief, Violation } from '../../types'
+import type { AllowRoot, Annotate, BlastRadius, BoundaryCouplings, BoundaryRef, BranchDiff, BranchItem, Churn, ComponentDetail, Dashboard, FanIn, FileDetail, GitHead, GraphSearch, Listed, PathBetween, Related, Rescan, SessionDiff, SessionLedger, SessionRev, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
@@ -194,16 +194,6 @@ export function parseBranchDiff(stdout: string): BranchDiff | null {
     c.dead_code.items.every(isPlaced) &&
     (c.violations === null || (typeof c.violations === 'object' && Array.isArray(c.violations.items)))
   return placed ? parsed : null
-}
-
-/** One file's context for the model's tool from the wrapper's stdout; null for silence or anything unexpected. */
-export function parseFileContext(stdout: string): FileContext | null {
-  const parsed = parse(stdout, FILE, [], []) as FileContext | null
-  if (parsed === null || parsed.status !== 'ok') return parsed
-  const f = parsed.file
-  const ok =
-    typeof f === 'object' && f !== null && typeof f.path === 'string' && typeof f.dependents?.count === 'number' && Array.isArray(f.dependents.top) && Array.isArray(f.tests?.items) && Array.isArray(f.commits)
-  return ok ? parsed : null
 }
 
 const CHURN = new Set(['ok', 'no-git', 'unreadable', 'unscanned', 'error', 'no-binary'])

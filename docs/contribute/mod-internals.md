@@ -18,7 +18,7 @@ start at the [pane guide](../claude-code/pane.md).
 | `port.ts`    | how the other modules reach Claude Code                                |
 | `loaders.ts` | the dashboard and every read keyed to what the pane shows              |
 | `watcher.ts` | the live watcher, the scans, and whose change a scan took in           |
-| `agent.ts`   | the notes for the model and its `knossos_context` tool                 |
+| `agent.ts`   | the notes for the model                                                |
 | `actions.ts` | what a press on the pane does                                          |
 | `render.tsx` | what the band and the pane draw                                        |
 | `session.ts` | start-up, the age tick, the end of a turn or a session, and `/knossos` |

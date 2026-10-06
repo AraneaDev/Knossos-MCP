@@ -29,6 +29,18 @@ No framework module is imported and no bundler or application is started.
 - A `.js` or `.cjs` file with no import, export, `require` or `module.exports`
   is a classic script, loaded by a `<script>` tag or run by Node, and is
   `executable` too: nothing can import anything from it.
+- A module that exports nothing and calls something at its top level
+  (`seed();`, `main().catch(...)`, `await start()`) is run rather than
+  imported, by `node scripts/seed.js` or as a bundler's entry, and is
+  `executable` too. Any `export`, or `module.exports` or `exports` named
+  anywhere in the file, rules it out.
+- A file no tsconfig includes is read under fallback options: the module
+  resolution options of the config nearest to it, without its `strict`, `lib`
+  or `types`. Which globals and type libraries the project loads is unknown
+  there, so an error that a name or type library is missing (`Cannot find
+name '__dirname'`, the hint to install `@types/node`, a `/// <reference
+types>` that is not installed) is left out. A missing module, a type error
+  and a grammar error are still reported.
 - A module importing `k6` or `k6/*` is a k6 load-test script: it is
   `executable`, and its default export, `setup`, `teardown`, `handleSummary` and
   every function a scenario names as its `exec` are marked `runtime_invoked`,

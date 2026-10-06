@@ -10,9 +10,8 @@ that puts the graph on screen while a session works. You get three things:
 - **The live watcher**, which rescans the project as files change, so the band
   and the pane follow the code whoever edits it.
 
-The mod also tells the model a few facts at the moment they help. Those notes,
-and the `knossos_context` tool the model can call, are on their own page:
-[notes for the model](agent-notes.md).
+The mod also tells the model a few facts at the moment they help. Those notes
+are on their own page: [notes for the model](agent-notes.md).
 
 The mod never blocks an edit, never starts a turn on its own and never scans
 inside a hook. When something it needs is missing, it stays quiet.
@@ -490,7 +489,7 @@ in every subagent. A file is `this session`'s when the session's Edit, Write or
 NotebookEdit wrote it, or when a scan took it in while one of the session's
 calls was running.
 
-Calls that only read or wait do not count: Read, Grep, Glob, `knossos_context`,
+Calls that only read or wait do not count: Read, Grep, Glob, `file_context`,
 and Agent, AskUserQuestion, TaskOutput, TaskStop, Monitor, SendMessage and the
 plan-mode tools. A change made while the session waits on someone is yours.
 

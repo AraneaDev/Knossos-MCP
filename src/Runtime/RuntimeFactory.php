@@ -41,7 +41,8 @@ final class RuntimeFactory
     }
 
     /**
-     * `KNOSSOS_DATA_DIR/knossos.sqlite`, else `<cwd>/.knossos/knossos.sqlite`.
+     * `KNOSSOS_DATA_DIR/knossos.sqlite`, else the installation's graph in
+     * `~/.knossos` when there is one, else `<cwd>/.knossos/knossos.sqlite`.
      *
      * The working-directory fallback means a CLI run from another project addresses a
      * different graph; set KNOSSOS_DATA_DIR to make one installation share one.
@@ -50,6 +51,10 @@ final class RuntimeFactory
     {
         $directory = getenv('KNOSSOS_DATA_DIR');
         if (!is_string($directory) || $directory === '') {
+            $home = self::homeDatabasePath();
+            if ($home !== null) {
+                return $home;
+            }
             $cwd = getcwd();
             if ($cwd === false) {
                 throw new RuntimeException('Unable to determine the current working directory; set KNOSSOS_DATA_DIR or pass --db=PATH.');
@@ -58,6 +63,23 @@ final class RuntimeFactory
         }
 
         return rtrim($directory, '/') . '/knossos.sqlite';
+    }
+
+    /**
+     * The installation's graph, `~/.knossos/knossos.sqlite`, when it exists:
+     * `tools/install` puts it there and pins the server and hooks to it, so a
+     * shell without KNOSSOS_DATA_DIR reads the same graph. Null when there is
+     * no such file, so a fresh checkout keeps the working-directory fallback.
+     */
+    public static function homeDatabasePath(): ?string
+    {
+        $home = getenv('HOME');
+        if (!is_string($home) || $home === '') {
+            return null;
+        }
+        $path = rtrim($home, '/') . '/.knossos/knossos.sqlite';
+
+        return is_file($path) ? $path : null;
     }
 
     /** Where Knossos is installed, used to locate migrations and the scanner workers. */

@@ -2,7 +2,10 @@
 
 `architecture_health` (CLI: `architecture-health`) reports
 `dead_code_candidates` alongside its hubs and hotspots: components with no
-inbound edge among the selected edge kinds.
+inbound edge among the selected edge kinds. It returns one page of them;
+`knossos dead-code <path|project-id>` lists every candidate, with
+`--reachability=unreferenced|test-only` to narrow it, and ends with what it
+left out (annotated, suppressed, reached by convention).
 
 These are **candidates, not findings**. They rest on what [the graph and its evidence](graph-and-evidence.md) can and cannot see. A zero in-degree is only the absence of static evidence: reflection, configuration, templates, registry
 arrays, callbacks, dispatch tables, and framework conventions all reference code
@@ -85,6 +88,7 @@ auditable rather than invisible.
 | `suppressed_candidates`          | Canonical names matched by `dead_code_suppressions` in [project configuration](../get-started/project-configuration.md).                                                                                                                                                                         |
 | `excluded_convention_discovered` | Components a framework or tool reaches by convention: controllers, commands, jobs, listeners, handlers, migrations and similar framework roles, `application.entry_point`, `library.public_api`, test modules and `tooling.config` (see below).                                                  |
 | `annotated_false_positives`      | Components carrying a `false_positive` [annotation](../agents/agent-integration.md#component-annotations).                                                                                                                                                                                       |
+| `annotated_intentional`          | Components carrying an `intentional` [annotation](../agents/agent-integration.md#component-annotations): true findings that are meant, such as a parked route.                                                                                                                                   |
 
 ### Why engine-invoked members are excluded
 
@@ -273,6 +277,9 @@ The candidate list reports its own truncation in `bounds.candidates_truncated` a
 - Record `false_positive` when the component is reached in a way the scan cannot
   see. It is dropped from future candidate lists and the count moves to
   `bounds.annotated_false_positives`.
+- Record `intentional` when the finding is true and meant: a route parked on
+  purpose, a helper only tests use by design. It is dropped from future
+  candidate lists and counted under `bounds.annotated_intentional`.
 - Use `dead_code_suppressions` for whole families of such components (a
   generated namespace, a plugin directory) rather than annotating each one.
 
@@ -292,6 +299,9 @@ The candidate list reports its own truncation in `bounds.candidates_truncated` a
   tool config as a dependant. The claiming file is recorded on the role as
   `named_by`.
 - A tool config is read only for the keys that name files it loads
-  (`setupFiles`, `globalSetup`, `entry`, and their siblings). A path reached
-  some other way (built from a variable, or under a key not on that list) is
-  still invisible.
+  (`setupFiles`, `globalSetup`, `entry`, and their siblings), and for files a
+  key maps to through a path anchored to the config
+  (`replacement: resolve(__dirname, 'visual/stubs.tsx')` in a bundler alias,
+  or `new URL('./stub.ts', import.meta.url)`). A path reached some other way
+  (built from a variable, or under a key not on that list) is still
+  invisible.

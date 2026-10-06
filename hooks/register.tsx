@@ -16,12 +16,12 @@ import type { Flash } from './lib/flash'
 import { NO_CHANGES } from './lib/layout'
 import { LIVE_OFF } from './lib/live'
 import { copyCommand, handlersOf, twinTarget } from './mod/actions'
-import { answerContext, commitNoteFor, headAt, noteEdit, noteRead, noteSafely, projectRoot, reflogAt } from './mod/agent'
+import { commitNoteFor, headAt, noteEdit, noteRead, noteSafely, projectRoot, reflogAt } from './mod/agent'
 import { request } from './mod/loaders'
 import type { Port } from './mod/port'
 import { drawBand, drawPane } from './mod/render'
 import { endSession, endTurn, openPane, registerCommand, retryRegister, runCommand, startUp } from './mod/session'
-import { CONTEXT_TOOL_NAME, editedPath, mod, PANE, reset, takeNoteSlot } from './mod/state'
+import { editedPath, mod, PANE, reset, takeNoteSlot } from './mod/state'
 import type { StartCycles } from './mod/state'
 
 /**
@@ -132,7 +132,6 @@ function portOf($: EngineInterface): Port {
     store: { get: key => $.store.get(key), set: (key, value) => $.store.set(key, value) },
     config: { list: () => $.config.list() },
     command: { register: args => $.command.register(args) },
-    tool: { register: args => $.tool.register(args) },
     prompt: { submit: args => $.prompt.submit(args) },
     plugin: { root: $.plugin.root },
     state: {
@@ -198,9 +197,6 @@ export const register: Register = (on, options) => {
   // Every call of the session's, in every loop, by any tool that can write rather than wait or read: while one runs
   // (and a moment after), what the watcher scans is the session's own, whatever route the change took.
   on('tool.call', async ($, e, next) => {
-    // The model's own tool, one file's context in one call, by the name its registration returned: answered
-    // here, and no other hook answers it. The engine allows one hook on every call, so it shares this one.
-    if (e.tool === (mod.contextTool ?? CONTEXT_TOOL_NAME)) return { result: await answerContext(portOf($), (e as { path?: unknown }).path).catch(() => 'knossos_context: the answer failed; try again.') }
     if (mod.disabled || !counts(e.tool)) return next(e)
     const id = `${++mod.callSeq}`
     begin(mod.activity, id, await $.clock.now())

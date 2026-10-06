@@ -133,12 +133,17 @@ trait Fixtures
     }
 
     /**
+     * The small checkout graph, in memory or in `$pdo` (an open, migrated
+     * database a CLI context can also reach).
+     *
      * @return array{0: PDO, 1: SqliteGraphRepository, 2: array<string, string>}
      */
-    public function storeFixture(?string $migrationDirectory = null): array
+    public function storeFixture(?string $migrationDirectory = null, ?PDO $pdo = null): array
     {
-        $pdo = SqliteConnection::open(':memory:');
-        (new MigrationRunner($pdo, $migrationDirectory ?? self::repositoryRoot() . '/migrations'))->migrate();
+        if ($pdo === null) {
+            $pdo = SqliteConnection::open(':memory:');
+            (new MigrationRunner($pdo, $migrationDirectory ?? self::repositoryRoot() . '/migrations'))->migrate();
+        }
         $repository = new SqliteGraphRepository($pdo);
 
         $project = StableId::project('fixture-shop');

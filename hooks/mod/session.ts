@@ -1,11 +1,9 @@
 /**
- * The session's life as the mod follows it: registering `/knossos` and the
- * model's tool, start-up, the age tick, the end of a turn and of a session,
+ * The session's life as the mod follows it: registering `/knossos`, start-up, the age tick, the end of a turn and of a session,
  * and the `/knossos` command with the pane it opens.
  */
 import type { ConfigRow, UiPane } from 'claude-code'
 
-import { CONTEXT_DESCRIPTION, CONTEXT_SCHEMA, CONTEXT_TOOL } from '../lib/agent'
 import { bandModel } from '../lib/band'
 import { NO_CHANGES, noGraphOf, paneStatus } from '../lib/layout'
 import { SingleFlight } from '../lib/scheduler'
@@ -13,7 +11,7 @@ import { declaredOf, huesOf } from '../lib/palette'
 import { currentSession, peekKey, readGitHead, refreshDashboard, request, settleBaseline, showComponent } from './loaders'
 import { endWatcher, placed } from './port'
 import type { Port } from './port'
-import { CONTEXT_TOOL_NAME, cyclesOf, mod, PANE } from './state'
+import { cyclesOf, mod, PANE } from './state'
 import { ensureWatcher, scanSafely } from './watcher'
 
 /** What `/knossos` answers to anything it does not take. */
@@ -25,46 +23,28 @@ const AGE_TICK_MS = 1_000
 /** How often the pane with no figures, after a load that failed, asks for the dashboard again. */
 const EMPTY_RETRY_MS = 15_000
 
-/**
- * Registers the model's `knossos_context` tool (one file's context in one
- * call); false when the engine refuses, as it does until a session is bound.
- * The first refusal leaves one debug line.
- */
-async function registerTool(io: Port): Promise<boolean> {
-  if (mod.contextTool !== null) return true
-  try {
-    const { tool } = await io.tool.register({ name: CONTEXT_TOOL, description: CONTEXT_DESCRIPTION, inputSchema: CONTEXT_SCHEMA as unknown as Record<string, unknown> })
-    mod.contextTool = typeof tool === 'string' && tool !== '' ? tool : CONTEXT_TOOL_NAME
-    return true
-  } catch (err) {
-    if (!mod.toolFailureLogged) {
-      mod.toolFailureLogged = true
-      io.ui.log(`knossos: could not register the knossos_context tool yet, retrying (${err instanceof Error ? err.message : String(err)})`, { to: 'debug' })
-    }
-    return false
-  }
-}
-
 /** How long to wait before each retry of a refused registration, in milliseconds; after the last, turn ends retry. */
 const REGISTER_RETRY_MS = [500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const
 
 /**
- * Registers `/knossos` and the model's `knossos_context` tool; false when
- * the engine refuses either, as it does when no session is bound in the
- * process yet (the moment after a hot reload). The first refusal leaves one
- * debug line.
+ * Registers `/knossos`; false when the engine refuses, as it does when no
+ * session is bound in the process yet (the moment after a hot reload). The
+ * first refusal leaves one debug line.
+ *
+ * The mod registers no tool for the model: a tool registered here is served
+ * under the plugin's name, `knossos`, and the engine keeps one server per
+ * name, so it would hide the Knossos MCP server and every tool it has. The
+ * server answers `file_context` itself.
  */
 export async function registerCommand(io: Port): Promise<boolean> {
-  // The model's tool rides on the same registration, and its retries: both need a session bound.
-  const tool = await registerTool(io)
-  if (mod.commandRegistered) return tool
+  if (mod.commandRegistered) return true
   try {
     await io.command.register({
       name: 'knossos',
       description: 'Toggle the Knossos architecture pane; /knossos inspect <component> to drill in',
     })
     mod.commandRegistered = true
-    return tool
+    return true
   } catch (err) {
     if (!mod.registerFailureLogged) {
       mod.registerFailureLogged = true
@@ -77,7 +57,7 @@ export async function registerCommand(io: Port): Promise<boolean> {
 /** Retries a refused registration after the `attempt`-th delay, then the next; past the last, the end of a turn tries again. */
 export function retryRegister(io: Port, attempt: number, gen = mod.registerGen): void {
   const delay = REGISTER_RETRY_MS[attempt]
-  if (delay === undefined || (mod.commandRegistered && mod.contextTool !== null) || mod.disabled || gen !== mod.registerGen) return
+  if (delay === undefined || mod.commandRegistered || mod.disabled || gen !== mod.registerGen) return
   try {
     mod.registerTimer = io.clock.after(delay, () => {
       mod.registerTimer = null
@@ -266,7 +246,7 @@ export async function endTurn(io: Port, agentId: string | undefined): Promise<vo
   mod.turnRan = mod.ranCommands
   mod.ranCommands = []
   // Still refused once the timed retries ran out: each turn's end asks again, a session being bound by now.
-  if (!mod.disabled && !(mod.commandRegistered && mod.contextTool !== null) && mod.registerTimer === null) await registerCommand(io)
+  if (!mod.disabled && !mod.commandRegistered && mod.registerTimer === null) await registerCommand(io)
   // The turn may have committed or switched branches: the header reads where the checkout stands again.
   if (!mod.disabled) io.clock.after(0, () => void readGitHead(io).catch(() => undefined))
   // No graph to draw yet (the person may just have asked Claude to scan): look again, once the turn is over.

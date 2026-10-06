@@ -210,6 +210,37 @@ Find the largest or longest files. Use to spot refactor targets without shelling
 
 Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
+## `file_context`
+
+One file's architectural context in one short answer: its boundary and the declared rules that bind it, how many files depend on it (and the closest few), the tests that reach it, and its latest commits. Call it before editing a file you have not read about, instead of grepping for its callers.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
+| `refresh_if_stale` | boolean | no | default=true |
+| `project_id` | string | yes | minLength=1 |
+| `path` | string | yes | minLength=1 |
+
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
+
+## `list_diagnostics`
+
+The scan diagnostics of the active graph (compiler and worker errors, warnings and notes), by file and line. Use to see what the dashboard counts as diagnostics, filtered by severity or path prefix.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
+| `refresh_if_stale` | boolean | no | default=true |
+| `project_id` | string | yes | minLength=1 |
+| `severity` | string | no | enum=error, warning, info |
+| `path_prefix` | string | no | minLength=1 |
+| `limit` | integer | no | minimum=1; maximum=100; default=100 |
+| `offset` | integer | no | minimum=0; maximum=100000; default=0 |
+
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
+
 ## `list_annotations`
 
 List durable agent annotations recorded on components, optionally filtered by component or kind. Use to review or audit prior annotate_component calls.
@@ -221,7 +252,7 @@ List durable agent annotations recorded on components, optionally filtered by co
 | `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `component` | string | no | minLength=1 |
-| `kind` | string | no | enum=intended_boundary, confirmed_dead, false_positive, note |
+| `kind` | string | no | enum=intended_boundary, confirmed_dead, false_positive, intentional, note |
 | `limit` | integer | no | minimum=1; maximum=100; default=100 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
@@ -312,7 +343,7 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `check_architecture`
 
-Verify declared boundary rules still hold. Use to confirm a change did not introduce a forbidden cross-boundary dependency.
+Verify declared boundary rules still hold. Use to confirm a change did not introduce a forbidden cross-boundary dependency. Without `policies`, checks the ones the project declares in knossos.json.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -320,7 +351,7 @@ Verify declared boundary rules still hold. Use to confirm a change did not intro
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
 | `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
-| `policies` | array | yes | maxItems=50 |
+| `policies` | array | no | maxItems=50 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `limit` | integer | no | minimum=1; maximum=100; default=100 |
 | `max_edges` | integer | no | minimum=1; maximum=100000; default=100000 |
@@ -506,13 +537,13 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `annotate_component`
 
-Record a durable annotation on a component (intended_boundary, confirmed_dead, false_positive, note) that survives rescans. false_positive annotations remove the component from dead-code candidates. Preview by default; pass execute to apply.
+Record a durable annotation on a component (intended_boundary, confirmed_dead, false_positive, intentional, note) that survives rescans. false_positive (flagged wrongly) and intentional (true, and meant: a parked route, a test-only helper) remove the component from dead-code candidates. Preview by default; pass execute to apply.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `project_id` | string | yes | minLength=1 |
 | `component` | string | yes | minLength=1 |
-| `kind` | string | yes | enum=intended_boundary, confirmed_dead, false_positive, note |
+| `kind` | string | yes | enum=intended_boundary, confirmed_dead, false_positive, intentional, note |
 | `value` | string | no | maxLength=2000; default="" |
 | `remove` | boolean | no | default=false |
 | `execute` | boolean | no | default=false |

@@ -22,7 +22,7 @@ is the short version.
 - [The pane](claude-code/pane.md): what do the band, each tab and each overlay
   of the pane show, and which keys drive them?
 - [Notes for the model](claude-code/agent-notes.md): what does the mod tell the
-  model, when, in which words, and what does `knossos_context` answer?
+  model, when, and in which words?
 - [Session brief](claude-code/session-brief.md): what does a session see when
   it starts, and how is each verdict chosen?
 - [The routing skill](claude-code/skill.md): which questions does the skill

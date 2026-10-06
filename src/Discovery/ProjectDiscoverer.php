@@ -1001,6 +1001,9 @@ final readonly class ProjectDiscoverer
     /** The order react-scripts resolves `src/index` in; the first that exists is built. */
     private const CREATE_REACT_APP_EXTENSIONS = ['web.mjs', 'mjs', 'web.js', 'js', 'web.ts', 'ts', 'web.tsx', 'tsx', 'web.jsx', 'jsx'];
 
+    /** Config keys whose files a tool leaves out rather than loads. */
+    private const DROPPING_KEYS = ['exclude', 'excludes', 'ignore', 'ignores', 'ignored', 'external', 'externals'];
+
     /**
      * Config keys whose value names a file the tool LOADS.
      *
@@ -1552,6 +1555,15 @@ final readonly class ProjectDiscoverer
         }
         $paths = [];
         $globs = [];
+        // Anchored to the config's own directory, so `../shared/stub.ts` is resolved
+        // there first; only a path that then leaves the project is dropped.
+        foreach (self::anchoredConfigPaths($contents) as $anchored) {
+            $resolved = self::withinProject($directory === '' ? $anchored : $directory . '/' . $anchored);
+            $path = $resolved === null ? null : self::entryPointPath($resolved, '');
+            if ($path !== null) {
+                $paths[$path] = true;
+            }
+        }
         foreach ($values as $token) {
             // A `command` is a shell line; any other value is one path,
             // which a split on whitespace leaves whole.
@@ -1573,6 +1585,67 @@ final readonly class ProjectDiscoverer
         }
 
         return ['entry_points' => array_keys($paths), 'entry_globs' => array_keys($globs)];
+    }
+
+    /**
+     * The paths a config maps a key to through a path anchored to itself:
+     * `replacement: resolve(__dirname, 'visual/stubs.tsx')` in a bundler
+     * alias, `'./AuthContext': path.join(__dirname, 'stub.ts')`, or
+     * `fileURLToPath(new URL('./stub.ts', import.meta.url))`. An alias that
+     * swaps one module for another is the only way to reach the replacement,
+     * and no import names it.
+     *
+     * Only a value under a key: a bare anchored path (`root: resolve(...)`
+     * is keyed too, but names a directory, which {@see self::entryPointPath()}
+     * drops) and one under a key that drops files are left out.
+     *
+     * @return list<string> paths relative to the config's directory
+     */
+    private static function anchoredConfigPaths(string $contents): array
+    {
+        $quoted = '[\'"`][^\'"`]+[\'"`]';
+        $pattern = sprintf(
+            '/([A-Za-z_$][\w$]*|%1$s)\s*:\s*(?:(?:[A-Za-z_$][\w$]*\.)?(?:resolve|join)\(\s*__dirname((?:\s*,\s*%1$s)+)\s*\)|(?:fileURLToPath\(\s*)?new\s+URL\(\s*(%1$s)\s*,\s*import\.meta\.url\s*\))/',
+            $quoted,
+        );
+        if (preg_match_all($pattern, $contents, $matches, PREG_SET_ORDER | PREG_UNMATCHED_AS_NULL) === false) {
+            return [];
+        }
+        $paths = [];
+        foreach ($matches as $match) {
+            if (in_array(strtolower(trim($match[1], '\'"`')), self::DROPPING_KEYS, true)) {
+                continue;
+            }
+            $arguments = $match[2] ?? $match[3] ?? '';
+            preg_match_all('/[\'"`]([^\'"`]+)[\'"`]/', $arguments, $segments);
+            $paths[] = implode('/', array_map(static fn(string $segment): string => trim($segment, '/'), $segments[1]));
+        }
+
+        return $paths;
+    }
+
+    /**
+     * `$path` with its `.` and `..` segments folded, or null when it climbs
+     * above the project root.
+     */
+    private static function withinProject(string $path): ?string
+    {
+        $segments = [];
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                if ($segments === []) {
+                    return null;
+                }
+                array_pop($segments);
+                continue;
+            }
+            $segments[] = $segment;
+        }
+
+        return $segments === [] ? null : implode('/', $segments);
     }
 
     /**

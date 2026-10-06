@@ -2250,6 +2250,73 @@ TOML);
      * as files to load, and an excluded path is exactly the kind of file that
      * turns out to be dead. Marking it an entry point would hide the finding.
      */
+    /**
+     * A bundler alias can swap one module for another: a regex `find` and a
+     * `replacement` file, or a key and a file. No import names the
+     * replacement, so it is reached through the config alone, as an entry
+     * point is. Paths are anchored to the config (`__dirname`, or a URL off
+     * `import.meta.url`); a directory alias names no module, and an excluded
+     * file is not loaded.
+     */
+    public function testDiscoverReadsTheFilesABundlerAliasSubstitutes(): void
+    {
+        mkdir($this->root . '/frontend', 0700, true);
+        file_put_contents($this->root . '/frontend/vite.visual.config.ts', implode("\n", [
+            "import { resolve } from 'node:path'",
+            "import { fileURLToPath } from 'node:url'",
+            'export default defineConfig({',
+            "  root: resolve(__dirname, 'visual'),",
+            '  resolve: {',
+            '    alias: [',
+            "      { find: /^.*\\/context\\/AuthContext$/, replacement: resolve(__dirname, 'visual/stubs.tsx') },",
+            "      { find: '@api', replacement: path.join(__dirname, './visual', 'apiStub.ts') },",
+            "      { find: '@base', replacement: fileURLToPath(new URL('./visual/baseStub.ts', import.meta.url)) },",
+            "      { find: '@', replacement: resolve(__dirname, 'src') },",
+            '    ],',
+            '  },',
+            "  test: { exclude: resolve(__dirname, 'visual/legacy.ts') },",
+            '})',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'tool_config'));
+        $this->assertNotEmpty($units);
+        assertSame([
+            'frontend/visual/stubs.tsx',
+            'frontend/visual/apiStub.ts',
+            'frontend/visual/baseStub.ts',
+        ], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * A nested config's alias may climb out of its own directory and stay in
+     * the project (`../shared/stub.ts`); the path is resolved against the
+     * config's directory. One that leaves the project names nothing here.
+     */
+    public function testDiscoverResolvesAnAliasThatClimbsOutOfTheConfigsDirectory(): void
+    {
+        mkdir($this->root . '/frontend', 0700, true);
+        file_put_contents($this->root . '/frontend/vite.config.ts', implode("\n", [
+            'export default defineConfig({',
+            '  resolve: {',
+            '    alias: [',
+            "      { find: '@stub', replacement: resolve(__dirname, '../shared/stub.ts') },",
+            "      { find: '@gone', replacement: resolve(__dirname, '../../outside.ts') },",
+            '    ],',
+            '  },',
+            '})',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $units = array_values(array_filter($discoverer->discover($this->root)->units, fn($u): bool => $u->kind === 'tool_config'));
+        $this->assertNotEmpty($units);
+        assertSame(['shared/stub.ts'], $units[0]->metadata['entry_points']);
+    }
+
     public function testDiscoverIgnoresPathsAConfigExcludesRatherThanLoads(): void
     {
         file_put_contents($this->root . '/vitest.config.ts', implode("\n", [

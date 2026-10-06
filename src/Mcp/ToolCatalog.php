@@ -313,6 +313,41 @@ final readonly class ToolCatalog
             ],
             self::fileMetricsDefinition(),
             [
+                'name' => 'file_context',
+                'title' => 'File context',
+                'description' => 'One file\'s architectural context in one short answer: its boundary and the declared rules that bind it, how many files depend on it (and the closest few), the tests that reach it, and its latest commits. Call it before editing a file you have not read about, instead of grepping for its callers.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        ...self::commonReadProperties(),
+                        'project_id' => ['type' => 'string', 'minLength' => 1],
+                        'path' => ['type' => 'string', 'minLength' => 1, 'description' => 'The file, relative to the project root or absolute under it.'],
+                    ],
+                    'required' => ['project_id', 'path'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
+            [
+                'name' => 'list_diagnostics',
+                'title' => 'List diagnostics',
+                'description' => 'The scan diagnostics of the active graph (compiler and worker errors, warnings and notes), by file and line. Use to see what the dashboard counts as diagnostics, filtered by severity or path prefix.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        ...self::commonReadProperties(),
+                        'project_id' => ['type' => 'string', 'minLength' => 1],
+                        'severity' => ['type' => 'string', 'enum' => ['error', 'warning', 'info']],
+                        'path_prefix' => ['type' => 'string', 'minLength' => 1],
+                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
+                        'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
+                    ],
+                    'required' => ['project_id'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
+            [
                 'name' => 'list_annotations',
                 'title' => 'List annotations',
                 'description' => 'List durable agent annotations recorded on components, optionally filtered by component or kind. Use to review or audit prior annotate_component calls.',
@@ -322,7 +357,7 @@ final readonly class ToolCatalog
                         ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'component' => ['type' => 'string', 'minLength' => 1],
-                        'kind' => ['type' => 'string', 'enum' => ['intended_boundary', 'confirmed_dead', 'false_positive', 'note']],
+                        'kind' => ['type' => 'string', 'enum' => ['intended_boundary', 'confirmed_dead', 'false_positive', 'intentional', 'note']],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
                         'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
                     ],
@@ -436,7 +471,7 @@ final readonly class ToolCatalog
             [
                 'name' => 'check_architecture',
                 'title' => 'Check architecture policies',
-                'description' => 'Verify declared boundary rules still hold. Use to confirm a change did not introduce a forbidden cross-boundary dependency.',
+                'description' => 'Verify declared boundary rules still hold. Use to confirm a change did not introduce a forbidden cross-boundary dependency. Without `policies`, checks the ones the project declares in knossos.json.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -451,7 +486,7 @@ final readonly class ToolCatalog
                         'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 100000],
                         'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1000],
                     ],
-                    'required' => ['project_id', 'policies'],
+                    'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
                 'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
@@ -665,11 +700,11 @@ final readonly class ToolCatalog
         return [
             [
                 'name' => 'annotate_component', 'title' => 'Annotate component',
-                'description' => 'Record a durable annotation on a component (intended_boundary, confirmed_dead, false_positive, note) that survives rescans. false_positive annotations remove the component from dead-code candidates. Preview by default; pass execute to apply.',
+                'description' => 'Record a durable annotation on a component (intended_boundary, confirmed_dead, false_positive, intentional, note) that survives rescans. false_positive (flagged wrongly) and intentional (true, and meant: a parked route, a test-only helper) remove the component from dead-code candidates. Preview by default; pass execute to apply.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'component' => ['type' => 'string', 'minLength' => 1],
-                    'kind' => ['type' => 'string', 'enum' => ['intended_boundary', 'confirmed_dead', 'false_positive', 'note']],
+                    'kind' => ['type' => 'string', 'enum' => ['intended_boundary', 'confirmed_dead', 'false_positive', 'intentional', 'note']],
                     'value' => ['type' => 'string', 'maxLength' => 2000, 'default' => ''],
                     'remove' => ['type' => 'boolean', 'default' => false],
                     'execute' => ['type' => 'boolean', 'default' => false],
