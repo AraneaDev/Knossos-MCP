@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Knossos\Cli;
 
+use Knossos\Runtime\RuntimeFactory;
+
 /**
  * Decides which graph a path-addressed brief command reads.
  *
- * `--db` first, `KNOSSOS_DATA_DIR` second, then the nearest
+ * `--db` first, `KNOSSOS_DATA_DIR` second, the installation's graph in
+ * `~/.knossos` third when it exists, then the nearest
  * `.knossos/knossos.sqlite` at or above the target. Shared by
  * `session-brief`, `turn-brief`, `rescan`, `dashboard`, `component-detail` and
  * `file-detail` so they cannot answer one directory out of different databases.
@@ -33,8 +36,9 @@ final readonly class ProjectDatabaseLocator
      *
      * Precedence is unchanged where it was ever explicit: `--db` first,
      * `KNOSSOS_DATA_DIR` second (a container installation depends on it, and
-     * the runtime already knows how to join it), and only then the target
-     * path.
+     * the runtime already knows how to join it), then the installation's
+     * graph in `~/.knossos` when it exists (where `tools/install` points the
+     * server and the hooks), and only then the target path.
      *
      * @param array<string, list<string>> $options
      */
@@ -45,7 +49,7 @@ final readonly class ProjectDatabaseLocator
             || (is_string($dataDirectory) && $dataDirectory !== '')) {
             return $context->databasePath();
         }
-        return $this->nearestDatabase($target);
+        return RuntimeFactory::homeDatabasePath() ?? $this->nearestDatabase($target);
     }
 
     /**

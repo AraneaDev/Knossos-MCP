@@ -87,4 +87,21 @@ final class ProjectDatabaseLocatorTest extends KnossosTestCase
         $found = (new ProjectDatabaseLocator())->locate('/', [], $this->context());
         assertSame($this->context()->databasePath(), $found);
     }
+
+    #[Group('cli')]
+    public function testTheHomeDatabaseWinsOverANearerProjectDatabase(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-locator-' . bin2hex(random_bytes(4));
+        mkdir($root . '/.knossos', 0700, true);
+        touch($root . '/.knossos/knossos.sqlite');
+        mkdir(getenv('HOME') . '/.knossos', 0700);
+        touch(getenv('HOME') . '/.knossos/knossos.sqlite');
+        try {
+            assertSame(getenv('HOME') . '/.knossos/knossos.sqlite', (new ProjectDatabaseLocator())->locate($root, [], $this->context()));
+        } finally {
+            unlink(getenv('HOME') . '/.knossos/knossos.sqlite');
+            rmdir(getenv('HOME') . '/.knossos');
+            $this->removeTempTree($root);
+        }
+    }
 }
