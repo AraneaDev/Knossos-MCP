@@ -2,6 +2,8 @@ import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vitest/config";
 
+import budgets from "./coverage-budgets.json" with { type: "json" };
+
 const jsxStub = fileURLToPath(
     new URL("./tools/jsx-runtime-stub.mjs", import.meta.url),
 );
@@ -22,5 +24,17 @@ export default defineConfig({
             "tools/capture/*.spec.mjs",
         ],
         environment: "node",
+        coverage: {
+            provider: "v8",
+            include: [
+                "hooks/lib/**/*.ts",
+                "hooks/mod/**/*.ts",
+                "hooks/mod/**/*.tsx",
+            ],
+            exclude: ["**/*.spec.ts"],
+            reportsDirectory: "coverage/mod",
+            reporter: ["text-summary", "json-summary"],
+            thresholds: budgets.mod,
+        },
     },
 });
