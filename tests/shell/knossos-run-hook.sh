@@ -284,14 +284,18 @@ fi
 mkdir -p "$STUBS/container" "$STUBS/dockerbin"
 sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|/srv/data|" "$SCRIPTS/knossos-run-container.sh" > "$STUBS/container/knossos-run.sh"
 # Drops `run --rm` and the `-v` mounts, writes each `-e` to `env` beside it, says `user=<uid:gid>` when the run names a user, then prints the image and its argv.
+# `--init` and `--name` are recorded in `flags` beside it, and `rm -f <name>` in `removed`.
 cat > "$STUBS/dockerbin/docker" <<'STUB'
 #!/bin/sh
+if [ "$1" = rm ]; then printf '%s\n' "$*" >> "${0%/*}/removed"; exit 0; fi
 shift 2
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -v) shift 2 ;;
         -e) printf '%s\n' "$2" >> "${0%/*}/env"; shift 2 ;;
         --user=*) printf 'user=%s|' "${1#--user=}"; shift ;;
+        --init) printf 'init|' >> "${0%/*}/flags"; shift ;;
+        --name) printf 'name=%s|' "$2" >> "${0%/*}/flags"; shift 2 ;;
         *) break ;;
     esac
 done
@@ -390,7 +394,7 @@ expect_silent_success 'container with a failing docker stays silent' \
 # timeout tool prints the limit it was given instead of running anything.
 mkdir -p "$STUBS/timeoutbin"
 # shellcheck disable=SC2016 # $1 belongs to the stub, not to this script
-printf '#!/bin/sh\nprintf "%%s" "$1"\n' > "$STUBS/timeoutbin/timeout"; chmod +x "$STUBS/timeoutbin/timeout"
+printf '#!/bin/sh\nif [ "$1" = -k ]; then shift 2; fi\nprintf "%%s" "$1"\n' > "$STUBS/timeoutbin/timeout"; chmod +x "$STUBS/timeoutbin/timeout"
 expect_output 'dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" dashboard "$STUBS/proj"
 expect_output 'turn-brief is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" turn-brief "$STUBS/proj"
 expect_output 'scan is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" scan "$STUBS/proj"
@@ -399,6 +403,22 @@ expect_output 'component-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIME
 expect_output 'file-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" file-detail "$STUBS/proj" a.php
 expect_output 'container session-diff is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-diff "$STUBS/proj" "--rev=$REV" --file=a.php
 expect_output 'container dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj"
+
+# A timed-out container hook removes its container, not only the docker client.
+mkdir -p "$STUBS/timeoutkill"
+# shellcheck disable=SC2016 # $1 belongs to the stub, not to this script
+printf '#!/bin/sh\nif [ "$1" = -k ]; then shift 2; fi\nexit 124\n' > "$STUBS/timeoutkill/timeout"
+chmod +x "$STUBS/timeoutkill/timeout"
+: > "$STUBS/dockerbin/removed"
+env PATH="$STUBS/timeoutkill:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj" >/dev/null 2>&1
+if grep -q '^rm -f knossos-hook-' "$STUBS/dockerbin/removed"; then printf 'ok   timed-out container is removed\n'; else printf 'FAIL timed-out container is removed\n'; failures=$((failures + 1)); fi
+# Every run carries an init process and a name the removal can address.
+rm -f "$STUBS/dockerbin/flags"
+env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj" >/dev/null 2>&1
+case "$(cat "$STUBS/dockerbin/flags" 2>/dev/null)" in
+    init\|name=knossos-hook-*) printf 'ok   container run has --init and a name\n' ;;
+    *) printf 'FAIL container run has --init and a name (flags %s)\n' "$(cat "$STUBS/dockerbin/flags" 2>/dev/null)"; failures=$((failures + 1)) ;;
+esac
 
 # The wrapper, like the SessionStart hook, never runs a project's own bin/knossos.
 proj="$(mktemp -d)"

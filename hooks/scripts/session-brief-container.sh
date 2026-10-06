@@ -88,18 +88,24 @@ find_timeout() {
 
 # Longer than the local timeout because container startup is not free, but still
 # bounded: a session start must never wait on a stuck daemon.
+#
+# `timeout` stops only the docker client; the container it started keeps running
+# and keeps writing the shared data directory. So the run is named, the name is
+# removed when the limit fires, and `--init` makes the container's first process
+# reap and forward signals. `-k 5` ends a client that ignores the first signal.
+NAME="knossos-hook-$$"
 if TIMEOUT_BIN="$(find_timeout)"; then
-    OUTPUT="$("$TIMEOUT_BIN" 10 docker run --rm \
+    OUTPUT="$("$TIMEOUT_BIN" -k 5 10 docker run --rm --init --name "$NAME" \
         -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
-        "$IMAGE" session-brief "$PROJECT_DIR" 2>/dev/null)" || exit 0
+        "$IMAGE" session-brief "$PROJECT_DIR" 2>/dev/null)" || { docker rm -f "$NAME" >/dev/null 2>&1; exit 0; }
 else
     # Neither `timeout` nor `gtimeout` exists here, so this one call has no
     # bound of its own. The backstop is the harness: hooks.json sets this
     # hook's own "timeout" to 15, and Claude Code enforces that ceiling on
     # the whole process regardless of what runs inside it.
-    OUTPUT="$(docker run --rm \
+    OUTPUT="$(docker run --rm --init --name "$NAME" \
         -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \

@@ -74,8 +74,11 @@ mkdir -p "$BOX/bin" "$BOX/proj"
 sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|/srv/data|" "${HOOK%/*}/session-brief-container.sh" > "$BOX/hook.sh"
 cat > "$BOX/bin/docker" <<'STUB'
 #!/bin/sh
+if [ "$1" = rm ]; then printf '%s\n' "$*" >> "${0%/*}/removed"; exit 0; fi
 while [ "$#" -gt 0 ]; do
     [ "$1" = -e ] && printf '%s\n' "$2" >> "${0%/*}/env"
+    [ "$1" = --init ] && printf 'init|' >> "${0%/*}/flags"
+    [ "$1" = --name ] && printf 'name=%s|' "$2" >> "${0%/*}/flags"
     shift
 done
 STUB
@@ -87,6 +90,18 @@ else
     printf 'FAIL %s: env=%s\n' 'container hook names the project as git'"'"'s safe directory' "$(cat "$BOX/bin/env" 2>/dev/null)"
     failures=$((failures + 1))
 fi
+case "$(cat "$BOX/bin/flags" 2>/dev/null)" in
+    init\|name=knossos-hook-*) printf 'ok   %s\n' 'container hook run has --init and a name' ;;
+    *) printf 'FAIL %s: flags=%s\n' 'container hook run has --init and a name' "$(cat "$BOX/bin/flags" 2>/dev/null)"; failures=$((failures + 1)) ;;
+esac
+# A timed-out container hook removes its container, not only the docker client.
+mkdir -p "$BOX/killer"
+# shellcheck disable=SC2016 # $1 belongs to the stub, not to this script
+printf '#!/bin/sh\nif [ "$1" = -k ]; then shift 2; fi\nexit 124\n' > "$BOX/killer/timeout"
+chmod +x "$BOX/killer/timeout"
+: > "$BOX/bin/removed"
+env PATH="$BOX/killer:$BOX/bin:$PATH" CLAUDE_PROJECT_DIR="$BOX/proj" sh "$BOX/hook.sh" >/dev/null 2>&1
+if grep -q '^rm -f knossos-hook-' "$BOX/bin/removed"; then printf 'ok   %s\n' 'timed-out container hook is removed'; else printf 'FAIL %s\n' 'timed-out container hook is removed'; failures=$((failures + 1)); fi
 rm -rf "$BOX"
 
 # A project that ships an executable bin/knossos must never have it run:
