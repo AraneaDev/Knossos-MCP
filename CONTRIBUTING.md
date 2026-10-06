@@ -12,7 +12,7 @@ the host:
 - **Git**
 
 Running the tooling directly on the host additionally needs PHP 8.3 or newer
-with `ext-json`, `ext-pdo`, and `ext-pdo_sqlite`, Node.js 22 or newer, Python
+with `ext-json`, `ext-pdo`, and `ext-pdo_sqlite`, Node 24 or newer, Python
 3.11 or newer, and Composer. Those are minimums, not ranges.
 
 ### Setup
@@ -54,7 +54,7 @@ tools/install-hooks
 `tools/pane-preview.mjs` draws the [Claude Code mod](docs/claude-code/pane.md)'s
 pane as PNGs, the way a terminal shows it, so a layout change can be judged without a live
 session. It lays the pane out with the mod's own functions over this repository's graph. It
-needs Node.js with TypeScript type stripping (22.18 or newer), `rsvg-convert`, and the
+needs Node.js with TypeScript type stripping (Node 24 or newer), `rsvg-convert`, and the
 DejaVu Sans and DejaVu Sans Mono fonts. It is never installed with the plugin and never runs
 in the quality gate.
 

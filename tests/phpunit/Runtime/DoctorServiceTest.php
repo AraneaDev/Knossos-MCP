@@ -407,7 +407,7 @@ final class DoctorServiceTest extends KnossosTestCase
         // release was built against still has to pass, or `doctor` reports a
         // working installation as broken.
         $floors = [
-            'node.version' => [trim((string) shell_exec('node --version 2>/dev/null')), '/^v(\d+)\./', '22', 'Node'],
+            'node.version' => [trim((string) shell_exec('node --version 2>/dev/null')), '/^v(\d+)\./', '24', 'Node'],
             'python.version' => [trim((string) shell_exec('python3 --version 2>/dev/null')), '/^Python (\d+\.\d+)\./', '3.11', 'Python'],
             'php.version' => [PHP_VERSION, '/^(\d+\.\d+)\./', '8.3', 'PHP'],
         ];
@@ -421,6 +421,19 @@ final class DoctorServiceTest extends KnossosTestCase
             assertSame((new RuntimeVersionRequirement($runtime, $pattern, $minimum))->verify($reported), $check['detail'], $name);
             assertSame('ok', $check['status'], $name);
         }
+    }
+
+    public function testTheDoctorRefusesNode22BecauseTheWorkersDeclareNode24(): void
+    {
+        // The doctor floor and the engines fields in package.json have to agree,
+        // or doctor passes a runtime the workers then refuse to start on.
+        $floors = (new \ReflectionClassConstant(DoctorService::class, 'FLOORS'))->getValue();
+        [$runtime, $pattern, $minimum] = $floors['node'];
+
+        self::assertSame('24', $minimum);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Node 24 or newer is required');
+        (new RuntimeVersionRequirement($runtime, $pattern, $minimum))->verify('v22.11.0');
     }
 
     // ----- optional worker (Rust) -----

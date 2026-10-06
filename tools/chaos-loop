@@ -10,7 +10,7 @@ CHAOS_MCP_BIN="${CHAOS_MCP_BIN:-${CHAOS_MCP_ROOT}/build/index.js}"
 CHAOS_MCP_CWD="${CHAOS_MCP_CWD:-${ROOT_DIR}}"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "error: node not found on PATH; install Node 22+" >&2
+  echo "error: node not found on PATH; install Node 24+" >&2
   exit 127
 fi
 

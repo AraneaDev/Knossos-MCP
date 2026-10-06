@@ -218,7 +218,7 @@ for any other stdio client are on [Codex and other MCP clients](../agents/client
 
 ## Native runtimes
 
-You need PHP 8.3 or newer with JSON, PDO and PDO SQLite, Node 22 or newer,
+You need PHP 8.3 or newer with JSON, PDO and PDO SQLite, Node 24 or newer,
 Python 3.11 or newer, Composer 2 and Git. Each is a floor. `doctor` reports a
 version below it and does not cap the ones above. Install the locked
 dependencies without running project scripts:

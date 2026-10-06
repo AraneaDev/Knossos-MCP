@@ -74,7 +74,7 @@ tabs and a search, then an edit, the band summing up the change, and its diff in
 
 ## Installation
 
-You need PHP 8.3 or newer with JSON, PDO and PDO SQLite, Node 22 or newer, Python 3.11 or newer,
+You need PHP 8.3 or newer with JSON, PDO and PDO SQLite, Node 24 or newer, Python 3.11 or newer,
 Composer 2 and Git. Cargo 1.82 or newer is optional and adds Rust scanning. Without PHP on the
 host, use [Docker](docs/get-started/installation.md#docker).
 
