@@ -199,6 +199,25 @@ final class PluginCommandTest extends KnossosTestCase
         exec('rm -rf ' . escapeshellarg($root));
     }
 
+    /**
+     * The installed library names the binary of the checkout that installed
+     * it, so the hooks never have to search a project's own bin/ directory.
+     */
+    #[Group('cli')]
+    public function testInstallBakesTheInstallingCheckoutsBinary(): void
+    {
+        $root = $this->sourceRoot();
+        try {
+            $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+            $library = (string) file_get_contents($root . '/.plugin/hooks/scripts/lib.sh');
+
+            assertSame(true, str_contains($library, "KNOSSOS_INSTALLED_BIN='" . $root . "/bin/knossos'"));
+            assertSame(false, str_contains($library, '$PROJECT_DIR/bin/knossos'));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
+        }
+    }
+
     #[Group('cli')]
     public function testPreviewUnderJsonEmitsTheCommandsAsData(): void
     {

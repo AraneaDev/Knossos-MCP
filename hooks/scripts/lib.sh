@@ -1,7 +1,7 @@
 # shellcheck shell=sh
 # Shared helpers for the Knossos hook scripts. Sourced, never executed.
 #
-# Callers run under `set -u` and set PROJECT_DIR before calling find_knossos.
+# Callers run under `set -u`.
 
 # Set at install time to the data directory the MCP server uses; empty when unknown.
 # A checkout that was never installed still holds the placeholder, which counts as unknown.
@@ -13,11 +13,22 @@ if [ -n "$KNOSSOS_INSTALLED_DATA_DIR" ]; then
     export KNOSSOS_DATA_DIR KNOSSOS_ROOTS_FILE
 fi
 
-# Discovery order: an explicit override, then PATH, then the conventional
-# locations. Deliberately short: a long search is a slow session start.
+# Set at install time to the knossos binary of the checkout that installed the
+# plugin; empty when unknown. Searched before PATH, and a project's own bin/ is
+# never searched at all: opening a repository must not run code it ships.
+KNOSSOS_INSTALLED_BIN='__KNOSSOS_BIN__'
+case $KNOSSOS_INSTALLED_BIN in __*__) KNOSSOS_INSTALLED_BIN='' ;; esac
+
+# Discovery order: an explicit override, the installed checkout's binary, PATH,
+# then the conventional locations. Deliberately short: a long search is a slow
+# session start.
 find_knossos() {
     if [ -n "${KNOSSOS_BIN:-}" ] && [ -x "${KNOSSOS_BIN}" ]; then
         printf '%s' "${KNOSSOS_BIN}"
+        return 0
+    fi
+    if [ -n "$KNOSSOS_INSTALLED_BIN" ] && [ -x "$KNOSSOS_INSTALLED_BIN" ]; then
+        printf '%s' "$KNOSSOS_INSTALLED_BIN"
         return 0
     fi
     if command -v knossos >/dev/null 2>&1; then
@@ -27,7 +38,7 @@ find_knossos() {
     # HOME is expanded only when it is set: the callers run under `set -u`,
     # and a bare $HOME with HOME unset makes the shell print a diagnostic on
     # stderr, which a hook promising silence must not do.
-    for candidate in "$PROJECT_DIR/bin/knossos" "${HOME:+$HOME/.local/bin/knossos}" /usr/local/bin/knossos; do
+    for candidate in "${HOME:+$HOME/.local/bin/knossos}" /usr/local/bin/knossos; do
         if [ -x "$candidate" ]; then
             printf '%s' "$candidate"
             return 0

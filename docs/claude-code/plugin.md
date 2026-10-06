@@ -74,9 +74,13 @@ To check which directory your server reads, call its `server_info` tool. See
 The hooks look for `knossos` in a fixed, short order:
 
 1. `KNOSSOS_BIN`, when it is set and executable.
-2. `knossos` on `PATH`.
-3. `$CLAUDE_PROJECT_DIR/bin/knossos`, `~/.local/bin/knossos`,
-   `/usr/local/bin/knossos`.
+2. The `bin/knossos` of the checkout that ran `install-agent-plugin`. The
+   installer writes its path into the plugin.
+3. `knossos` on `PATH`.
+4. `~/.local/bin/knossos`, `/usr/local/bin/knossos`.
+
+A project's own `bin/knossos` is never run: opening a repository must not
+execute code it ships.
 
 Every failure is silent by design, so a session in a project outside your
 Knossos checkout simply gets no brief, with nothing to say why. One symlink

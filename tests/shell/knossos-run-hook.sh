@@ -386,4 +386,19 @@ expect_output 'file-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT K
 expect_output 'container session-diff is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-diff /tmp "--rev=$REV" --file=a.php
 expect_output 'container dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard /tmp
 
+# The wrapper, like the SessionStart hook, never runs a project's own bin/knossos.
+proj="$(mktemp -d)"
+home="$(mktemp -d)"
+mkdir -p "$proj/bin"
+printf '#!/bin/sh\n: > "%s/RAN"\n' "$proj" > "$proj/bin/knossos"
+chmod +x "$proj/bin/knossos"
+env -u KNOSSOS_BIN PATH="$STUBS/bare" HOME="$home" /bin/sh "$RUN" dashboard "$proj" >/dev/null 2>&1
+if [ -e "$proj/RAN" ]; then
+    printf 'FAIL project-local binary was executed by the wrapper\n'
+    failures=$((failures + 1))
+else
+    printf 'ok   wrapper never executes a project-local binary\n'
+fi
+rm -rf "$proj" "$home"
+
 [ "$failures" -eq 0 ] || exit 1

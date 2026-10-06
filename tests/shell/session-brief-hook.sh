@@ -84,5 +84,24 @@ else
 fi
 rm -rf "$BOX"
 
+# A project that ships an executable bin/knossos must never have it run:
+# opening a repository is not consent to execute its code.
+proj="$(mktemp -d)"
+home="$(mktemp -d)"
+mkdir -p "$proj/bin" "$home/bare"
+# dirname is the one outside tool the hook needs before it can find its
+# library; without it the hook exits early and the case would prove nothing.
+ln -s "$(command -v dirname)" "$home/bare/dirname"
+printf '#!/bin/sh\n: > "%s/RAN"\n' "$proj" > "$proj/bin/knossos"
+chmod +x "$proj/bin/knossos"
+env -u KNOSSOS_BIN PATH="$home/bare" HOME="$home" CLAUDE_PROJECT_DIR="$proj" "$SH_BIN" "$HOOK" >/dev/null 2>&1
+if [ -e "$proj/RAN" ]; then
+    printf 'FAIL project-local binary was executed\n'
+    failures=$((failures + 1))
+else
+    printf 'ok   project-local binary is never executed\n'
+fi
+rm -rf "$proj" "$home"
+
 [ "$failures" -eq 0 ] || exit 1
 printf 'all hook failure modes silent\n'
