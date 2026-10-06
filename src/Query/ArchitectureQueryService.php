@@ -36,6 +36,7 @@ final readonly class ArchitectureQueryService
     private AgentBriefService $briefQueries;
     private AnnotationService $annotationQueries;
     private FileContextQueryService $fileContextQueries;
+    private DiagnosticsQueryService $diagnosticsQueries;
     private RefreshPolicy $refreshPolicy;
 
     public function __construct(
@@ -77,6 +78,7 @@ final readonly class ArchitectureQueryService
         $this->briefQueries = new AgentBriefService($pdo, $clock, $this->topologyQueries);
         $this->annotationQueries = new AnnotationService($pdo, $clock);
         $this->fileContextQueries = new FileContextQueryService($pdo, $clock);
+        $this->diagnosticsQueries = new DiagnosticsQueryService($pdo, $clock);
     }
 
     /**
@@ -475,6 +477,12 @@ final readonly class ArchitectureQueryService
     public function fileContext(string $projectId, string $path): ResultEnvelope
     {
         return $this->fileContextQueries->fileContext($projectId, $path);
+    }
+
+    /** {@see DiagnosticsQueryService::listDiagnostics()} */
+    public function listDiagnostics(string $projectId, ?string $severity = null, ?string $pathPrefix = null, int $limit = 100, int $offset = 0): ResultEnvelope
+    {
+        return $this->diagnosticsQueries->listDiagnostics($projectId, $severity, $pathPrefix, $limit, $offset);
     }
 
     /** {@see AnnotationService::listAnnotations()} */

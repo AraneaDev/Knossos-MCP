@@ -54,6 +54,8 @@ Usage:
                               [--candidate-offset=N] [--candidate-timeout=MS] [--json]
   knossos dead-code <path|project-id> [--reachability=unreferenced|test-only]
                     [--db=PATH] [--json]
+  knossos diagnostics <path|project-id> [--severity=error|warning|info]
+                      [--path=PREFIX] [--db=PATH] [--json]
   knossos check-architecture <path|project-id> --policies=FILE [--limit=N]
                              [--min-confidence=LEVEL] [--max-edges=N]
                              [--timeout-ms=N] [--json]

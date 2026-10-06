@@ -56,6 +56,22 @@ final class ProjectListCommandTest extends KnossosTestCase
         self::assertStringContainsString('1 annotated intentional', $text);
     }
 
+    public function testDiagnosticsAreListedWholeAndFilteredBySeverity(): void
+    {
+        $pdo = $this->pdo();
+        [, $repository, $ids] = $this->storeFixture(null, $pdo);
+        $insert = $pdo->prepare("INSERT INTO diagnostics (id, project_id, scan_id, file_id, severity, code, message, start_line, end_line, owner_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test')");
+        $insert->execute(['d1', $ids['project'], $ids['scan'], $ids['file'], 'warning', 'TS6133', 'unused', 9, 9]);
+        $insert->execute(['d2', $ids['project'], $ids['scan'], $ids['file'], 'error', 'TS2322', 'wrong type', 3, 3]);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $text = $this->runList('diagnostics', [$ids['project']], [], json: false);
+        self::assertStringContainsString('src/Checkout.php:3 TS2322 error wrong type', $text);
+        self::assertStringContainsString('2 diagnostics.', $text);
+        $warnings = $this->runList('diagnostics', [$ids['project']], ['json' => ['1'], 'severity' => ['warning']]);
+        self::assertSame(['TS6133'], array_column($warnings['diagnostics'], 'code'));
+    }
+
     private function pdo(): PDO
     {
         return (new RuntimeFactory(self::repositoryRoot()))->database($this->database);

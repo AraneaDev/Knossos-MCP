@@ -57,6 +57,7 @@ final class McpTest extends KnossosTestCase
             ['export_diagram', ['project_id' => $ids['project']]],
             ['list_boundaries', ['project_id' => $ids['project']]],
             ['search_architecture', ['project_id' => $ids['project'], 'query' => 'Checkout']],
+            ['list_diagnostics', ['project_id' => $ids['project'], 'severity' => 'error']],
             ['cleanup_stale_scans', ['project_id' => $ids['project']]],
             ['remove_project', ['project_id' => $ids['project']]],
         ];

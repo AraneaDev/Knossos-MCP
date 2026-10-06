@@ -43,8 +43,36 @@ final class ProjectListCommand implements CliCommand
 
         return match ($command) {
             'dead-code' => $this->deadCode($project['id'], $options, $context),
+            'diagnostics' => $this->diagnostics($project['id'], $options, $context),
             default => throw new InvalidArgumentException(sprintf('Unknown command: %s', $command)),
         };
+    }
+
+    /**
+     * Every diagnostic, paged through.
+     *
+     * @param array<string, list<string>> $options
+     */
+    private function diagnostics(string $projectId, array $options, CliCommandContext $context): int
+    {
+        $queries = new ArchitectureQueryService($context->database());
+        $severity = $context->options->single($options, 'severity');
+        $prefix = $context->options->single($options, 'path');
+        $items = [];
+        $offset = 0;
+        do {
+            $page = $queries->listDiagnostics($projectId, $severity, $prefix, 100, $offset);
+            array_push($items, ...$page->data['diagnostics']);
+            $offset = $page->data['pagination']['next_offset'];
+        } while ($offset !== null);
+        $lines = array_map(
+            static fn(array $d): string => sprintf('%s%s %s %s %s', $d['path'] ?? '(project)', $d['line'] === null ? '' : ':' . $d['line'], $d['code'], $d['severity'], $d['message']),
+            $items,
+        );
+        $lines[] = sprintf('%d diagnostic%s.', count($items), count($items) === 1 ? '' : 's');
+        $context->output(['project_id' => $projectId, 'total' => count($items), 'diagnostics' => $items], $context->options->flag($options, 'json'), implode("\n", $lines));
+
+        return 0;
     }
 
     /**

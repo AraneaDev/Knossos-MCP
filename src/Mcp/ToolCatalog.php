@@ -329,6 +329,25 @@ final readonly class ToolCatalog
                 'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
+                'name' => 'list_diagnostics',
+                'title' => 'List diagnostics',
+                'description' => 'The scan diagnostics of the active graph (compiler and worker errors, warnings and notes), by file and line. Use to see what the dashboard counts as diagnostics, filtered by severity or path prefix.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        ...self::commonReadProperties(),
+                        'project_id' => ['type' => 'string', 'minLength' => 1],
+                        'severity' => ['type' => 'string', 'enum' => ['error', 'warning', 'info']],
+                        'path_prefix' => ['type' => 'string', 'minLength' => 1],
+                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
+                        'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
+                    ],
+                    'required' => ['project_id'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
+            [
                 'name' => 'list_annotations',
                 'title' => 'List annotations',
                 'description' => 'List durable agent annotations recorded on components, optionally filtered by component or kind. Use to review or audit prior annotate_component calls.',

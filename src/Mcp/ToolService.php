@@ -275,6 +275,7 @@ final readonly class ToolService
             'export_agent_brief' => $this->exportAgentBrief($arguments),
             'file_metrics' => $this->fileMetrics($arguments),
             'file_context' => $this->fileContext($arguments),
+            'list_diagnostics' => $this->listDiagnostics($arguments),
             'explain_flow' => $this->flow($arguments),
             'impact_analysis' => $this->impact($arguments),
             'dependency_cycles' => $this->cycles($arguments),
@@ -615,6 +616,22 @@ final readonly class ToolService
             array_key_exists('sort_by', $arguments) ? self::string($arguments, 'sort_by') : 'line_count',
             array_key_exists('order', $arguments) ? self::string($arguments, 'order') : 'desc',
             self::integer($arguments, 'limit', 50, 1, 100),
+            self::integer($arguments, 'offset', 0, 0, 100_000),
+        );
+    }
+
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listDiagnostics()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    private function listDiagnostics(array $arguments): ResultEnvelope
+    {
+        return $this->queries->listDiagnostics(
+            self::string($arguments, 'project_id'),
+            array_key_exists('severity', $arguments) ? self::string($arguments, 'severity') : null,
+            array_key_exists('path_prefix', $arguments) ? self::string($arguments, 'path_prefix') : null,
+            self::integer($arguments, 'limit', 100, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
         );
     }

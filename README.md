@@ -26,7 +26,7 @@
 relationships between them, each with the file and line that proves it. In Claude Code,
 `/knossos` opens that graph as a live pane beside your session, and the agent gets a short note
 at the moment it reads, edits or commits a file that matters: how much depends on it, which
-rules bind it, and which tests reach it. The same graph answers 34 MCP tools and a CLI, for
+rules bind it, and which tests reach it. The same graph answers 35 MCP tools and a CLI, for
 Claude Code, Codex or any MCP client.
 
 Facts that static analysis cannot prove are labelled with their confidence and origin.
@@ -56,7 +56,7 @@ tabs and a search, then an edit, the band summing up the change, and its diff in
   carries. Each note is said once and never blocks a tool call
 - **`file_context`**: one tool call for a file's boundary and the rules that bind it, its
   dependents, the tests that reach it and its latest commits
-- **34 MCP tools**: impact analysis, call sites, flows between components, cycles, hubs,
+- **35 MCP tools**: impact analysis, call sites, flows between components, cycles, hubs,
   dead-code candidates, change review, test impact, snapshots and trends. Every tool except
   `server_info` has an equivalent CLI command
 - **Evidence on every fact**: each relationship points back to a file and a line, and a path is
@@ -252,7 +252,7 @@ instead of a grep for its callers:
 ```
 
 Every note, its exact wording and its limits are in [notes for the model](docs/claude-code/agent-notes.md).
-Over MCP, in any client, the 34 tools answer questions such as:
+Over MCP, in any client, the 35 tools answer questions such as:
 
 - What depends, directly or transitively, on `UserRepository`?
 - What are the exact call sites of `ScannerClient::scan`?

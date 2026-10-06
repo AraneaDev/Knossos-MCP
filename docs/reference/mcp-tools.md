@@ -224,6 +224,23 @@ One file's architectural context in one short answer: its boundary and the decla
 
 Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
+## `list_diagnostics`
+
+The scan diagnostics of the active graph (compiler and worker errors, warnings and notes), by file and line. Use to see what the dashboard counts as diagnostics, filtered by severity or path prefix.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
+| `refresh_if_stale` | boolean | no | default=true |
+| `project_id` | string | yes | minLength=1 |
+| `severity` | string | no | enum=error, warning, info |
+| `path_prefix` | string | no | minLength=1 |
+| `limit` | integer | no | minimum=1; maximum=100; default=100 |
+| `offset` | integer | no | minimum=0; maximum=100000; default=0 |
+
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
+
 ## `list_annotations`
 
 List durable agent annotations recorded on components, optionally filtered by component or kind. Use to review or audit prior annotate_component calls.
