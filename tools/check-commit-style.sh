@@ -56,16 +56,19 @@ esac
 
 # The types release-please recognises, read from its own config so a type this
 # check accepts and release-please does not -- exactly the failure this check
-# exists to prevent -- cannot happen. jq is installed by the job that calls this
-# in CI; the commit-msg hook may run on a machine without it, so that one case
-# falls back to the conventional set, which is a superset of any sane config.
-types='build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test'
+# exists to prevent -- cannot happen. The config is read with sed rather than jq,
+# so a machine without jq gives the same answer as CI. Only the
+# changelog-sections array is read: other "type" keys in the file, such as the
+# updaters' "generic", are not commit types.
+#
+# The fallback is for a missing or unreadable config, or one without
+# changelog-sections, and is that config's current set exactly.
+types='feat|fix|perf|docs|test|ci|refactor|style|chore'
 config="$ROOT/release-please-config.json"
-if command -v jq >/dev/null 2>&1 && [ -f "$config" ]; then
-  from_config=$(jq -r '.packages["."]["changelog-sections"][]?.type' "$config" 2>/dev/null |
-    tr -d '\r' | grep -E '^[a-z]+$' | sort -u | paste -sd'|' -)
-  # A config without changelog-sections says nothing about types, so the
-  # conventional set stands rather than being narrowed to nothing.
+if [ -r "$config" ]; then
+  from_config=$(sed -n '/"changelog-sections"/,/\]/p' "$config" 2>/dev/null |
+    sed -n 's/.*"type"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' |
+    sort -u | paste -sd'|' -)
   [ -n "$from_config" ] && types="$from_config"
 fi
 

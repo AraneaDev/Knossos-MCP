@@ -186,7 +186,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain tools/install \
         hooks/scripts/session-brief.sh hooks/scripts/session-brief-container.sh \
         hooks/scripts/knossos-run.sh hooks/scripts/knossos-run-container.sh hooks/scripts/lib.sh \
-        tests/shell/session-brief-hook.sh tests/shell/knossos-run-hook.sh tests/shell/install-hooks.sh
+        tests/shell/session-brief-hook.sh tests/shell/knossos-run-hook.sh tests/shell/install-hooks.sh tests/shell/check-commit-style.sh
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "shellcheck is required in the quality container" >&2
     exit 1
