@@ -92,22 +92,31 @@ printf("Repository JSON, size, line-ending, and secret checks passed: %d files.\
  */
 function repositoryFiles(string $root): array
 {
-    // Only these two are pruned at any depth. Every other generated directory is
-    // a root-relative prefix, so a fixture folder that merely happens to be named
-    // `vendor` or `coverage` is still scanned.
-    $skippedDirectories = ['.git', 'node_modules'];
+    // Pruned at any depth: these names are only ever written by tools, never
+    // authored, so no source directory can share one. Without git nothing else
+    // filters them, and a cache below the root (`workers/python/.mypy_cache`
+    // holds a cache.db over 2 MB) failed the size limit in a gitless build
+    // context. Every other generated directory is a root-relative prefix, so a
+    // fixture folder that merely happens to be named `vendor` or `coverage` is
+    // still scanned.
+    $skippedDirectories = [
+        '.git',
+        'node_modules',
+        '.mypy_cache',
+        '.ruff_cache',
+        '.pytest_cache',
+        '__pycache__',
+        '.phpunit.cache',
+        '.momus',
+    ];
     // Matched by full relative path, not bare basename -- see the docblock above.
     $skippedPathPrefixes = [
         'vendor/',
         'coverage/',
         '.knossos/',
-        '.mypy_cache/',
-        '.ruff_cache/',
         'workers/rust/target/',
         'workers/rust/bin/',
         'workers/php/vendor/',
-        'workers/python/bin/__pycache__/',
-        'workers/python/tests/__pycache__/',
     ];
     $paths = [];
     // Pruned during the walk rather than filtered afterwards. Collecting first

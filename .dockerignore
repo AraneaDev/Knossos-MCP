@@ -27,6 +27,12 @@ workers/rust/bin
 .mypy_cache
 .ruff_cache
 __pycache__
+# The bare names above match only at the root of the context. Tools write
+# these caches next to the code they ran on, so they are excluded at any depth.
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+**/__pycache__
 *.pyc
 workers/rust/mutants.out
 chaos-infection-log.json

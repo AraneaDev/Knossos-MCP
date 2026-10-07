@@ -63,14 +63,6 @@ final class RepositoryCheckTest extends KnossosTestCase
     }
 
     /**
-     * The other direction: a file the repository WOULD carry is still inspected,
-     * including one that is untracked because it has not been committed yet.
-     * That window — added to the working tree, not yet in a commit — is exactly
-     * when the secret and line-ending rules earn their keep, so the git-ignore
-     * filter must not widen into "skip everything git does not already track".
-     */
-    #[Group('documentation')]
-    /**
      * A skipped directory must not be opened, only discarded.
      *
      * The walk collected every path first and dropped the skipped ones
@@ -111,6 +103,14 @@ final class RepositoryCheckTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The other direction: a file the repository WOULD carry is still inspected,
+     * including one that is untracked because it has not been committed yet.
+     * That window — added to the working tree, not yet in a commit — is exactly
+     * when the secret and line-ending rules earn their keep, so the git-ignore
+     * filter must not widen into "skip everything git does not already track".
+     */
+    #[Group('documentation')]
     public function testRepositoryCheckStillInspectsUntrackedFilesThatAreNotIgnored(): void
     {
         $root = self::repositoryRoot();
@@ -192,6 +192,45 @@ final class RepositoryCheckTest extends KnossosTestCase
             self::assertStringNotContainsString('repository-check-binary', $errors);
         } finally {
             @unlink($file);
+            @rmdir($dir);
+        }
+    }
+
+    /**
+     * Without git, generated caches below the root are still pruned.
+     *
+     * The quality container's build context carries no .git directory, so the
+     * walk is the only filter. Cache directories were pruned only at the root,
+     * and `workers/python/.mypy_cache` holds a cache.db over 2 MB, so a gitless
+     * run failed the size limit on a file no commit could carry. Each fixture
+     * below violates the secret rule, so it is reported unless pruned.
+     */
+    #[Group('documentation')]
+    public function testGeneratedCachesArePrunedAtAnyDepthWithoutGit(): void
+    {
+        $root = self::repositoryRoot();
+        $dir = $root . '/tests/Fixtures/repository-check-caches';
+        self::assertDirectoryDoesNotExist($dir);
+        $names = ['.mypy_cache', '.ruff_cache', '.pytest_cache', '__pycache__', '.phpunit.cache', '.momus', 'node_modules'];
+
+        try {
+            foreach ($names as $name) {
+                mkdir($dir . '/' . $name, 0o755, true);
+                // Split so this file never matches the check it exercises.
+                file_put_contents($dir . '/' . $name . '/key.ts', "const k = `-----BEGIN RSA " . "PRIVATE KEY-----`\n");
+            }
+            // GIT_DIR pointing nowhere makes `git check-ignore` fail, so the
+            // checker fails open exactly as it does in a gitless checkout.
+            [, , $errors] = $this->runFixtureCommandOutput(
+                ['env', 'GIT_DIR=/nonexistent', PHP_BINARY, $root . '/tools/repository-check.php'],
+            );
+
+            self::assertStringNotContainsString('repository-check-caches', $errors);
+        } finally {
+            foreach ($names as $name) {
+                @unlink($dir . '/' . $name . '/key.ts');
+                @rmdir($dir . '/' . $name);
+            }
             @rmdir($dir);
         }
     }
