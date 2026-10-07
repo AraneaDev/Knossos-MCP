@@ -1,10 +1,12 @@
 // A stand-in for the module the Claude Code engine provides at run time, so a
 // static scan of this repository resolves register.tsx's imports instead of
 // reporting them as missing, and the specs' type-check (hooks/tsconfig.spec.json)
-// runs where the engine's own declarations do not exist, as in CI. Every name
-// here is `any`, so a module annotates a callback's parameter with the
-// engine's type rather than leaving it to be inferred. The engine supplies the
-// real declarations when it loads the mod; nothing here is shipped with the plugin.
+// runs where the engine's own declarations do not exist, as in CI. Most names
+// here are `any`, so a module annotates a callback's parameter with the
+// engine's type rather than leaving it to be inferred. The typed ones (On,
+// Register, EngineInterface, atom, update and the testing module) mirror how
+// the mod calls them. The engine supplies the real declarations when it loads
+// the mod; nothing here is shipped with the plugin.
 /* eslint-disable @typescript-eslint/no-explicit-any -- the engine owns these shapes; a scan only needs the names to resolve */
 declare module 'claude-code' {
   export type ConfigRow = any
