@@ -68,7 +68,7 @@ jobs:
         run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - name: Build and push the pinned quality image
         if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: quality
@@ -83,7 +83,7 @@ jobs:
       # build into a pull: tools/quality only builds it when it is absent.
       - name: Build and push the runtime image
         if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: runtime
@@ -96,7 +96,7 @@ jobs:
       # written to tarballs instead of the registry.
       - name: Build the quality image to a tarball
         if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: quality
@@ -107,7 +107,7 @@ jobs:
           outputs: type=docker,dest=/tmp/quality.tar
       - name: Build the runtime image to a tarball
         if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: runtime
