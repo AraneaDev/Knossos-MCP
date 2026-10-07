@@ -91,6 +91,15 @@ TypeScript `import type`, is erased at runtime and does not count, so a loop
 closed only by such imports is not reported. The result says so in its
 `warnings`.
 
+The default bounds cover the whole graph of most projects: `max_nodes`
+(default 50,000) counts only the symbols that take part in a selected
+relationship, and `max_edges` defaults to 100,000. The search reads bare
+endpoint pairs first and loads names, files and lines only for the cycles it
+reports, so a graph of tens of thousands of relationships is searched well
+inside the default `timeout_ms` of one second. When a bound does stop the
+search, the summary names it, and the Claude Code pane shows the count as `?`
+rather than `0+` when nothing was found before the stop.
+
 ![The Cycles tab: a 13-member dependency cycle drawn as a serpentine of boxes with a return edge labelled back to the start, and the list of all cycles below](../images/claude-code/cycles.png)
 
 ## Architecture health

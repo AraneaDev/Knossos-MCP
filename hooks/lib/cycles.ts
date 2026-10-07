@@ -33,16 +33,30 @@ import type { Openable } from './views'
 
 export type CycleNode = { name: string; canonical: string; boundary: string | null }
 export type CycleLine = { size: number; nodes: CycleNode[]; more: number }
-/** The cycles, largest first, and the ones the person unfolded (by index). */
-export type CyclesInput = { count: string; cycles: CycleLine[]; unfolded: number[] }
+/**
+ * The cycles, largest first, and the ones the person unfolded (by index).
+ * `stopped` names the bounds a search hit before it found any cycle: empty
+ * when the search found some or ran to the end.
+ */
+export type CyclesInput = { count: string; cycles: CycleLine[]; unfolded: number[]; stopped?: string[] }
 
 /** The most boxes a cycle shows before its middle folds, per tier. */
 export const FOLD_AT: Record<Tier, number> = { narrow: 6, medium: 10, wide: 16 }
 
+/**
+ * The cycle count as the pane shows it. A search that stopped before it found
+ * any has not shown there are none, so it reads `?` rather than `0+`, which
+ * looks like zero; one that found some before stopping is a floor, `50+`.
+ */
+export function cycleCount(cycles: Dashboard['cycles']): string {
+  return cycles.truncated && cycles.count === 0 ? '?' : countLabel(cycles.count, cycles.truncated)
+}
+
 /** The Cycles tab's view of a dashboard: the largest first, each member with its boundary. */
 export function cyclesInput(d: Pick<Dashboard, 'cycles'>, unfolded: number[] = []): CyclesInput {
   return {
-    count: countLabel(d.cycles.count, d.cycles.truncated),
+    count: cycleCount(d.cycles),
+    stopped: d.cycles.truncated && d.cycles.count === 0 ? d.cycles.truncation_reasons : [],
     cycles: d.cycles.largest.map(c => {
       const nodes = c.nodes?.map(n => ({ name: displayName(n), canonical: n.canonical_name, boundary: n.boundary })) ?? c.members.map(name => ({ name, canonical: name, boundary: null }))
       return { size: c.size, nodes, more: Math.max(0, c.size - nodes.length) }
@@ -168,9 +182,12 @@ export function cyclesArrangement(input: CyclesInput, tier: Tier, hues: Hues = N
     key: 'cycles',
     grow: { length: shown, min: CYCLES_MIN },
     make: (columns, limit) => {
-      const note = shown === 0 ? 'none' : `${input.count}${String(shown) === input.count ? '' : ` · ${shown} shown`} · largest first`
+      const stopped = input.stopped ?? []
+      const empty = stopped.length > 0 ? ['incomplete', ...stopped].join(' · ') : 'none'
+      const note = shown === 0 ? empty : `${input.count}${String(shown) === input.count ? '' : ` · ${shown} shown`} · largest first`
       const section = (body: Row[]): Section => ({ key: 'cycles', title: shown > 1 ? 'All cycles' : 'Cycles', note: noteOf(note), body })
-      if (shown === 0) return section([{ key: 'cycles-none', segments: [{ text: '   No dependency cycles.', dim: true }] }])
+      // A search cut short has not shown there are none, so it does not say so.
+      if (shown === 0) return section([{ key: 'cycles-none', segments: [{ text: stopped.length > 0 ? '   Search stopped early; none found before it did.' : '   No dependency cycles.', dim: true }] }])
       const window = windowOf(shown, limit, marked?.index ?? -1)
       const rows = input.cycles.slice(window.start, window.end).map((cycle, n) => cycleLine(cycle, window.start + n, offsets[window.start + n]!, marked?.index === window.start + n, columns, hues))
       return section([...rows, ...moreRows('cycles-window', window, shown, columns, i => offsets[i] ?? 0)])

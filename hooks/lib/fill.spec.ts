@@ -120,6 +120,17 @@ describe('the stat tiles', () => {
     expect(press(list, 'degree')).toBeUndefined()
   })
 
+  it('show a cycle search that stopped before it found any as unknown, not as zero', () => {
+    const list = stats({ cycles: { count: 0, truncated: true, truncation_reasons: ['time_limit'], largest: [] } })
+    const tile = list.find(s => s.key === 'cycles')
+    expect(tile?.value).toBe('?')
+    expect(tile?.tone).toBe('warn')
+    // The Cycles tab says why.
+    expect(tile?.press).toBe('stat:cycles')
+    // A capped count that found some still reads as a floor.
+    expect(stats({ cycles: { count: 50, truncated: true, truncation_reasons: ['result_limit'], largest: [] } }).find(s => s.key === 'cycles')?.value).toBe('50+')
+  })
+
   it('stay text at zero', () => {
     const list = stats({ cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] }, dead_code_candidates: 0 }, '0', 0)
     for (const key of ['cycles', 'dead', 'policy', 'diagnostics']) expect(press(list, key), key).toBeUndefined()
