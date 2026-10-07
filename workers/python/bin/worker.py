@@ -387,7 +387,7 @@ class ProjectModuleIndex:
                 try:
                     child.name.encode("utf-8")
                 except UnicodeEncodeError:
-                    # Undecoded bytes in a name cannot be reported in a frame.
+                    # Keeps input_hashes keys valid UTF-8 for the PHP side.
                     continue
                 marker = child / "__init__.py"
                 present = marker.is_file()
@@ -2258,7 +2258,7 @@ def input_hash_parts(input_hashes: dict[str, str | None], part_bytes: int | None
     budget = INPUT_HASHES_PART_BYTES if part_bytes is None else part_bytes
     parts: list[dict[str, str | None]] = []
     part: dict[str, str | None] = {}
-    # The serialized part: its braces, less the comma its last entry lacks.
+    # The serialized part, measured in its ASCII-escaped wire form: its braces, less the comma its last entry lacks.
     size = 1
     for relative, content_hash in input_hashes.items():
         # `"path":"<64 hex>",` or `"path":null,`
