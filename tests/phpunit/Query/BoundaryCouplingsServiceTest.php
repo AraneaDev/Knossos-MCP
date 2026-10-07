@@ -13,6 +13,7 @@ use Knossos\Runtime\MemoryLimit;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 use function PHPUnit\Framework\assertCount;
 use function PHPUnit\Framework\assertGreaterThan;
@@ -65,8 +66,14 @@ final class BoundaryCouplingsServiceTest extends KnossosTestCase
         }
     }
 
-    /** A cell joining more components than one SQLite statement may bind still names them all. */
+    /**
+     * A cell joining more components than one SQLite statement may bind still names them all.
+     *
+     * In a process of its own: the quarter of a million pairs take tens of megabytes at once, and in the
+     * shared process the pages they spread over stayed held by the allocator for every test after it.
+     */
     #[Group('query')]
+    #[RunInSeparateProcess]
     public function testACellOfMoreComponentsThanOneStatementBindsIsListed(): void
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
@@ -136,8 +143,14 @@ final class BoundaryCouplingsServiceTest extends KnossosTestCase
         $pdo->commit();
     }
 
-    /** A cell of many distinct pairs, as the default edge cap allows, lists its strongest without holding every pair's components. */
+    /**
+     * A cell of many distinct pairs, as the default edge cap allows, lists its strongest without holding every pair's components.
+     *
+     * In a process of its own: the peak it measures must not depend on what the tests before it left allocated,
+     * and resetting the peak in the shared process would hide the suite's own from the run's report.
+     */
     #[Group('query')]
+    #[RunInSeparateProcess]
     public function testADenseCellIsListedWithinTheMemoryOfItsResult(): void
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);

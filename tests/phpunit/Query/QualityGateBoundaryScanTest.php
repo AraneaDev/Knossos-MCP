@@ -8,6 +8,7 @@ use Knossos\Query\ArchitectureQueryService;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 /**
  * The gate refuses to pass a boundary budget it could not fully evaluate, which
@@ -18,7 +19,14 @@ use PHPUnit\Framework\Attributes\Group;
  */
 final class QualityGateBoundaryScanTest extends KnossosTestCase
 {
+    /**
+     * In a process of its own: the 20,001 edges built in PHP to seed the graph
+     * take tens of megabytes at once, the peak it measures must not depend on
+     * what earlier tests left allocated, and resetting the peak in the shared
+     * process would hide the suite's own from the run's report.
+     */
     #[Group('query')]
+    #[RunInSeparateProcess]
     public function testABoundaryBudgetIsStillDeterminateOnAGraphAboveTheDefaultEdgeCeiling(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();

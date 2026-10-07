@@ -26,6 +26,7 @@ use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Store\GraphRepository;
 use Knossos\Store\StableId;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 
 #[Group('graph-reconciler')]
@@ -2384,8 +2385,13 @@ final class GraphReconcilerTest extends TestCase
      * Expanding namespace prefixes and directory imports against a large graph
      * reaches exactly the nodes a plain filter over every node reaches, for
      * direct and nested prefixes and for patterns with and without matches.
+     *
+     * In a process of its own: the large graph takes megabytes of small
+     * allocations at once, and in the shared process the allocator pages they
+     * spread over stayed held for every test after it.
      */
     #[Group('reconciliation')]
+    #[RunInSeparateProcess]
     public function testPrefixAndContextExpansionOverALargeGraphMatchesAPlainFilter(): void
     {
         $caller = $this->minimalNode('php:method:App\\Webhook::post', 'App\\Webhook::post');
