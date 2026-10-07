@@ -410,20 +410,33 @@ TOML);
     public function testConfigurationHashIncludesTheAnalysisVersionSalt(): void
     {
         $pdo = $this->createSchema();
-        $dir = sys_get_temp_dir() . '/knossos-planner-salt-' . bin2hex(random_bytes(6));
-        mkdir($dir);
-        try {
-            $planner = new ScanPlanner($pdo, [$dir]);
-            $prep = $planner->prepare($dir, null, null, null, null, null, null);
+        $planner = new ScanPlanner($pdo, [sys_get_temp_dir()]);
 
-            // Verify that hashes are not empty (they include the version salt)
-            $this->assertNotEmpty($prep->configurationHashes['typescript']);
-            $this->assertNotEmpty($prep->configurationHashes['python']);
-            $this->assertNotEmpty($prep->configurationHashes['rust']);
-            $this->assertNotEmpty($prep->configurationHashes['php']);
-        } finally {
-            rmdir($dir);
-        }
+        // Access the private configurationHash method via reflection
+        $method = new \ReflectionMethod(ScanPlanner::class, 'configurationHash');
+        $method->setAccessible(true);
+
+        $emptyUnits = [];
+        $kinds = ['composer'];
+
+        // Same units and kinds, different salts should produce different hashes
+        $hash1 = $method->invoke($planner, $emptyUnits, $kinds, 'test-salt-v1');
+        $hash2 = $method->invoke($planner, $emptyUnits, $kinds, 'test-salt-v2');
+
+        $this->assertNotSame(
+            $hash1,
+            $hash2,
+            'Different salts must produce different configuration hashes',
+        );
+
+        // Same units, kinds, and salt should produce the same hash
+        $hash3 = $method->invoke($planner, $emptyUnits, $kinds, 'test-salt-v1');
+
+        $this->assertSame(
+            $hash1,
+            $hash3,
+            'Same salt with same inputs must produce identical hashes',
+        );
     }
 
     public function testPrepareRejectsSnapshotRetentionOutOfRange(): void
