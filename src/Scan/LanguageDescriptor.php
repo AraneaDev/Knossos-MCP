@@ -83,7 +83,7 @@ final readonly class LanguageDescriptor
     public static function defaults(string $installationRoot): array
     {
         return [
-            new self('php', ['php'], [PHP_BINARY, '-d', 'memory_limit=512M', $installationRoot . '/workers/php/bin/worker'], 'scanner_php', workerMemoryMb: 512, analysisInputs: ['workers/php/src/**', 'workers/php/bin/worker']),
+            new self('php', ['php'], [PHP_BINARY, '-d', 'memory_limit=512M', $installationRoot . '/workers/php/bin/worker'], 'scanner_php', workerMemoryMb: 512, analysisInputs: ['workers/php/src/**', 'workers/php/bin/worker', 'workers/php/composer.lock']),
             new self(
                 'typescript',
                 ['typescript', 'javascript'],

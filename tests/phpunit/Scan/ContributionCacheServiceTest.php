@@ -68,7 +68,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file = $this->writeFile('Foo.php', "<?php // stable\n");
         $contribution = new ScanContribution('knossos.php:file:Foo.php');
 
-        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         assertSame(1, count($result['cache_entries']));
@@ -84,7 +84,7 @@ final class ContributionCacheServiceTest extends TestCase
         file_put_contents($file->absolutePath, "<?php // mutated after discovery\n");
         $contribution = new ScanContribution('knossos.php:file:Foo.php');
 
-        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg', 'analysis');
 
         // The contribution is still returned for this scan's graph,
         // but no poisoned cache entry is persisted.
@@ -100,7 +100,7 @@ final class ContributionCacheServiceTest extends TestCase
         unlink($file->absolutePath); // vanished before the scan-time re-fingerprint
         $contribution = new ScanContribution('knossos.php:file:Gone.php');
 
-        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         assertSame(0, count($result['cache_entries']));
@@ -121,7 +121,7 @@ final class ContributionCacheServiceTest extends TestCase
         $token->cancel();
 
         $this->expectException(ScanCancelledException::class);
-        $service->partition($files, $manifest, 'cfg', [], false, $token);
+        $service->partition($files, $manifest, 'cfg', [], false, 'analysis', $token);
     }
 
     public function testPartitionWithoutTokenReturnsPartition(): void
@@ -132,7 +132,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file->relativePath = 'src/Only.php';
         $file->contentHash = 'abc';
 
-        $partition = $service->partition([$file], $manifest, 'cfg', [], false);
+        $partition = $service->partition([$file], $manifest, 'cfg', [], false, 'analysis');
 
         assertSame(true, $partition instanceof ContributionPartition);
         assertSame(1, $partition->added);
@@ -155,7 +155,7 @@ final class ContributionCacheServiceTest extends TestCase
             ],
         ];
 
-        $partition = $service->partition([$file], $manifest, 'cfg', $cache, false);
+        $partition = $service->partition([$file], $manifest, 'cfg', $cache, false, 'analysis');
 
         assertSame(0, count($partition->cached));
         assertSame([$file], $partition->filesToScan);
@@ -173,7 +173,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file->contentHash = 'abc123';
         $contribution = new ScanContribution($manifest->id . ':file:src/NoAbsolutePath.php');
 
-        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         assertSame(1, count($result['cache_entries']));
@@ -189,7 +189,7 @@ final class ContributionCacheServiceTest extends TestCase
         $fileB = $this->writeFile('b.php', "<?php // b\n");
         $contributionA = new ScanContribution($manifest->id . ':file:a.php');
 
-        $result = $service->entriesForScanned([$contributionA], [$fileA, $fileB], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$contributionA], [$fileA, $fileB], $manifest, 'cfg', 'analysis');
 
         self::assertCount(2, $result['contributions']);
         $missing = $result['contributions'][1];
@@ -218,7 +218,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file = $this->writeFile('b.php', "<?php // b\n");
         $misattributed = new ScanContribution($manifest->id . ':file:not/asked/for.php');
 
-        $result = $service->entriesForScanned([$misattributed], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$misattributed], [$file], $manifest, 'cfg', 'analysis');
 
         self::assertCount(1, $result['contributions']);
         $diagnostic = $result['contributions'][0]->diagnostics[0];
@@ -241,7 +241,7 @@ final class ContributionCacheServiceTest extends TestCase
         $answered = new ScanContribution($manifest->id . ':file:b.php');
         $stray = new ScanContribution($manifest->id . ':file:not/asked/for.php');
 
-        $result = $service->entriesForScanned([$answered, $stray], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$answered, $stray], [$file], $manifest, 'cfg', 'analysis');
 
         self::assertCount(2, $result['contributions']);
         $report = $result['contributions'][1];
@@ -265,7 +265,7 @@ final class ContributionCacheServiceTest extends TestCase
         $first = new ScanContribution($manifest->id . ':file:b.php');
         $second = new ScanContribution($manifest->id . ':file:b.php');
 
-        $result = $service->entriesForScanned([$first, $second], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$first, $second], [$file], $manifest, 'cfg', 'analysis');
 
         self::assertCount(1, $result['contributions']);
         $diagnostic = $result['contributions'][0]->diagnostics[0];
@@ -279,7 +279,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file = $this->writeFile('Foo.php', "<?php // stable\n");
         $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], $file->contentHash);
 
-        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         assertSame(1, count($result['cache_entries']));
@@ -295,7 +295,7 @@ final class ContributionCacheServiceTest extends TestCase
         $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], hash('sha256', "<?php // B\n"));
 
         $error = captureThrows(
-            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg'),
+            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg', 'analysis'),
             ScanSnapshotChangedException::class,
         );
 
@@ -310,7 +310,7 @@ final class ContributionCacheServiceTest extends TestCase
         $contribution = new ScanContribution('knossos.php:file:Foo.php', [], [], [], hash('sha256', "<?php // B\n"));
 
         $error = captureThrows(
-            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->manifest(), 'cfg'),
+            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->manifest(), 'cfg', 'analysis'),
             ScanSnapshotChangedException::class,
         );
 
@@ -323,7 +323,7 @@ final class ContributionCacheServiceTest extends TestCase
         $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')]);
 
         $error = captureThrows(
-            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg'),
+            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg', 'analysis'),
             WorkerException::class,
         );
 
@@ -340,7 +340,7 @@ final class ContributionCacheServiceTest extends TestCase
             new \Knossos\Scanner\Protocol\Diagnostic('error', 'PHP_UNSCANNABLE_FILE', 'unreadable', new Evidence('Foo.php', 1, 1)),
         ]);
 
-        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         assertSame(0, count($result['cache_entries']));
@@ -351,7 +351,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file = $this->writeFile('Foo.php', "<?php // A\n");
         $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')]);
 
-        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->manifest(), 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->manifest(), 'cfg', 'analysis');
 
         assertSame(1, count($result['cache_entries']));
     }
@@ -362,13 +362,13 @@ final class ContributionCacheServiceTest extends TestCase
         $first = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], $file->contentHash);
         $second = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], $file->contentHash);
 
-        $result = (new ContributionCacheService())->entriesForScanned([$first, $second], [$file], $this->hashingManifest(), 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned([$first, $second], [$file], $this->hashingManifest(), 'cfg', 'analysis');
 
         assertSame($file->contentHash, $result['contributions'][0]->contentHash);
 
         $bad = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], hash('sha256', 'other'));
         captureThrows(
-            fn() => (new ContributionCacheService())->entriesForScanned([$first, $bad], [$file], $this->hashingManifest(), 'cfg'),
+            fn() => (new ContributionCacheService())->entriesForScanned([$first, $bad], [$file], $this->hashingManifest(), 'cfg', 'analysis'),
             ScanSnapshotChangedException::class,
         );
     }

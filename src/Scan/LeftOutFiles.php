@@ -29,7 +29,7 @@ final class LeftOutFiles
         private readonly ContributionCacheService $cache,
         private readonly ScannerManifest $manifest,
         private readonly string $leftOutHash,
-        private readonly string $analysisHash = '',
+        private readonly string $analysisHash,
     ) {}
 
     /** Leave one file out, with the failure that its answer alone caused. */

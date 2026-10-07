@@ -26,9 +26,14 @@ final class AnalysisHash
      * The hash of the named files, memoised for the life of the process.
      *
      * @param list<string> $patterns
+     * @throws \InvalidArgumentException when patterns are given without an installation root, since
+     *         every path would then read as missing and the hash could never change
      */
     public static function of(string $installationRoot, array $patterns): string
     {
+        if ($installationRoot === '' && $patterns !== []) {
+            throw new \InvalidArgumentException('An analysis hash needs the installation root its patterns are relative to.');
+        }
         $key = $installationRoot . "\0" . implode("\0", $patterns);
 
         return self::$memo[$key] ??= self::compute(rtrim($installationRoot, '/'), $patterns);

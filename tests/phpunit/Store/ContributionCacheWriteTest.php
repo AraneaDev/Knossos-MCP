@@ -100,6 +100,18 @@ final class ContributionCacheWriteTest extends KnossosTestCase
     }
 
     #[Group('store')]
+    public function testAnEntryNamingAnUnknownReadGroupIsRefusedAndWritesNothing(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+
+        self::assertThrowsWith(
+            fn() => $repository->replaceContributionCache($ids['project'], [self::entry('a.ts', [], readGroup: 'nowhere')]),
+            \InvalidArgumentException::class,
+        );
+        assertSame('0', (string) $pdo->query('SELECT COUNT(*) FROM contribution_cache')->fetchColumn());
+    }
+
+    #[Group('store')]
     public function testAnEntryRejectsAMalformedReadPathOrHash(): void
     {
         self::assertThrowsWith(fn() => self::entry('a.ts', ['../escape' => self::hash('x')]), \InvalidArgumentException::class);

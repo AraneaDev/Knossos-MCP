@@ -92,4 +92,11 @@ final class AnalysisHashTest extends KnossosTestCase
 
         self::assertNotSame($first, AnalysisHash::of($this->root, ['src/**']));
     }
+
+    #[Group('scan')]
+    public function testPatternsWithoutAnInstallationRootAreRefused(): void
+    {
+        self::assertThrowsWith(fn() => AnalysisHash::of('', ['src/**']), \InvalidArgumentException::class);
+        assertSame(AnalysisHash::of('', []), AnalysisHash::of('', []));
+    }
 }

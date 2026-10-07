@@ -371,6 +371,16 @@ final class SqliteGraphWriter
             }
             $wanted[$entry->contribution->ownerKey] = true;
         }
+        $storedGroups = $this->statements->prepare('SELECT 1 FROM contribution_read_groups WHERE project_id = :project AND group_id = :group LIMIT 1');
+        foreach ($entries as $entry) {
+            if ($entry->fromCache || $entry->readGroup === null || isset($readGroups[$entry->readGroup])) {
+                continue;
+            }
+            $storedGroups->execute(['project' => $projectId, 'group' => $entry->readGroup]);
+            if ($storedGroups->fetchColumn() === false) {
+                throw new InvalidArgumentException(sprintf('Contribution cache entry %s names an unknown read group.', $entry->contribution->ownerKey));
+            }
+        }
         $existing = $pdo->prepare('SELECT owner_key FROM contribution_cache WHERE project_id = :project');
         $existing->execute(['project' => $projectId]);
         $deleteReads = $this->statements->prepare('DELETE FROM contribution_reads WHERE project_id = :project AND owner_key = :owner');

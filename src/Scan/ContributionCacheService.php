@@ -63,9 +63,9 @@ final readonly class ContributionCacheService
         string $configurationHash,
         array $cache,
         bool $force,
+        string $analysisHash,
         ?CancellationToken $cancellation = null,
         ?string $leftOutConfigurationHash = null,
-        string $analysisHash = '',
     ): ContributionPartition {
         $cacheVersion = self::cacheVersion($manifest, $analysisHash);
         $cached = [];
@@ -117,7 +117,7 @@ final readonly class ContributionCacheService
      * The cache entry for a file left out of the graph, or null when its bytes
      * no longer match what discovery hashed and the next scan must look again.
      */
-    public function leftOutEntry(object $file, ScannerManifest $manifest, string $leftOutConfigurationHash, ScanContribution $contribution, string $analysisHash = ''): ?ContributionCacheEntry
+    public function leftOutEntry(object $file, ScannerManifest $manifest, string $leftOutConfigurationHash, ScanContribution $contribution, string $analysisHash): ?ContributionCacheEntry
     {
         if (!$this->contentStillMatchesDiscovery($file)) {
             return null;
@@ -133,7 +133,7 @@ final readonly class ContributionCacheService
      * @param list<object> $files
      * @return array{contributions: list<ScanContribution>, cache_entries: list<ContributionCacheEntry>}
      */
-    public function entriesForScanned(array $scanned, array $files, ScannerManifest $manifest, string $configurationHash, string $analysisHash = ''): array
+    public function entriesForScanned(array $scanned, array $files, ScannerManifest $manifest, string $configurationHash, string $analysisHash): array
     {
         $cacheVersion = self::cacheVersion($manifest, $analysisHash);
         $byOwner = [];

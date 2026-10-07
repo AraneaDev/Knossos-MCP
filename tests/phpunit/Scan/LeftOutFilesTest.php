@@ -17,7 +17,7 @@ final class LeftOutFilesTest extends TestCase
 {
     public function testALeftOutFileKeepsAFactFreeContributionAndACacheEntryUnderTheLeftOutKey(): void
     {
-        $leftOut = new LeftOutFiles(new ContributionCacheService(), self::manifest(), 'left-out:abc');
+        $leftOut = new LeftOutFiles(new ContributionCacheService(), self::manifest(), 'left-out:abc', 'analysis');
 
         $leftOut->add(self::file('dist/a.js'), new WorkerException('WORKER_FRAME_TOO_LARGE', 'Frame too large.'));
         $leftOut->add(self::file('dist/b.js'), new WorkerException('WORKER_OUTPUT_LIMIT', 'Output too large.'));
@@ -41,7 +41,7 @@ final class LeftOutFilesTest extends TestCase
         try {
             $file = self::file('dist/a.js');
             $file->absolutePath = $path;
-            $leftOut = new LeftOutFiles(new ContributionCacheService(), self::manifest(), 'left-out:abc');
+            $leftOut = new LeftOutFiles(new ContributionCacheService(), self::manifest(), 'left-out:abc', 'analysis');
 
             $leftOut->add($file, new WorkerException('WORKER_FRAME_TOO_LARGE', 'Frame too large.'));
 

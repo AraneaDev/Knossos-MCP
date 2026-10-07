@@ -171,9 +171,9 @@ final readonly class LanguageScanRunner
             $plan->preparation->configurationHashes[$descriptor->key],
             $plan->cacheByScannerPath,
             $plan->effectiveMode === 'full' || $plan->workerInputsChanged,
+            $analysisHash,
             $cancellation,
             $leftOutHash,
-            $analysisHash,
         );
         $request = self::scanRequest($descriptor, $plan, $files);
         // One request per batch: ScannerProtocolSession::scan() calls
