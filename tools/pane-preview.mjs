@@ -5,7 +5,7 @@
  *
  * Never installed with the plugin (the installer copies a fixed list of
  * files from hooks/) and never run by the quality gate. It needs Node with
- * TypeScript type stripping (22.18+) and `rsvg-convert` with a monospace font
+ * TypeScript type stripping (Node 24+) and `rsvg-convert` with a monospace font
  * (DejaVu Sans Mono).
  *
  * It lays the pane out with the mod's own pure functions (hooks/lib) over

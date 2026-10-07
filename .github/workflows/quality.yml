@@ -34,10 +34,18 @@ jobs:
     permissions:
       contents: read
       packages: write # pushes the run's images to this repository's registry
+    # A pull request from a fork gets a read-only GITHUB_TOKEN, so a login and
+    # a push to the registry fail there and turn the required check red for
+    # every outside contributor. Such a run builds the same two images, hands
+    # them to the lanes as a short-lived artifact, and never touches the
+    # registry. Every step that differs between the two routes carries the
+    # same expression: a push, or a pull request whose head lives in this
+    # repository.
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -59,7 +67,8 @@ jobs:
         id: apt-refresh
         run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - name: Build and push the pinned quality image
-        uses: docker/build-push-action@v6
+        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           target: quality
@@ -67,13 +76,14 @@ jobs:
           cache-from: type=gha,scope=quality-image
           cache-to: type=gha,mode=max,scope=quality-image
           build-args: APT_REFRESH=${{ steps.apt-refresh.outputs.date }}
-          push: true
+          push: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
       # The release lane builds this target too, from inside the quality
       # container against the host daemon, where buildx's cache does not
       # reach. Publishing it here and pulling it there turns an uncached
       # build into a pull: tools/quality only builds it when it is absent.
       - name: Build and push the runtime image
-        uses: docker/build-push-action@v6
+        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           target: runtime
@@ -81,7 +91,41 @@ jobs:
           cache-from: type=gha,scope=runtime-image
           cache-to: type=gha,mode=max,scope=runtime-image
           build-args: APT_REFRESH=${{ steps.apt-refresh.outputs.date }}
-          push: true
+          push: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+      # The fork route: the same builds, same tags and same cache scopes,
+      # written to tarballs instead of the registry.
+      - name: Build the quality image to a tarball
+        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          target: quality
+          tags: ${{ env.QUALITY_IMAGE }}
+          cache-from: type=gha,scope=quality-image
+          cache-to: type=gha,mode=max,scope=quality-image
+          build-args: APT_REFRESH=${{ steps.apt-refresh.outputs.date }}
+          outputs: type=docker,dest=/tmp/quality.tar
+      - name: Build the runtime image to a tarball
+        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          target: runtime
+          tags: ${{ env.RUNTIME_IMAGE }}
+          cache-from: type=gha,scope=runtime-image
+          cache-to: type=gha,mode=max,scope=runtime-image
+          build-args: APT_REFRESH=${{ steps.apt-refresh.outputs.date }}
+          outputs: type=docker,dest=/tmp/runtime.tar
+      - name: Hand the images to the lanes
+        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: images
+          path: |
+            /tmp/quality.tar
+            /tmp/runtime.tar
+          retention-days: 1
+          if-no-files-found: error
 
   lane:
     needs: image
@@ -133,24 +177,43 @@ jobs:
       # Credentials are NOT persisted, for the same reason: the gate lane is
       # handed this checkout on a mount, and a token in .git/config would be
       # readable by everything the lane runs. This job only ever reads history.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: ${{ matrix.lane == 'gate' && '0' || '1' }}
           persist-credentials: false
-      - uses: docker/login-action@v3
+      # Same-repo runs pull the commit's images from the registry; a fork's
+      # run loads the tarballs the image job uploaded. Both routes end with
+      # the same local names, so every later step is shared.
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Pull the pinned quality image
+        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           docker pull --quiet "$QUALITY_IMAGE"
           docker tag "$QUALITY_IMAGE" knossos:quality
       - name: Pull the runtime image
-        if: matrix.lane == 'release'
+        if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && matrix.lane == 'release' }}
         run: |
           docker pull --quiet "$RUNTIME_IMAGE"
           docker tag "$RUNTIME_IMAGE" knossos:quality-runtime
+      - name: Download the images built for this commit
+        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: images
+          path: ${{ runner.temp }}/images
+      - name: Load the images built for this commit
+        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        run: |
+          docker load --quiet -i "$RUNNER_TEMP/images/quality.tar"
+          docker load --quiet -i "$RUNNER_TEMP/images/runtime.tar"
+          docker tag "$QUALITY_IMAGE" knossos:quality
+          docker tag "$RUNTIME_IMAGE" knossos:quality-runtime
+          rm -rf "$RUNNER_TEMP/images"
       # Trivy downloads its vulnerability database on first use, and the lane
       # container is thrown away after every run, so it downloaded the whole
       # thing again each time. Cached on the host and mounted in.
@@ -161,7 +224,7 @@ jobs:
       # failure mode a security scan must not have.
       - name: Restore the trivy vulnerability database
         if: matrix.lane == 'release'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/trivy-cache
           key: trivy-db-${{ github.run_id }}
@@ -172,14 +235,17 @@ jobs:
       # an empty directory on the host instead of failing.
       - name: Run the ${{ matrix.lane }} lane
         if: matrix.lane != 'gate'
+        env:
+          LANE: ${{ matrix.lane }}
+          EXTERNAL_LINKS: ${{ github.event_name == 'pull_request' && '0' || '1' }}
         run: |
-          mkdir -p "${{ runner.temp }}/trivy-cache"
+          mkdir -p "$RUNNER_TEMP/trivy-cache"
           docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
             -e TRIVY_CACHE_DIR=/tmp/trivy-cache \
-            -e KNOSSOS_EXTERNAL_LINKS=${{ github.event_name == 'pull_request' && '0' || '1' }} \
+            -e KNOSSOS_EXTERNAL_LINKS="$EXTERNAL_LINKS" \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "${{ runner.temp }}/trivy-cache:/tmp/trivy-cache" \
-            knossos:quality full ${{ matrix.lane }}
+            -v "$RUNNER_TEMP/trivy-cache:/tmp/trivy-cache" \
+            knossos:quality full "$LANE"
       # The gate lane runs on its own because it is the one lane that needs the
       # repository's history: the image bakes this source without .git, so the
       # checkout is mounted and the baseline commit named explicitly.
@@ -191,8 +257,10 @@ jobs:
       - name: Work out the baseline commit
         if: matrix.lane == 'gate'
         id: gate-base
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          base='${{ github.event.pull_request.base.sha || github.event.before }}'
+          base="$BASE"
           case "$base" in
             '' | 0000000000000000000000000000000000000000) base='' ;;
           esac
@@ -200,10 +268,12 @@ jobs:
           printf 'baseline: %s\n' "${base:-<derived by the lane>}"
       - name: Run the gate lane
         if: matrix.lane == 'gate'
+        env:
+          GATE_BASE_REF: ${{ steps.gate-base.outputs.sha }}
         run: |
           docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
             -e KNOSSOS_GATE_REPO=/workspace \
-            -e KNOSSOS_GATE_BASE_REF='${{ steps.gate-base.outputs.sha }}' \
+            -e KNOSSOS_GATE_BASE_REF="$GATE_BASE_REF" \
             -v "$PWD:/workspace:ro" \
             knossos:quality full gate
       - name: Collect reports
@@ -213,7 +283,7 @@ jobs:
           docker rm knossos-quality
       - name: Upload coverage and benchmark reports
         if: always() && matrix.lane == 'coverage'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: quality-reports
           path: coverage/
@@ -232,13 +302,15 @@ jobs:
       contents: write # publishes the coverage badge to the gh-pages branch
     steps:
       - name: Require every lane to have passed
+        env:
+          RESULT: ${{ needs.lane.result }}
         run: |
-          result='${{ needs.lane.result }}'
+          result="$RESULT"
           printf 'lane matrix result: %s\n' "$result"
           [ "$result" = 'success' ] || exit 1
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: github.ref == 'refs/heads/main'
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         if: github.ref == 'refs/heads/main'
         with:
           name: quality-reports
@@ -249,7 +321,7 @@ jobs:
       # The script sums all three languages; PHP alone is the bulk of the code.
       - name: Setup Node LTS
         if: github.ref == 'refs/heads/main'
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: lts/*
       - name: Publish coverage badge

@@ -88,18 +88,33 @@ find_timeout() {
 
 # Longer than the local timeout because container startup is not free, but still
 # bounded: a session start must never wait on a stuck daemon.
+#
+# `timeout` stops only the docker client; the container it started keeps running
+# and keeps writing the shared data directory. So the run is named, the name is
+# removed when the limit fires, and `--init` makes the container's first process
+# reap and forward signals. `docker run` forwards the first signal to the
+# container and keeps waiting, so `-k 2` is the path that actually ends a stuck
+# client. The removal is bounded too: the 10 s run, the 2 s kill and the 2 s
+# removal stay inside the 15 s ceiling hooks.json sets, which would otherwise
+# kill this script before the container is removed.
+#
+# The name carries the start time as well as the process id, so a reused
+# process id never addresses another run's container. `date` is optional here:
+# without it the name falls back to the process id alone.
+NAME_SUFFIX=$(date +%s 2>/dev/null) || NAME_SUFFIX=''
+NAME="knossos-hook-$$${NAME_SUFFIX:+-$NAME_SUFFIX}"
 if TIMEOUT_BIN="$(find_timeout)"; then
-    OUTPUT="$("$TIMEOUT_BIN" 10 docker run --rm \
+    OUTPUT="$("$TIMEOUT_BIN" -k 2 10 docker run --rm --init --name "$NAME" \
         -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
-        "$IMAGE" session-brief "$PROJECT_DIR" 2>/dev/null)" || exit 0
+        "$IMAGE" session-brief "$PROJECT_DIR" 2>/dev/null)" || { "$TIMEOUT_BIN" 2 docker rm -f "$NAME" >/dev/null 2>&1; exit 0; }
 else
     # Neither `timeout` nor `gtimeout` exists here, so this one call has no
     # bound of its own. The backstop is the harness: hooks.json sets this
     # hook's own "timeout" to 15, and Claude Code enforces that ceiling on
     # the whole process regardless of what runs inside it.
-    OUTPUT="$(docker run --rm \
+    OUTPUT="$(docker run --rm --init --name "$NAME" \
         -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \

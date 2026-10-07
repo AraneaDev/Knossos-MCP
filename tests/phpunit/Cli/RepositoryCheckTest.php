@@ -63,14 +63,6 @@ final class RepositoryCheckTest extends KnossosTestCase
     }
 
     /**
-     * The other direction: a file the repository WOULD carry is still inspected,
-     * including one that is untracked because it has not been committed yet.
-     * That window — added to the working tree, not yet in a commit — is exactly
-     * when the secret and line-ending rules earn their keep, so the git-ignore
-     * filter must not widen into "skip everything git does not already track".
-     */
-    #[Group('documentation')]
-    /**
      * A skipped directory must not be opened, only discarded.
      *
      * The walk collected every path first and dropped the skipped ones
@@ -111,6 +103,14 @@ final class RepositoryCheckTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The other direction: a file the repository WOULD carry is still inspected,
+     * including one that is untracked because it has not been committed yet.
+     * That window — added to the working tree, not yet in a commit — is exactly
+     * when the secret and line-ending rules earn their keep, so the git-ignore
+     * filter must not widen into "skip everything git does not already track".
+     */
+    #[Group('documentation')]
     public function testRepositoryCheckStillInspectsUntrackedFilesThatAreNotIgnored(): void
     {
         $root = self::repositoryRoot();
@@ -130,6 +130,108 @@ final class RepositoryCheckTest extends KnossosTestCase
             assertContains('docs/repository-check-fixture.md contains CR line endings', $errors);
         } finally {
             @unlink($fixture);
+        }
+    }
+
+    /** A secret in a TypeScript file is found: the extension is not an allowlist. */
+    #[Group('documentation')]
+    public function testSecretsAreFoundInEveryTextFile(): void
+    {
+        $this->assertSecretIsFound('repository-check-scan', 'key.ts');
+    }
+
+    /** A folder that is merely named vendor, below the root, is scanned like any other. */
+    #[Group('documentation')]
+    public function testNestedFoldersNamedVendorAreScanned(): void
+    {
+        $this->assertSecretIsFound('repository-check-nested', 'vendor/key.ts');
+    }
+
+    private function assertSecretIsFound(string $name, string $relative): void
+    {
+        $root = self::repositoryRoot();
+        $dir = $root . '/tests/Fixtures/' . $name;
+        self::assertDirectoryDoesNotExist($dir);
+        $file = $dir . '/' . $relative;
+        mkdir(dirname($file), 0o755, true);
+
+        try {
+            // Split so this file never matches the check it exercises.
+            file_put_contents($file, "const k = `-----BEGIN RSA " . "PRIVATE KEY-----`\n");
+            [$ignoreExit] = $this->runFixtureCommandOutput(['git', '-C', $root, 'check-ignore', '-q', $file]);
+            if ($ignoreExit === 0) {
+                self::markTestSkipped('git ignores the fixture path here, so the walk is not what decides.');
+            }
+            [$exit, , $errors] = $this->runFixtureCommandOutput([PHP_BINARY, $root . '/tools/repository-check.php']);
+
+            self::assertNotSame(0, $exit);
+            assertContains("tests/Fixtures/$name/$relative contains a private key", $errors);
+        } finally {
+            @unlink($file);
+            if (dirname($file) !== $dir) {
+                @rmdir(dirname($file));
+            }
+            @rmdir($dir);
+        }
+    }
+
+    /** A binary file is not text and is never flagged for line endings. */
+    #[Group('documentation')]
+    public function testBinaryFilesAreSkipped(): void
+    {
+        $root = self::repositoryRoot();
+        $dir = $root . '/tests/Fixtures/repository-check-binary';
+        self::assertDirectoryDoesNotExist($dir);
+        mkdir($dir, 0o755, true);
+        $file = $dir . '/image.png';
+
+        try {
+            file_put_contents($file, "\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+            [, , $errors] = $this->runFixtureCommandOutput([PHP_BINARY, $root . '/tools/repository-check.php']);
+
+            self::assertStringNotContainsString('repository-check-binary', $errors);
+        } finally {
+            @unlink($file);
+            @rmdir($dir);
+        }
+    }
+
+    /**
+     * Without git, generated caches below the root are still pruned.
+     *
+     * The quality container's build context carries no .git directory, so the
+     * walk is the only filter. Cache directories were pruned only at the root,
+     * and `workers/python/.mypy_cache` holds a cache.db over 2 MB, so a gitless
+     * run failed the size limit on a file no commit could carry. Each fixture
+     * below violates the secret rule, so it is reported unless pruned.
+     */
+    #[Group('documentation')]
+    public function testGeneratedCachesArePrunedAtAnyDepthWithoutGit(): void
+    {
+        $root = self::repositoryRoot();
+        $dir = $root . '/tests/Fixtures/repository-check-caches';
+        self::assertDirectoryDoesNotExist($dir);
+        $names = ['.mypy_cache', '.ruff_cache', '.pytest_cache', '__pycache__', '.phpunit.cache', '.momus', 'node_modules'];
+
+        try {
+            foreach ($names as $name) {
+                mkdir($dir . '/' . $name, 0o755, true);
+                // Split so this file never matches the check it exercises.
+                file_put_contents($dir . '/' . $name . '/key.ts', "const k = `-----BEGIN RSA " . "PRIVATE KEY-----`\n");
+            }
+            // GIT_DIR pointing nowhere makes `git check-ignore` fail, so the
+            // checker fails open exactly as it does in a gitless checkout.
+            [, , $errors] = $this->runFixtureCommandOutput(
+                ['env', 'GIT_DIR=/nonexistent', PHP_BINARY, $root . '/tools/repository-check.php'],
+            );
+
+            self::assertStringNotContainsString('repository-check-caches', $errors);
+        } finally {
+            foreach ($names as $name) {
+                @unlink($dir . '/' . $name . '/key.ts');
+                @rmdir($dir . '/' . $name);
+            }
+            @rmdir($dir);
         }
     }
 }

@@ -48,6 +48,11 @@ node_modules/.bin/c8 report \
     --functions="$(node -p "require('./coverage-budgets.json').typescript.functions")" \
     --statements="$(node -p "require('./coverage-budgets.json').typescript.statements")"
 
+# The plugin's own TypeScript (hooks/lib, hooks/mod) is measured by vitest, and
+# the thresholds come from the same budgets file. A shortfall exits non-zero, which
+# `set -e` turns into an aborted run.
+node_modules/.bin/vitest run --config vitest.config.mjs --coverage
+
 # The quality gate runs the Python unit suite separately from PHPUnit. Collect
 # it here too: the PHP integration tests exercise the real subprocess protocol,
 # while these tests cover the worker's pure collector and edge-case branches.

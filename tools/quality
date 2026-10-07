@@ -91,7 +91,7 @@ run_mod_checks() (
             > "$stage/tsconfig.json"
         "$root/node_modules/.bin/tsc" -p "$stage/tsconfig.json"
     else
-        printf 'knossos mod: Claude Code API types not found; strict type-check of hooks/register.tsx NOT run\n' >&2
+        printf 'knossos mod: Claude Code API types not found; register.tsx checked against hooks/engine.d.ts only (typecheck:mod)\n' >&2
     fi
 )
 
@@ -186,7 +186,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain tools/install \
         hooks/scripts/session-brief.sh hooks/scripts/session-brief-container.sh \
         hooks/scripts/knossos-run.sh hooks/scripts/knossos-run-container.sh hooks/scripts/lib.sh \
-        tests/shell/session-brief-hook.sh tests/shell/knossos-run-hook.sh tests/shell/install-hooks.sh
+        tests/shell/session-brief-hook.sh tests/shell/knossos-run-hook.sh tests/shell/install-hooks.sh tests/shell/check-commit-style.sh
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "shellcheck is required in the quality container" >&2
     exit 1
@@ -251,6 +251,8 @@ if [ "$profile" = "full" ] && in_lane release; then
         docker build --target runtime -t knossos:quality-runtime .
     fi
     docker run --rm knossos:quality-runtime doctor --json
+    docker run --rm --entrypoint sh knossos:quality-runtime -c 'test ! -w /opt/knossos/bin/knossos && test ! -w /opt/knossos/src && test -w /data' \
+        || { echo 'runtime image: the code tree must not be writable by the runtime user' >&2; exit 1; }
     tools/release-lifecycle
     tools/supply-chain
     tools/benchmark

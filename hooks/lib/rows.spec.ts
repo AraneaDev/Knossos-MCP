@@ -47,3 +47,18 @@ describe('the rows a row takes on screen', () => {
     expect(rowsHeight([hunk, { key: 'b', segments: [{ text: 'y' }] }])).toBe(8)
   })
 })
+
+describe('display width', () => {
+  it('counts wide characters as two cells', () => expect(cells('漢字')).toBe(4))
+  it('counts an emoji as two cells', () => expect(cells('a😀')).toBe(3))
+  it('counts a combining mark as nothing', () => expect(cells('e\u0301')).toBe(1))
+  it('never draws a wide path wider than the width, and never splits a grapheme', () => {
+    const path = 'src/漢字/データ/ファイル👩\u200d💻.ts'
+    for (let width = 1; width <= 40; width++) {
+      const { dir, base } = pathParts(path, width)
+      const drawn = dir + base
+      expect(cells(drawn)).toBeLessThanOrEqual(width)
+      expect(drawn.includes('\u200d') ? drawn.includes('👩\u200d💻') : true).toBe(true)
+    }
+  })
+})

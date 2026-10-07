@@ -24,5 +24,11 @@
   },
   "rust": {
     "lines": 90.7
+  },
+  "mod": {
+    "lines": 78.3,
+    "branches": 71.2,
+    "functions": 74.8,
+    "statements": 76.5
   }
 }

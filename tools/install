@@ -50,7 +50,7 @@ for runtime in php node python3; do
 done
 if [ -n "$missing" ]; then
     echo "Missing required runtimes:$missing" >&2
-    echo "Install PHP 8.3+, Node 22+, and Python 3.11+, then re-run." >&2
+    echo "Install PHP 8.3+, Node 24+, and Python 3.11+, then re-run." >&2
     exit 1
 fi
 log "$(php -r 'echo "php " . PHP_VERSION;'), node $(node --version), $(python3 --version)"

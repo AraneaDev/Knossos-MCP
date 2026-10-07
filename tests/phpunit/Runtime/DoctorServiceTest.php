@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Runtime;
 
+use Knossos\Filesystem\RegularFileOpener;
 use Knossos\Runtime\DoctorService;
 use Knossos\Runtime\RuntimeVersionRequirement;
 use Knossos\Store\SqliteConnection;
@@ -123,7 +124,7 @@ final class DoctorServiceTest extends KnossosTestCase
             $this->assertContains($check['status'], ['ok', 'error', 'skipped']);
         }
 
-        // The 14 checks fired when databasePath is ':memory:' (data.writable
+        // The 15 checks fired when databasePath is ':memory:' (data.writable
         // is conditional and excluded in this mode) — verifies both shape
         // AND the exact set of named checks in a single run() call.
         $names = array_column($result['checks'], 'name');
@@ -133,11 +134,20 @@ final class DoctorServiceTest extends KnossosTestCase
             'node.version', 'git.version', 'python.version',
             'sqlite.integrity', 'sqlite.foreign_keys', 'sqlite.migrations',
             'worker.php', 'worker.typescript', 'worker.python', 'worker.rust',
+            'filesystem.opener',
         ];
         foreach ($expected as $name) {
             $this->assertContains($name, $names, "missing check: {$name}");
         }
-        assertSame(14, count($names));
+        assertSame(15, count($names));
+    }
+
+    /** The doctor says which file opener this host uses, so a slow helper-per-file scan is visible. */
+    public function testDoctorReportsTheFileOpenerPath(): void
+    {
+        $check = $this->findCheck((new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run(), 'filesystem.opener');
+
+        self::assertSame(RegularFileOpener::usesHelper() ? 'skipped' : 'ok', $check['status']);
     }
 
     public function testRunSkipsDataWritableWhenDatabasePathIsInMemory(): void
@@ -397,7 +407,7 @@ final class DoctorServiceTest extends KnossosTestCase
         // release was built against still has to pass, or `doctor` reports a
         // working installation as broken.
         $floors = [
-            'node.version' => [trim((string) shell_exec('node --version 2>/dev/null')), '/^v(\d+)\./', '22', 'Node'],
+            'node.version' => [trim((string) shell_exec('node --version 2>/dev/null')), '/^v(\d+)\./', '24', 'Node'],
             'python.version' => [trim((string) shell_exec('python3 --version 2>/dev/null')), '/^Python (\d+\.\d+)\./', '3.11', 'Python'],
             'php.version' => [PHP_VERSION, '/^(\d+\.\d+)\./', '8.3', 'PHP'],
         ];
@@ -411,6 +421,23 @@ final class DoctorServiceTest extends KnossosTestCase
             assertSame((new RuntimeVersionRequirement($runtime, $pattern, $minimum))->verify($reported), $check['detail'], $name);
             assertSame('ok', $check['status'], $name);
         }
+    }
+
+    public function testTheDoctorRefusesNode22BecauseTheWorkersDeclareNode24(): void
+    {
+        // The doctor floor and the engines fields in package.json have to agree,
+        // or doctor passes a runtime the workers then refuse to start on.
+        $floors = (new \ReflectionClassConstant(DoctorService::class, 'FLOORS'))->getValue();
+        [$runtime, $pattern, $minimum] = $floors['node'];
+
+        self::assertSame('24', $minimum);
+        foreach (['package.json', 'workers/typescript/package.json'] as $manifest) {
+            $package = json_decode((string) file_get_contents(dirname(__DIR__, 3) . '/' . $manifest), true, flags: JSON_THROW_ON_ERROR);
+            self::assertSame('>=' . $minimum, $package['engines']['node'], $manifest);
+        }
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Node 24 or newer is required');
+        (new RuntimeVersionRequirement($runtime, $pattern, $minimum))->verify('v22.11.0');
     }
 
     // ----- optional worker (Rust) -----

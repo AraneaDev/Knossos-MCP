@@ -23,7 +23,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  id-token: write
 
 # One run per branch. A second push cancels the first, because whoever pushed
 # again has already answered the question the running job was asked. The runs
@@ -39,12 +38,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      # Opens/updates the Release PR from Conventional Commits. On merge of that
-      # PR, creates the vX.Y.Z tag + GitHub Release and sets release_created=true.
-      - name: Run release-please
+      # On merge of a Release PR, creates a DRAFT GitHub Release and sets
+      # release_created=true. A draft has no tag yet, so a failing gate below
+      # leaves nothing published. Opening the next Release PR is a separate
+      # call at the end of the job: in the same call it would run before this
+      # draft is tagged, miss the previous release, and write a changelog over
+      # the whole history.
+      - name: Run release-please (releases)
         id: release
-        uses: googleapis/release-please-action@v5
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         with:
+          skip-github-pull-request: true
           # A Release PR opened with the built-in GITHUB_TOKEN arrives with no checks
           # on it, because GitHub does not start workflows for that token, and main
           # requires those checks. RELEASE_PLEASE_TOKEN raises the event as a real
@@ -53,8 +57,8 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       # Everything below runs ONLY on the merge that cut a release. Because the
-      # tag/release are made with GITHUB_TOKEN, no separate tag-triggered
-      # workflow would fire — so build/verify/publish live here instead.
+      # release is made with GITHUB_TOKEN, no separate tag-triggered workflow
+      # would fire, so gate and publish live here instead.
       # Full history: the profile's `gate` lane measures the released tree
       # against the commit before it, and a shallow clone cannot reach one.
       #
@@ -65,12 +69,13 @@ jobs:
       # nothing here: reading the credential is the whole risk, and everything
       # the profile runs, tests and their dependencies included, could read it.
       # Nothing after this step uses git credentials -- release-please took its
-      # own token above, and the image push authenticates to the registry
-      # separately -- so persisting them buys nothing.
+      # own token above, and the gh calls below take theirs from env -- so
+      # persisting them buys nothing.
       - name: Checkout
         if: ${{ steps.release.outputs.release_created }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ steps.release.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -78,9 +83,10 @@ jobs:
         if: ${{ steps.release.outputs.release_created }}
         run: docker build --target quality -t knossos:quality .
 
-      # The same versioned profile that gates every PR, re-run against the
-      # released tree: lint, static analysis, tests, coverage floors, mutation
-      # score, security audits, and supply-chain assurance.
+      # The same versioned profile that gates every PR, run against the release
+      # commit before the release is published: lint, static analysis, tests,
+      # coverage floors, mutation score, security audits, and supply-chain
+      # assurance.
       - name: Run full quality profile
         if: ${{ steps.release.outputs.release_created }}
         run: |
@@ -97,9 +103,43 @@ jobs:
           docker run --rm knossos:release version --json
           docker run --rm knossos:release doctor --json
 
-      # Pre-release: no container registry yet. Intentionally dormant. To go
-      # public: remove `if: false` and add registry auth (OIDC or a token).
-      - name: Publish runtime image
-        if: false
+      - name: Publish the release now that its gate passed
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+
+      # A failed or cancelled gate (the job timeout included) removes the
+      # draft, so nothing is ever tagged that did not pass. Creating the release
+      # also moved the merged Release PR from `autorelease: pending` to
+      # `autorelease: tagged`, and release-please only releases a merged PR
+      # that is still pending. Without putting the label back, no later run
+      # would ever produce this version again. The PR is found from the release
+      # commit, which is the commit the PR merged as.
+      - name: Remove the draft release and re-open it when its gate did not pass
+        if: ${{ !success() && steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+          SHA: ${{ steps.release.outputs.sha }}
         run: |
-          echo "docker push placeholder for ${{ steps.release.outputs.tag_name }}"
+          gh release delete "$TAG" --yes --repo "$GITHUB_REPOSITORY"
+          PR=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/pulls" --jq '.[0].number')
+          if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+            echo "::error::No pull request found for $SHA; relabel the Release PR to 'autorelease: pending' by hand."
+            exit 1
+          fi
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR/labels/autorelease:%20tagged"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f 'labels[]=autorelease: pending'
+
+      # Opens or updates the next Release PR. It runs after the release is
+      # settled: after a publish the new tag exists to diff against, and after
+      # a rollback the step above has made the merged PR pending again, so this
+      # pass leaves it alone and the next run releases it.
+      - name: Run release-please (pull requests)
+        if: ${{ !cancelled() }}
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
+        with:
+          skip-github-release: true
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}

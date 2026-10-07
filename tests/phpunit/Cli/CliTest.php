@@ -535,7 +535,10 @@ final class CliTest extends KnossosTestCase
     {
         [$probeExit] = $this->runFixtureCommandOutput(['docker', 'compose', 'version']);
         if ($probeExit !== 0) {
-            return; // Docker is not available in this environment; the text test above still applies.
+            // The text test above still applies. Skipped rather than returned
+            // from: a test that asserts nothing is reported as risky, and a
+            // risky test fails the gate on any host without the compose plugin.
+            self::markTestSkipped('docker compose is not available to this process.');
         }
 
         $root = self::repositoryRoot();
@@ -566,7 +569,10 @@ final class CliTest extends KnossosTestCase
     {
         [$probeExit] = $this->runFixtureCommandOutput(['docker', 'compose', 'version']);
         if ($probeExit !== 0) {
-            return; // Docker is not available in this environment; the text test above still applies.
+            // The text test above still applies. Skipped rather than returned
+            // from: a test that asserts nothing is reported as risky, and a
+            // risky test fails the gate on any host without the compose plugin.
+            self::markTestSkipped('docker compose is not available to this process.');
         }
 
         $root = self::repositoryRoot();

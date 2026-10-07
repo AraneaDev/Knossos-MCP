@@ -74,8 +74,11 @@ mkdir -p "$BOX/bin" "$BOX/proj"
 sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|/srv/data|" "${HOOK%/*}/session-brief-container.sh" > "$BOX/hook.sh"
 cat > "$BOX/bin/docker" <<'STUB'
 #!/bin/sh
+if [ "$1" = rm ]; then printf '%s\n' "$*" >> "${0%/*}/removed"; exit 0; fi
 while [ "$#" -gt 0 ]; do
     [ "$1" = -e ] && printf '%s\n' "$2" >> "${0%/*}/env"
+    [ "$1" = --init ] && printf 'init|' >> "${0%/*}/flags"
+    [ "$1" = --name ] && printf 'name=%s|' "$2" >> "${0%/*}/flags"
     shift
 done
 STUB
@@ -87,6 +90,29 @@ else
     printf 'FAIL %s: env=%s\n' 'container hook names the project as git'"'"'s safe directory' "$(cat "$BOX/bin/env" 2>/dev/null)"
     failures=$((failures + 1))
 fi
+case "$(cat "$BOX/bin/flags" 2>/dev/null)" in
+    init\|name=knossos-hook-*) printf 'ok   %s\n' 'container hook run has --init and a name' ;;
+    *) printf 'FAIL %s: flags=%s\n' 'container hook run has --init and a name' "$(cat "$BOX/bin/flags" 2>/dev/null)"; failures=$((failures + 1)) ;;
+esac
+# A timed-out container hook removes its container, not only the docker client.
+# The stand-in timeout reports the run as timed out and records its kill delay;
+# any other call it records as bounded and runs. The 10 s run, the kill delay
+# and the bounded removal must fit inside hooks.json's 15 s ceiling, or the
+# harness kills the hook before the removal runs.
+mkdir -p "$BOX/killer"
+cat > "$BOX/killer/timeout" <<'STUB'
+#!/bin/sh
+if [ "$1" = -k ]; then printf 'kill-after=%s limit=%s\n' "$2" "$3" >> "${0%/*}/calls"; exit 124; fi
+printf 'bounded=%s %s\n' "$1" "$2" >> "${0%/*}/calls"
+shift
+exec "$@"
+STUB
+chmod +x "$BOX/killer/timeout"
+: > "$BOX/bin/removed"
+env PATH="$BOX/killer:$BOX/bin:$PATH" CLAUDE_PROJECT_DIR="$BOX/proj" sh "$BOX/hook.sh" >/dev/null 2>&1
+if grep -q '^rm -f knossos-hook-' "$BOX/bin/removed"; then printf 'ok   %s\n' 'timed-out container hook is removed'; else printf 'FAIL %s\n' 'timed-out container hook is removed'; failures=$((failures + 1)); fi
+if grep -qx 'kill-after=2 limit=10' "$BOX/killer/calls"; then printf 'ok   %s\n' 'timed-out container hook client is killed 2 s after its 10 s limit'; else printf 'FAIL %s (calls %s)\n' 'timed-out container hook client is killed 2 s after its 10 s limit' "$(cat "$BOX/killer/calls" 2>/dev/null)"; failures=$((failures + 1)); fi
+if grep -qx 'bounded=2 docker' "$BOX/killer/calls"; then printf 'ok   %s\n' 'container hook removal is bounded at 2 s'; else printf 'FAIL %s (calls %s)\n' 'container hook removal is bounded at 2 s' "$(cat "$BOX/killer/calls" 2>/dev/null)"; failures=$((failures + 1)); fi
 rm -rf "$BOX"
 
 # A project that ships an executable bin/knossos must never have it run:

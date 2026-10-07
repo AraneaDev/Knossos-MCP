@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Runtime;
 
+use Knossos\Filesystem\RegularFileOpener;
 use Knossos\Git\GitProcessRunner;
 use Knossos\Scan\LanguageDescriptor;
 use Knossos\Scanner\Worker\ProcessScannerClient;
@@ -29,7 +30,7 @@ final readonly class DoctorService
      */
     private const FLOORS = [
         'php' => ['PHP', '/^(\d+\.\d+)\./', '8.3'],
-        'node' => ['Node', '/^v(\d+)\./', '22'],
+        'node' => ['Node', '/^v(\d+)\./', '24'],
         'python' => ['Python', '/^Python (\d+\.\d+)\./', '3.11'],
     ];
 
@@ -76,6 +77,9 @@ final readonly class DoctorService
         if ($this->databasePath !== ':memory:') {
             $this->check($checks, 'data.writable', fn(): string => is_writable(dirname($this->databasePath)) ? dirname($this->databasePath) : throw new \RuntimeException('Data directory is not writable.'));
         }
+        $checks[] = RegularFileOpener::usesHelper()
+            ? ['name' => 'filesystem.opener', 'status' => 'skipped', 'detail' => 'helper process per file; install ext-ffi with ffi.enable=1 for faster scans']
+            : ['name' => 'filesystem.opener', 'status' => 'ok', 'detail' => 'ffi'];
         // Sourced from LanguageDescriptor rather than repeated here, so scan and
         // doctor cannot disagree about a worker's command or its availability.
         foreach (LanguageDescriptor::defaults($this->installationRoot) as $descriptor) {

@@ -268,15 +268,29 @@ case "$SUBCOMMAND" in
     session-head|session-diff) USER_ARG="--user=$(id -u):$(id -g)" ;;
 esac
 
+# `timeout` stops only the docker client; the container it started keeps running
+# and keeps writing the shared data directory. So the run is named, the name is
+# removed when the limit fires, and `--init` makes the container's first process
+# reap and forward signals. `docker run` forwards the first signal to the
+# container and keeps waiting, so `-k 2` is the path that actually ends a stuck
+# client. The removal is bounded too: the mod allows the limit plus 5 s, and
+# the 2 s kill and the 2 s removal fit in that, where a longer wait would have
+# the mod kill this script before the container is removed.
+#
+# The name carries the start time as well as the process id, so a reused
+# process id never addresses another run's container. `date` is optional here:
+# without it the name falls back to the process id alone.
+NAME_SUFFIX=$(date +%s 2>/dev/null) || NAME_SUFFIX=''
+NAME="knossos-hook-$$${NAME_SUFFIX:+-$NAME_SUFFIX}"
 if TIMEOUT_BIN="$(find_timeout)"; then
-    OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" docker run --rm ${USER_ARG:+"$USER_ARG"} \
+    OUTPUT="$("$TIMEOUT_BIN" -k 2 "$LIMIT" docker run --rm --init --name "$NAME" ${USER_ARG:+"$USER_ARG"} \
         -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
-        "$IMAGE" "$COMMAND" "$TARGET" "$@" --json 2>/dev/null)" || exit 0
+        "$IMAGE" "$COMMAND" "$TARGET" "$@" --json 2>/dev/null)" || { "$TIMEOUT_BIN" 2 docker rm -f "$NAME" >/dev/null 2>&1; exit 0; }
 else
     # No timeout tool: the mod's own $.process.run timeoutMs is the bound.
-    OUTPUT="$(docker run --rm ${USER_ARG:+"$USER_ARG"} \
+    OUTPUT="$(docker run --rm --init --name "$NAME" ${USER_ARG:+"$USER_ARG"} \
         -e "KNOSSOS_GIT_SAFE_DIRECTORY=$PROJECT_DIR" \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
