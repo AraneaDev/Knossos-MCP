@@ -120,20 +120,22 @@ final class ProjectScanService implements ProjectScanner
             // Cancellation wins over fidelity reporting: an abandoned scan
             // must surface ScanCancelledException, not a worker degradation.
             $cancellation->throwIfCancelled();
-            // An incremental scan must never reconcile a partial language set:
-            // doing so prunes the last good facts for a worker that failed and
-            // can replace a healthy graph with an empty one. A full scan has no
-            // prior graph to preserve and may still degrade per language, but
-            // an incremental failure is fail-closed so the caller can repair
-            // the worker and retry without data loss.
-            if ($plan->effectiveMode === 'incremental' && $language->workerDiagnostics !== []) {
+            // A rescan must never reconcile a partial language set, whatever
+            // its mode: doing so prunes the last good facts for a worker that
+            // failed and can replace a healthy graph with an empty one. That
+            // holds for a requested full rescan as much as an incremental one.
+            // Only a project with no active scan has no prior graph to preserve
+            // and may still degrade per language; anywhere else the failure is
+            // fail-closed so the caller can repair the worker and retry
+            // without data loss.
+            if ($plan->hadActiveScan && $language->workerDiagnostics !== []) {
                 $failed = array_map(
                     static fn(array $diagnostic): string => ($diagnostic['owner'] ?? 'unknown') . ': ' . ($diagnostic['code'] ?? 'WORKER_FAILED'),
                     $language->workerDiagnostics,
                 );
                 throw new WorkerException(
                     'WORKER_DEGRADED_INCREMENTAL',
-                    'Incremental scan aborted to preserve the last good graph. Failed workers: ' . implode(', ', $failed) . '.',
+                    'Scan aborted to preserve the last good graph. Failed workers: ' . implode(', ', $failed) . '.',
                 );
             }
             // The workers read every file themselves, so their facts descend

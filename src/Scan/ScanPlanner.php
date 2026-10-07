@@ -207,6 +207,7 @@ final readonly class ScanPlanner
             $cache,
             count(array_diff_key($old, $current)),
             $workerInputsChanged,
+            $existing !== false && $existing['active_scan_id'] !== null,
         );
     }
 

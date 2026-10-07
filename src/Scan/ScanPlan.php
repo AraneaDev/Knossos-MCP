@@ -16,5 +16,7 @@ final readonly class ScanPlan
         public int $deletedFiles,
         /** Forces contribution rebuild when a cached dependency declaration changed. */
         public bool $workerInputsChanged = false,
+        /** True when the project already has an active scan whose graph a failed worker could prune. */
+        public bool $hadActiveScan = false,
     ) {}
 }

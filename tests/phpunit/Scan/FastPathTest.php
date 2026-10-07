@@ -310,6 +310,29 @@ final class FastPathTest extends KnossosTestCase
     }
 
     #[Group('scan')]
+    public function testRequestedFullRescanKeepsTheLastGoodGraphWhenAWorkerFails(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
+        $dead = $this->installationRootWithDeadTypescriptWorker();
+        try {
+            $pdo = $this->freshTestDatabase();
+            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+            $activeBefore = (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn();
+            $graphBefore = $this->graphSignature($pdo);
+
+            $failure = captureThrows(fn() => (new ProjectScanService($pdo, $dead, [$root]))->scan($root, mode: 'full'), WorkerException::class);
+
+            assertSame('WORKER_DEGRADED_INCREMENTAL', $failure->diagnosticCode);
+            assertSame($activeBefore, (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn());
+            assertSame($graphBefore, $this->graphSignature($pdo));
+        } finally {
+            $this->removeTempTree($root);
+            $this->removeTempTree($dead);
+        }
+    }
+
+    #[Group('scan')]
     public function testConfigOrScannerSetChangeSkipsFastPath(): void
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
