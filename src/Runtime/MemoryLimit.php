@@ -25,8 +25,14 @@ final class MemoryLimit
      * @param string $value the limit in PHP shorthand, or `-1` for unlimited
      * @param string $source one of the SOURCE_* constants
      * @param ?string $rejected the environment value that was not a valid size, when there was one
+     * @param ?string $failure why PHP refused the limit that was asked for, when it did
      */
-    public function __construct(public readonly string $value, public readonly string $source, public readonly ?string $rejected = null) {}
+    public function __construct(
+        public readonly string $value,
+        public readonly string $source,
+        public readonly ?string $rejected = null,
+        public readonly ?string $failure = null,
+    ) {}
 
     /**
      * Decide the effective limit from the host's current value and the environment's.
@@ -69,17 +75,39 @@ final class MemoryLimit
             return $match[2] === '' ? -1 : null;
         }
         $multiplier = ['' => 1, 'K' => 1024, 'M' => 1024 ** 2, 'G' => 1024 ** 3][strtoupper($match[2])];
-        $bytes = (int) $match[1] * $multiplier;
+        // Compared as text first: digits beyond PHP_INT_MAX would cast to a float, and so would the product.
+        $digits = ltrim($match[1], '0');
+        $max = (string) PHP_INT_MAX;
+        $fitsInt = strlen($digits) < strlen($max) || (strlen($digits) === strlen($max) && strcmp($digits, $max) <= 0);
+        if ($digits === '' || !$fitsInt || (int) $digits > intdiv(PHP_INT_MAX, $multiplier)) {
+            return null;
+        }
 
-        return $bytes > 0 ? $bytes : null;
+        return (int) $digits * $multiplier;
     }
 
-    /** Resolve the limit from this process's ini value and environment, set it, and remember the outcome. */
-    public static function apply(): self
+    /**
+     * Resolve the limit from this process's ini value and environment, set it, and remember the outcome.
+     *
+     * PHP refuses a limit below what the process already uses, and says so with a warning on stderr.
+     * That warning is suppressed here and the refusal is kept in {@see self::$failure} instead, with the
+     * value PHP really has, so `doctor` can report it and no stdio transport is polluted.
+     *
+     * @param ?callable(string): (string|false) $setIni replaces `ini_set('memory_limit', ...)`; for tests
+     */
+    public static function apply(?callable $setIni = null): self
     {
         $environment = getenv(self::ENVIRONMENT_VARIABLE);
         $limit = self::resolve((string) ini_get('memory_limit'), $environment === false ? null : $environment);
-        ini_set('memory_limit', $limit->value);
+        $setIni ??= static fn(string $value): string|false => @ini_set('memory_limit', $value);
+        if ($setIni($limit->value) === false) {
+            $limit = new self(
+                (string) ini_get('memory_limit'),
+                self::SOURCE_INI,
+                $limit->rejected,
+                sprintf('PHP refused a memory limit of %s', $limit->value),
+            );
+        }
 
         return self::$applied = $limit;
     }

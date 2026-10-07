@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Runtime;
 
+use Knossos\Runtime\DoctorService;
 use Knossos\Runtime\MemoryLimit;
+use Knossos\Store\SqliteConnection;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
 
@@ -91,60 +93,192 @@ final class MemoryLimitTest extends KnossosTestCase
         yield 'gigabytes lower case' => ['2g', 2 * 1024 ** 3];
         yield 'unlimited' => ['-1', -1];
         yield 'zero' => ['0', null];
+        yield 'zero gigabytes' => ['0G', null];
         yield 'words' => ['lots', null];
         yield 'unknown suffix' => ['5T', null];
         yield 'negative with suffix' => ['-1M', null];
         yield 'empty' => ['', null];
+        yield 'surrounding spaces' => [' 512M ', 512 * 1024 ** 2];
+        yield 'trailing newline' => ["512M\n", 512 * 1024 ** 2];
+        yield 'overflowing gigabytes' => ['9999999999G', null];
+        yield 'overflow at the boundary' => ['8589934592G', null];
+        yield 'overflowing plain digits' => ['99999999999999999999', null];
     }
 
-    /** Shorthand parsing covers K, M, G, plain bytes and -1. */
+    /** Shorthand parsing covers K, M, G, plain bytes and -1, and rejects anything that does not fit an int. */
     #[DataProvider('sizes')]
     public function testBytesParsesShorthand(string $size, ?int $expected): void
     {
         self::assertSame($expected, MemoryLimit::bytes($size));
     }
 
-    /** apply() sets the ini value, reports it through applied(), and a subprocess sees it. */
+    /** An overflowing environment value is an invalid one, not a crash. */
+    public function testAnOverflowingEnvironmentValueIsRejected(): void
+    {
+        $limit = MemoryLimit::resolve('128M', '9999999999G');
+
+        self::assertSame('1G', $limit->value);
+        self::assertSame('9999999999G', $limit->rejected);
+    }
+
+    /** An unparseable host value is replaced by the default rather than kept. */
+    public function testAnUnparseableHostValueFallsBackToTheDefault(): void
+    {
+        self::assertSame('default', MemoryLimit::resolve('9999999999G', null)->source);
+    }
+
+    /** apply() sets the ini value from the environment and applied() reports the decision. */
+    public function testApplySetsTheLimitAndRemembersIt(): void
+    {
+        $this->withRestoredState(function (): void {
+            putenv('KNOSSOS_MEMORY_LIMIT=2G');
+            $limit = MemoryLimit::apply();
+
+            self::assertSame('2G', ini_get('memory_limit'));
+            self::assertSame($limit, MemoryLimit::applied());
+            self::assertSame('KNOSSOS_MEMORY_LIMIT', $limit->source);
+        });
+    }
+
+    /** A refused ini_set keeps the value PHP really has and records why. */
+    public function testARefusedLimitIsReportedWithTheValueInForce(): void
+    {
+        $this->withRestoredState(function (): void {
+            putenv('KNOSSOS_MEMORY_LIMIT=2G');
+            $limit = MemoryLimit::apply(static fn(string $value): bool => false);
+
+            self::assertSame((string) ini_get('memory_limit'), $limit->value);
+            self::assertSame('php.ini', $limit->source);
+            self::assertNotNull($limit->failure);
+            self::assertStringContainsString('2G', $limit->failure);
+        });
+    }
+
+    /** A limit below current usage is refused by PHP; that must not write a warning. */
+    public function testALimitBelowCurrentUsageDoesNotWarn(): void
+    {
+        $this->withRestoredState(function (): void {
+            putenv('KNOSSOS_MEMORY_LIMIT=1K');
+            $limit = MemoryLimit::apply();
+
+            self::assertNotNull($limit->failure);
+            self::assertNotSame('1K', ini_get('memory_limit'));
+        });
+    }
+
+    /** doctor reports the effective limit, its source, and an invalid or refused request as an error. */
+    public function testDoctorReportsWhatWasApplied(): void
+    {
+        $this->withRestoredState(function (): void {
+            putenv('KNOSSOS_MEMORY_LIMIT=2G');
+            MemoryLimit::apply();
+            self::assertSame(['ok', '2G (KNOSSOS_MEMORY_LIMIT)'], $this->doctorMemoryCheck());
+
+            putenv('KNOSSOS_MEMORY_LIMIT=lots');
+            MemoryLimit::apply();
+            [$status, $detail] = $this->doctorMemoryCheck();
+            self::assertSame('error', $status);
+            self::assertStringContainsString('KNOSSOS_MEMORY_LIMIT=lots is not a valid size', $detail);
+
+            putenv('KNOSSOS_MEMORY_LIMIT=1K');
+            MemoryLimit::apply();
+            [$status, $detail] = $this->doctorMemoryCheck();
+            self::assertSame('error', $status);
+            self::assertStringContainsString('1K', $detail);
+        });
+    }
+
+    /** The CLI entry point applies the limit before anything heavy runs. */
     public function testBinKnossosAppliesTheLimit(): void
     {
-        $binary = self::repositoryRoot() . '/bin/knossos';
-        $default = $this->doctorMemoryCheck([PHP_BINARY, '-d', 'memory_limit=128M', $binary, 'doctor', '--json'], null);
-        self::assertSame('ok', $default['status']);
-        self::assertSame('1G (default)', $default['detail']);
+        self::assertSame('1G|default|', $this->entryPoint(['-d', 'memory_limit=128M'], null));
+        self::assertSame('768M|KNOSSOS_MEMORY_LIMIT|', $this->entryPoint(['-d', 'memory_limit=128M'], '768M'));
+    }
 
-        $explicit = $this->doctorMemoryCheck([PHP_BINARY, '-d', 'memory_limit=128M', $binary, 'doctor', '--json'], '768M');
-        self::assertSame('768M (KNOSSOS_MEMORY_LIMIT)', $explicit['detail']);
+    /** The HTTP router runs under `php -S`, so it applies the limit itself, straight after the autoloader. */
+    public function testHttpRouterAppliesTheLimitAfterTheAutoloader(): void
+    {
+        $source = (string) file_get_contents(self::repositoryRoot() . '/bin/http-router.php');
+        $autoload = strpos($source, "vendor/autoload.php';");
+        $apply = strpos($source, 'MemoryLimit::apply()');
 
-        $invalid = $this->doctorMemoryCheck([PHP_BINARY, '-d', 'memory_limit=128M', $binary, 'doctor', '--json'], 'lots');
-        self::assertSame('error', $invalid['status']);
-        self::assertStringContainsString('1G (default); KNOSSOS_MEMORY_LIMIT=lots is not a valid size', $invalid['detail']);
+        self::assertNotFalse($autoload);
+        self::assertNotFalse($apply);
+        self::assertGreaterThan($autoload, $apply);
+        self::assertLessThan(strpos($source, 'RuntimeFactory::', $autoload) ?: PHP_INT_MAX, $apply);
     }
 
     /**
-     * Run the CLI and return its php.memory_limit check.
+     * Run the real `bin/knossos --version` in a fresh PHP and return "value|source|rejected" as the
+     * limit stood when the process ended.
      *
-     * @param non-empty-list<string> $command
-     * @return array{name: string, status: string, detail: string}
+     * A prepended probe registers a shutdown function, which still runs after the entry point's
+     * `exit`, so the whole startup path is exercised and no database or doctor run is needed.
+     *
+     * @param list<string> $phpOptions
      */
-    private function doctorMemoryCheck(array $command, ?string $limit): array
+    private function entryPoint(array $phpOptions, ?string $limit): string
     {
-        $environment = array_merge(getenv(), ['KNOSSOS_DATA_DIR' => sys_get_temp_dir() . '/knossos-memory-' . uniqid('', true)]);
-        unset($environment['KNOSSOS_MEMORY_LIMIT']);
-        if ($limit !== null) {
-            $environment['KNOSSOS_MEMORY_LIMIT'] = $limit;
+        $root = self::repositoryRoot();
+        $probe = tempnam(sys_get_temp_dir(), 'knossos-memory-probe');
+        $out = tempnam(sys_get_temp_dir(), 'knossos-memory-out');
+        $err = tempnam(sys_get_temp_dir(), 'knossos-memory-err');
+        try {
+            file_put_contents($probe, '<?php register_shutdown_function(static function (): void {'
+                . ' $l = \\Knossos\\Runtime\\MemoryLimit::applied();'
+                . ' file_put_contents(getenv("KNOSSOS_PROBE_OUT"), ini_get("memory_limit") . "|" . $l->source . "|" . $l->rejected); });');
+            $environment = array_merge(getenv(), ['KNOSSOS_PROBE_OUT' => $out]);
+            unset($environment['KNOSSOS_MEMORY_LIMIT']);
+            if ($limit !== null) {
+                $environment['KNOSSOS_MEMORY_LIMIT'] = $limit;
+            }
+            $process = proc_open(
+                [PHP_BINARY, ...$phpOptions, '-d', 'auto_prepend_file=' . $probe, $root . '/bin/knossos', '--version'],
+                [1 => ['file', '/dev/null', 'w'], 2 => ['file', $err, 'w']],
+                $pipes,
+                $root,
+                $environment,
+            );
+            self::assertIsResource($process);
+            self::assertSame(0, proc_close($process));
+            self::assertSame('', (string) file_get_contents($err));
+
+            return (string) file_get_contents($out);
+        } finally {
+            @unlink($probe);
+            @unlink($out);
+            @unlink($err);
         }
-        $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, self::repositoryRoot(), $environment);
-        self::assertIsResource($process);
-        $stdout = (string) stream_get_contents($pipes[1]);
-        stream_get_contents($pipes[2]);
-        proc_close($process);
-        /** @var array{checks: list<array{name: string, status: string, detail: string}>} $report */
-        $report = json_decode($stdout, true, 512, JSON_THROW_ON_ERROR);
-        foreach ($report['checks'] as $check) {
+    }
+
+    /**
+     * The php.memory_limit check as [status, detail].
+     *
+     * @return array{string, string}
+     */
+    private function doctorMemoryCheck(): array
+    {
+        $service = new DoctorService(SqliteConnection::open(':memory:'), self::repositoryRoot(), ':memory:');
+        foreach ($service->run()['checks'] as $check) {
             if ($check['name'] === 'php.memory_limit') {
-                return $check;
+                return [$check['status'], $check['detail']];
             }
         }
         self::fail('doctor did not report php.memory_limit');
+    }
+
+    /** Run a body that changes the process-wide limit, then put the limit, the environment and applied() back. */
+    private function withRestoredState(callable $body): void
+    {
+        $original = (string) ini_get('memory_limit');
+        $before = getenv('KNOSSOS_MEMORY_LIMIT');
+        try {
+            $body();
+        } finally {
+            putenv($before === false ? 'KNOSSOS_MEMORY_LIMIT' : 'KNOSSOS_MEMORY_LIMIT=' . $before);
+            @ini_set('memory_limit', $original);
+            MemoryLimit::apply();
+            @ini_set('memory_limit', $original);
+        }
     }
 }

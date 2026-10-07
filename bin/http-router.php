@@ -10,6 +10,10 @@ use Knossos\Runtime\RuntimeFactory;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
+// `php -S` loads this file per request and never runs bin/knossos, so the
+// limit is set here too. Idempotent, and cheap enough for every request.
+\Knossos\Runtime\MemoryLimit::apply();
+
 if (parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) !== '/mcp') {
     http_response_code(404);
     header('Content-Type: application/json');

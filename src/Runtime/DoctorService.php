@@ -56,6 +56,9 @@ final readonly class DoctorService
         $this->check($checks, 'php.memory_limit', static function (): string {
             $limit = MemoryLimit::applied();
             $detail = sprintf('%s (%s)', (string) ini_get('memory_limit'), $limit->source);
+            if ($limit->failure !== null) {
+                throw new \RuntimeException(sprintf('%s; %s', $detail, $limit->failure));
+            }
             if ($limit->rejected !== null) {
                 throw new \RuntimeException(sprintf('%s; %s=%s is not a valid size', $detail, MemoryLimit::ENVIRONMENT_VARIABLE, $limit->rejected));
             }

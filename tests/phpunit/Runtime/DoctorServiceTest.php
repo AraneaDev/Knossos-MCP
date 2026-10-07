@@ -124,7 +124,7 @@ final class DoctorServiceTest extends KnossosTestCase
             $this->assertContains($check['status'], ['ok', 'error', 'skipped']);
         }
 
-        // The 16 checks fired when databasePath is ':memory:' (data.writable
+        // The 17 checks fired when databasePath is ':memory:' (data.writable
         // is conditional and excluded in this mode) — verifies both shape
         // AND the exact set of named checks in a single run() call.
         $names = array_column($result['checks'], 'name');
