@@ -245,10 +245,15 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
 
         $loaded = CachedReads::load($pdo, $ids['project']);
 
-        assertSame(['a.ts' => ['scanner_id' => 'knossos.typescript', 'file_path' => 'a.ts', 'content_hash' => self::hash('a'), 'read_attribution' => true, 'read_group' => 'G']], $loaded->rows);
+        assertSame(['a.ts' => ['scanner_id' => 'knossos.typescript', 'file_path' => 'a.ts', 'content_hash' => self::hash('a'), 'scanner_version' => '1', 'configuration_hash' => 'c', 'read_attribution' => true, 'read_group' => 'G']], $loaded->rows);
         assertSame(['a.ts' => ['b.ts' => null]], $loaded->ownerReads);
         assertSame(['G' => ['tsconfig.json' => self::hash('t')]], $loaded->groupReads);
         assertSame([], CachedReads::load($pdo, 'another-project')->rows);
+        $withoutReads = CachedReads::load($pdo, $ids['project'], false);
+        assertSame($loaded->rows, $withoutReads->rows);
+        assertSame([], $withoutReads->ownerReads);
+        assertSame([], $withoutReads->groupReads);
+        assertSame(["knossos.typescript\0a.ts" => ['owner_key' => 'a.ts'] + $loaded->rows['a.ts']], $loaded->byScannerPath());
     }
 
     /** @param array<string, array{scanner_id: string, file_path: string, content_hash: string, read_attribution: bool, read_group: ?string, reads: array<string, ?string>}> $rows */

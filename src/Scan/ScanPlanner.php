@@ -192,23 +192,18 @@ final readonly class ScanPlanner
         $statement->execute(['id' => $projectId]);
         $existing = $statement->fetch();
         $effectiveMode = $preparation->requestedMode === 'full' || $existing === false || $existing['active_scan_id'] === null ? 'full' : 'incremental';
-        $statement = $this->pdo->prepare(
-            'SELECT owner_key, file_path, content_hash, scanner_id, scanner_version, configuration_hash, read_attribution, read_group '
-            . 'FROM contribution_cache WHERE project_id = :project',
-        );
-        $statement->execute(['project' => $projectId]);
-        $cachedRows = $statement->fetchAll();
-        $cache = [];
-        foreach ($cachedRows as $row) {
-            $cache[$row['scanner_id'] . "\0" . $row['file_path']] = $row;
-        }
+        // One read of the cache metadata serves the partition, the deleted
+        // count and, for an incremental scan, the invalidation below. A full
+        // scan rebuilds every entry, so it leaves the read sets unloaded.
+        $loaded = CachedReads::load($this->pdo, $projectId, $effectiveMode === 'incremental');
+        $cache = $loaded->byScannerPath();
         $current = array_fill_keys(array_map(static fn($file): string => $file->relativePath, $preparation->discovery->files), true);
-        $old = array_fill_keys(array_column($cachedRows, 'file_path'), true);
+        $old = array_fill_keys(array_column($loaded->rows, 'file_path'), true);
 
         $cachedReads = null;
         $invalidated = [];
         if ($effectiveMode === 'incremental') {
-            $cachedReads = CachedReads::load($this->pdo, $projectId);
+            $cachedReads = $loaded;
             $discovered = array_map(static fn($hashed): string => $hashed->contentHash, $preparation->discovery->hashedPaths());
             $root = rtrim($preparation->discovery->rootRealpath, '/');
             $maxFileBytes = $preparation->maxFileBytes;
