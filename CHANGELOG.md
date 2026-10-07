@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.2](https://github.com/AraneaDev/knossos/compare/v0.19.1...v0.19.2) (2026-10-07)
+
+
+### Fixes
+
+* one bad input no longer drops a language ([#151](https://github.com/AraneaDev/knossos/issues/151)) ([dfc7311](https://github.com/AraneaDev/knossos/commit/dfc73117a61e29ec30446ddb1d754e12e27f649f))
+
 ## [0.19.1](https://github.com/AraneaDev/knossos/compare/v0.19.0...v0.19.1) (2026-10-07)
 
 
