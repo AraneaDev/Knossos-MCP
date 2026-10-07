@@ -341,32 +341,50 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             'WHERE bm.project_id = ? ORDER BY bm.node_id, b.id',
         );
         $memberships->execute([$projectId]);
+        // Rows arrive grouped by node: each group becomes that node's set.
         $setIndex = [];
         $current = null;
         $members = [];
-        $flush = static function () use (&$slice, &$setIndex, &$current, &$members): void {
-            if ($current !== null && $members !== [] && isset($slice['index'][$current])) {
-                $key = implode("\0", $members);
-                if (!isset($setIndex[$key])) {
-                    $setIndex[$key] = count($slice['boundary_sets']);
-                    $slice['boundary_sets'][] = $members;
-                }
-                $slice['boundary_set'][$slice['index'][$current]] = $setIndex[$key];
-            }
-            $members = [];
-        };
         while (($row = $memberships->fetch()) !== false) {
-            if ($row['node_id'] !== $current) {
-                $flush();
-                $current = $row['node_id'];
+            $nodeId = (string) $row['node_id'];
+            if ($nodeId !== $current) {
+                if ($current !== null) {
+                    self::assignBoundarySet($slice, $setIndex, $current, $members);
+                }
+                $current = $nodeId;
+                $members = [];
             }
             if (!isset($repositoryWide[(string) $row['id']])) {
                 $members[] = (string) $row['id'];
             }
         }
-        $flush();
+        if ($current !== null) {
+            self::assignBoundarySet($slice, $setIndex, $current, $members);
+        }
 
         return $slice;
+    }
+
+    /**
+     * Gives a node of the slice its boundary set, adding the set when it is the first node to hold it.
+     *
+     * A node outside the slice, or one whose boundaries are all repository-wide, gets none.
+     *
+     * @param array{index: array<string, int>, boundary_set: array<int, int>, boundary_sets: list<list<string>>} $slice
+     * @param array<string, int> $setIndex the sets so far, keyed by their members
+     * @param list<string> $members the node's boundary ids, sorted
+     */
+    private static function assignBoundarySet(array &$slice, array &$setIndex, string $nodeId, array $members): void
+    {
+        if ($members === [] || !isset($slice['index'][$nodeId])) {
+            return;
+        }
+        $key = implode("\0", $members);
+        if (!isset($setIndex[$key])) {
+            $setIndex[$key] = count($slice['boundary_sets']);
+            $slice['boundary_sets'][] = $members;
+        }
+        $slice['boundary_set'][$slice['index'][$nodeId]] = $setIndex[$key];
     }
 
     /**
