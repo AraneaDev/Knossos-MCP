@@ -99,6 +99,10 @@ trait WorkerClients
         $coverageDirectory = getenv('KNOSSOS_PYTHON_COVERAGE_DIR');
         return is_string($coverageDirectory) && $coverageDirectory !== ''
             ? [
+                'python3',
+                '-W',
+                'ignore::SyntaxWarning',
+                '-m',
                 'coverage',
                 'run',
                 '--branch',
