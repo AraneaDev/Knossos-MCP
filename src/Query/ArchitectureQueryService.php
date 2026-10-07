@@ -241,7 +241,7 @@ final readonly class ArchitectureQueryService
         array $edgeKinds = [],
         string $minConfidence = 'possible',
         int $limit = 20,
-        int $maxNodes = 10_000,
+        int $maxNodes = 50_000,
         int $maxEdges = 100_000,
         int $timeoutMs = 1000,
         bool $includeExternal = false,

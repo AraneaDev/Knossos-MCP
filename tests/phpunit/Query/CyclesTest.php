@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query;
 
+use Closure;
 use InvalidArgumentException;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Store\StableId;
@@ -11,6 +12,7 @@ use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Tests\Phpunit\Support\RowCountingStatement;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 final class CyclesTest extends KnossosTestCase
 {
@@ -299,9 +301,63 @@ final class CyclesTest extends KnossosTestCase
      * was read with both endpoints' names and its file path attached. A search
      * that stops early finds nothing, so the answer was "0 cycles" over a graph
      * that has two.
+     *
+     * Run in a process of its own, like the other large-graph tests: what the
+     * graph leaves behind in the heap would otherwise count against the 128 MB
+     * of every test after it.
      */
     #[Group('cycles')]
+    #[RunInSeparateProcess]
     public function testTheDefaultSearchCoversALargeGraphCompletely(): void
+    {
+        [$pdo, $project, $nodes, $node] = $this->largeGraph();
+
+        $result = (new ArchitectureQueryService($pdo))->dependencyCycles($project);
+
+        assertSame(false, $result->truncated);
+        assertSame([], $result->data['bounds']['truncation_reasons']);
+        assertSame([13, 3], array_column($result->data['cycles'], 'size'));
+        assertSame(array_map($node, range(100, 112)), $result->data['cycles'][0]['member_ids']);
+        assertSame(array_map($node, range(5000, 5002)), $result->data['cycles'][1]['member_ids']);
+        assertSame('App\\Synthetic00100', $result->data['cycles'][0]['members'][0]['canonical_name']);
+        assertSame('certain', $result->data['cycles'][1]['minimum_confidence']);
+        // 5000 -> 5001, 5001 -> 5002 and the back edge; nothing else joins two members.
+        assertSame(['edge:5000:0', 'edge:5001:0', 'edge:back:b'], array_column($result->data['cycles'][1]['relationships'], 'id'));
+        assertSame(true, str_starts_with($result->summary, 'Found 2 dependency cycle components.'));
+        // The fixture's own two nodes and their edge are part of the graph too.
+        assertSame($nodes + 2, $result->data['bounds']['nodes_examined']);
+    }
+
+    /**
+     * architecture_health flags cycle participants from its own cycle search,
+     * which it used to run with its 10,000-node cap: on a graph past that size
+     * the search was cut short and no participant was flagged.
+     */
+    #[Group('cycles')]
+    #[RunInSeparateProcess]
+    public function testArchitectureHealthFlagsEveryCycleOfALargeGraph(): void
+    {
+        [$pdo, $project, , $node] = $this->largeGraph();
+
+        $result = (new ArchitectureQueryService($pdo))->architectureHealth($project);
+
+        assertSame(false, $result->data['bounds']['cycle_scan_truncated']);
+        assertSame([], array_values(array_diff($result->data['bounds']['truncation_reasons'], ['result_limit'])));
+        $flagged = array_column(array_filter($result->data['static_hotspots'], static fn(array $hotspot): bool => $hotspot['factors']['cycle_participant']), 'component');
+        $flaggedIds = array_column($flagged, 'id');
+        sort($flaggedIds);
+        assertSame([...array_map($node, range(100, 112)), ...array_map($node, range(5000, 5002))], $flaggedIds);
+    }
+
+    /**
+     * Twelve thousand synthetic symbols and about sixty thousand dependency
+     * edges, two of which close a loop: 100 -> ... -> 112 -> 100 (thirteen
+     * members) and 5000 -> 5001 -> 5002 -> 5000 (three). A third back edge is
+     * an erased type import and closes nothing.
+     *
+     * @return array{PDO, string, int, Closure(int): string} the connection, the project, the node count and the id of node i
+     */
+    private function largeGraph(): array
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $project = $ids['project'];
@@ -342,19 +398,6 @@ final class CyclesTest extends KnossosTestCase
         $pdo->commit();
         $repository->completeScan($project, $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->dependencyCycles($project);
-
-        assertSame(false, $result->truncated);
-        assertSame([], $result->data['bounds']['truncation_reasons']);
-        assertSame([13, 3], array_column($result->data['cycles'], 'size'));
-        assertSame(array_map($node, range(100, 112)), $result->data['cycles'][0]['member_ids']);
-        assertSame(array_map($node, range(5000, 5002)), $result->data['cycles'][1]['member_ids']);
-        assertSame('App\\Synthetic00100', $result->data['cycles'][0]['members'][0]['canonical_name']);
-        assertSame('certain', $result->data['cycles'][1]['minimum_confidence']);
-        // 5000 -> 5001, 5001 -> 5002 and the back edge; nothing else joins two members.
-        assertSame(['edge:5000:0', 'edge:5001:0', 'edge:back:b'], array_column($result->data['cycles'][1]['relationships'], 'id'));
-        assertSame(true, str_starts_with($result->summary, 'Found 2 dependency cycle components.'));
-        // The fixture's own two nodes and their edge are part of the graph too.
-        assertSame($nodes + 2, $result->data['bounds']['nodes_examined']);
+        return [$pdo, $project, $nodes, $node];
     }
 }

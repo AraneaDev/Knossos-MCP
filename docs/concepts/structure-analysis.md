@@ -119,6 +119,9 @@ knossos architecture-health project_... --limit=20 --json
 
 A hub's score is its degree, the number of edges in and out. A hotspot adds
 twice its cross-boundary degree, plus three if it takes part in a cycle.
+The cycle check runs with the same `max_nodes` (default 50,000) and
+`max_edges` as the rest of the call, inside what is left of `timeout_ms`;
+when it is cut short, `bounds.cycle_scan_truncated` says so.
 Hotspots are static structural signals and predict neither change frequency nor defects. For that, read [change review](change-review.md).
 
 The dead-code half of the result is the subtlest thing Knossos reports. It

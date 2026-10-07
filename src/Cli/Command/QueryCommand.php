@@ -288,7 +288,7 @@ final class QueryCommand implements CliCommand
     private function architectureHealth(array $p, array $o, CliCommandContext $c): int
     {
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-health <path|project-id> [options]'), $c);
-        $result = $this->queries($c)->architectureHealth($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 100_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), $c->options->flag($o, 'include-external'), $c->options->flag($o, 'include-tests'), $c->options->single($o, 'candidate-confidence') ?? 'possible', $c->options->integer($o, 'candidate-offset', 0, 0, 100_000), $c->options->integer($o, 'candidate-timeout', 5000, 1, 60_000));
+        $result = $this->queries($c)->architectureHealth($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 50_000, 1, 50_000), $c->options->integer($o, 'max-edges', 100_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), $c->options->flag($o, 'include-external'), $c->options->flag($o, 'include-tests'), $c->options->single($o, 'candidate-confidence') ?? 'possible', $c->options->integer($o, 'candidate-offset', 0, 0, 100_000), $c->options->integer($o, 'candidate-timeout', 5000, 1, 60_000));
         return $this->result($result, $o, $c);
     }
 
