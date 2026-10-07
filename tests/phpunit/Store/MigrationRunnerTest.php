@@ -372,4 +372,73 @@ final class MigrationRunnerTest extends TestCase
 
         $this->assertStringContainsString('Unable to enumerate migration files', $error->getMessage());
     }
+
+    public function testConcurrentRunnersApplyEachMigrationOnce(): void
+    {
+        [, $dir] = $this->freshEnvironment();
+
+        $applied = $this->migrateWhileAnotherProcessMigrates($dir);
+
+        assertSame(['001_create_a', '002_create_b'], $this->appliedVersions(SqliteConnection::open($this->tempSqlite)));
+        assertSame([], $applied);
+    }
+
+    public function testConcurrentRunnersApplyANoTransactionMigrationOnce(): void
+    {
+        [, $dir] = $this->freshEnvironment();
+        file_put_contents(
+            $dir . '/003_rebuild_c.sql',
+            "-- migrate:no-transaction\nPRAGMA foreign_keys = OFF;\nBEGIN;\nCREATE TABLE c (id INTEGER PRIMARY KEY);\n",
+        );
+
+        $applied = $this->migrateWhileAnotherProcessMigrates($dir);
+
+        assertSame(
+            ['001_create_a', '002_create_b', '003_rebuild_c'],
+            $this->appliedVersions(SqliteConnection::open($this->tempSqlite)),
+        );
+        assertSame([], $applied);
+    }
+
+    /**
+     * Migrate on a connection whose first "is this applied" read goes stale: a
+     * second connection completes every migration right after that read, which
+     * is what two processes starting together produce.
+     *
+     * @return list<string> versions the stale connection reports as applied
+     */
+    private function migrateWhileAnotherProcessMigrates(string $dir): array
+    {
+        $other = SqliteConnection::open($this->tempSqlite);
+        $racing = new class ('sqlite:' . $this->tempSqlite, null, null, [
+            \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+            \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
+            \PDO::ATTR_EMULATE_PREPARES => false,
+        ]) extends \PDO {
+            public ?\Closure $afterFirstRead = null;
+
+            public function prepare(string $query, array $options = []): \PDOStatement|false
+            {
+                $statement = parent::prepare($query, $options);
+                if ($this->afterFirstRead !== null && str_contains($query, 'FROM schema_migrations WHERE version')) {
+                    $hook = $this->afterFirstRead;
+                    $this->afterFirstRead = null;
+                    $statement->execute(['version' => '']);
+                    $hook();
+
+                    // The read the runner acts on predates the other process.
+                    return parent::prepare($query . ' AND 0', $options);
+                }
+
+                return $statement;
+            }
+        };
+        $racing->exec('PRAGMA busy_timeout = 5000');
+        $racing->exec('PRAGMA foreign_keys = ON');
+        $racing->afterFirstRead = static function () use ($other, $dir): void {
+            (new MigrationRunner($other, $dir))->migrate();
+        };
+
+        return (new MigrationRunner($racing, $dir))->migrate();
+    }
 }
