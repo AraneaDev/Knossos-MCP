@@ -77,6 +77,11 @@ final class ReadSetInvalidator
             }
             if ($row['read_group'] !== null) {
                 $ownersOfGroup[$row['read_group']][$owner] = true;
+                // A group the store no longer holds leaves nothing to compare
+                // the owner's shared reads against, so it cannot be current.
+                if (!isset($cached->groupReads[$row['read_group']])) {
+                    $changed[$row['file_path']] = true;
+                }
             }
         }
         foreach ($cached->groupReads as $group => $reads) {

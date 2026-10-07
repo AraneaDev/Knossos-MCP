@@ -76,6 +76,27 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
         assertSame(['p', 'q'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered(['p', 'q', 'r']), $probe)));
     }
 
+    /**
+     * A group the owner names but the store no longer holds leaves nothing to
+     * compare its reads against, so the owner cannot be shown to be current.
+     */
+    #[Group('scan')]
+    public function testAnOwnerWhoseReadGroupIsMissingIsInvalidated(): void
+    {
+        $cached = new CachedReads(
+            [
+                'p' => self::row('p', [], group: 'gone'),
+                'q' => self::row('q', [], group: 'G'),
+                'r' => self::row('r', []),
+            ],
+            ['p' => [], 'q' => [], 'r' => []],
+            ['G' => ['tsconfig.json' => self::hash('t')]],
+        );
+        $discovered = self::discovered(['p', 'q', 'r']) + ['tsconfig.json' => self::hash('t')];
+
+        assertSame(['p'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe())));
+    }
+
     #[Group('scan')]
     public function testAnUnattributedScannerIsInvalidatedWholeWhileAnAttributedOneLosesOnlyTheChangedFile(): void
     {
