@@ -568,7 +568,11 @@ export class TypeScriptScanner {
         }
         // No tsconfig includes these files, and the fallback inherits no
         // `types` or `lib`: a missing global or type library is its gap.
+        // Its options are partly made up here rather than read from the
+        // user's config, so an option error that names no file describes
+        // those made-up options, not anything the user can fix.
         if (fallback) {
+            programLevel = [];
             for (const [relative, items] of diagnosticsByFile) {
                 diagnosticsByFile.set(
                     relative,
@@ -5210,6 +5214,9 @@ function fallbackGroups(root, remaining, parsedConfigs, packageDirectories) {
 // not in the one the config describes for its own files.
 const RESOLUTION_OPTIONS = [
     "baseUrl",
+    // A deprecated option inherited above is reported again for the fallback
+    // unless the config's own remedy for that deprecation comes with it.
+    "ignoreDeprecations",
     "paths",
     // Where `paths` resolve from when no `baseUrl` is set: the config's own
     // directory, which TypeScript records here and nowhere else.

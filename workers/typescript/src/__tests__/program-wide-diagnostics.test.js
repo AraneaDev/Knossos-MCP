@@ -179,3 +179,53 @@ describe("a diagnostic that names no file", () => {
         expect(programWide(byPath["src/b.ts"])).toEqual([]);
     });
 });
+
+describe("the fallback program for files outside every tsconfig", () => {
+    const deprecated = {
+        "tsconfig.json": JSON.stringify({
+            compilerOptions: { baseUrl: ".", ignoreDeprecations: "6.0" },
+            include: ["src"],
+        }),
+        "src/a.ts": "export const a = 1;\n",
+        "test/a.test.ts": 'import { a } from "src/a";\nexport const t = a;\n',
+    };
+
+    it("honours the config's ignoreDeprecations along with its baseUrl", () => {
+        const root = fixture(deprecated);
+
+        const byPath = scan(
+            new TypeScriptScanner(),
+            root,
+            ["src/a.ts", "test/a.test.ts"],
+            ["tsconfig.json"],
+        );
+
+        expect(Object.keys(byPath).sort()).toEqual([
+            "src/a.ts",
+            "test/a.test.ts",
+        ]);
+        for (const contribution of Object.values(byPath)) {
+            expect(
+                contribution.diagnostics.map((item) => item.code),
+            ).not.toContain("TS5101");
+        }
+    });
+
+    it("never reports a diagnostic that names no file", () => {
+        const root = fixture(deprecated);
+        // Every program, the fallback included, is handed an option error.
+        hook.getPreEmitDiagnostics = (real, program) => [
+            ...real(program),
+            optionError,
+        ];
+
+        const byPath = scan(
+            new TypeScriptScanner(),
+            root,
+            ["test/a.test.ts"],
+            ["tsconfig.json"],
+        );
+
+        expect(programWide(byPath["test/a.test.ts"])).toEqual([]);
+    });
+});

@@ -40,7 +40,11 @@ No framework module is imported and no bundler or application is started.
   there, so an error that a name or type library is missing (`Cannot find
 name '__dirname'`, the hint to install `@types/node`, a `/// <reference
 types>` that is not installed) is left out. A missing module, a type error
-  and a grammar error are still reported.
+  and a grammar error are still reported. An option error that names no file is
+  not reported for these files: the fallback options are partly made up by the
+  scanner, so the error would not be about your config. The config's
+  `ignoreDeprecations` comes along with its resolution options, so a deprecation
+  you silenced stays silent here too.
 - A module importing `k6` or `k6/*` is a k6 load-test script: it is
   `executable`, and its default export, `setup`, `teardown`, `handleSummary` and
   every function a scenario names as its `exec` are marked `runtime_invoked`,
