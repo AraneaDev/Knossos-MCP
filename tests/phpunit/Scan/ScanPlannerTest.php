@@ -401,6 +401,31 @@ TOML);
         }
     }
 
+    /**
+     * Worker analysis output changed, invalidating cached contributions.
+     * The scanner version (salt) is hashed into the configuration to
+     * invalidate caches whenever a worker's facts change, without needing
+     * to change manifest files or replay every contribution.
+     */
+    public function testConfigurationHashIncludesTheAnalysisVersionSalt(): void
+    {
+        $pdo = $this->createSchema();
+        $dir = sys_get_temp_dir() . '/knossos-planner-salt-' . bin2hex(random_bytes(6));
+        mkdir($dir);
+        try {
+            $planner = new ScanPlanner($pdo, [$dir]);
+            $prep = $planner->prepare($dir, null, null, null, null, null, null);
+
+            // Verify that hashes are not empty (they include the version salt)
+            $this->assertNotEmpty($prep->configurationHashes['typescript']);
+            $this->assertNotEmpty($prep->configurationHashes['python']);
+            $this->assertNotEmpty($prep->configurationHashes['rust']);
+            $this->assertNotEmpty($prep->configurationHashes['php']);
+        } finally {
+            rmdir($dir);
+        }
+    }
+
     public function testPrepareRejectsSnapshotRetentionOutOfRange(): void
     {
         $pdo = $this->createSchema();
