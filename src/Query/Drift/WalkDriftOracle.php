@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query\Drift;
 
+use Knossos\Discovery\FileFingerprint;
 use Knossos\Discovery\ProjectDiscoverer;
 use PDO;
 
@@ -139,7 +140,13 @@ final readonly class WalkDriftOracle implements DriftOracle
             // same tick). Both cases require reading the file, so the mtime
             // buys nothing as a prefilter; it only tells us the file is still
             // there.
-            if (@filemtime($absolute) === false || ($hash = @hash_file('sha256', $absolute)) === false) {
+            //
+            // The bytes are read the way discovery reads them, through the
+            // regular-file opener: a plain read of a tracked path that became
+            // a named pipe blocks until a writer appears, and the probe runs
+            // on every tool result. Anything that is no longer a regular file
+            // reads as gone, which is what a rescan would conclude too.
+            if (@filemtime($absolute) === false || ($hash = FileFingerprint::contentHashOf($absolute)) === null) {
                 ++$deleted;
                 $named = DriftCounts::name($named, (string) $relativePath, 'deleted');
                 continue;

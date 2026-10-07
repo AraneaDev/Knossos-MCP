@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query\Drift;
 
+use Knossos\Discovery\FileFingerprint;
 use Knossos\Git\DirtyPathSet;
 use Knossos\Git\GitProcessRunner;
 use Knossos\Git\GitProcessRunnerInterface;
@@ -311,8 +312,11 @@ final readonly class GitDriftOracle implements DriftOracle
         foreach ($candidates as $path) {
             $absolute = $root . '/' . $path;
             if (array_key_exists($path, $hashes)) {
-                $hash = @hash_file('sha256', $absolute);
-                if ($hash === false) {
+                // Read the way discovery reads: a tracked path that became a
+                // named pipe would block a plain read forever, so anything
+                // that is no longer a regular file counts as gone.
+                $hash = FileFingerprint::contentHashOf($absolute);
+                if ($hash === null) {
                     ++$deleted;
                     $named = DriftCounts::name($named, (string) $path, 'deleted');
                     continue;
