@@ -698,6 +698,38 @@ PYTHON);
     }
 
     /**
+     * Python 3.12+ prints a SyntaxWarning to stderr for every invalid escape the
+     * parser meets; enough of them must not fail the whole Python batch.
+     */
+    #[Group('python-scanner')]
+    public function testManyInvalidEscapeSequencesDoNotDegradeThePythonScan(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o777, true);
+        file_put_contents($root . '/a.py', "import re\n" . str_repeat("re.compile(\"\\d\")\n", 2000));
+        file_put_contents($root . '/b.py', "def f():\n    return 1\n");
+        $database = tempnam(sys_get_temp_dir(), 'knossos-python-');
+        if ($database === false) {
+            throw new RuntimeException('Unable to allocate Python database.');
+        }
+        try {
+            $pdo = SqliteConnection::open($database);
+            (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+            $result = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, 'Escapes');
+            assertSame([], $result->data['degraded_languages']);
+            assertSame(2, $result->data['parsed_files']);
+        } finally {
+            unset($result, $pdo);
+            foreach ([$database, $database . '-shm', $database . '-wal'] as $candidate) {
+                if (is_file($candidate)) {
+                    unlink($candidate);
+                }
+            }
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * A top-level relative import is unrunnable Python but legal to parse. It
      * must cost its own edge and produce a diagnostic, never a reference the
      * graph cannot name.

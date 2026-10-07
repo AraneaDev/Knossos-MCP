@@ -649,3 +649,41 @@ def test_routes_register_through_an_aliased_fastapi_import(scan_collect, project
 
     handler = next(n for n in nodes if n["canonical_name"].endswith("list_items"))
     assert handler["attributes"]["python_framework_roles"] == ["fastapi.route_handler"]
+
+
+def test_invalid_escape_sequences_leave_stderr_empty(worker: ModuleType, tmp_path: Path, scan_collect, capfd) -> None:
+    import warnings
+
+    # Python 3.12+ warns on stderr for each invalid escape the parser meets; a
+    # file full of them must not turn the worker's stderr into noise.
+    (tmp_path / "a.py").write_text("import re\n" + 're.compile("\\d")\n' * 2000, encoding="utf-8")
+    (tmp_path / "b.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        contributions = scan_collect(tmp_path, ["a.py", "b.py"])
+    assert [str(warning.message) for warning in caught] == []
+    assert capfd.readouterr().err == ""
+    assert len(contributions) == 2
+    assert all(contribution["nodes"] for contribution in contributions)
+
+
+def test_directory_name_that_is_not_utf8_does_not_break_output(worker: ModuleType, tmp_path: Path, scan_collect) -> None:
+    import json
+    import os
+
+    try:
+        os.mkdir(os.path.join(os.fsencode(tmp_path), b"caf\xe9"))
+    except OSError:
+        pytest.skip("filesystem rejects non-UTF-8 names")
+    (tmp_path / "m.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    contributions = scan_collect(tmp_path, ["m.py"])
+    assert len(contributions) == 1
+    for contribution in contributions:
+        json.dumps(contribution, ensure_ascii=False).encode("utf-8")
+
+
+def test_frames_stay_ascii_even_for_names_that_are_not_valid_unicode(worker: ModuleType, capsys) -> None:
+    worker.write({"path": "caf\udce9/m.py"})
+    out = capsys.readouterr().out
+    assert out.isascii()
+    assert out.endswith("\n")

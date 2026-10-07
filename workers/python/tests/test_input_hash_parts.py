@@ -11,7 +11,7 @@ HASH = "a" * 64
 
 
 def _size(part: dict[str, str | None]) -> int:
-    return len(json.dumps(part, separators=(",", ":"), ensure_ascii=False).encode())
+    return len(json.dumps(part, separators=(",", ":"), ensure_ascii=True).encode())
 
 
 def test_nothing_read_is_one_empty_part(worker: ModuleType) -> None:

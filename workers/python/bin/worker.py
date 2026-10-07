@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, NamedTuple
@@ -59,9 +60,18 @@ SHEBANG_PROBE_BYTES = 256
 UTF8_BOM = b"\xef\xbb\xbf"
 
 
+# Every frame is ASCII (``\\u`` escapes decode to the same JSON), so a name that
+# is not valid Unicode, or a locale whose stdout cannot encode it, cannot fail the write.
 def write(message: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(message, separators=(",", ":"), ensure_ascii=False) + "\n")
+    sys.stdout.write(json.dumps(message, separators=(",", ":"), ensure_ascii=True) + "\n")
     sys.stdout.flush()
+
+
+def _parse_quietly(source: bytes, **options: Any) -> ast.Module:
+    """Parse ``source``; a SyntaxWarning (an invalid escape) must not reach stderr, where enough of them fail the batch."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return ast.parse(source, **options)
 
 
 def safe_root(value: Any) -> Path:
@@ -374,6 +384,11 @@ class ProjectModuleIndex:
             for child in sorted(self.root.iterdir()):
                 if is_excluded(child.name) or not child.is_dir():
                     continue
+                try:
+                    child.name.encode("utf-8")
+                except UnicodeEncodeError:
+                    # Undecoded bytes in a name cannot be reported in a frame.
+                    continue
                 marker = child / "__init__.py"
                 present = marker.is_file()
                 self._record_probe(walk_path(marker), present)
@@ -513,7 +528,7 @@ class ProjectModuleIndex:
                 # reports the bytes this request saw.
                 self._record_walk(walked, hashlib.sha256(source).hexdigest())
                 try:
-                    tree = ast.parse(source)
+                    tree = _parse_quietly(source)
                 except (SyntaxError, ValueError, RecursionError):
                     tree = None
                 if tree is not None:
@@ -2150,7 +2165,7 @@ def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Ca
     # importer's sake; if the two reads disagree, the entry becomes None.
     index.record_read(relative, content_hash)
     try:
-        tree = ast.parse(source, filename=relative, type_comments=True)
+        tree = _parse_quietly(source, filename=relative, type_comments=True)
     except (SyntaxError, UnicodeDecodeError, ValueError) as error:
         emit(_diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error), content_hash))
         return
@@ -2247,7 +2262,7 @@ def input_hash_parts(input_hashes: dict[str, str | None], part_bytes: int | None
     size = 1
     for relative, content_hash in input_hashes.items():
         # `"path":"<64 hex>",` or `"path":null,`
-        entry = len(json.dumps(relative, ensure_ascii=False).encode()) + (4 if content_hash is None else 66) + 2
+        entry = len(json.dumps(relative, ensure_ascii=True).encode()) + (4 if content_hash is None else 66) + 2
         if part and size + entry > budget:
             parts.append(part)
             part = {}
