@@ -17,13 +17,15 @@ final class AnalysisHash
 {
     private const SKIPPED_DIRECTORIES = ['__tests__', 'tests', 'node_modules'];
 
-    /** @var array<string, string> */
-    private static array $memo = [];
-
     private function __construct() {}
 
     /**
-     * The hash of the named files, memoised for the life of the process.
+     * The hash of the named files as they are now.
+     *
+     * Read afresh on every call rather than remembered for the life of the
+     * process: a long-running server whose worker is updated in place must
+     * see the new files on its next scan. The scan runner asks once per
+     * language per scan, and the files are few.
      *
      * @param list<string> $patterns
      * @throws \InvalidArgumentException when patterns are given without an installation root, since
@@ -34,15 +36,8 @@ final class AnalysisHash
         if ($installationRoot === '' && $patterns !== []) {
             throw new \InvalidArgumentException('An analysis hash needs the installation root its patterns are relative to.');
         }
-        $key = $installationRoot . "\0" . implode("\0", $patterns);
 
-        return self::$memo[$key] ??= self::compute(rtrim($installationRoot, '/'), $patterns);
-    }
-
-    /** Drop the memo, so a test that edits a file sees the edit. */
-    public static function forget(): void
-    {
-        self::$memo = [];
+        return self::compute(rtrim($installationRoot, '/'), $patterns);
     }
 
     /**

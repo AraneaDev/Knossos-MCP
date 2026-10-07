@@ -206,7 +206,8 @@ final class LanguageScanRunnerTest extends TestCase
 
     /**
      * A cached contribution is keyed on the bytes of the worker's own files, so
-     * editing one of them re-analyses what that worker produced.
+     * editing one of them re-analyses what that worker produced, on the next
+     * scan of the same long-running process.
      */
     public function testEditingAWorkerFileInvalidatesItsCachedContributions(): void
     {
@@ -214,7 +215,6 @@ final class LanguageScanRunnerTest extends TestCase
         mkdir($root . '/worker', 0o777, true);
         file_put_contents($root . '/worker/analysis.php', "<?php // one\n");
         try {
-            AnalysisHash::forget();
             $descriptor = new LanguageDescriptor(
                 key: 'php',
                 languages: ['php'],
@@ -233,14 +233,12 @@ final class LanguageScanRunnerTest extends TestCase
             assertSame(1, $reused->unchanged);
 
             file_put_contents($root . '/worker/analysis.php', "<?php // two\n");
-            AnalysisHash::forget();
             $rescanned = $runner->run($plan, new CancellationToken());
 
             assertSame(0, $rescanned->unchanged);
             assertSame(1, $rescanned->changed);
         } finally {
             exec('rm -rf ' . escapeshellarg($root));
-            AnalysisHash::forget();
         }
     }
 
