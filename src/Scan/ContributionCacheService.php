@@ -58,30 +58,15 @@ final readonly class ContributionCacheService
      * marked as coming from the cache, so the writer keeps its stored row.
      *
      * @param list<object> $files
-     * @param array<string, array<string, mixed>> $cache metadata rows keyed by scanner id and path;
-     *        a row may carry `payload_json` itself, which is used when no PDO is given
-     * @param ?string $leftOutConfigurationHash see {@see self::leftOutConfigurationHash()}; a row
-     *        stored under it is reused too, and counted as left out
-     * @param string $analysisHash see {@see AnalysisHash}
-     * @param array<string, true> $invalidatedOwners owners a change reached ({@see ReadSetInvalidator}), counted as changed
-     * @param ?PDO $pdo where the reused rows' payloads are read from, with `$projectId`
-     * @param ?CachedReads $cachedReads the stored reads a reused entry carries over
      */
     public function partition(
         array $files,
         ScannerManifest $manifest,
-        string $configurationHash,
-        array $cache,
-        bool $force,
-        string $analysisHash,
+        PartitionContext $context,
         ?CancellationToken $cancellation = null,
-        ?string $leftOutConfigurationHash = null,
-        array $invalidatedOwners = [],
-        ?PDO $pdo = null,
-        ?string $projectId = null,
-        ?CachedReads $cachedReads = null,
     ): ContributionPartition {
-        $cacheVersion = self::cacheVersion($manifest, $analysisHash);
+        $cacheVersion = self::cacheVersion($manifest, $context->analysisHash);
+        $leftOutConfigurationHash = $context->leftOutConfigurationHash;
         /** @var list<array{file: object, row: ?array<string, mixed>, owner: string, valid: bool}> $decisions */
         $decisions = [];
         $reusedRows = [];
@@ -93,20 +78,20 @@ final readonly class ContributionCacheService
                 $sinceLastPoll = 0;
                 $cancellation->throwIfCancelled();
             }
-            $row = $cache[$manifest->id . "\0" . $file->relativePath] ?? null;
+            $row = $context->cache[$manifest->id . "\0" . $file->relativePath] ?? null;
             $owner = (string) ($row['owner_key'] ?? $manifest->id . ':file:' . $file->relativePath);
-            $valid = !$force && $row !== null
-                && !isset($invalidatedOwners[$owner])
+            $valid = !$context->force && $row !== null
+                && !isset($context->invalidatedOwners[$owner])
                 && $row['content_hash'] === $file->contentHash
                 && $row['scanner_version'] === $cacheVersion
-                && ($row['configuration_hash'] === $configurationHash
+                && ($row['configuration_hash'] === $context->configurationHash
                     || ($leftOutConfigurationHash !== null && $row['configuration_hash'] === $leftOutConfigurationHash));
             if ($valid) {
                 $reusedRows[$owner] = $row;
             }
             $decisions[] = ['file' => $file, 'row' => $row, 'owner' => $owner, 'valid' => $valid];
         }
-        $reused = self::reusedContributions($reusedRows, $pdo, $projectId);
+        $reused = self::reusedContributions($reusedRows, $context->pdo, $context->projectId);
 
         $cached = [];
         $entries = [];
@@ -116,7 +101,7 @@ final readonly class ContributionCacheService
         $leftOutPaths = [];
         foreach ($decisions as ['file' => $file, 'row' => $row, 'owner' => $owner, 'valid' => $valid]) {
             $contribution = $valid ? ($reused[$owner] ?? null) : null;
-            $entry = $contribution === null || $row === null ? null : $this->reusedEntry($file, $manifest, $row, $contribution, $cachedReads);
+            $entry = $contribution === null || $row === null ? null : $this->reusedEntry($file, $manifest, $row, $contribution, $context->cachedReads);
             if ($contribution !== null && $entry !== null && $row !== null) {
                 $cached[] = $contribution;
                 $entries[] = $entry;

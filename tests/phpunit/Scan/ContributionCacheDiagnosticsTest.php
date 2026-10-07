@@ -7,6 +7,7 @@ namespace Knossos\Tests\Phpunit\Scan;
 use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ContributionCacheService;
+use Knossos\Scan\PartitionContext;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\Evidence;
@@ -36,10 +37,10 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
         $cancelled = new CancellationToken();
         $cancelled->cancel();
 
-        (new ContributionCacheService())->partition(self::files(255), self::manifest(), 'cfg', [], false, 'analysis', $cancelled);
+        (new ContributionCacheService())->partition(self::files(255), self::manifest(), new PartitionContext('cfg', [], false, 'analysis'), $cancelled);
 
         assertThrows(
-            static fn() => (new ContributionCacheService())->partition(self::files(256), self::manifest(), 'cfg', [], false, 'analysis', $cancelled),
+            static fn() => (new ContributionCacheService())->partition(self::files(256), self::manifest(), new PartitionContext('cfg', [], false, 'analysis'), $cancelled),
             ScanCancelledException::class,
         );
     }
@@ -134,11 +135,11 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
             return false;
         });
 
-        (new ContributionCacheService())->partition(self::files(767), self::manifest(), 'cfg', [], false, 'analysis', $counting);
+        (new ContributionCacheService())->partition(self::files(767), self::manifest(), new PartitionContext('cfg', [], false, 'analysis'), $counting);
         assertSame(2, $polls);
 
         $polls = 0;
-        (new ContributionCacheService())->partition(self::files(768), self::manifest(), 'cfg', [], false, 'analysis', $counting);
+        (new ContributionCacheService())->partition(self::files(768), self::manifest(), new PartitionContext('cfg', [], false, 'analysis'), $counting);
         assertSame(3, $polls);
     }
 

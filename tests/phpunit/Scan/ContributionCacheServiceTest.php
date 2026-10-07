@@ -9,6 +9,7 @@ use Knossos\Scan\CachedReads;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\ContributionPartition;
+use Knossos\Scan\PartitionContext;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Protocol\{Confidence, Evidence, NodeFact, Origin};
@@ -122,7 +123,7 @@ final class ContributionCacheServiceTest extends TestCase
         $token->cancel();
 
         $this->expectException(ScanCancelledException::class);
-        $service->partition($files, $manifest, 'cfg', [], false, 'analysis', $token);
+        $service->partition($files, $manifest, new PartitionContext('cfg', [], false, 'analysis'), $token);
     }
 
     public function testPartitionWithoutTokenReturnsPartition(): void
@@ -133,7 +134,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file->relativePath = 'src/Only.php';
         $file->contentHash = 'abc';
 
-        $partition = $service->partition([$file], $manifest, 'cfg', [], false, 'analysis');
+        $partition = $service->partition([$file], $manifest, new PartitionContext('cfg', [], false, 'analysis'));
 
         assertSame(true, $partition instanceof ContributionPartition);
         assertSame(1, $partition->added);
@@ -156,7 +157,7 @@ final class ContributionCacheServiceTest extends TestCase
             ],
         ];
 
-        $partition = $service->partition([$file], $manifest, 'cfg', $cache, false, 'analysis');
+        $partition = $service->partition([$file], $manifest, new PartitionContext('cfg', $cache, false, 'analysis'));
 
         assertSame(0, count($partition->cached));
         assertSame([$file], $partition->filesToScan);
@@ -206,7 +207,7 @@ final class ContributionCacheServiceTest extends TestCase
 
         // SQLite also evaluates the column while inserting; only reads count.
         $payloadsRead = [];
-        $partition = $service->partition($files, $manifest, 'cfg', $cache, false, 'analysis', null, null, ['knossos.php:file:B.php' => true], $pdo, 'project', $cachedReads);
+        $partition = $service->partition($files, $manifest, new PartitionContext('cfg', $cache, false, 'analysis', null, ['knossos.php:file:B.php' => true], $pdo, 'project', $cachedReads));
 
         assertSame(['knossos.php:file:A.php'], array_map(static fn(ScanContribution $contribution): string => $contribution->ownerKey, $partition->cached));
         assertSame(true, $partition->cacheEntries[0]->fromCache);

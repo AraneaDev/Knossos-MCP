@@ -171,22 +171,19 @@ final readonly class LanguageScanRunner
         // The key follows the worker's own files, so editing one invalidates
         // what it produced without a number to bump.
         $analysisHash = AnalysisHash::of($this->installationRoot, $descriptor->analysisInputs);
-        $partition = $this->cache->partition(
-            $files,
-            $manifest,
+        $partition = $this->cache->partition($files, $manifest, new PartitionContext(
             $plan->preparation->configurationHashes[$descriptor->key],
             $plan->cacheByScannerPath,
             // Only a full scan forces everything. An incremental one rescans
             // the owners a change reached, which the plan already named.
             $plan->effectiveMode === 'full',
             $analysisHash,
-            $cancellation,
             $leftOutHash,
             $plan->invalidatedOwners,
             $this->pdo,
             $plan->projectId,
             $plan->cachedReads,
-        );
+        ), $cancellation);
         $request = self::scanRequest($descriptor, $plan, $files);
         // One request per batch: ScannerProtocolSession::scan() calls
         // beginRequest() per invocation, which resets both the cumulative
