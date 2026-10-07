@@ -108,14 +108,14 @@ final class MemoryLimitTest extends KnossosTestCase
     public function testBinKnossosAppliesTheLimit(): void
     {
         $binary = self::repositoryRoot() . '/bin/knossos';
-        $default = $this->doctorMemoryCheck(['php', '-d', 'memory_limit=128M', $binary, 'doctor', '--json'], null);
+        $default = $this->doctorMemoryCheck([PHP_BINARY, '-d', 'memory_limit=128M', $binary, 'doctor', '--json'], null);
         self::assertSame('ok', $default['status']);
         self::assertSame('1G (default)', $default['detail']);
 
-        $explicit = $this->doctorMemoryCheck(['php', '-d', 'memory_limit=128M', $binary, 'doctor', '--json'], '768M');
+        $explicit = $this->doctorMemoryCheck([PHP_BINARY, '-d', 'memory_limit=128M', $binary, 'doctor', '--json'], '768M');
         self::assertSame('768M (KNOSSOS_MEMORY_LIMIT)', $explicit['detail']);
 
-        $invalid = $this->doctorMemoryCheck(['php', '-d', 'memory_limit=128M', $binary, 'doctor', '--json'], 'lots');
+        $invalid = $this->doctorMemoryCheck([PHP_BINARY, '-d', 'memory_limit=128M', $binary, 'doctor', '--json'], 'lots');
         self::assertSame('error', $invalid['status']);
         self::assertStringContainsString('1G (default); KNOSSOS_MEMORY_LIMIT=lots is not a valid size', $invalid['detail']);
     }
