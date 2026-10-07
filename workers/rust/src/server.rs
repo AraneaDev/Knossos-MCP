@@ -432,6 +432,9 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
 /// Parsing, walking and dropping a syntax tree recurse once per level, and
 /// running out of stack aborts the process instead of unwinding, so a file
 /// nested far past real code would take every other file of the scan with it.
+/// The pre-scan counts `(`, `[` and `{` only. Other recursion (generic angle
+/// brackets, unary chains, long `else if` chains) is covered by the 64 MB
+/// worker stack, not by the pre-scan.
 const MAX_NESTING: usize = 256;
 
 /// The depth of `(`, `[` and `{` nesting in `source` once it passes `limit`,
@@ -926,5 +929,68 @@ mod tests {
 
         assert_eq!(b"01234".to_vec(), over);
         assert_eq!(b"0123456789".to_vec(), at);
+    }
+}
+
+#[cfg(test)]
+mod nesting_tests {
+    use super::nesting_beyond;
+
+    /// Nesting limit low enough to write each case by hand.
+    const LIMIT: usize = 3;
+
+    #[test]
+    fn the_limit_itself_passes_and_one_past_it_trips() {
+        assert_eq!(None, nesting_beyond("(((x)))", LIMIT));
+        assert_eq!(Some(4), nesting_beyond("((((x))))", LIMIT));
+        assert_eq!(Some(4), nesting_beyond("{[({x})]}", LIMIT));
+    }
+
+    #[test]
+    fn a_lifetime_is_not_a_character_literal() {
+        assert_eq!(None, nesting_beyond("fn f<'a>(x:&'a str){((x))}", LIMIT));
+        assert_eq!(Some(4), nesting_beyond("fn f<'a>(((( x))))", LIMIT));
+    }
+
+    #[test]
+    fn character_literals_hide_their_delimiters() {
+        let source = "fn f(){ let a='{'; let b='\\''; let c='\"'; ((x)) }";
+        assert_eq!(None, nesting_beyond(source, LIMIT));
+        assert_eq!(Some(4), nesting_beyond("{ let a='x'; ((((x)))) }", LIMIT));
+    }
+
+    #[test]
+    fn string_literals_hide_their_delimiters() {
+        assert_eq!(None, nesting_beyond("{ let s = \"\\\"((((\"; (x) }", LIMIT));
+        assert_eq!(Some(4), nesting_beyond("{ let s = \"a\"; (((x))) }", LIMIT));
+    }
+
+    #[test]
+    fn raw_strings_hide_their_delimiters() {
+        assert_eq!(None, nesting_beyond("{ r#\"((\"((\"#; (x) }", LIMIT));
+        assert_eq!(None, nesting_beyond("{ br\"((((\"; (x) }", LIMIT));
+        assert_eq!(Some(4), nesting_beyond("{ r#\"a\"#; (((x))) }", LIMIT));
+    }
+
+    #[test]
+    fn an_identifier_r_does_not_open_a_raw_string() {
+        assert_eq!(
+            Some(4),
+            nesting_beyond("{ let r = 1; let var = r; (((x))) }", LIMIT)
+        );
+    }
+
+    #[test]
+    fn comments_hide_their_delimiters_and_block_comments_nest() {
+        assert_eq!(None, nesting_beyond("{ // ((((\n (x) }", LIMIT));
+        assert_eq!(None, nesting_beyond("{ /* ((((( */ (x) }", LIMIT));
+        assert_eq!(None, nesting_beyond("{ /* /* ((( */ ((( */ (x) }", LIMIT));
+        assert_eq!(Some(4), nesting_beyond("/* a */ ((((x))))", LIMIT));
+    }
+
+    #[test]
+    fn unbalanced_closers_do_not_go_below_zero() {
+        assert_eq!(None, nesting_beyond("))))))(((x)))", LIMIT));
+        assert_eq!(None, nesting_beyond("}}}}{((x))", LIMIT));
     }
 }

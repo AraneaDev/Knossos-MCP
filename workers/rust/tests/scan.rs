@@ -1518,6 +1518,27 @@ fn a_deeply_nested_file_is_a_diagnostic_and_costs_only_itself() {
 }
 
 #[test]
+fn nesting_of_exactly_the_limit_still_parses() {
+    // One block plus 255 parentheses is 256 levels.
+    let source = format!(
+        "fn f() {{ let x = {}1{}; }}",
+        "(".repeat(255),
+        ")".repeat(255)
+    );
+    let contributions = scan_fixture("exactly-deep", &[("src/edge.rs", &source)]);
+
+    assert!(contributions[0]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(contributions[0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["kind"] == "function"));
+}
+
+#[test]
 fn a_missing_file_is_a_diagnostic_not_a_failed_request() {
     let contributions = scan_fixture("missing", &[("src/present.rs", "pub fn here() {}\n")]);
     assert_eq!(1, contributions.len());
