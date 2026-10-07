@@ -38,13 +38,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      # Opens/updates the Release PR from Conventional Commits. On merge of that
-      # PR, creates a DRAFT GitHub Release and sets release_created=true. A draft
-      # has no tag yet, so a failing gate below leaves nothing published.
-      - name: Run release-please
+      # On merge of a Release PR, creates a DRAFT GitHub Release and sets
+      # release_created=true. A draft has no tag yet, so a failing gate below
+      # leaves nothing published. Opening the next Release PR is a separate
+      # call at the end of the job: in the same call it would run before this
+      # draft is tagged, miss the previous release, and write a changelog over
+      # the whole history.
+      - name: Run release-please (releases)
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         with:
+          skip-github-pull-request: true
           # A Release PR opened with the built-in GITHUB_TOKEN arrives with no checks
           # on it, because GitHub does not start workflows for that token, and main
           # requires those checks. RELEASE_PLEASE_TOKEN raises the event as a real
@@ -128,3 +132,14 @@ jobs:
           fi
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR/labels/autorelease:%20tagged"
           gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f 'labels[]=autorelease: pending'
+
+      # Opens or updates the next Release PR. It runs after the release is
+      # settled: after a publish the new tag exists to diff against, and after
+      # a rollback the step above has made the merged PR pending again, so this
+      # pass leaves it alone and the next run releases it.
+      - name: Run release-please (pull requests)
+        if: ${{ !cancelled() }}
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
+        with:
+          skip-github-release: true
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
