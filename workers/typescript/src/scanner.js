@@ -3804,7 +3804,7 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
     for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
         if (!diagnostic.file) {
             // An option or configuration error names no file; it applies to
-            // every file of the program, so each requested one carries it.
+            // the whole program and is reported once, on the program's carrier.
             const message =
                 ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n") +
                 " (applies to the whole program)";
