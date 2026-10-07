@@ -235,23 +235,28 @@ describe("a program that fails for a reason other than the stack", () => {
         expect(codes(byPath["other/ok.ts"])).toEqual(["TS_PROGRAM_TOO_DEEP"]);
     });
 
-    it("attaches a diagnostic that names no file to every requested file", () => {
-        const root = fixture(files);
+    it("reports a diagnostic that names no file once, on the first requested file", () => {
+        const root = fixture({
+            ...files,
+            "tsconfig.json": JSON.stringify({ include: ["deep", "other"] }),
+        });
+        const optionError = {
+            file: undefined,
+            start: undefined,
+            length: undefined,
+            category: 2,
+            code: 5023,
+            messageText: "Unknown compiler option.",
+        };
         hook.getPreEmitDiagnostics = (real, program) => [
             ...real(program),
-            {
-                file: undefined,
-                start: undefined,
-                length: undefined,
-                category: 2,
-                code: 5023,
-                messageText: "Unknown compiler option.",
-            },
+            optionError,
+            optionError,
         ];
 
         const { byPath } = scan(
             root,
-            ["deep/a.ts", "other/ok.ts"],
+            ["other/ok.ts", "deep/a.ts"],
             ["tsconfig.json"],
         );
 
@@ -259,11 +264,12 @@ describe("a program that fails for a reason other than the stack", () => {
             {
                 severity: "warning",
                 code: "TS5023",
-                message: "Unknown compiler option.",
+                message:
+                    "Unknown compiler option. (applies to the whole program)",
                 evidence: { path: "deep/a.ts", start_line: 1, end_line: 1 },
             },
         ]);
-        expect(codes(byPath["other/ok.ts"])).toEqual(["TS5023"]);
+        expect(codes(byPath["other/ok.ts"])).toEqual([]);
     });
 });
 

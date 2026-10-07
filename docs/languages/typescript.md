@@ -162,3 +162,13 @@ Dynamic route segments stay in their source spelling, dynamic request URLs are
 omitted, and framework roles never override a language symbol kind. A NestJS
 route whose decorator argument is not a literal gets an empty segment rather
 than a guessed one.
+
+## Compiler diagnostics
+
+Compiler errors that name a file are attached to that file. An option error that
+names no file, such as a deprecated `moduleResolution` value, appears once per
+program, on its first requested file, and its message says it applies to the
+whole program. If a deprecation is not worth acting on yet, you can silence it
+with `"ignoreDeprecations"` in your `tsconfig.json`. A program the compiler
+cannot build or check at all reports `TS_PROGRAM_FAILED` for its files and costs
+no other program's facts.

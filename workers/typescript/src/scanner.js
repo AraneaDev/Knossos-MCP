@@ -579,19 +579,26 @@ export class TypeScriptScanner {
             }
         }
 
+        const skipped = (relative) =>
+            relative === null ||
+            belowNodeModules(relative) ||
+            !requestedSet.has(relative) ||
+            emitted.has(relative) ||
+            // Another config includes this file itself; its program
+            // describes it under the options the project really uses.
+            (owners.has(relative) && owners.get(relative) !== owner);
+        // A diagnostic that names no file describes the whole program, so it
+        // is reported once, on the first requested file in path order, rather
+        // than once per file.
+        const carrier = program
+            .getSourceFiles()
+            .map((sourceFile) => relativeInside(root, sourceFile.fileName))
+            .filter((relative) => !skipped(relative))
+            .sort()[0];
+
         for (const sourceFile of program.getSourceFiles()) {
             const relative = relativeInside(root, sourceFile.fileName);
-            if (
-                relative === null ||
-                belowNodeModules(relative) ||
-                !requestedSet.has(relative) ||
-                emitted.has(relative) ||
-                // Another config includes this file itself; its program
-                // describes it under the options the project really uses.
-                (owners.has(relative) && owners.get(relative) !== owner)
-            ) {
-                continue;
-            }
+            if (skipped(relative)) continue;
 
             const redirect = sourceFile.redirectInfo;
             if (redirect !== undefined && !redirectReadsAgree(redirect)) {
@@ -623,14 +630,16 @@ export class TypeScriptScanner {
                     edges: collector.edges,
                     diagnostics: [
                         ...(diagnosticsByFile.get(relative) ?? []),
-                        ...programLevel.map((item) => ({
-                            ...item,
-                            evidence: {
-                                path: relative,
-                                start_line: 1,
-                                end_line: 1,
-                            },
-                        })),
+                        ...(relative === carrier ? programLevel : []).map(
+                            (item) => ({
+                                ...item,
+                                evidence: {
+                                    path: relative,
+                                    start_line: 1,
+                                    end_line: 1,
+                                },
+                            }),
+                        ),
                     ],
                 };
             } catch (error) {
@@ -3738,16 +3747,23 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
         if (!diagnostic.file) {
             // An option or configuration error names no file; it applies to
             // every file of the program, so each requested one carries it.
+            const message =
+                ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n") +
+                " (applies to the whole program)";
+            const code = `TS${diagnostic.code}`;
+            if (
+                programLevel.some(
+                    (item) => item.code === code && item.message === message,
+                )
+            )
+                continue;
             programLevel.push({
                 severity:
                     diagnostic.category === ts.DiagnosticCategory.Error
                         ? "error"
                         : "warning",
-                code: `TS${diagnostic.code}`,
-                message: ts.flattenDiagnosticMessageText(
-                    diagnostic.messageText,
-                    "\n",
-                ),
+                code,
+                message,
             });
             continue;
         }
