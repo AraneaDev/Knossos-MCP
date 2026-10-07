@@ -50,6 +50,22 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
         }
     }
 
+    /** Discovery skips a name it cannot carry, so the oracle must not report it as drift that no rescan can repair. */
+    #[Group('query')]
+    public function testAnUnsupportedPathNameIsNotDrift(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            file_put_contents($root . "/src/x\xff.php", "<?php\n");
+            file_put_contents($root . "/src/a\nb.php", "<?php\n");
+            touch($root . '/src', time() + 60);
+
+            self::assertSame(0, self::drift($pdo, $projectId, $root)->added);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /** The oracle must honour a project's own configured ignores, not only IgnoreMatcher's built-in defaults. */
     #[Group('query')]
     public function testAProjectIgnoreIsHonoured(): void
@@ -112,6 +128,36 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
             (new WalkDriftOracle($pdo, $predicate))->drift($projectId, $this->activeScanId($pdo, $projectId), $root, $this->finishedAt($pdo, $projectId));
 
             self::assertSame(500, $predicate->calls, 'The walk must stop at its budget, not enumerate all 701 entries.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The per-directory budget bounds how many entries are read, and a name
+     * discovery cannot carry is still an entry that had to be read. Skipping
+     * such names before counting them let a directory full of them be
+     * enumerated in full. With as many unsupported names as trackable ones
+     * in one directory, the budget is spent on both, so fewer than 500
+     * trackable entries can be asked about.
+     */
+    #[Group('query')]
+    public function testUnsupportedNamesCountTowardThePerDirectoryBound(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            for ($index = 0; $index < 600; ++$index) {
+                file_put_contents($root . '/src/noise' . $index . '.log', 'x');
+            }
+            for ($index = 0; $index < 600; ++$index) {
+                file_put_contents($root . "/src/bad\n" . $index . '.log', 'x');
+            }
+            touch($root . '/src', time() + 60);
+            $predicate = $this->countingPredicate();
+
+            (new WalkDriftOracle($pdo, $predicate))->drift($projectId, $this->activeScanId($pdo, $projectId), $root, $this->finishedAt($pdo, $projectId));
+
+            self::assertLessThan(500, $predicate->calls, 'Unsupported names must use up the budget too, not ride past it for free.');
         } finally {
             $this->removeTempTree($root);
         }

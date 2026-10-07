@@ -59,8 +59,10 @@ SHEBANG_PROBE_BYTES = 256
 UTF8_BOM = b"\xef\xbb\xbf"
 
 
+# Every frame is ASCII (``\\u`` escapes decode to the same JSON), so a name that
+# is not valid Unicode, or a locale whose stdout cannot encode it, cannot fail the write.
 def write(message: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(message, separators=(",", ":"), ensure_ascii=False) + "\n")
+    sys.stdout.write(json.dumps(message, separators=(",", ":"), ensure_ascii=True) + "\n")
     sys.stdout.flush()
 
 
@@ -373,6 +375,15 @@ class ProjectModuleIndex:
         try:
             for child in sorted(self.root.iterdir()):
                 if is_excluded(child.name) or not child.is_dir():
+                    continue
+                try:
+                    child.name.encode("utf-8")
+                except UnicodeEncodeError:
+                    # Keeps input_hashes keys valid UTF-8 for the PHP side.
+                    continue
+                if any(ord(c) < 32 or ord(c) == 127 for c in child.name):
+                    # Discovery cannot name a path with a control character,
+                    # so a probe below it would be a read of no known file.
                     continue
                 marker = child / "__init__.py"
                 present = marker.is_file()
@@ -2243,11 +2254,11 @@ def input_hash_parts(input_hashes: dict[str, str | None], part_bytes: int | None
     budget = INPUT_HASHES_PART_BYTES if part_bytes is None else part_bytes
     parts: list[dict[str, str | None]] = []
     part: dict[str, str | None] = {}
-    # The serialized part: its braces, less the comma its last entry lacks.
+    # The serialized part, measured in its ASCII-escaped wire form: its braces, less the comma its last entry lacks.
     size = 1
     for relative, content_hash in input_hashes.items():
         # `"path":"<64 hex>",` or `"path":null,`
-        entry = len(json.dumps(relative, ensure_ascii=False).encode()) + (4 if content_hash is None else 66) + 2
+        entry = len(json.dumps(relative, ensure_ascii=True).encode()) + (4 if content_hash is None else 66) + 2
         if part and size + entry > budget:
             parts.append(part)
             part = {}

@@ -218,7 +218,7 @@ final readonly class LanguageScanRunner
             // boundary instead of running the language to completion.
             $cancellation->throwIfCancelled();
         }
-        self::assertNotEveryFileLeftOut(count($files), count($partition->leftOutPaths) + count($leftOut->paths()));
+        self::assertNotEveryFileLeftOut(count($partition->filesToScan), count($leftOut->paths()));
         $recorded = $this->cache->entriesForScanned(
             $scanned,
             array_values(array_filter(
@@ -351,15 +351,20 @@ final readonly class LanguageScanRunner
     }
 
     /**
-     * Fail a language whose every file (two or more) was left out.
+     * Fail a language whose every file (two or more) sent in this scan was
+     * left out.
+     *
+     * Files reused from the cache as left out are not counted: they were not
+     * sent, so they say nothing about the limits of this scan, and counting
+     * them failed the language again on every rescan with no worker call.
      *
      * That is not that many oversized files: it is a limit set too low or a
      * broken worker, and a language with no facts at all must read as failed
      * rather than as a quiet success.
      */
-    private static function assertNotEveryFileLeftOut(int $files, int $leftOut): void
+    private static function assertNotEveryFileLeftOut(int $sent, int $leftOut): void
     {
-        if ($files < 2 || $leftOut !== $files) {
+        if ($sent < 2 || $leftOut !== $sent) {
             return;
         }
 
@@ -367,7 +372,7 @@ final readonly class LanguageScanRunner
             'Every one of the %1$d files was left out because its own answer outgrew a size limit. That points to '
             . 'a limit set too low or a broken worker rather than %1$d oversized files, so the language is reported '
             . 'as failed.',
-            $files,
+            $sent,
         ));
     }
 

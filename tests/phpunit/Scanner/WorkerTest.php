@@ -162,8 +162,9 @@ final class WorkerTest extends KnossosTestCase
         assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
 
         $stderr = $this->fakeWorkerClient('stderr_flood', new WorkerLimits(maxStderrBytes: 100));
-        $error = captureThrows(fn() => iterator_to_array($stderr->scan([])), WorkerException::class);
-        assertSame('WORKER_STDERR_LIMIT', $error->diagnosticCode);
+        // A noisy worker that answers correctly is not a failure.
+        $contributions = iterator_to_array($stderr->scan([]));
+        assertSame('worker:file:src/Checkout.ts', $contributions[0]->ownerKey);
 
         $output = $this->fakeWorkerClient('output_flood', new WorkerLimits(maxLineBytes: 1024, maxOutputBytes: 2048));
         $error = captureThrows(fn() => iterator_to_array($output->scan([])), WorkerException::class);

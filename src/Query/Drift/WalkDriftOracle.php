@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Query\Drift;
 
+use Knossos\Discovery\FileFingerprint;
+use Knossos\Discovery\ProjectDiscoverer;
 use PDO;
 
 /**
@@ -138,7 +140,11 @@ final readonly class WalkDriftOracle implements DriftOracle
             // same tick). Both cases require reading the file, so the mtime
             // buys nothing as a prefilter; it only tells us the file is still
             // there.
-            if (@filemtime($absolute) === false || ($hash = @hash_file('sha256', $absolute)) === false) {
+            //
+            // Not a plain hash_file(): a tracked path that became a named pipe
+            // would block it until a writer appears, and this runs on every
+            // tool result. A path that is no longer a regular file reads as gone.
+            if (@filemtime($absolute) === false || ($hash = FileFingerprint::probeHashOf($absolute)) === null) {
                 ++$deleted;
                 $named = DriftCounts::name($named, (string) $relativePath, 'deleted');
                 continue;
@@ -245,15 +251,22 @@ final readonly class WalkDriftOracle implements DriftOracle
                     if ($entry === '.' || $entry === '..' || isset($tracked[$entry])) {
                         continue;
                     }
-                    $absolute = $directory . '/' . $entry;
-                    $relative = ltrim(substr($absolute, strlen($root)), '/');
                     // Counted before the question is asked, not after it is
-                    // answered. Asking is the expensive half — a stat, and for
-                    // an extensionless file a read of its first line — so a
+                    // answered. Asking is the expensive half: a stat, and for
+                    // an extensionless file a read of its first line. A
                     // budget that only counted the entries that passed left a
                     // directory of a hundred thousand log files enumerated in
                     // full, which is precisely what the budget exists to stop.
+                    // An unsupported name is counted too, since reading it
+                    // already cost a directory entry.
                     ++$examined;
+                    $absolute = $directory . '/' . $entry;
+                    $relative = ltrim(substr($absolute, strlen($root)), '/');
+                    // Discovery skips a name it cannot carry, and naming one
+                    // here would put raw bytes into a JSON result.
+                    if (!ProjectDiscoverer::isSupportedPath($relative)) {
+                        continue;
+                    }
                     if (!$scanned->tracks($relative, $absolute)) {
                         continue;
                     }

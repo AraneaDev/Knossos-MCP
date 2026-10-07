@@ -132,7 +132,7 @@ final class TypescriptWorkerEdgeCasesTest extends KnossosTestCase
             "import { deepValue } from \"./linkback\";\nexport const usesLink = deepValue;\n",
         );
         file_put_contents($this->root . '/tsconfig.json', json_encode([
-            'compilerOptions' => ['module' => 'CommonJS', 'moduleResolution' => 'node'],
+            'compilerOptions' => ['module' => 'CommonJS', 'moduleResolution' => 'node', 'ignoreDeprecations' => '6.0'],
             'include' => ['src'],
         ]));
 
@@ -187,7 +187,7 @@ final class TypescriptWorkerEdgeCasesTest extends KnossosTestCase
         // id before the top-level import resolves the second, redirected
         // copy.
         file_put_contents($this->root . '/tsconfig.json', json_encode([
-            'compilerOptions' => ['module' => 'CommonJS', 'moduleResolution' => 'node', 'allowJs' => true],
+            'compilerOptions' => ['module' => 'CommonJS', 'moduleResolution' => 'node', 'ignoreDeprecations' => '6.0', 'allowJs' => true],
             'files' => ['vendor/importFirst.ts', 'importSecond.ts'],
         ]));
 

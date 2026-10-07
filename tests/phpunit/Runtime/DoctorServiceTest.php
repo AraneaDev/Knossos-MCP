@@ -130,7 +130,7 @@ final class DoctorServiceTest extends KnossosTestCase
         $names = array_column($result['checks'], 'name');
         $expected = [
             'php.version',
-            'php.extension.json', 'php.extension.pdo', 'php.extension.pdo_sqlite',
+            'php.extension.json', 'php.extension.mbstring', 'php.extension.pdo', 'php.extension.pdo_sqlite',
             'node.version', 'git.version', 'python.version',
             'sqlite.integrity', 'sqlite.foreign_keys', 'sqlite.migrations',
             'worker.php', 'worker.typescript', 'worker.python', 'worker.rust',
@@ -139,7 +139,7 @@ final class DoctorServiceTest extends KnossosTestCase
         foreach ($expected as $name) {
             $this->assertContains($name, $names, "missing check: {$name}");
         }
-        assertSame(15, count($names));
+        assertSame(16, count($names));
     }
 
     /** The doctor says which file opener this host uses, so a slow helper-per-file scan is visible. */

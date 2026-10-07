@@ -53,7 +53,7 @@ final readonly class DoctorService
     {
         $checks = [];
         $this->check($checks, 'php.version', static fn(): string => self::requirement('php')->verify(PHP_VERSION));
-        foreach (['json', 'pdo', 'pdo_sqlite'] as $extension) {
+        foreach (['json', 'mbstring', 'pdo', 'pdo_sqlite'] as $extension) {
             $this->check($checks, 'php.extension.' . $extension, static fn(): string => extension_loaded($extension) ? 'loaded' : throw new \RuntimeException('missing'));
         }
         $this->check($checks, 'node.version', fn(): string => self::requirement('node')->verify($this->command(['node', '--version'], hardenGitConfig: false)));

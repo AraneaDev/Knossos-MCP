@@ -19,7 +19,10 @@ import {
 
 // TypeScript's exports are non-configurable getters, so vi.spyOn cannot replace
 // createProgram; the module is wrapped instead, with a hook each test sets.
-const hook = vi.hoisted(() => ({ createProgram: null }));
+const hook = vi.hoisted(() => ({
+    createProgram: null,
+    getPreEmitDiagnostics: null,
+}));
 vi.mock("typescript", async (importOriginal) => {
     const actual = (await importOriginal()).default;
     const wrapped = new Proxy(actual, {
@@ -27,6 +30,16 @@ vi.mock("typescript", async (importOriginal) => {
             if (property === "createProgram" && hook.createProgram !== null) {
                 return (...args) =>
                     hook.createProgram(target.createProgram, ...args);
+            }
+            if (
+                property === "getPreEmitDiagnostics" &&
+                hook.getPreEmitDiagnostics !== null
+            ) {
+                return (...args) =>
+                    hook.getPreEmitDiagnostics(
+                        target.getPreEmitDiagnostics,
+                        ...args,
+                    );
             }
             return Reflect.get(target, property, receiver);
         },
@@ -51,6 +64,7 @@ function fixture(files) {
 
 afterEach(() => {
     hook.createProgram = null;
+    hook.getPreEmitDiagnostics = null;
     vi.restoreAllMocks();
     while (created.length > 0) {
         rmSync(created.pop(), { recursive: true, force: true });
@@ -134,24 +148,128 @@ describe("a program whose construction overflows the stack", () => {
         expect(result.programs).toBe(0);
     });
 
-    it("keeps any other RangeError fatal to the request", () => {
+    it("reports any other RangeError as a failed program, not a deep one", () => {
         const root = fixture(files);
         hook.createProgram = () => {
             throw new RangeError("Invalid array length");
         };
 
-        expect(() => scan(root, ["other/ok.ts"], [])).toThrow(
-            "Invalid array length",
-        );
+        const { byPath } = scan(root, ["other/ok.ts"], []);
+
+        expect(codes(byPath["other/ok.ts"])).toEqual(["TS_PROGRAM_FAILED"]);
     });
 
-    it("keeps any other error fatal to the request", () => {
+    it("does not read a plain Error as a stack overflow", () => {
         const root = fixture(files);
         hook.createProgram = () => {
             throw new Error("Maximum call stack size exceeded");
         };
 
-        expect(() => scan(root, ["other/ok.ts"], [])).toThrow();
+        const { byPath } = scan(root, ["other/ok.ts"], []);
+
+        expect(codes(byPath["other/ok.ts"])).toEqual(["TS_PROGRAM_FAILED"]);
+    });
+});
+
+describe("a program that fails for a reason other than the stack", () => {
+    const files = {
+        "tsconfig.json": JSON.stringify({ include: ["deep"] }),
+        "deep/a.ts": "export const a = 1;\n",
+        "other/ok.ts": "export class Ok {}\n",
+    };
+
+    it("reports the files of that program and still scans the rest", () => {
+        const root = fixture(files);
+        hook.createProgram = (createProgram, options) => {
+            if (options.rootNames.some((name) => name.includes("/deep/")))
+                throw new Error("Debug Failure");
+            return createProgram(options);
+        };
+
+        const { byPath, contributions } = scan(
+            root,
+            ["deep/a.ts", "other/ok.ts"],
+            ["tsconfig.json"],
+        );
+
+        expect(contributions).toHaveLength(2);
+        expect(byPath["deep/a.ts"].nodes).toEqual([]);
+        expect(byPath["deep/a.ts"].diagnostics).toEqual([
+            {
+                severity: "error",
+                code: "TS_PROGRAM_FAILED",
+                message: expect.stringContaining("Debug Failure"),
+                evidence: { path: "deep/a.ts", start_line: 1, end_line: 1 },
+            },
+        ]);
+        expect(codes(byPath["other/ok.ts"])).toEqual([]);
+        expect(byPath["other/ok.ts"].nodes.length).toBeGreaterThan(0);
+    });
+
+    it("keeps the facts when only the compiler diagnostics fail", () => {
+        const root = fixture(files);
+        hook.getPreEmitDiagnostics = () => {
+            throw new Error("Debug Failure");
+        };
+
+        const { byPath } = scan(
+            root,
+            ["deep/a.ts", "other/ok.ts"],
+            ["tsconfig.json"],
+        );
+
+        for (const relative of ["deep/a.ts", "other/ok.ts"]) {
+            expect(byPath[relative].nodes.length).toBeGreaterThan(0);
+            expect(byPath[relative].diagnostics).toEqual([]);
+        }
+    });
+
+    it("still reports a stack overflow in the diagnostics as too deep", () => {
+        const root = fixture(files);
+        hook.getPreEmitDiagnostics = () => {
+            throw overflow();
+        };
+
+        const { byPath } = scan(root, ["other/ok.ts"], []);
+
+        expect(codes(byPath["other/ok.ts"])).toEqual(["TS_PROGRAM_TOO_DEEP"]);
+    });
+
+    it("reports a diagnostic that names no file once, on the program's first file", () => {
+        const root = fixture({
+            ...files,
+            "tsconfig.json": JSON.stringify({ include: ["deep", "other"] }),
+        });
+        const optionError = {
+            file: undefined,
+            start: undefined,
+            length: undefined,
+            category: 2,
+            code: 5023,
+            messageText: "Unknown compiler option.",
+        };
+        hook.getPreEmitDiagnostics = (real, program) => [
+            ...real(program),
+            optionError,
+            optionError,
+        ];
+
+        const { byPath } = scan(
+            root,
+            ["other/ok.ts", "deep/a.ts"],
+            ["tsconfig.json"],
+        );
+
+        expect(byPath["deep/a.ts"].diagnostics).toEqual([
+            {
+                severity: "warning",
+                code: "TS5023",
+                message:
+                    "Unknown compiler option. (applies to the whole program)",
+                evidence: { path: "deep/a.ts", start_line: 1, end_line: 1 },
+            },
+        ]);
+        expect(codes(byPath["other/ok.ts"])).toEqual([]);
     });
 });
 

@@ -144,16 +144,16 @@ final readonly class ScanPlanner
             'php' => $this->configurationHash($discovery->units, ['composer', 'knossos'], 'php-analysis-v6'),
             // tool_config: the worker reads module aliases from vite, svelte, webpack and
             // vue configs, so editing one must invalidate what was resolved under it.
-            'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'tool_config', 'knossos'], 'typescript-analysis-v19'),
+            'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'tool_config', 'knossos'], 'typescript-analysis-v20'),
             // 'requirements' is in the hash because detectedFramework() reads
             // requirements.txt for the Python framework gating above: without
             // it, adding fastapi to requirements.txt would reuse contributions
             // scanned with enrichment switched off.
-            'python' => $this->configurationHash($discovery->units, ['python', 'requirements', 'knossos'], 'python-analysis-v13'),
+            'python' => $this->configurationHash($discovery->units, ['python', 'requirements', 'knossos'], 'python-analysis-v14'),
             // Cargo.toml is now a recorded unit (kind 'cargo'), so editing it
             // invalidates a Rust contribution's cache entry the same way
             // composer.json and package.json do for PHP and TypeScript.
-            'rust' => $this->configurationHash($discovery->units, ['cargo', 'knossos'], 'rust-analysis-v5'),
+            'rust' => $this->configurationHash($discovery->units, ['cargo', 'knossos'], 'rust-analysis-v6'),
         ];
 
         return new ScanPreparation(
@@ -207,6 +207,7 @@ final readonly class ScanPlanner
             $cache,
             count(array_diff_key($old, $current)),
             $workerInputsChanged,
+            $existing !== false && $existing['active_scan_id'] !== null,
         );
     }
 

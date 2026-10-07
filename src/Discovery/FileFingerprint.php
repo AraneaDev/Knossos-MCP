@@ -104,6 +104,31 @@ final readonly class FileFingerprint
     }
 
     /**
+     * {@see self::contentHashOf()} for a probe that hashes every tracked file on
+     * every call, where it must not cost a process per file.
+     *
+     * With the FFI opener it is contentHashOf(). Without it, opening a file
+     * means spawning a helper process, which across thousands of tracked rows
+     * is far too slow for a probe, so the file is hashed in-process after an
+     * is_file() check instead. That check is what keeps a FIFO from blocking
+     * the read: a FIFO, a directory or a missing path is null, never a hash.
+     * A race between the check and the read is possible and accepted, since a
+     * probe only needs a path that stopped being a regular file to read as gone.
+     */
+    public static function probeHashOf(string $absolutePath): ?string
+    {
+        if (!RegularFileOpener::usesHelper()) {
+            return self::contentHashOf($absolutePath);
+        }
+        if (!is_file($absolutePath)) {
+            return null;
+        }
+        $hash = @hash_file('sha256', $absolutePath);
+
+        return $hash === false ? null : $hash;
+    }
+
+    /**
      * Physical line count is the number of newline terminators plus a trailing
      * unterminated line: an empty file is 0 lines, "a\n" and "a" are both 1,
      * and CRLF terminators are counted once (by their "\n").

@@ -401,6 +401,27 @@ TOML);
         }
     }
 
+    /**
+     * The analysis salt is part of the configuration hash.
+     *
+     * The salt is the scanner version, so a worker whose facts change
+     * invalidates cached contributions without a manifest change or a replay
+     * of every contribution.
+     */
+    public function testConfigurationHashIncludesTheAnalysisVersionSalt(): void
+    {
+        $pdo = $this->createSchema();
+        $planner = new ScanPlanner($pdo, [sys_get_temp_dir()]);
+        $method = new \ReflectionMethod(ScanPlanner::class, 'configurationHash');
+
+        $first = $method->invoke($planner, [], ['composer'], 'test-salt-v1');
+        $second = $method->invoke($planner, [], ['composer'], 'test-salt-v2');
+        $repeat = $method->invoke($planner, [], ['composer'], 'test-salt-v1');
+
+        assertNotSame($first, $second, 'Different salts must produce different configuration hashes.');
+        assertSame($first, $repeat, 'The same salt with the same inputs must produce the same hash.');
+    }
+
     public function testPrepareRejectsSnapshotRetentionOutOfRange(): void
     {
         $pdo = $this->createSchema();

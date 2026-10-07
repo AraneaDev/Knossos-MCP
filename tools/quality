@@ -169,7 +169,7 @@ if in_lane tests; then
 # the optional Rust one. The paths are relative on purpose: that is the form
 # docs/reference/scanner-sdk.md shows worker authors.
 tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- php workers/php/bin/worker
-tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- python3 -I -B workers/python/bin/worker.py
+tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- python3 -I -B -W ignore::SyntaxWarning workers/python/bin/worker.py
 tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- node workers/typescript/bin/worker.js
 fi
 
@@ -366,6 +366,15 @@ if [ "$profile" = "full" ] && in_lane gate; then
         git -C "$gate_repo" archive --format=tar -o "$gate_dir/tree.tar" "$1"
         tar -xf "$gate_dir/tree.tar" -C "$gate_dir/tree"
         rm -f "$gate_dir/tree.tar"
+        # An archive holds no installed packages, so every type library a
+        # tsconfig names under `types` reads as missing, an error on every run.
+        # The scan does not follow a symlink out of the tree, so the packages
+        # are hard-linked in, or copied where the filesystems differ.
+        if [ -d "$root/node_modules" ]; then
+            cp -al "$root/node_modules" "$gate_dir/tree/node_modules" 2>/dev/null \
+                || { rm -rf "$gate_dir/tree/node_modules" \
+                    && cp -a "$root/node_modules" "$gate_dir/tree/node_modules"; }
+        fi
         KNOSSOS_DATA_DIR="$gate_dir" php -d memory_limit=512M "$root/bin/knossos" \
             scan "$gate_dir/tree" --mode=full --json > "$2"
     }

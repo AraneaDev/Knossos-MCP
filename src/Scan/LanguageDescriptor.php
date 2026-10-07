@@ -103,7 +103,10 @@ final readonly class LanguageDescriptor
                 scanBatchSourceBytes: 3_000_000,
                 workerMemoryMb: 2048,
             ),
-            new self('python', ['python'], ['python3', '-I', '-B', $installationRoot . '/workers/python/bin/worker.py'], 'scanner_python'),
+            // Python 3.12+ prints a SyntaxWarning to stderr for every invalid
+            // escape the parser meets; ignoring that category at start keeps a
+            // file full of them from turning stderr into noise.
+            new self('python', ['python'], ['python3', '-I', '-B', '-W', 'ignore::SyntaxWarning', $installationRoot . '/workers/python/bin/worker.py'], 'scanner_python'),
             new self(
                 'rust',
                 ['rust'],

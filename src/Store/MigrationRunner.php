@@ -65,14 +65,9 @@ final readonly class MigrationRunner
             }
             $checksum = hash('sha256', $sql);
 
-            $statement = $this->pdo->prepare('SELECT checksum FROM schema_migrations WHERE version = :version');
-            $statement->execute(['version' => $version]);
-            $existing = $statement->fetchColumn();
-
-            if ($existing !== false) {
-                if (!hash_equals((string) $existing, $checksum)) {
-                    throw new RuntimeException(sprintf('Applied migration checksum changed: %s', $version));
-                }
+            $existing = $this->recordedChecksum($version);
+            if ($existing !== null) {
+                $this->assertSameChecksum($existing, $checksum, $version);
                 continue;
             }
 
@@ -83,9 +78,28 @@ final readonly class MigrationRunner
             // cascade into its children) cannot run under the runner's own
             // transaction.
             $ownTransaction = !str_starts_with($sql, '-- migrate:no-transaction');
-            if ($ownTransaction) {
-                $this->pdo->beginTransaction();
+
+            // The check above ran outside any write lock, so another process
+            // may have applied this version since. Take the write lock first
+            // and look again: the loser of the race waits here and then skips.
+            // For a no-transaction migration the lock is only a probe, because
+            // the body must run outside a transaction.
+            SqliteBusy::beginImmediate($this->pdo);
+            try {
+                $existing = $this->recordedChecksum($version);
+                if ($existing !== null) {
+                    $this->assertSameChecksum($existing, $checksum, $version);
+                    $this->pdo->exec('COMMIT');
+                    continue;
+                }
+                if (!$ownTransaction) {
+                    $this->pdo->exec('COMMIT');
+                }
+            } catch (Throwable $error) {
+                $this->rollBackQuietly();
+                throw $error;
             }
+
             try {
                 $this->pdo->exec($sql);
                 // Record the applied version inside the same transaction as the
@@ -96,7 +110,7 @@ final readonly class MigrationRunner
                 // open for the runner to commit (see below).
                 $this->recordVersion($version, $checksum);
                 if ($ownTransaction) {
-                    $this->pdo->commit();
+                    $this->pdo->exec('COMMIT');
                 } else {
                     try {
                         $this->pdo->exec('COMMIT');
@@ -116,21 +130,24 @@ final readonly class MigrationRunner
                     $this->pdo->exec('PRAGMA foreign_keys = ON');
                 }
             } catch (Throwable $error) {
-                if ($this->pdo->inTransaction()) {
-                    $this->pdo->rollBack();
-                }
+                // PDO::inTransaction() does not see a transaction opened with a
+                // plain BEGIN, so roll back at the SQL level.
+                $this->rollBackQuietly();
                 if (!$ownTransaction) {
-                    // The migration's own SQL-level transaction may still be
-                    // open (PDO::inTransaction() only tracks API-level ones),
-                    // and PRAGMA foreign_keys is a no-op inside it.
-                    try {
-                        $this->pdo->exec('ROLLBACK');
-                    } catch (Throwable) {
-                        // No SQL-level transaction was active.
-                    }
                     // A failed rebuild may abort between PRAGMA foreign_keys
                     // OFF and ON; the connection contract is enforcement on.
                     $this->pdo->exec('PRAGMA foreign_keys = ON');
+                    // The lock probe does not span the body, so another process
+                    // can finish the same rebuild first and this one then fails
+                    // on the objects it created. A version recorded by then was
+                    // applied, just not by this process.
+                    if (str_contains($error->getMessage(), 'already exists')) {
+                        $existing = $this->recordedChecksum($version);
+                        if ($existing !== null) {
+                            $this->assertSameChecksum($existing, $checksum, $version);
+                            continue;
+                        }
+                    }
                 }
                 throw $error;
             }
@@ -140,8 +157,36 @@ final readonly class MigrationRunner
 
         return $applied;
     }
-    /** Record an applied migration, which is what makes re-running a no-op. */
 
+    /** The checksum recorded for a version, or null when it is not applied. */
+    private function recordedChecksum(string $version): ?string
+    {
+        $statement = $this->pdo->prepare('SELECT checksum FROM schema_migrations WHERE version = :version');
+        $statement->execute(['version' => $version]);
+        $existing = $statement->fetchColumn();
+
+        return $existing === false ? null : (string) $existing;
+    }
+
+    /** Refuse a migration whose file no longer matches the checksum recorded when it was applied. */
+    private function assertSameChecksum(string $recorded, string $checksum, string $version): void
+    {
+        if (!hash_equals($recorded, $checksum)) {
+            throw new RuntimeException(sprintf('Applied migration checksum changed: %s', $version));
+        }
+    }
+
+    /** Roll back an open transaction, tolerating the case where none is active. */
+    private function rollBackQuietly(): void
+    {
+        try {
+            $this->pdo->exec('ROLLBACK');
+        } catch (Throwable) {
+            // No transaction was active.
+        }
+    }
+
+    /** Record an applied migration, which is what makes re-running a no-op. */
     private function recordVersion(string $version, string $checksum): void
     {
         $insert = $this->pdo->prepare(

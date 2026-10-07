@@ -394,9 +394,11 @@ export class TypeScriptScanner {
      * costs the files of this one program, not the whole request: each gets a
      * facts-free contribution saying why, and the remaining configs and the
      * fallback still run. Whatever reads were recorded before the overflow stay
-     * recorded.
+     * recorded. Any other error out of the build or the checker is contained
+     * the same way, under TS_PROGRAM_FAILED, so one program the compiler cannot
+     * handle never discards the facts of the others.
      *
-     * @returns {{reused: boolean}|undefined} undefined when the stack overflowed
+     * @returns {{reused: boolean}|undefined} undefined when the program failed
      */
     #scanProgram(
         key,
@@ -438,7 +440,7 @@ export class TypeScriptScanner {
                 key.endsWith(FALLBACK_KEY),
             );
         } catch (error) {
-            if (!isStackOverflow(error)) throw error;
+            const overflowed = isStackOverflow(error);
             const covered = [
                 ...parsed.fileNames,
                 ...(program?.getSourceFiles() ?? []).map(
@@ -456,11 +458,17 @@ export class TypeScriptScanner {
                     continue;
                 }
                 emit(
-                    factFreeContribution(
-                        relative,
-                        "TS_PROGRAM_TOO_DEEP",
-                        "The TypeScript compiler exceeded its stack building the program for this file's configuration (for example, an import chain too deep to follow), so its facts are omitted.",
-                    ),
+                    overflowed
+                        ? factFreeContribution(
+                              relative,
+                              "TS_PROGRAM_TOO_DEEP",
+                              "The TypeScript compiler exceeded its stack building the program for this file's configuration (for example, an import chain too deep to follow), so its facts are omitted.",
+                          )
+                        : factFreeContribution(
+                              relative,
+                              "TS_PROGRAM_FAILED",
+                              `The TypeScript compiler failed building or checking the program for this file's configuration, so its facts are omitted: ${error instanceof Error ? error.message : String(error)}`,
+                          ),
                 );
                 emitted.add(relative);
             }
@@ -547,37 +555,34 @@ export class TypeScriptScanner {
         fallback,
     ) {
         const checker = program.getTypeChecker();
-        const diagnosticsByFile = diagnosticsForProgram(
+        const { byFile: diagnosticsByFile, programLevel } = programDiagnostics(
             program,
             root,
             maxFileBytes,
+            fallback,
         );
-        // No tsconfig includes these files, and the fallback inherits no
-        // `types` or `lib`: a missing global or type library is its gap.
-        if (fallback) {
-            for (const [relative, items] of diagnosticsByFile) {
-                diagnosticsByFile.set(
-                    relative,
-                    items.filter(
-                        (item) => !UNKNOWN_GLOBAL_CODES.has(item.code),
-                    ),
-                );
-            }
-        }
 
+        const skipped = (relative) =>
+            relative === null ||
+            belowNodeModules(relative) ||
+            !requestedSet.has(relative) ||
+            emitted.has(relative) ||
+            // Another config includes this file itself; its program
+            // describes it under the options the project really uses.
+            (owners.has(relative) && owners.get(relative) !== owner);
+        // A diagnostic that names no file describes the whole program, so it
+        // is reported once, on one fixed file of the program. The carrier is
+        // chosen from the program itself, never from the request: a project is
+        // sent in batches and an incremental scan sends only changed files, so
+        // a carrier taken from each request repeats the diagnostic once per
+        // batch and keeps every copy in the graph. Only a request that names
+        // the carrier reports it.
+        const carrier = programWideCarrier(program, root, owner, owners);
+        const programWide = (relative) =>
+            relative === carrier ? anchoredAt(programLevel, relative) : [];
         for (const sourceFile of program.getSourceFiles()) {
             const relative = relativeInside(root, sourceFile.fileName);
-            if (
-                relative === null ||
-                belowNodeModules(relative) ||
-                !requestedSet.has(relative) ||
-                emitted.has(relative) ||
-                // Another config includes this file itself; its program
-                // describes it under the options the project really uses.
-                (owners.has(relative) && owners.get(relative) !== owner)
-            ) {
-                continue;
-            }
+            if (skipped(relative)) continue;
 
             const redirect = sourceFile.redirectInfo;
             if (redirect !== undefined && !redirectReadsAgree(redirect)) {
@@ -607,7 +612,10 @@ export class TypeScriptScanner {
                     owner_key: `knossos.typescript:file:${relative}`,
                     nodes: collector.nodes,
                     edges: collector.edges,
-                    diagnostics: diagnosticsByFile.get(relative) ?? [],
+                    diagnostics: [
+                        ...(diagnosticsByFile.get(relative) ?? []),
+                        ...programWide(relative),
+                    ],
                 };
             } catch (error) {
                 contribution = {
@@ -628,6 +636,7 @@ export class TypeScriptScanner {
                                 end_line: 1,
                             },
                         },
+                        ...programWide(relative),
                     ],
                 };
             }
@@ -3409,8 +3418,14 @@ function createRestrictedProgram(
         ...parsed.options,
         skipLibCheck: true,
         skipDefaultLibCheck: true,
+        traceResolution: false,
     };
     const host = ts.createCompilerHost(options, true);
+    // Resolution tracing writes through the system host to stdout, which is
+    // the frame channel, so a single trace line makes the reply invalid JSON
+    // and the whole language is dropped. A referenced project's own options
+    // are not overridden above, so the host's trace is silenced as well.
+    host.trace = () => {};
     // What an editor does: a referenced project's outputs stand for its
     // sources, so nothing has to be built before it can be analysed.
     host.useSourceOfProjectReferenceRedirect = () => true;
@@ -3701,10 +3716,115 @@ function componentTarget(specifier, resolved) {
     };
 }
 
+/**
+ * A program's compiler diagnostics, by file and program-wide.
+ *
+ * Compiler diagnostics are best-effort: failing to compute them must not cost
+ * the facts. A stack overflow still reaches the program-level backstop, which
+ * reports the files as too deep.
+ *
+ * No tsconfig includes a fallback program's files, and the fallback inherits
+ * no `types` or `lib`: a missing global or type library is its gap. Its
+ * options are partly made up by the scanner rather than read from the user's
+ * config, so an option error that names no file describes those made-up
+ * options, not anything the user can fix, and is dropped.
+ */
+function programDiagnostics(program, root, maxFileBytes, fallback) {
+    let byFile = new Map();
+    let programLevel = [];
+    try {
+        ({ byFile, programLevel } = diagnosticsForProgram(
+            program,
+            root,
+            maxFileBytes,
+        ));
+    } catch (error) {
+        rethrowStackOverflow(error);
+    }
+    if (!fallback) return { byFile, programLevel };
+    for (const [relative, items] of byFile) {
+        byFile.set(
+            relative,
+            items.filter((item) => !UNKNOWN_GLOBAL_CODES.has(item.code)),
+        );
+    }
+    return { byFile, programLevel: [] };
+}
+
+/** Program-wide diagnostics, each anchored at the first line of one file. */
+function anchoredAt(programLevel, relative) {
+    return programLevel.map((item) => ({
+        ...item,
+        evidence: { path: relative, start_line: 1, end_line: 1 },
+    }));
+}
+
+/**
+ * The one file of a program that carries its program-wide diagnostics.
+ *
+ * The sorted first of the program's own root files that a contribution can be
+ * made for: inside the root, outside node_modules, owned by this config rather
+ * than another that includes it, nameable by the core, loaded, and not a
+ * redirected duplicate of another package copy. It depends only on the
+ * program, so every request agrees on it however the files are batched.
+ */
+function programWideCarrier(program, root, owner, owners) {
+    const candidates = [];
+    for (const fileName of program.getRootFileNames()) {
+        const relative = relativeInside(root, fileName);
+        if (
+            relative === null ||
+            belowNodeModules(relative) ||
+            // Discovery skips a name with a control character, so such a file
+            // is never requested and would carry the diagnostics nowhere.
+            hasControlCharacter(relative) ||
+            (owners.has(relative) && owners.get(relative) !== owner)
+        )
+            continue;
+        const sourceFile = program.getSourceFile(fileName);
+        if (sourceFile === undefined || sourceFile.redirectInfo !== undefined)
+            continue;
+        candidates.push(relative);
+    }
+    return candidates.sort()[0];
+}
+
+/** Whether a name holds a C0 control character or DEL, which the core cannot carry. */
+function hasControlCharacter(name) {
+    for (let index = 0; index < name.length; index++) {
+        const code = name.charCodeAt(index);
+        if (code < 32 || code === 127) return true;
+    }
+    return false;
+}
+
 function diagnosticsForProgram(program, root, maxFileBytes) {
     const result = new Map();
+    const programLevel = [];
     for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
-        if (!diagnostic.file) continue;
+        if (!diagnostic.file) {
+            // An option or configuration error names no file; it applies to
+            // the whole program and is reported once, on the program's carrier.
+            const message =
+                ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n") +
+                " (applies to the whole program)";
+            const code = `TS${diagnostic.code}`;
+            if (
+                programLevel.some(
+                    (item) => item.code === code && item.message === message,
+                )
+            )
+                continue;
+            programLevel.push({
+                severity:
+                    diagnostic.category === ts.DiagnosticCategory.Error
+                        ? "error"
+                        : "warning",
+                code,
+                message,
+            });
+            continue;
+        }
         const component = componentSources.get(diagnostic.file);
         if (
             component !== undefined &&
@@ -3769,7 +3889,7 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
         result.set(relative, list);
     }
     componentParseDiagnostics(program, root, result);
-    return result;
+    return { byFile: result, programLevel };
 }
 
 /**
@@ -5120,6 +5240,9 @@ function fallbackGroups(root, remaining, parsedConfigs, packageDirectories) {
 // not in the one the config describes for its own files.
 const RESOLUTION_OPTIONS = [
     "baseUrl",
+    // A deprecated option inherited above is reported again for the fallback
+    // unless the config's own remedy for that deprecation comes with it.
+    "ignoreDeprecations",
     "paths",
     // Where `paths` resolve from when no `baseUrl` is set: the config's own
     // directory, which TypeScript records here and nowhere else.

@@ -98,6 +98,9 @@ final readonly class ScannedPaths implements TrackedPathPredicate
      */
     public function tracks(string $relativePath, string $absolutePath): bool
     {
+        if (!ProjectDiscoverer::isSupportedPath($relativePath)) {
+            return false;
+        }
         if (!ProjectDiscoverer::isConfigurationFile($relativePath)) {
             if ($this->ignores->matches($relativePath)) {
                 return false;

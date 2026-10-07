@@ -94,7 +94,7 @@ final class InputHashesPartsScanTest extends KnossosTestCase
         foreach ($imports as $index => $source) {
             $discovered[] = $this->write($apps[] = sprintf('app_%02d.py', $index), $source, 'python');
         }
-        $descriptor = new LanguageDescriptor(key: 'python', stage: 'python-analysis', languages: ['python'], command: ['python3', '-I', '-B', self::repositoryRoot() . '/workers/python/bin/worker.py']);
+        $descriptor = new LanguageDescriptor(key: 'python', stage: 'python-analysis', languages: ['python'], command: ['python3', '-I', '-B', '-W', 'ignore::SyntaxWarning', self::repositoryRoot() . '/workers/python/bin/worker.py']);
 
         [$result, $inputHashes] = $this->runScan($descriptor, $discovered, []);
 

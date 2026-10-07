@@ -1487,6 +1487,66 @@ fn a_syntax_error_costs_only_its_own_file() {
 }
 
 #[test]
+fn a_deeply_nested_file_is_a_diagnostic_and_costs_only_itself() {
+    let deep = format!(
+        "fn f() {{ let x = {}1{}; }}",
+        "(".repeat(4000),
+        ")".repeat(4000)
+    );
+    let contributions = scan_fixture(
+        "too-deep",
+        &[("src/deep.rs", &deep), ("src/ok.rs", "pub fn ok() {}\n")],
+    );
+
+    let deep = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/deep.rs")
+        .unwrap();
+    assert_eq!("RS_TOO_DEEP", deep["diagnostics"][0]["code"]);
+    assert_eq!("error", deep["diagnostics"][0]["severity"]);
+    assert_eq!(1, deep["diagnostics"][0]["evidence"]["start_line"]);
+
+    let ok = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/ok.rs")
+        .unwrap();
+    assert!(ok["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["kind"] == "function"));
+}
+
+#[test]
+fn nesting_of_exactly_the_limit_still_parses() {
+    // One block plus 255 parentheses is 256 levels. The test thread's stack is
+    // small, so the scan runs on one as large as the worker's own.
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let source = format!(
+                "fn f() {{ let x = {}1{}; }}",
+                "(".repeat(255),
+                ")".repeat(255)
+            );
+            let contributions = scan_fixture("exactly-deep", &[("src/edge.rs", &source)]);
+
+            assert!(contributions[0]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+            assert!(contributions[0]["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n["kind"] == "function"));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn a_missing_file_is_a_diagnostic_not_a_failed_request() {
     let contributions = scan_fixture("missing", &[("src/present.rs", "pub fn here() {}\n")]);
     assert_eq!(1, contributions.len());

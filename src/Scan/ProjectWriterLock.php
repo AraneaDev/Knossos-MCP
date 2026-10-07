@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Closure;
+use Knossos\Store\SqliteBusy;
 use PDO;
 use PDOException;
 use Throwable;
@@ -42,7 +43,7 @@ final readonly class ProjectWriterLock
             if ((string) $error->getCode() === '23000' || str_contains($error->getMessage(), 'UNIQUE constraint')) {
                 throw new ScanBusyException(sprintf('A scan is already running for project %s.', $projectId), previous: $error);
             }
-            if (self::isDatabaseBusy($error)) {
+            if (SqliteBusy::is($error)) {
                 throw new ScanBusyException(sprintf('The graph database is busy; another writer holds the lock (project %s).', $projectId), previous: $error);
             }
             throw $error;
@@ -54,21 +55,5 @@ final readonly class ProjectWriterLock
             throw $error;
         }
         return new ProjectWriterLease($this->pdo, $projectId, $token, $this->clock);
-    }
-
-    /**
-     * SQLite reports a contended WAL write lock as SQLSTATE HY000 with a
-     * "database is locked"/"busy" message (distinct from the 23000 UNIQUE
-     * collision on the lock row itself). Both mean "come back later", so both
-     * surface as ScanBusyException rather than a raw driver error.
-     */
-    private static function isDatabaseBusy(PDOException $error): bool
-    {
-        if ((string) $error->getCode() !== 'HY000') {
-            return false;
-        }
-        $message = strtolower($error->getMessage());
-
-        return str_contains($message, 'database is locked') || str_contains($message, 'database table is locked') || str_contains($message, 'busy');
     }
 }

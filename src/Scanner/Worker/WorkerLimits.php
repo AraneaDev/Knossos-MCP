@@ -10,6 +10,10 @@ use InvalidArgumentException;
 final readonly class WorkerLimits
 {
     /**
+     * @param int $maxStderrBytes How much of a worker's stderr is kept: the
+     *     newest bytes, for the message of an error. It bounds what is retained,
+     *     not what a request may write, so a worker that warns a lot but answers
+     *     correctly is not failed for it.
      * @param int $maxInputHashesBytes Bytes of `scan/input_hashes` frames one
      *     scan request may send. Counted apart from $maxOutputBytes because the
      *     map describes the files a request read, which for a TypeScript

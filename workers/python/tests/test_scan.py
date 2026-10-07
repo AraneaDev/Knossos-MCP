@@ -649,3 +649,83 @@ def test_routes_register_through_an_aliased_fastapi_import(scan_collect, project
 
     handler = next(n for n in nodes if n["canonical_name"].endswith("list_items"))
     assert handler["attributes"]["python_framework_roles"] == ["fastapi.route_handler"]
+
+
+# The interpreter flags the core launches the worker with. The source of truth
+# is the python descriptor in src/Scan/LanguageDescriptor.php; keep the two in
+# step. `-W ignore::SyntaxWarning` is what keeps parser warnings off stderr.
+LAUNCH_FLAGS = ["-I", "-B", "-W", "ignore::SyntaxWarning"]
+
+
+def test_invalid_escape_sequences_leave_stderr_empty(tmp_path: Path) -> None:
+    import json
+    import subprocess
+    import sys
+
+    from conftest import WORKER_PATH
+
+    # Python 3.12+ warns on stderr for each invalid escape the parser meets; a
+    # file full of them must not turn the worker's stderr into noise.
+    (tmp_path / "a.py").write_text("import re\n" + 're.compile("\\d")\n' * 2000, encoding="utf-8")
+    (tmp_path / "b.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "scan", "params": {"root": str(tmp_path), "files": ["a.py", "b.py"]}},
+        {"jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": {}},
+    ]
+
+    child = subprocess.run(
+        [sys.executable, *LAUNCH_FLAGS, str(WORKER_PATH)],
+        input="".join(json.dumps(request) + "\n" for request in requests),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+
+    assert child.stderr == ""
+    frames = [json.loads(line) for line in child.stdout.splitlines()]
+    contributions = [frame["params"] for frame in frames if frame.get("method") == "scan/contribution"]
+    assert len(contributions) == 2
+    assert all(contribution["nodes"] for contribution in contributions)
+
+
+def test_directory_name_that_is_not_utf8_does_not_break_output(
+    worker: ModuleType, tmp_path: Path, scan_collect
+) -> None:
+    import json
+    import os
+
+    try:
+        os.mkdir(os.path.join(os.fsencode(tmp_path), b"caf\xe9"))
+    except OSError:
+        pytest.skip("filesystem rejects non-UTF-8 names")
+    (tmp_path / "m.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    emitted: list[dict] = []
+    result = worker.scan({"root": str(tmp_path), "files": ["m.py"]}, emitted.append)
+    assert len(emitted) == 1
+    for key in result["input_hashes"]:
+        key.encode("utf-8")
+    for part in worker.input_hash_parts(result["input_hashes"]):
+        json.dumps(part, ensure_ascii=False).encode("utf-8")
+
+
+def test_directory_name_with_a_control_character_is_not_reported_as_read(worker: ModuleType, tmp_path: Path) -> None:
+    # Discovery cannot name such a directory, so a probe below it would be a
+    # read of a path the core has no file for.
+    try:
+        (tmp_path / "a\nb").mkdir()
+    except OSError:
+        pytest.skip("filesystem rejects control characters in names")
+    (tmp_path / "m.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    emitted: list[dict] = []
+    result = worker.scan({"root": str(tmp_path), "files": ["m.py"]}, emitted.append)
+    assert len(emitted) == 1
+    assert [key for key in result["input_hashes"] if any(ord(c) < 32 or ord(c) == 127 for c in key)] == []
+
+
+def test_frames_stay_ascii_even_for_names_that_are_not_valid_unicode(worker: ModuleType, capsys) -> None:
+    worker.write({"path": "caf\udce9/m.py"})
+    out = capsys.readouterr().out
+    assert out.isascii()
+    assert out.endswith("\n")

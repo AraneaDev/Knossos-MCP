@@ -3,7 +3,9 @@
 Knossos scans Python through the same out-of-process scanner protocol as the
 other languages. The worker needs Python 3.11 or newer. The bundled worker uses
 only the standard-library `ast` module and starts with the isolated,
-bytecode-disabled flags `-I -B`. It never imports or runs your project.
+bytecode-disabled flags `-I -B`, plus `-W ignore::SyntaxWarning` so that the
+parser's warnings about invalid escapes in your source stay off stderr. It
+never imports or runs your project.
 
 ## What the scanner reads
 

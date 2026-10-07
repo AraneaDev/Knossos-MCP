@@ -40,7 +40,11 @@ No framework module is imported and no bundler or application is started.
   there, so an error that a name or type library is missing (`Cannot find
 name '__dirname'`, the hint to install `@types/node`, a `/// <reference
 types>` that is not installed) is left out. A missing module, a type error
-  and a grammar error are still reported.
+  and a grammar error are still reported. An option error that names no file is
+  not reported for these files: the fallback options are partly made up by the
+  scanner, so the error would not be about your config. The config's
+  `ignoreDeprecations` comes along with its resolution options, so a deprecation
+  you silenced stays silent here too.
 - A module importing `k6` or `k6/*` is a k6 load-test script: it is
   `executable`, and its default export, `setup`, `teardown`, `handleSummary` and
   every function a scenario names as its `exec` are marked `runtime_invoked`,
@@ -162,3 +166,15 @@ Dynamic route segments stay in their source spelling, dynamic request URLs are
 omitted, and framework roles never override a language symbol kind. A NestJS
 route whose decorator argument is not a literal gets an empty segment rather
 than a guessed one.
+
+## Compiler diagnostics
+
+Compiler errors that name a file are attached to that file. An option error that
+names no file, such as a deprecated `moduleResolution` value, appears once per
+program, on the program's first file in path order, and its message says it
+applies to the whole program. That file is the same however your files are
+batched, so an incremental scan that does not touch it neither repeats nor
+drops the diagnostic. If a deprecation is not worth acting on yet, you can silence it
+with `"ignoreDeprecations"` in your `tsconfig.json`. A program the compiler
+cannot build or check at all reports `TS_PROGRAM_FAILED` for its files and costs
+no other program's facts.

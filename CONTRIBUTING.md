@@ -12,7 +12,7 @@ the host:
 - **Git**
 
 Running the tooling directly on the host additionally needs PHP 8.3 or newer
-with `ext-json`, `ext-pdo`, and `ext-pdo_sqlite`, Node 24 or newer, Python
+with `ext-json`, `ext-mbstring`, `ext-pdo`, and `ext-pdo_sqlite`, Node 24 or newer, Python
 3.11 or newer, and Composer. Those are minimums, not ranges.
 
 ### Setup

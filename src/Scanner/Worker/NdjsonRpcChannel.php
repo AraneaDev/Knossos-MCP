@@ -27,7 +27,6 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     private string $stderrBuffer = '';
     /** The previous request's stderr, kept so a worker's dying words outlive the request it died in. */
     private string $lastWords = '';
-    private int $stderrBytes = 0;
     /** Bytes of `scan/input_hashes` frames this request, counted apart from the output budget. */
     private int $inputHashesBytes = 0;
     /** Bytes of every other complete frame this request, charged to the output budget. */
@@ -79,7 +78,6 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         // output from before a request that succeeded in between.
         $this->lastWords = $this->stderrBuffer;
         $this->stderrBuffer = '';
-        $this->stderrBytes = 0;
         $this->inputHashesBytes = 0;
         $this->outputBytes = 0;
 
@@ -555,25 +553,37 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         }
         $this->stdoutBuffer .= $chunk;
     }
-    /** Buffer stderr under its own cap, so diagnostics survive without competing with frames. */
+    /**
+     * Keep only the newest stderr bytes, up to the cap.
+     *
+     * A worker that warns on every file writes far more than the cap while
+     * answering correctly, so volume is not a fault. The end of the stream is
+     * what explains a death, so the oldest bytes are the ones dropped.
+     */
 
     private function appendStderr(string $chunk): void
     {
-        $this->stderrBytes += strlen($chunk);
-        if ($this->stderrBytes > $this->limits->maxStderrBytes) {
-            throw new WorkerException('WORKER_STDERR_LIMIT', 'Worker stderr exceeds the request limit.');
+        $max = $this->limits->maxStderrBytes;
+        if ($max === 0) {
+            return;
         }
-        $this->stderrBuffer .= $chunk;
+        $this->stderrBuffer = substr($this->stderrBuffer . $chunk, -$max);
     }
-    /** Attach the captured stderr to an error, which is usually the only clue to why a worker failed. */
+    /**
+     * Attach the captured stderr to an error, which is usually the only clue to why a worker failed.
+     *
+     * The tail is cut by byte count, so its first byte can sit inside a
+     * multibyte character, and a worker may write bytes that are not UTF-8 at
+     * all. The message is JSON-encoded later, so the tail is scrubbed first.
+     */
 
     private function withStderr(string $message): string
     {
-        $stderr = trim($this->stderrBuffer);
+        $stderr = trim(mb_scrub($this->stderrBuffer, 'UTF-8'));
         if ($stderr !== '') {
             return $message . ' Worker stderr: ' . $stderr;
         }
-        $earlier = trim($this->lastWords);
+        $earlier = trim(mb_scrub($this->lastWords, 'UTF-8'));
 
         return $earlier === ''
             ? $message

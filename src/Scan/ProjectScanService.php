@@ -120,21 +120,32 @@ final class ProjectScanService implements ProjectScanner
             // Cancellation wins over fidelity reporting: an abandoned scan
             // must surface ScanCancelledException, not a worker degradation.
             $cancellation->throwIfCancelled();
-            // An incremental scan must never reconcile a partial language set:
-            // doing so prunes the last good facts for a worker that failed and
-            // can replace a healthy graph with an empty one. A full scan has no
-            // prior graph to preserve and may still degrade per language, but
-            // an incremental failure is fail-closed so the caller can repair
-            // the worker and retry without data loss.
-            if ($plan->effectiveMode === 'incremental' && $language->workerDiagnostics !== []) {
-                $failed = array_map(
-                    static fn(array $diagnostic): string => ($diagnostic['owner'] ?? 'unknown') . ': ' . ($diagnostic['code'] ?? 'WORKER_FAILED'),
+            // A rescan must never reconcile away a failed language's facts,
+            // whatever its mode: doing so prunes the last good facts for a
+            // worker that failed and can replace a healthy graph with an empty
+            // one. That holds for a requested full rescan as much as an
+            // incremental one, so such a scan fails closed and the caller can
+            // repair the worker and retry without data loss. A full rescan
+            // whose failed languages hold no facts in the graph has nothing to
+            // lose, and degrades per language as a first scan does; refusing it
+            // would leave no way to update the other languages until the
+            // broken worker is repaired.
+            if ($plan->hadActiveScan && $language->workerDiagnostics !== []) {
+                $owners = array_values(array_unique(array_map(
+                    static fn(array $diagnostic): string => (string) ($diagnostic['owner'] ?? 'unknown'),
                     $language->workerDiagnostics,
-                );
-                throw new WorkerException(
-                    'WORKER_DEGRADED_INCREMENTAL',
-                    'Incremental scan aborted to preserve the last good graph. Failed workers: ' . implode(', ', $failed) . '.',
-                );
+                )));
+                if ($plan->effectiveMode !== 'full' || $this->graphHoldsFactsOf($projectId, $owners)) {
+                    $failed = array_map(
+                        static fn(array $diagnostic): string => ($diagnostic['owner'] ?? 'unknown') . ': ' . ($diagnostic['code'] ?? 'WORKER_FAILED'),
+                        $language->workerDiagnostics,
+                    );
+                    throw new WorkerException(
+                        'WORKER_DEGRADED_INCREMENTAL',
+                        'Scan aborted to preserve the last good graph. Failed workers: ' . implode(', ', $failed)
+                            . '. Fix the worker (run `knossos doctor`) and rescan; the graph is unchanged.',
+                    );
+                }
             }
             // The workers read every file themselves, so their facts descend
             // from bytes this process never hashed. Discovery's own files are
@@ -233,6 +244,34 @@ final class ProjectScanService implements ProjectScanner
     private static function elapsedMilliseconds(int $startedAt): float
     {
         return round((hrtime(true) - $startedAt) / 1_000_000, 3);
+    }
+
+    /**
+     * Whether the project's graph holds any node owned by one of these scanners.
+     *
+     * Every fact a scanner contributes is owned by a key that starts with its
+     * id and a colon, and every file it analysed carries at least its file
+     * node, so a scanner with no node under that prefix has nothing to lose.
+     *
+     * @param list<string> $scannerIds
+     */
+    private function graphHoldsFactsOf(string $projectId, array $scannerIds): bool
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT 1 FROM nodes WHERE project_id = :project AND owner_key >= :low AND owner_key < :high LIMIT 1',
+        );
+        foreach ($scannerIds as $scannerId) {
+            // ';' is the character after ':', so the range is exactly the
+            // keys that start with "<id>:" and the owner index can serve it.
+            $statement->execute(['project' => $projectId, 'low' => $scannerId . ':', 'high' => $scannerId . ';']);
+            $found = $statement->fetchColumn() !== false;
+            $statement->closeCursor();
+            if ($found) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

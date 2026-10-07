@@ -60,7 +60,7 @@ final class SqliteTransactions
         // beginTransaction() issues a deferred BEGIN, and PDO::inTransaction()
         // only tracks API-level transactions, so the boundary is tracked
         // manually here.
-        $this->pdo->exec('BEGIN IMMEDIATE');
+        SqliteBusy::beginImmediate($this->pdo);
         $this->open = true;
         try {
             $result = $operation();
