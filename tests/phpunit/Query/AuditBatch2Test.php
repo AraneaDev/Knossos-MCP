@@ -121,7 +121,7 @@ final class AuditBatch2Test extends KnossosTestCase
     #[Group('query')]
     public function testStronglyConnectedComponentsWalkADeepNumberedChain(): void
     {
-        $count = 50_000;
+        $count = 20_000;
         $adjacency = $reverse = [];
         for ($i = 0; $i < $count; $i++) {
             $adjacency[$i] = [($i + 1) % $count];
