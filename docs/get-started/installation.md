@@ -38,6 +38,16 @@ The installer reads these environment variables:
 | `KNOSSOS_MCP_NAME`   | `knossos`               | The name of the registered server.        |
 | `KNOSSOS_MCP_SCOPE`  | `user`                  | `claude mcp` scope: local, user, project. |
 | `KNOSSOS_SEED_SCAN`  | `1`                     | `0` skips the initial scan.               |
+| `KNOSSOS_MEMORY_LIMIT` | `1G`                  | The PHP memory limit of the core.         |
+
+`KNOSSOS_MEMORY_LIMIT` is read by the core itself, not only by the installer.
+The core sets its own memory limit when it starts, so a scan behaves the same
+whatever your `php.ini` says. Without the variable it runs at `1G`, or at your
+`php.ini` value when that is higher or `-1`. A value you set is used as given,
+even when it is lower than `1G`. It takes a PHP size such as `512M` or `2G`, or
+`-1` for no limit. An invalid value is ignored and `knossos doctor` reports it
+as an error on the `php.memory_limit` check, which also shows the effective
+limit and where it came from: `default`, `KNOSSOS_MEMORY_LIMIT` or `php.ini`.
 
 Restart Claude Code afterwards, or reload its MCP servers. Then
 [scan your first project](first-scan.md). To get the session brief and the

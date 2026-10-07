@@ -124,12 +124,12 @@ final class DoctorServiceTest extends KnossosTestCase
             $this->assertContains($check['status'], ['ok', 'error', 'skipped']);
         }
 
-        // The 15 checks fired when databasePath is ':memory:' (data.writable
+        // The 16 checks fired when databasePath is ':memory:' (data.writable
         // is conditional and excluded in this mode) — verifies both shape
         // AND the exact set of named checks in a single run() call.
         $names = array_column($result['checks'], 'name');
         $expected = [
-            'php.version',
+            'php.version', 'php.memory_limit',
             'php.extension.json', 'php.extension.mbstring', 'php.extension.pdo', 'php.extension.pdo_sqlite',
             'node.version', 'git.version', 'python.version',
             'sqlite.integrity', 'sqlite.foreign_keys', 'sqlite.migrations',
@@ -139,7 +139,7 @@ final class DoctorServiceTest extends KnossosTestCase
         foreach ($expected as $name) {
             $this->assertContains($name, $names, "missing check: {$name}");
         }
-        assertSame(16, count($names));
+        assertSame(17, count($names));
     }
 
     /** The doctor says which file opener this host uses, so a slow helper-per-file scan is visible. */
