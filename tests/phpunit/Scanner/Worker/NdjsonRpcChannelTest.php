@@ -599,24 +599,65 @@ final class NdjsonRpcChannelTest extends TestCase
         assertSame('WORKER_OUTPUT_LIMIT', $error->diagnosticCode);
     }
 
-    public function testReadMessageThrowsOnStderrLimit(): void
+    public function testAWorkerThatWritesMoreStderrThanTheCapStillAnswers(): void
     {
-        // appendStderr() when stderrBytes > maxStderrBytes throws
-        // WORKER_STDERR_LIMIT.
+        // A worker that warns a lot but answers correctly must not fail the
+        // request: stderr is context, so only its newest bytes are kept.
         $process = $this->mockProcess();
         $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxStderrBytes: 16));
 
         $deadline = $channel->beginRequest();
-        fwrite($process->pipes[2], str_repeat('e', 50));
+        fwrite($process->pipes[2], str_repeat('a', 40) . str_repeat('b', 16));
         fflush($process->pipes[2]);
         rewind($process->pipes[2]);
+        fwrite($process->pipes[1], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n");
+        fflush($process->pipes[1]);
+        rewind($process->pipes[1]);
+
+        $message = $channel->readMessage($deadline);
+
+        assertSame(1, $message['id']);
+        $buffer = new \ReflectionProperty(NdjsonRpcChannel::class, 'stderrBuffer');
+        assertSame(str_repeat('b', 16), $buffer->getValue($channel));
+    }
+
+    public function testStderrKeepsOnlyTheNewestBytesAcrossChunks(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxStderrBytes: 8));
+        $append = new \ReflectionMethod(NdjsonRpcChannel::class, 'appendStderr');
+
+        foreach (['12345', '67890', 'abc'] as $chunk) {
+            $append->invoke($channel, $chunk);
+        }
+
+        $buffer = new \ReflectionProperty(NdjsonRpcChannel::class, 'stderrBuffer');
+        assertSame('7890abc', substr($buffer->getValue($channel), -7));
+        assertSame(8, strlen($buffer->getValue($channel)));
+    }
+
+    public function testAWorkerThatWritesStderrAndThenExitsFailsWithItsOwnCodeAndTheTail(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 100, maxLineBytes: 128, maxStderrBytes: 16));
+        $deadline = $channel->beginRequest();
+
+        fwrite($process->pipes[2], str_repeat('e', 40) . 'the real cause');
+        fflush($process->pipes[2]);
+        rewind($process->pipes[2]);
+        $process->running = false;
+        ftruncate($process->pipes[1], 0);
+        fclose($process->pipes[1]);
+        $process->pipes[1] = fopen('php://temp', 'r');
 
         $error = captureThrows(
             static fn() => $channel->readMessage($deadline),
             WorkerException::class,
         );
 
-        assertSame('WORKER_STDERR_LIMIT', $error->diagnosticCode);
+        assertSame('WORKER_EXITED', $error->diagnosticCode);
+        assertContains('the real cause', $error->getMessage());
+        assertSame(false, str_contains($error->getMessage(), str_repeat('e', 20)));
     }
 
     // ----- WORKER_EXITED -----
