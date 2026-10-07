@@ -394,9 +394,11 @@ export class TypeScriptScanner {
      * costs the files of this one program, not the whole request: each gets a
      * facts-free contribution saying why, and the remaining configs and the
      * fallback still run. Whatever reads were recorded before the overflow stay
-     * recorded.
+     * recorded. Any other error out of the build or the checker is contained
+     * the same way, under TS_PROGRAM_FAILED, so one program the compiler cannot
+     * handle never discards the facts of the others.
      *
-     * @returns {{reused: boolean}|undefined} undefined when the stack overflowed
+     * @returns {{reused: boolean}|undefined} undefined when the program failed
      */
     #scanProgram(
         key,
@@ -438,7 +440,7 @@ export class TypeScriptScanner {
                 key.endsWith(FALLBACK_KEY),
             );
         } catch (error) {
-            if (!isStackOverflow(error)) throw error;
+            const overflowed = isStackOverflow(error);
             const covered = [
                 ...parsed.fileNames,
                 ...(program?.getSourceFiles() ?? []).map(
@@ -456,11 +458,17 @@ export class TypeScriptScanner {
                     continue;
                 }
                 emit(
-                    factFreeContribution(
-                        relative,
-                        "TS_PROGRAM_TOO_DEEP",
-                        "The TypeScript compiler exceeded its stack building the program for this file's configuration (for example, an import chain too deep to follow), so its facts are omitted.",
-                    ),
+                    overflowed
+                        ? factFreeContribution(
+                              relative,
+                              "TS_PROGRAM_TOO_DEEP",
+                              "The TypeScript compiler exceeded its stack building the program for this file's configuration (for example, an import chain too deep to follow), so its facts are omitted.",
+                          )
+                        : factFreeContribution(
+                              relative,
+                              "TS_PROGRAM_FAILED",
+                              `The TypeScript compiler failed building or checking the program for this file's configuration, so its facts are omitted: ${error instanceof Error ? error.message : String(error)}`,
+                          ),
                 );
                 emitted.add(relative);
             }
@@ -547,11 +555,17 @@ export class TypeScriptScanner {
         fallback,
     ) {
         const checker = program.getTypeChecker();
-        const diagnosticsByFile = diagnosticsForProgram(
-            program,
-            root,
-            maxFileBytes,
-        );
+        // Compiler diagnostics are best-effort: failing to compute them must
+        // not cost the facts. A stack overflow still reaches the program-level
+        // backstop, which reports the files as too deep.
+        let diagnosticsByFile = new Map();
+        let programLevel = [];
+        try {
+            ({ byFile: diagnosticsByFile, programLevel } =
+                diagnosticsForProgram(program, root, maxFileBytes));
+        } catch (error) {
+            rethrowStackOverflow(error);
+        }
         // No tsconfig includes these files, and the fallback inherits no
         // `types` or `lib`: a missing global or type library is its gap.
         if (fallback) {
@@ -607,7 +621,17 @@ export class TypeScriptScanner {
                     owner_key: `knossos.typescript:file:${relative}`,
                     nodes: collector.nodes,
                     edges: collector.edges,
-                    diagnostics: diagnosticsByFile.get(relative) ?? [],
+                    diagnostics: [
+                        ...(diagnosticsByFile.get(relative) ?? []),
+                        ...programLevel.map((item) => ({
+                            ...item,
+                            evidence: {
+                                path: relative,
+                                start_line: 1,
+                                end_line: 1,
+                            },
+                        })),
+                    ],
                 };
             } catch (error) {
                 contribution = {
@@ -3709,8 +3733,24 @@ function componentTarget(specifier, resolved) {
 
 function diagnosticsForProgram(program, root, maxFileBytes) {
     const result = new Map();
+    const programLevel = [];
     for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
-        if (!diagnostic.file) continue;
+        if (!diagnostic.file) {
+            // An option or configuration error names no file; it applies to
+            // every file of the program, so each requested one carries it.
+            programLevel.push({
+                severity:
+                    diagnostic.category === ts.DiagnosticCategory.Error
+                        ? "error"
+                        : "warning",
+                code: `TS${diagnostic.code}`,
+                message: ts.flattenDiagnosticMessageText(
+                    diagnostic.messageText,
+                    "\n",
+                ),
+            });
+            continue;
+        }
         const component = componentSources.get(diagnostic.file);
         if (
             component !== undefined &&
@@ -3775,7 +3815,7 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
         result.set(relative, list);
     }
     componentParseDiagnostics(program, root, result);
-    return result;
+    return { byFile: result, programLevel };
 }
 
 /**
