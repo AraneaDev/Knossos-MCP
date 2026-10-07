@@ -408,6 +408,8 @@ final readonly class GraphReconciler
         $warnedReferences = [];
         $inheritanceSources = $this->inheritanceSources($contributions);
         $returnTypes = self::returnTypes($contributions);
+        // Built on the first prefix or directory edge, once per reconcile.
+        $references = null;
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
                 $sourceId = $nodeMap[$edge->sourceReference] ?? null;
@@ -422,7 +424,8 @@ final readonly class GraphReconciler
                     // One edge per module the loaded directory holds, found
                     // here because only the graph, not a worker's request,
                     // knows every module.
-                    foreach (self::contextTargets($edge->targetReference, $nodeMap) as $targetId) {
+                    $references ??= new NodeReferenceIndex($nodeMap);
+                    foreach (self::contextTargets($edge->targetReference, $references) as $targetId) {
                         $record = $this->edgeWithEvidence($projectId, $edge, $sourceId, $targetId, $contribution->ownerKey, $fileIds);
                         $edges[$record['id']] = $record;
                     }
@@ -431,7 +434,8 @@ final readonly class GraphReconciler
                 if (str_contains($edge->targetReference, ':class_prefix:')) {
                     // A class name built from a namespace prefix at runtime:
                     // one edge per class directly in that namespace.
-                    foreach (self::classPrefixTargets($edge->targetReference, $nodeMap) as $targetId) {
+                    $references ??= new NodeReferenceIndex($nodeMap);
+                    foreach (self::classPrefixTargets($edge->targetReference, $references) as $targetId) {
                         $record = $this->edgeWithEvidence($projectId, $edge, $sourceId, $targetId, $contribution->ownerKey, $fileIds);
                         $edges[$record['id']] = $record;
                     }
@@ -571,10 +575,9 @@ final readonly class GraphReconciler
      * not one the prefix can name unless the reference ends `\\**`, and an
      * empty prefix names nothing.
      *
-     * @param array<string, string> $nodeMap
      * @return list<string>
      */
-    private static function classPrefixTargets(string $reference, array $nodeMap): array
+    private static function classPrefixTargets(string $reference, NodeReferenceIndex $references): array
     {
         [$language, , $namespace] = array_pad(explode(':', $reference, 3), 3, '');
         // A trailing `\\**` reaches the namespaces below the prefix.
@@ -585,10 +588,10 @@ final readonly class GraphReconciler
         }
         $prefix = $language . ':class:' . $namespace . '\\';
         $targets = [];
-        foreach ($nodeMap as $candidate => $nodeId) {
+        foreach ($references->withPrefix($prefix) as $candidate => $nodeId) {
             // Direct children only, or, for `\\**`, only classes in a
             // namespace below: the expression puts a segment after the prefix.
-            if (str_starts_with($candidate, $prefix) && str_contains(substr($candidate, strlen($prefix)), '\\') === $nested) {
+            if (str_contains(substr($candidate, strlen($prefix)), '\\') === $nested) {
                 $targets[] = $nodeId;
             }
         }
@@ -604,10 +607,9 @@ final readonly class GraphReconciler
      * matches, descending only when the import is recursive. A pattern PCRE
      * cannot compile loads nothing.
      *
-     * @param array<string, string> $nodeMap
      * @return list<string>
      */
-    private static function contextTargets(string $reference, array $nodeMap): array
+    private static function contextTargets(string $reference, NodeReferenceIndex $references): array
     {
         [$language, , $json] = array_pad(explode(':', $reference, 3), 3, '');
         $context = json_decode($json, true);
@@ -619,10 +621,7 @@ final readonly class GraphReconciler
         $prefix = $context['directory'] === '' ? '' : $context['directory'] . '/';
         $modulePrefix = $language . ':module:' . $prefix;
         $targets = [];
-        foreach ($nodeMap as $candidate => $nodeId) {
-            if (!str_starts_with($candidate, $modulePrefix)) {
-                continue;
-            }
+        foreach ($references->withPrefix($modulePrefix) as $candidate => $nodeId) {
             $inner = substr($candidate, strlen($modulePrefix));
             if ($inner === '' || (($context['recursive'] ?? true) !== true && str_contains($inner, '/'))) {
                 continue;
