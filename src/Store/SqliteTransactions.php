@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Knossos\Store;
 
+use Knossos\Scan\ScanBusyException;
 use PDO;
+use PDOException;
 use RuntimeException;
 use Throwable;
 
@@ -40,6 +42,9 @@ final class SqliteTransactions
      */
     private const SAVEPOINT = 'knossos_sp';
 
+    /** Pauses between the retries of BEGIN IMMEDIATE: 200, 400 and 800 ms. */
+    private const BUSY_BACKOFF_MICROSECONDS = [200_000, 400_000, 800_000];
+
     public function __construct(private readonly PDO $pdo) {}
 
     /**
@@ -60,7 +65,7 @@ final class SqliteTransactions
         // beginTransaction() issues a deferred BEGIN, and PDO::inTransaction()
         // only tracks API-level transactions, so the boundary is tracked
         // manually here.
-        $this->pdo->exec('BEGIN IMMEDIATE');
+        $this->beginImmediate();
         $this->open = true;
         try {
             $result = $operation();
@@ -75,6 +80,37 @@ final class SqliteTransactions
             } catch (Throwable) {
             }
             throw $error;
+        }
+    }
+
+    /**
+     * Take the write lock, waiting out a holder that outlasts the busy timeout.
+     *
+     * The connection's busy timeout covers a short hold. A longer one raised a
+     * raw driver error after the scan's worker work was already done, so the
+     * lock is retried with a growing pause and only then reported as busy.
+     */
+    private function beginImmediate(): void
+    {
+        foreach (self::BUSY_BACKOFF_MICROSECONDS as $pause) {
+            try {
+                $this->pdo->exec('BEGIN IMMEDIATE');
+
+                return;
+            } catch (PDOException $error) {
+                if (!SqliteBusy::is($error)) {
+                    throw $error;
+                }
+            }
+            usleep($pause);
+        }
+        try {
+            $this->pdo->exec('BEGIN IMMEDIATE');
+        } catch (PDOException $error) {
+            if (!SqliteBusy::is($error)) {
+                throw $error;
+            }
+            throw new ScanBusyException('The graph database is busy; another writer holds the lock.', 0, $error);
         }
     }
 
