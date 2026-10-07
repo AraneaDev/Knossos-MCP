@@ -68,10 +68,15 @@ def write(message: dict[str, Any]) -> None:
 
 
 def _parse_quietly(source: bytes, **options: Any) -> ast.Module:
-    """Parse ``source``; a SyntaxWarning (an invalid escape) must not reach stderr, where enough of them fail the batch."""
+    """Parse ``source`` without letting a SyntaxWarning (an invalid escape) reach stderr.
+
+    Enough of them on stderr fail the batch.
+    """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return ast.parse(source, **options)
+        # Keyword options pick no overload, so the result is typed explicitly.
+        module: ast.Module = ast.parse(source, **options)
+        return module
 
 
 def safe_root(value: Any) -> Path:

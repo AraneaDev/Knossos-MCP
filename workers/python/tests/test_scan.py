@@ -667,7 +667,9 @@ def test_invalid_escape_sequences_leave_stderr_empty(worker: ModuleType, tmp_pat
     assert all(contribution["nodes"] for contribution in contributions)
 
 
-def test_directory_name_that_is_not_utf8_does_not_break_output(worker: ModuleType, tmp_path: Path, scan_collect) -> None:
+def test_directory_name_that_is_not_utf8_does_not_break_output(
+    worker: ModuleType, tmp_path: Path, scan_collect
+) -> None:
     import json
     import os
 
