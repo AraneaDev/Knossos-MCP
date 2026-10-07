@@ -24,6 +24,8 @@ import {
     toVirtualSource,
 } from "./component-source.js";
 
+// Every contribution's owner key is this prefix and the file's project path.
+const OWNER_KEY_PREFIX = "knossos.typescript:file:";
 const SOURCE_EXTENSIONS = new Set([
     ".ts",
     ".tsx",
@@ -169,6 +171,21 @@ class InputReadRecorder {
         this.hashes.set(relative, contentHash);
     }
 
+    /** Whether this request recorded a read or probe under a key. */
+    has(relative) {
+        return this.hashes.has(relative);
+    }
+
+    /** The value a key carries in `input_hashes`, as recorded so far. */
+    value(relative) {
+        return this.hashes.get(relative);
+    }
+
+    /** Every key recorded so far. */
+    keys() {
+        return this.hashes.keys();
+    }
+
     /** Remember a SourceFile this request created from its own read. */
     created(sourceFile) {
         this.sourceFiles.add(sourceFile);
@@ -187,11 +204,286 @@ class InputReadRecorder {
 
     /** The map as the result field, keys sorted for deterministic output. */
     toResult() {
+        return this.select(this.hashes.keys());
+    }
+
+    /** The given keys with their recorded values, sorted, as a `reads` map. */
+    select(keys) {
         return Object.fromEntries(
-            [...this.hashes].sort(([left], [right]) =>
-                left < right ? -1 : left > right ? 1 : 0,
-            ),
+            [...keys]
+                .sort((left, right) =>
+                    left < right ? -1 : left > right ? 1 : 0,
+                )
+                .map((key) => [key, this.hashes.get(key)]),
         );
+    }
+}
+
+/**
+ * Which files each requested file's facts came from, for its contribution's
+ * `reads`, and which reads every file of the request shares, for the result's.
+ *
+ * A requested file is attributed its direct reads: every module its imports,
+ * exports, `import()`, `require` calls and import types resolved to, with
+ * every candidate the resolution probed on the way there; the targets of its
+ * `/// <reference>` directives; the package.json files that decided its module
+ * format; and the file of every declaration the checker answered with while
+ * its facts were collected. The core closes over those itself: a file it
+ * rescans counts as a change to every file that read it.
+ *
+ * That closure runs only through files the core scans. What a dependency's
+ * declarations read, and whatever no project source accounts for (a config, a
+ * bundler alias config, a probe for a type library), is shared by the whole
+ * request. So is a global script and a module that augments the global scope
+ * or another module: every file of its program sees those declarations
+ * without an import saying so.
+ *
+ * Values are taken from the recorder once the request has finished, so a path
+ * two programs read differently carries the same null here as in
+ * `input_hashes`.
+ */
+class ReadAttribution {
+    /** @param {InputReadRecorder} reads the request's recorder */
+    constructor(root, reads, maxFileBytes) {
+        this.root = root;
+        this.reads = reads;
+        this.maxFileBytes = maxFileBytes;
+        // Requested path to the keys its contribution read.
+        this.byFile = new Map();
+        // Keys a project source's own contribution reports.
+        this.accounted = new Set();
+        // Keys every file of the request shares, whoever else read them.
+        this.shared = new Set();
+    }
+
+    /**
+     * Attribute a requested file's reads.
+     *
+     * @param {ts.SourceFile[]|Set<ts.SourceFile>} declarationFiles the files
+     *   holding a declaration the checker answered with for this file
+     * @param {string[]} probes paths the file's facts asked about directly
+     */
+    requested(program, sourceFile, relative, declarationFiles, probes) {
+        const keys = this.#directReads(program, sourceFile, true);
+        for (const file of declarationFiles)
+            this.#addRecorded(keys, file.fileName);
+        for (const probe of probes) this.#addProbed(keys, probe);
+        keys.delete(relative);
+        this.byFile.set(relative, keys);
+        this.#account(sourceFile, relative, keys);
+    }
+
+    /**
+     * Account for the files of a program this request did not attribute: a
+     * project source reports its own reads when it is scanned, and whatever a
+     * dependency's file read is shared.
+     */
+    program(program) {
+        for (const sourceFile of program.getSourceFiles()) {
+            const relative = relativeInside(this.root, sourceFile.fileName);
+            if (relative === null || this.byFile.has(relative)) continue;
+            const keys = this.#directReads(program, sourceFile, false);
+            if (isProjectSource(relative)) {
+                this.#account(sourceFile, relative, keys);
+                continue;
+            }
+            for (const key of keys) this.shared.add(key);
+        }
+    }
+
+    /** The `reads` of a requested file's contribution; `{}` when it read nothing. */
+    readsOf(relative) {
+        return this.reads.select(this.byFile.get(relative) ?? []);
+    }
+
+    /** The result's `reads`: everything no project source accounts for. */
+    sharedReads() {
+        const keys = new Set(this.shared);
+        for (const key of this.reads.keys()) {
+            if (!this.accounted.has(key)) keys.add(key);
+        }
+        return this.reads.select(keys);
+    }
+
+    #account(sourceFile, relative, keys) {
+        this.accounted.add(relative);
+        for (const key of keys) this.accounted.add(key);
+        if (declaresGlobally(sourceFile) && this.reads.has(relative))
+            this.shared.add(relative);
+    }
+
+    /**
+     * The keys of what one file of a program read directly. With `probe`, a
+     * location this request has not recorded yet (a resolution answered from
+     * the cache another file filled, or a candidate the compiler skipped
+     * because its directory is missing) is probed now and recorded; without
+     * it, only recorded keys count.
+     */
+    #directReads(program, sourceFile, probe) {
+        const keys = new Set();
+        const add = probe
+            ? (location) => this.#addProbed(keys, location)
+            : (location) => this.#addRecorded(keys, location);
+        const addResolution = (resolution, resolvedFileName) => {
+            if (resolvedFileName !== undefined) add(resolvedFileName);
+            for (const location of resolution.failedLookupLocations ?? [])
+                add(location);
+            for (const location of resolution.affectingLocations ?? [])
+                add(location);
+        };
+        program.forEachResolvedModule(
+            (resolution) =>
+                addResolution(
+                    resolution,
+                    resolution.resolvedModule?.resolvedFileName,
+                ),
+            sourceFile,
+        );
+        program.forEachResolvedTypeReferenceDirective(
+            (resolution) =>
+                addResolution(
+                    resolution,
+                    resolution.resolvedTypeReferenceDirective?.resolvedFileName,
+                ),
+            sourceFile,
+        );
+        // A `/// <reference path>` is loaded as written, or with each source
+        // extension when it has none; every attempt went through the host.
+        for (const reference of sourceFile.referencedFiles) {
+            const target = normalize(
+                path.resolve(
+                    path.dirname(sourceFile.fileName),
+                    reference.fileName,
+                ),
+            );
+            this.#addRecorded(keys, target);
+            for (const extension of REFERENCE_EXTENSIONS)
+                this.#addRecorded(keys, `${target}${extension}`);
+        }
+        for (const location of sourceFile.packageJsonLocations ?? [])
+            add(location);
+        return keys;
+    }
+
+    #keyOf(location) {
+        const absolute = realSourcePath(normalize(path.resolve(location)));
+        return { absolute, key: inputHashKey(this.root, absolute) };
+    }
+
+    #addRecorded(keys, location) {
+        const { key } = this.#keyOf(location);
+        if (key !== null && this.reads.has(key)) keys.add(key);
+    }
+
+    /**
+     * Add a location's keys, probing it first when this request has not
+     * recorded it. A path the project's layout refuses is never read, so it
+     * has nothing to report. A file found present is hashed as a read of it
+     * would be, so its key carries the value any other read gives it.
+     *
+     * A dependency candidate the compiler did not probe is left out: it skips
+     * the candidates below a node_modules directory that does not exist, a
+     * dozen per package import and ancestor directory, and installing a
+     * package changes a package.json that resolution did read.
+     */
+    #addProbed(keys, location) {
+        const { absolute, key } = this.#keyOf(location);
+        if (key === null) return;
+        if (this.reads.has(key)) {
+            keys.add(key);
+            return;
+        }
+        if (
+            belowNodeModules(key) ||
+            excludedByProjectLayoutPath(this.root, absolute)
+        )
+            return;
+        const walked = walkPath(absolute);
+        const present =
+            walked.kind === "file" && contains(this.root, walked.location);
+        const walkedKeys = walkKeys(this.root, walked);
+        if (
+            present &&
+            walkedKeys.final !== null &&
+            !this.reads.has(walkedKeys.final)
+        )
+            this.reads.record(
+                walkedKeys.final,
+                boundedHash(walked.location, this.maxFileBytes),
+            );
+        recordProbe(this.reads, this.root, walked, present, this.maxFileBytes);
+        for (const candidate of [
+            walkedKeys.final,
+            ...walkedKeys.through,
+            ...walkedKeys.directories,
+        ]) {
+            if (candidate !== null && this.reads.has(candidate))
+                keys.add(candidate);
+        }
+    }
+}
+
+// What the compiler appends to a `/// <reference path>` written without one.
+const REFERENCE_EXTENSIONS = [".ts", ".tsx", ".d.ts", ".js", ".jsx"];
+
+/**
+ * Whether every file of a program sees a file's declarations without importing
+ * it: a script, or a module that augments the global scope or another module.
+ */
+function declaresGlobally(sourceFile) {
+    return (
+        !ts.isExternalOrCommonJsModule(sourceFile) ||
+        (sourceFile.moduleAugmentations?.length ?? 0) > 0
+    );
+}
+
+/**
+ * The checker, noting the source file of every declaration behind a symbol,
+ * type or signature it answers with, so a requested file is attributed the
+ * files its facts were resolved against. `files` is replaced per file.
+ */
+function declarationTracker(checker) {
+    const tracker = { files: new Set() };
+    const wrapped = new Map();
+    tracker.checker = new Proxy(checker, {
+        get(target, property) {
+            const value = target[property];
+            if (typeof value !== "function") return value;
+            let wrapper = wrapped.get(property);
+            if (wrapper === undefined) {
+                wrapper = (...args) => {
+                    const answer = value.apply(target, args);
+                    noteDeclarationFiles(answer, tracker.files);
+                    return answer;
+                };
+                wrapped.set(property, wrapper);
+            }
+            return wrapper;
+        },
+    });
+    return tracker;
+}
+
+/** Add the files declaring what a checker answer names. */
+function noteDeclarationFiles(answer, files) {
+    if (answer === null || typeof answer !== "object") return;
+    if (Array.isArray(answer)) {
+        for (const item of answer) noteDeclarationFiles(item, files);
+        return;
+    }
+    const symbols = [
+        answer.escapedName === undefined ? undefined : answer,
+        answer.symbol,
+        answer.aliasSymbol,
+    ];
+    const declarations = symbols.flatMap(
+        (symbol) => symbol?.declarations ?? [],
+    );
+    if (answer.declaration !== undefined) declarations.push(answer.declaration);
+    for (const declaration of declarations) {
+        // A synthesized declaration hangs off no file.
+        const file = declaration?.getSourceFile?.();
+        if (file !== undefined) files.add(file);
     }
 }
 
@@ -221,9 +513,35 @@ export class TypeScriptScanner {
      *
      * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, declaration_files?: unknown}} params
      * @param {(contribution: object) => void} emit
-     * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>}}
+     * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>, reads: Record<string, string|null>}}
      */
     scan(params, emit) {
+        // Held until the request has finished reading: a later program can
+        // read a path again and disagree, which turns its value null, and a
+        // contribution's `reads` must carry the value `input_hashes` ends with.
+        const contributions = [];
+        const { result, attribution } = this.#scanRequest(
+            params,
+            (contribution) => contributions.push(contribution),
+        );
+        for (const contribution of contributions) {
+            emit({
+                ...contribution,
+                reads: attribution.readsOf(
+                    contribution.owner_key.slice(OWNER_KEY_PREFIX.length),
+                ),
+            });
+        }
+        return { ...result, reads: attribution.sharedReads() };
+    }
+
+    /**
+     * Scan one request, handing each contribution to `emit` without its
+     * `reads`, which `attribution` gives once every read is in.
+     *
+     * @returns {{result: {files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>}, attribution: ReadAttribution}}
+     */
+    #scanRequest(params, emit) {
         const root = validateRoot(params.root);
         const { accepted: requested, rejected } = validateRequestedFiles(
             root,
@@ -231,6 +549,8 @@ export class TypeScriptScanner {
             params.limits,
         );
         const reads = new InputReadRecorder(this.observeHostPath);
+        const maxFileBytes = maxFileBytesFrom(params.limits);
+        const attribution = new ReadAttribution(root, reads, maxFileBytes);
         // Emitted before anything else so a file this worker cannot read still
         // gets its own contribution: raising it to the request would discard the
         // facts every other file in the batch contributes.
@@ -247,7 +567,6 @@ export class TypeScriptScanner {
         }
         const requestedSet = new Set(requested.map((file) => normalize(file)));
         const configPaths = configFilesForScan(root, params.config_files);
-        const maxFileBytes = maxFileBytesFrom(params.limits);
         const emitted = new Set();
         let programs = 0;
         let programsReused = 0;
@@ -257,6 +576,7 @@ export class TypeScriptScanner {
             root,
             maxFileBytes,
             reads,
+            attribution,
             requestedSet,
             emitted,
             emit,
@@ -279,7 +599,7 @@ export class TypeScriptScanner {
 
         const parsedConfigs = configPaths.map((configPath) => [
             configPath,
-            parseConfig(root, configPath, reads),
+            parseConfig(root, configPath, reads, maxFileBytes),
         ]);
         request.owners = configOwners(root, parsedConfigs);
         request.outputSources = outputSources(root, parsedConfigs);
@@ -333,10 +653,13 @@ export class TypeScriptScanner {
         }
 
         return {
-            files_scanned: emitted.size + rejected.length,
-            programs,
-            programs_reused: programsReused,
-            input_hashes: reads.toResult(),
+            result: {
+                files_scanned: emitted.size + rejected.length,
+                programs,
+                programs_reused: programsReused,
+                input_hashes: reads.toResult(),
+            },
+            attribution,
         };
     }
 
@@ -377,7 +700,19 @@ export class TypeScriptScanner {
                     programConfig(
                         request,
                         directory,
-                        fallbackConfig(root, files, group.parsed, directory),
+                        fallbackConfig(
+                            root,
+                            files,
+                            group.parsed,
+                            directory,
+                            (file) =>
+                                probeRecorded(
+                                    request.reads,
+                                    root,
+                                    file,
+                                    request.maxFileBytes,
+                                ),
+                        ),
                     ),
                     request,
                 ),
@@ -400,20 +735,9 @@ export class TypeScriptScanner {
      *
      * @returns {{reused: boolean}|undefined} undefined when the program failed
      */
-    #scanProgram(
-        key,
-        parsed,
-        {
-            root,
-            maxFileBytes,
-            reads,
-            requestedSet,
-            emitted,
-            emit,
-            owner,
-            owners,
-        },
-    ) {
+    #scanProgram(key, parsed, request) {
+        const { root, maxFileBytes, reads, requestedSet, emitted, emit } =
+            request;
         this.#reserveProgramSlot(key);
         this.#collectReleasedPrograms();
         const oldProgram = this.programCache.get(key);
@@ -428,17 +752,8 @@ export class TypeScriptScanner {
             );
             this.#cacheProgram(key, program);
             recordUnreadSourceFiles(root, program, reads, maxFileBytes);
-            this.#emitProgram(
-                root,
-                program,
-                requestedSet,
-                emitted,
-                emit,
-                maxFileBytes,
-                owner,
-                owners ?? new Map(),
-                key.endsWith(FALLBACK_KEY),
-            );
+            this.#emitProgram(program, request, key.endsWith(FALLBACK_KEY));
+            request.attribution.program(program);
         } catch (error) {
             const overflowed = isStackOverflow(error);
             const covered = [
@@ -543,18 +858,11 @@ export class TypeScriptScanner {
         }
     }
 
-    #emitProgram(
-        root,
-        program,
-        requestedSet,
-        emitted,
-        emit,
-        maxFileBytes,
-        owner,
-        owners,
-        fallback,
-    ) {
-        const checker = program.getTypeChecker();
+    #emitProgram(program, request, fallback) {
+        const { root, requestedSet, emitted, emit, maxFileBytes, owner } =
+            request;
+        const owners = request.owners ?? new Map();
+        const tracker = declarationTracker(program.getTypeChecker());
         const { byFile: diagnosticsByFile, programLevel } = programDiagnostics(
             program,
             root,
@@ -597,49 +905,18 @@ export class TypeScriptScanner {
                 continue;
             }
 
-            // Isolate per-file collection: a single adversarial/minified file can
-            // overflow the visitor recursion (RangeError). One bad file must
-            // degrade to a diagnostic, not discard facts for every other file in
-            // the request.
-            let contribution;
-            try {
-                const collector = new FactCollector(root, sourceFile, checker, {
-                    options: program.getCompilerOptions(),
-                    sourceFileAt: (fileName) => program.getSourceFile(fileName),
-                });
-                collector.collect();
-                contribution = {
-                    owner_key: `knossos.typescript:file:${relative}`,
-                    nodes: collector.nodes,
-                    edges: collector.edges,
-                    diagnostics: [
-                        ...(diagnosticsByFile.get(relative) ?? []),
-                        ...programWide(relative),
-                    ],
-                };
-            } catch (error) {
-                contribution = {
-                    owner_key: `knossos.typescript:file:${relative}`,
-                    nodes: [],
-                    edges: [],
-                    diagnostics: [
-                        {
-                            severity: "error",
-                            code: "TS_INTERNAL_ERROR",
-                            message:
-                                error instanceof Error
-                                    ? error.message
-                                    : String(error),
-                            evidence: {
-                                path: relative,
-                                start_line: 1,
-                                end_line: 1,
-                            },
-                        },
-                        ...programWide(relative),
-                    ],
-                };
-            }
+            const probes = [];
+            tracker.files = new Set();
+            const contribution = collectFile(
+                root,
+                program,
+                sourceFile,
+                { tracker, probes },
+                {
+                    own: diagnosticsByFile.get(relative) ?? [],
+                    programWide: programWide(relative),
+                },
+            );
             // Every SourceFile the restricted host creates has an entry. One
             // without would reach the core with facts but no hash, which it
             // refuses as a contract violation instead of trusting the read.
@@ -651,9 +928,75 @@ export class TypeScriptScanner {
             if (contentHash !== undefined) {
                 contribution.content_hash = contentHash;
             }
+            request.attribution.requested(
+                program,
+                sourceFile,
+                relative,
+                tracker.files,
+                probes,
+            );
             emit(contribution);
             emitted.add(relative);
         }
+    }
+}
+
+/**
+ * One requested file's contribution, without its hash or reads.
+ *
+ * Collection is isolated per file: a single adversarial or minified file can
+ * overflow the visitor recursion (RangeError), and one bad file must degrade
+ * to a diagnostic, not discard the facts of every other file in the request.
+ *
+ * @param {{tracker: {checker: ts.TypeChecker}, probes: string[]}} reads the
+ *   checker that notes declaration files, and where the paths the file's facts
+ *   asked about beyond its imports are listed
+ * @param {{own: object[], programWide: object[]}} diagnostics the compiler's
+ *   diagnostics on this file, and the program-wide ones it carries
+ */
+function collectFile(
+    root,
+    program,
+    sourceFile,
+    { tracker, probes },
+    diagnostics,
+) {
+    const relative = relativeInside(root, sourceFile.fileName);
+    try {
+        const collector = new FactCollector(root, sourceFile, tracker.checker, {
+            options: program.getCompilerOptions(),
+            sourceFileAt: (fileName) => {
+                probes.push(fileName);
+                return program.getSourceFile(fileName);
+            },
+            fileExists: (fileName) => {
+                probes.push(fileName);
+                return inRootFile(root, fileName);
+            },
+        });
+        collector.collect();
+        return {
+            owner_key: `${OWNER_KEY_PREFIX}${relative}`,
+            nodes: collector.nodes,
+            edges: collector.edges,
+            diagnostics: [...diagnostics.own, ...diagnostics.programWide],
+        };
+    } catch (error) {
+        return {
+            owner_key: `${OWNER_KEY_PREFIX}${relative}`,
+            nodes: [],
+            edges: [],
+            diagnostics: [
+                {
+                    severity: "error",
+                    code: "TS_INTERNAL_ERROR",
+                    message:
+                        error instanceof Error ? error.message : String(error),
+                    evidence: { path: relative, start_line: 1, end_line: 1 },
+                },
+                ...diagnostics.programWide,
+            ],
+        };
     }
 }
 
@@ -1594,10 +1937,10 @@ class TypeScriptLanguageFactCollector {
             // A file the program leaves out (a tsconfig `exclude`, or `.js`
             // without `allowJs`) is still the module the call loads. Only its
             // existence is asked, as the compiler host asks it, so nothing is
-            // read.
+            // read; the answer is attributed to this file like any probe.
             if (
                 allowedCompilerPath(this.root, fileName) &&
-                ts.sys.fileExists(fileName)
+                this.project.fileExists(fileName)
             )
                 return { fileName };
         }
@@ -2145,8 +2488,11 @@ class TypeScriptLanguageFactCollector {
     }
 }
 
-function parseConfig(root, configPath, reads) {
+function parseConfig(root, configPath, reads, maxFileBytes) {
     const absolute = validatedInside(root, configPath);
+    // Whether a component has a real `X.vue.ts` beside it decides the name it
+    // is offered under.
+    const exists = (file) => probeRecorded(reads, root, file, maxFileBytes);
     const host = {
         ...ts.sys,
         // A config and every config it extends or references decides the
@@ -2160,8 +2506,11 @@ function parseConfig(root, configPath, reads) {
             allowedCompilerPath(root, file)
                 ? readRecorded(root, file, reads, Number.MAX_SAFE_INTEGER)
                 : undefined,
+        // An `extends` target is probed before it is read, and a probe that
+        // finds nothing decides the options as surely as a read.
         fileExists: (file) =>
-            allowedCompilerPath(root, file) && ts.sys.fileExists(file),
+            allowedCompilerPath(root, file) &&
+            probeRecorded(reads, root, file, Number.MAX_SAFE_INTEGER),
         readDirectory: (directory, extensions, excludes, includes, depth) => {
             if (!allowedCompilerPath(root, directory)) return [];
             return ts.sys
@@ -2216,8 +2565,12 @@ function parseConfig(root, configPath, reads) {
         referencedOutputs.push([referenceConfig, referenced.options]);
         pending.push(...(referenced.projectReferences ?? []));
     }
-    parsed.fileNames = [...fileNames].map(offeredComponentPath);
-    parsed.ownFileNames = ownFileNames.map(offeredComponentPath);
+    parsed.fileNames = [...fileNames].map((file) =>
+        offeredComponentPath(file, exists),
+    );
+    parsed.ownFileNames = ownFileNames.map((file) =>
+        offeredComponentPath(file, exists),
+    );
     parsed.referencedOutputs = referencedOutputs;
     // References are kept, and the host resolves a reference's build output
     // back to its source (see createRestrictedProgram), so an import of
@@ -2578,6 +2931,28 @@ function linkedFileHash(root, relative, maxFileBytes) {
         : null;
 }
 
+/**
+ * Whether a path is an in-root file, recorded as a probe whose answer feeds
+ * facts (recordProbe). A default-library file is the worker's own and is
+ * answered without a record; anything else outside the root is absent.
+ */
+function probeRecorded(reads, root, file, maxFileBytes) {
+    const absolute = normalize(path.resolve(file));
+    if (contains(defaultLibDirectory(), absolute))
+        return ts.sys.fileExists(absolute);
+    if (!contains(root, absolute)) return false;
+    const walked = walkPath(absolute);
+    const present = walked.kind === "file" && contains(root, walked.location);
+    recordProbe(reads, root, walked, present, maxFileBytes);
+    return present;
+}
+
+/** Whether a path walks to a file inside the root, without recording it. */
+function inRootFile(root, file) {
+    const walked = walkPath(normalize(path.resolve(file)));
+    return walked.kind === "file" && contains(root, walked.location);
+}
+
 /** Record a path the host would not or could not read as a failed read. */
 function recordRefused(reads, root, absolute, maxFileBytes) {
     recordWalked(reads, root, walkPath(absolute), null, maxFileBytes);
@@ -2910,7 +3285,10 @@ function withBundlerAliases(root, directory, parsed, reads, maxFileBytes) {
     const aliases = {};
     for (const name of ALIAS_CONFIGS) {
         const config = path.join(directory, name);
-        if (!allowedCompilerPath(root, config) || !isRegularFile(config))
+        if (
+            !allowedCompilerPath(root, config) ||
+            !probeRecorded(reads, root, config, maxFileBytes)
+        )
             continue;
         if (name.startsWith("svelte.")) aliases.$lib ??= "src/lib";
         const text = readRecorded(root, config, reads, maxFileBytes);
@@ -3474,17 +3852,8 @@ function createRestrictedProgram(
     };
     // Module resolution decides an import's target by these answers, so an
     // in-root answer is recorded (recordProbe).
-    host.fileExists = (file) => {
-        const absolute = normalize(path.resolve(realSourcePath(file)));
-        if (contains(defaultLibDirectory(), absolute))
-            return ts.sys.fileExists(absolute);
-        if (!contains(root, absolute)) return false;
-        const walked = walkPath(absolute);
-        const present =
-            walked.kind === "file" && contains(root, walked.location);
-        recordProbe(reads, root, walked, present, maxFileBytes);
-        return present;
-    };
+    host.fileExists = (file) =>
+        probeRecorded(reads, root, realSourcePath(file), maxFileBytes);
     // Resolution realpaths a package's files before the host is asked for
     // them, so a link on that path is walked here, where its name is still
     // known, rather than lost behind the resolved name getSourceFile sees. The
@@ -3547,6 +3916,7 @@ function createRestrictedProgram(
         parsed.vueProject === true,
         parsed.outputSources ?? [],
         (file) => allowedCompilerPath(root, file),
+        (file) => probeRecorded(reads, root, file, maxFileBytes),
     );
     return ts.createProgram({
         rootNames: withSvelteRunes(parsed.fileNames, options, host),
@@ -3557,19 +3927,6 @@ function createRestrictedProgram(
     });
 }
 
-/**
- * Module resolution as the compiler does it, with two corrections for
- * components.
- *
- * An import that names a component (`./Card.vue`) means the component even
- * when a real `Card.vue.ts` sits beside it, which the compiler would try
- * first. And in a Vue project (`vueProject`, from the manifests), a relative
- * or path-mapped specifier with no extension that resolves to nothing
- * resolves to `.vue`, as webpack and Vue CLI list it in
- * `resolve.extensions`; the retry probes paths that are then recorded, so it
- * stays off elsewhere. The resolution mode follows a project reference's own
- * options, as the compiler's default loader does.
- */
 /**
  * Where each config in the scan, and each config one references, emits
  * (`outDir`) and what it emits from (`rootDir`, else its own directory).
@@ -3641,7 +3998,23 @@ function sourceOfBuildOutput(result, outputs, host) {
     return undefined;
 }
 
-function componentResolver(host, cache, vueProject, outputs, readable) {
+/**
+ * Module resolution as the compiler does it, with two corrections for
+ * components.
+ *
+ * An import that names a component (`./Card.vue`) means the component even
+ * when a real `Card.vue.ts` sits beside it, which the compiler would try
+ * first. And in a Vue project (`vueProject`, from the manifests), a relative
+ * or path-mapped specifier with no extension that resolves to nothing
+ * resolves to `.vue`, as webpack and Vue CLI list it in
+ * `resolve.extensions`; the retry probes paths that are then recorded, so it
+ * stays off elsewhere. The resolution mode follows a project reference's own
+ * options, as the compiler's default loader does.
+ *
+ * @param {(file: string) => boolean} probe whether a path is a real file, as
+ *   a recorded probe: a component's alias is not one
+ */
+function componentResolver(host, cache, vueProject, outputs, readable, probe) {
     return (
         literals,
         containingFile,
@@ -3669,6 +4042,7 @@ function componentResolver(host, cache, vueProject, outputs, readable) {
             // Resolved to build output is resolved to nothing: it is never
             // read (see allowedCompilerPath).
             const resolved = componentTarget(
+                probe,
                 literal.text,
                 direct.resolvedModule === undefined ||
                     !readable(direct.resolvedModule.resolvedFileName)
@@ -3683,10 +4057,23 @@ function componentResolver(host, cache, vueProject, outputs, readable) {
             )
                 return resolved;
             const component = resolve(`${literal.text}.vue`);
+            // Both attempts probed, and a file at any of those paths would
+            // change the answer, so each carries the other's misses.
             return component.resolvedModule !== undefined
-                ? component
-                : resolved;
+                ? withFailedLookups(component, resolved)
+                : withFailedLookups(resolved, component);
         });
+}
+
+/** A resolution that also names another attempt's failed lookups. */
+function withFailedLookups(resolution, attempt) {
+    return {
+        ...resolution,
+        failedLookupLocations: [
+            ...(resolution.failedLookupLocations ?? []),
+            ...(attempt.failedLookupLocations ?? []),
+        ],
+    };
 }
 
 /**
@@ -3694,7 +4081,7 @@ function componentResolver(host, cache, vueProject, outputs, readable) {
  * beside `X.vue`, redirected to the component's own alias; anything else as
  * it is.
  */
-function componentTarget(specifier, resolved) {
+function componentTarget(fileExists, specifier, resolved) {
     const dialect = componentDialect(specifier);
     const file = resolved.resolvedModule?.resolvedFileName;
     if (dialect === null || file === undefined) return resolved;
@@ -3703,8 +4090,8 @@ function componentTarget(specifier, resolved) {
     if (
         !file.endsWith(suffix) ||
         componentDialect(component) !== dialect ||
-        !isRegularFile(file) ||
-        !isRegularFile(component)
+        !fileExists(file) ||
+        !fileExists(component)
     )
         return resolved;
     return {
@@ -4715,7 +5102,7 @@ function unscannableContribution(relative, message) {
 // A contribution with no facts, only a diagnostic saying why.
 function factFreeContribution(relative, code, message) {
     return {
-        owner_key: `knossos.typescript:file:${relative}`,
+        owner_key: `${OWNER_KEY_PREFIX}${relative}`,
         nodes: [],
         edges: [],
         diagnostics: [
@@ -5275,7 +5662,14 @@ const FALLBACK_OPTIONS = {
     jsx: ts.JsxEmit.Preserve,
 };
 
-function fallbackConfig(root, remaining, config, directory = root) {
+/**
+ * The options and root files of a fallback program: the files no config's
+ * program emitted, under the resolution options of the config beside them.
+ *
+ * @param {(file: string) => boolean} exists whether a path is a real file, as
+ *   a recorded probe (see offeredPath)
+ */
+function fallbackConfig(root, remaining, config, directory, exists) {
     const configOptions = config?.options;
     const inherited = {};
     for (const option of RESOLUTION_OPTIONS)
@@ -5293,7 +5687,7 @@ function fallbackConfig(root, remaining, config, directory = root) {
         // case, only ever reaches the fallback program: no tsconfig `include`
         // matches either name.
         fileNames: remaining.map((relative) =>
-            offeredPath(path.join(root, relative)),
+            offeredPath(path.join(root, relative), exists),
         ),
         // A referenced project's outputs stand for its sources here as in
         // the config's own program (`#shared/*` naming its `dist`).
@@ -5419,6 +5813,33 @@ function excludedByProjectLayout(relative) {
     );
 }
 
+// File-name suffixes the core never discovers: minified bundles.
+const UNDISCOVERED_FILE_SUFFIXES = [".min.js", ".min.mjs", ".min.cjs"];
+
+/**
+ * Whether the core scans a project-relative path as one of this worker's own
+ * sources, so that file's contribution reports what it read. A dependency's
+ * file, one the project's layout excludes, and a file of another kind (JSON)
+ * report nothing of their own. A program holds an extensionless file only as a
+ * requested shebang script.
+ */
+function isProjectSource(relative) {
+    if (
+        excludedByProjectLayout(relative) ||
+        relative
+            .split("/")
+            .some((segment) => RESOLUTION_ALLOWED_EXCLUDED.has(segment)) ||
+        UNDISCOVERED_FILE_SUFFIXES.some((suffix) => relative.endsWith(suffix))
+    )
+        return false;
+    const extension = path.extname(relative);
+    return (
+        extension === "" ||
+        SOURCE_EXTENSIONS.has(extension.toLowerCase()) ||
+        componentDialect(relative) !== null
+    );
+}
+
 /**
  * Whether a project-relative path lies below a node_modules directory, at the
  * top level of the project or nested. A relative path has no leading slash, so
@@ -5482,11 +5903,11 @@ function realSourcePath(candidate) {
 // The name a requested file is offered to the program under: an extensionless
 // script as a `.js` alias, a file whose extension is not in lower case under its
 // lower-cased extension, and anything else as itself.
-function offeredPath(absolute) {
+function offeredPath(absolute, exists) {
     const dialect = componentDialect(absolute);
     if (dialect !== null) {
         const suffix = componentAliasSuffix(dialect);
-        return isRegularFile(`${absolute}${suffix}`)
+        return exists(`${absolute}${suffix}`)
             ? `${absolute}${COMPONENT_ALIAS_MARK}${suffix}`
             : `${absolute}${suffix}`;
     }
@@ -5498,8 +5919,8 @@ function offeredPath(absolute) {
 }
 
 /** A component's alias (see offeredPath); any other file as itself. */
-function offeredComponentPath(file) {
-    return componentDialect(file) === null ? file : offeredPath(file);
+function offeredComponentPath(file, exists) {
+    return componentDialect(file) === null ? file : offeredPath(file, exists);
 }
 
 /** Whether a path is a regular file, following links as the compiler does. */

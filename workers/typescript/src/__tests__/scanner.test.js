@@ -10,6 +10,8 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { TypeScriptScanner, discoverConfigFiles } from "../scanner.js";
+import { withoutAbsentAliasConfigs } from "./support/absent-alias-configs.mjs";
+import { absentRequireCandidates } from "./support/require-candidates.mjs";
 
 const created = [];
 
@@ -1129,7 +1131,7 @@ describe("input_hashes: the reads a request reports", () => {
             "src/a.ts",
         ]);
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "src/a.ts": sha256(Buffer.from(A)),
             "src/b.ts": sha256(Buffer.from(B)),
         });
@@ -1140,7 +1142,7 @@ describe("input_hashes: the reads a request reports", () => {
 
         const { result } = scanWithResult(new TypeScriptScanner(), root, []);
 
-        expect(result.input_hashes).toEqual({});
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({});
     });
 
     it("reports null for a file whose read failed", () => {
@@ -1150,7 +1152,10 @@ describe("input_hashes: the reads a request reports", () => {
             scanWithResult(new TypeScriptScanner(), root, ["src/a.ts"]),
         );
 
-        expect(result.input_hashes).toEqual({
+        // With b.ts out of the program, the import is looked for where a
+        // `require` would load it, up to b.ts, which is there.
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...absentRequireCandidates("src/b", ".ts"),
             "src/a.ts": sha256(Buffer.from(A)),
             "src/b.ts": null,
         });
@@ -1211,6 +1216,9 @@ describe("input_hashes: the key each read goes under", () => {
         // The import resolves to nothing because no candidate exists, so a
         // discovered candidate missing for that moment must fail verification.
         // Discovery never reports an absent path, so a stable tree is unaffected.
+        // The candidates below the missing directory, which the compiler names
+        // without probing, and those a `require` would load, are probed too:
+        // a file created at any of them changes what the import means.
         const root = fixture({
             "src/a.ts": 'import { M } from "./missing";\nexport const a = M;\n',
         });
@@ -1219,17 +1227,19 @@ describe("input_hashes: the key each read goes under", () => {
             "src/a.ts",
         ]);
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "src/a.ts": sha256(
                 Buffer.from(
                     'import { M } from "./missing";\nexport const a = M;\n',
                 ),
             ),
+            ...absentRequireCandidates("src/missing"),
             "src/missing.ts": null,
             "src/missing.tsx": null,
             "src/missing.d.ts": null,
             "src/missing.js": null,
             "src/missing.jsx": null,
+            "src/missing/package.json": null,
         });
     });
 
@@ -1241,7 +1251,7 @@ describe("input_hashes: the key each read goes under", () => {
             "src/a.ts",
         ]);
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "src/a.ts": sha256(Buffer.from(A)),
             "src/b.ts": sha256(Buffer.from(B)),
         });
@@ -1263,7 +1273,7 @@ describe("input_hashes: the key each read goes under", () => {
         // Discovery never hashes them, so the core re-reads them at commit:
         // what the import resolved through, and where an earlier candidate
         // would have taken it had it existed.
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "node_modules/dep.d.ts": null,
             "node_modules/dep.ts": null,
             "node_modules/dep.tsx": null,
@@ -1291,7 +1301,7 @@ describe("input_hashes: the key each read goes under", () => {
             "bin/cli",
         ]);
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "bin/cli": sha256(Buffer.from(script)),
         });
     });
@@ -1315,7 +1325,7 @@ describe("input_hashes: the key each read goes under", () => {
             "src/a.ts",
         ]);
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "src/a.ts": sha256(Buffer.from(A)),
             "src/b.ts": sha256(Buffer.from(B)),
             "lib/b.ts": sha256(Buffer.from(B)),
@@ -1361,7 +1371,8 @@ describe("input_hashes: a path that changes under the read", () => {
         );
 
         expect(readsMade).not.toContain(outside);
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...absentRequireCandidates("src/b"),
             "src/a.ts": sha256(Buffer.from(A)),
             "src/b.ts": null,
         });
@@ -1378,7 +1389,8 @@ describe("input_hashes: a path that changes under the read", () => {
             "/src/b.ts": () => linkOut(join(root, "src/b.ts"), outside),
         });
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...absentRequireCandidates("src/b"),
             "src/a.ts": sha256(Buffer.from(A)),
             "src/b.ts": null,
         });
@@ -1395,7 +1407,8 @@ describe("input_hashes: a path that changes under the read", () => {
             { limits: { max_file_bytes: 200 } },
         );
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...absentRequireCandidates("src/b", ".ts"),
             "src/a.ts": sha256(Buffer.from(A)),
             "src/b.ts": null,
         });
@@ -1408,7 +1421,8 @@ describe("input_hashes: a path that changes under the read", () => {
             "/src/b.ts": () => fs.unlinkSync(join(root, "src/b.ts")),
         });
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...absentRequireCandidates("src/b"),
             "src/a.ts": sha256(Buffer.from(A)),
             "src/b.ts": null,
         });
@@ -1556,6 +1570,15 @@ function linkedLayout(real = REAL, c = C) {
     return root;
 }
 
+// With each target out of the program, its import is looked for where a
+// `require` would load it: up to the `.ts` file when it is still there, at
+// every candidate when it is not.
+const requireCandidatesOf = (until) => ({
+    ...absentRequireCandidates("src/alias", until),
+    ...absentRequireCandidates("src/linkdir/c", until),
+    ...absentRequireCandidates("real/c", until),
+});
+
 const refusedOnRealKeys = {
     "src/a.ts": sha256(Buffer.from(IMPORTER)),
     "src/real.ts": null,
@@ -1602,25 +1625,37 @@ describe("input_hashes: a refused path reached through a symlink", () => {
             { limits: { max_file_bytes: 300 } },
         );
 
-        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...requireCandidatesOf(".ts"),
+            ...refusedOnRealKeys,
+        });
     });
 
     it("keys a file refused for now linking out of the root by the in-root link", () => {
         const result = scanSwapping("load", escape);
 
-        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...requireCandidatesOf(),
+            ...refusedOnRealKeys,
+        });
     });
 
     it("keys a file whose target left the root before the read by the in-root link", () => {
         const result = scanSwapping("read", escape);
 
-        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...requireCandidatesOf(),
+            ...refusedOnRealKeys,
+        });
     });
 
     it("keys a file removed before the read by where it was", () => {
         const result = scanSwapping("read", remove);
 
-        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...requireCandidatesOf(),
+            ...refusedOnRealKeys,
+        });
     });
 });
 
@@ -1639,7 +1674,8 @@ describe("input_hashes: a refused path under a directory swapped for a link", ()
             },
         });
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...absentRequireCandidates("src/sub/c"),
             "src/a.ts": sha256(Buffer.from(importer)),
             "src/sub/c.ts": null,
             "src/sub": null,
@@ -1678,7 +1714,7 @@ describe("input_hashes: a link target with `..` after a linked directory", () =>
         // so only the link itself, a directory, which is always null. The
         // probe that found src/lnk.ts present hashed the file it leads to,
         // as the read does.
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "src/a.ts": sha256(Buffer.from(importer)),
             "deep/c.ts": sha256(Buffer.from(DEEP)),
             "src/lnk.ts": sha256(Buffer.from(DEEP)),
@@ -1693,7 +1729,8 @@ describe("input_hashes: a link target with `..` after a linked directory", () =>
             "/src/lnk.ts": () => fs.unlinkSync(join(root, "deep/c.ts")),
         });
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...absentRequireCandidates("src/lnk"),
             "src/a.ts": sha256(Buffer.from(importer)),
             "deep/c.ts": null,
             "src/lnk.ts": null,
@@ -1711,7 +1748,8 @@ describe("input_hashes: a link target with `..` after a linked directory", () =>
             { limits: { max_file_bytes: 300 } },
         );
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...absentRequireCandidates("src/lnk", ".ts"),
             "src/a.ts": sha256(Buffer.from(importer)),
             "deep/c.ts": null,
             "src/lnk.ts": null,

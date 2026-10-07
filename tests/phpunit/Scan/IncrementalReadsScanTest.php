@@ -118,8 +118,8 @@ final class IncrementalReadsScanTest extends KnossosTestCase
 
     /**
      * A file added where an import already pointed changes what the importer
-     * resolves to, and a worker that does not attribute its reads gives no
-     * other way to tell, so every file of its scanner is rebuilt.
+     * resolves to. The importer recorded the path as probed and absent, so it
+     * is rebuilt with the new file, and a file that never looked there is not.
      */
     public function testAnAddedTypescriptFileThatAnExistingFileImportsMatchesAFullScan(): void
     {
@@ -133,7 +133,7 @@ final class IncrementalReadsScanTest extends KnossosTestCase
         $incremental = $this->scan($pdo);
 
         assertSame('incremental', $incremental->data['mode']);
-        assertSame(3, $incremental->data['parsed_files']);
+        assertSame(2, $incremental->data['parsed_files']);
         $full = $this->freshTestDatabase();
         $this->scan($full);
         assertSame($this->graphSignature($full), $this->graphSignature($pdo));
@@ -142,8 +142,8 @@ final class IncrementalReadsScanTest extends KnossosTestCase
     /**
      * A file the previous scan saw but could not cache is not an added file:
      * only it is rescanned, and once it is cached the next scan changes
-     * nothing. Edited while it has no cache row, it rebuilds its scanner like
-     * an added file would.
+     * nothing. Edited while it has no cache row, it is rescanned with the
+     * files that read it.
      */
     public function testAFileTheLastScanCouldNotCacheIsRescannedAloneUntilItChanges(): void
     {
@@ -166,7 +166,7 @@ final class IncrementalReadsScanTest extends KnossosTestCase
         $this->write('c.ts', "export class C {}\nexport class D extends C {}\n");
         $edited = $this->scan($pdo);
 
-        assertSame(3, $edited->data['parsed_files']);
+        assertSame(2, $edited->data['parsed_files']);
         $full = $this->freshTestDatabase();
         $this->scan($full);
         assertSame($this->graphSignature($full), $this->graphSignature($pdo));

@@ -106,6 +106,7 @@ async function handle(request) {
                     "partial_ast",
                     "content_hash",
                     "input_hashes",
+                    "read_attribution",
                 ],
             };
             break;

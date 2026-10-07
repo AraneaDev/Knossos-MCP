@@ -128,6 +128,7 @@ describe("a program whose construction overflows the stack", () => {
                     evidence: { path: "deep/a.ts", start_line: 1, end_line: 1 },
                 },
             ],
+            reads: {},
         });
         expect(codes(byPath["other/ok.ts"])).toEqual([]);
         expect(byPath["other/ok.ts"].nodes.length).toBeGreaterThan(0);

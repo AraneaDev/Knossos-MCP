@@ -919,7 +919,9 @@ final class TypescriptScannerTest extends KnossosTestCase
             iterator_to_array($client->scan(['root' => $root, 'files' => ['src/User.ts']]));
             $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
 
-            $expected = array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files);
+            $expected = array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files)
+                + self::absentTypescriptAliasConfigs();
+            ksort($expected);
             assertSame($expected, $inputHashes);
         } finally {
             $client->shutdown();

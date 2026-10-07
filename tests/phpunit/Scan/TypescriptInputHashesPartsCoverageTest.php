@@ -58,6 +58,7 @@ final class TypescriptInputHashesPartsCoverageTest extends KnossosTestCase
         $expected['src/entry.ts'] = hash('sha256', (string) file_get_contents($this->root . '/src/entry.ts'));
         // The tsconfig decides the program, so its read is reported too.
         $expected['tsconfig.json'] = hash('sha256', (string) file_get_contents($this->root . '/tsconfig.json'));
+        $expected += self::absentTypescriptAliasConfigs();
 
         $client = $this->typescriptWorkerClient();
         $contributions = iterator_to_array($client->scan([
@@ -75,5 +76,43 @@ final class TypescriptInputHashesPartsCoverageTest extends KnossosTestCase
         ksort($expected);
         ksort($inputHashes);
         assertSame($expected, $inputHashes);
+    }
+
+    /**
+     * What a dependency's declarations read is shared by every file of the
+     * request, and that set outgrows one frame as `input_hashes` does, so it
+     * travels in parts too.
+     */
+    public function testSharedReadsThatOutgrowOneFrameStillReachTheResult(): void
+    {
+        $directory = 'node_modules/dep/' . str_repeat('long-directory-name-', 9);
+        mkdir($this->root . '/' . $directory, 0o777, true);
+        mkdir($this->root . '/src', 0o777, true);
+        file_put_contents($this->root . '/node_modules/dep/package.json', '{"name": "dep", "types": "index.d.ts"}');
+        $exports = '';
+        $expected = [];
+        for ($i = 0; $i < self::FILES; ++$i) {
+            $relative = sprintf('%s/module-%04d.d.ts', $directory, $i);
+            $contents = sprintf("export declare const value%d: number;\n", $i);
+            file_put_contents($this->root . '/' . $relative, $contents);
+            $expected[$relative] = hash('sha256', $contents);
+            $exports .= sprintf("export * from './%s/module-%04d';\n", substr($directory, strlen('node_modules/dep/')), $i);
+        }
+        file_put_contents($this->root . '/node_modules/dep/index.d.ts', $exports);
+        file_put_contents($this->root . '/src/entry.ts', "import { value0 } from 'dep';\nexport const entry = value0;\n");
+
+        $client = $this->typescriptWorkerClient();
+        iterator_to_array($client->scan(['root' => $this->root, 'files' => ['src/entry.ts']]));
+        $result = $client->lastScanResult();
+        $client->shutdown();
+
+        $reads = $result['reads'] ?? [];
+        assertSame(true, strlen((string) json_encode($reads)) > 256_000);
+        assertSame($expected, array_intersect_key($reads, $expected));
+        // Each shared read is one input_hashes confirms with the same value.
+        $confirmed = array_intersect_key($result['input_hashes'] ?? [], $reads);
+        ksort($confirmed);
+        ksort($reads);
+        assertSame($reads, $confirmed);
     }
 }

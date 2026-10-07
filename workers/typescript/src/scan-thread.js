@@ -78,8 +78,10 @@ parentPort.on("message", (message) => {
 });
 
 /**
- * Send all but the last part of the result's `input_hashes` ahead of it, so no
- * frame outgrows the core's line cap; the result keeps the last part.
+ * Send all but the last part of the result's `input_hashes`, and of its shared
+ * `reads`, ahead of it, so no frame outgrows the core's line cap; the result
+ * keeps the last part of each. A part of the reads travels on a
+ * `scan/input_hashes` notification of its own, beside an empty map.
  */
 function withInputHashesParts(result) {
     const parts = inputHashesParts(result.input_hashes);
@@ -90,7 +92,15 @@ function withInputHashesParts(result) {
             params: { input_hashes: part },
         });
     }
-    return { ...result, input_hashes: parts.at(-1) };
+    const readsParts = inputHashesParts(result.reads);
+    for (const part of readsParts.slice(0, -1)) {
+        post({
+            jsonrpc: "2.0",
+            method: "scan/input_hashes",
+            params: { input_hashes: {}, reads: part },
+        });
+    }
+    return { ...result, input_hashes: parts.at(-1), reads: readsParts.at(-1) };
 }
 
 function post(frame) {

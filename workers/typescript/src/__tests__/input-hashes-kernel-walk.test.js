@@ -9,6 +9,8 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { TypeScriptScanner } from "../scanner.js";
+import { withoutAbsentAliasConfigs } from "./support/absent-alias-configs.mjs";
+import { absentRequireCandidates } from "./support/require-candidates.mjs";
 
 // Every layout here is reached through `/// <reference path>`, which hands the
 // host the linked name as written: TypeScript neither probes it with
@@ -64,8 +66,10 @@ function scan(root, { onRead, maxFileBytes } = {}) {
     });
     const limits =
         maxFileBytes === undefined ? {} : { max_file_bytes: maxFileBytes };
-    return scanner.scan({ root, files: ["src/a.ts"], limits }, () => {})
-        .input_hashes;
+    return withoutAbsentAliasConfigs(
+        scanner.scan({ root, files: ["src/a.ts"], limits }, () => {})
+            .input_hashes,
+    );
 }
 
 describe("input_hashes: a link chain that leaves the root and comes back", () => {
@@ -194,8 +198,9 @@ describe("input_hashes: a directory changed under the read", () => {
                 change(root);
             },
         });
-        return scanner.scan({ root, files: ["src/a.ts"] }, () => {})
-            .input_hashes;
+        return withoutAbsentAliasConfigs(
+            scanner.scan({ root, files: ["src/a.ts"] }, () => {}).input_hashes,
+        );
     }
 
     it("keys a file under a directory removed before the read where it was", () => {
@@ -203,7 +208,10 @@ describe("input_hashes: a directory changed under the read", () => {
             fs.rmSync(join(root, "src/sub"), { recursive: true }),
         );
 
+        // With c.ts out of the program, the import is looked for where a
+        // `require` would load it.
         expect(hashes).toEqual({
+            ...absentRequireCandidates("src/sub/c"),
             "src/a.ts": sha256(importer),
             "src/sub/c.ts": null,
         });
@@ -215,7 +223,10 @@ describe("input_hashes: a directory changed under the read", () => {
             writeFileSync(join(root, "src/sub"), C);
         });
 
+        // With c.ts out of the program, the import is looked for where a
+        // `require` would load it.
         expect(hashes).toEqual({
+            ...absentRequireCandidates("src/sub/c"),
             "src/a.ts": sha256(importer),
             "src/sub/c.ts": null,
         });
@@ -470,10 +481,10 @@ describe("input_hashes: a file replaced by a directory", () => {
                 },
             });
 
-            const hashes = scanner.scan(
-                { root, files: ["src/a.ts"] },
-                () => {},
-            ).input_hashes;
+            const hashes = withoutAbsentAliasConfigs(
+                scanner.scan({ root, files: ["src/a.ts"] }, () => {})
+                    .input_hashes,
+            );
 
             expect(hashes).toEqual({
                 "src/a.ts": sha256(direct),
