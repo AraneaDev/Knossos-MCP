@@ -9,7 +9,6 @@ import json
 import os
 import re
 import sys
-import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, NamedTuple
@@ -65,18 +64,6 @@ UTF8_BOM = b"\xef\xbb\xbf"
 def write(message: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(message, separators=(",", ":"), ensure_ascii=True) + "\n")
     sys.stdout.flush()
-
-
-def _parse_quietly(source: bytes, **options: Any) -> ast.Module:
-    """Parse ``source`` without letting a SyntaxWarning (an invalid escape) reach stderr.
-
-    Enough of them on stderr fail the batch.
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        # Keyword options pick no overload, so the result is typed explicitly.
-        module: ast.Module = ast.parse(source, **options)
-        return module
 
 
 def safe_root(value: Any) -> Path:
@@ -537,7 +524,7 @@ class ProjectModuleIndex:
                 # reports the bytes this request saw.
                 self._record_walk(walked, hashlib.sha256(source).hexdigest())
                 try:
-                    tree = _parse_quietly(source)
+                    tree = ast.parse(source)
                 except (SyntaxError, ValueError, RecursionError):
                     tree = None
                 if tree is not None:
@@ -2174,7 +2161,7 @@ def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Ca
     # importer's sake; if the two reads disagree, the entry becomes None.
     index.record_read(relative, content_hash)
     try:
-        tree = _parse_quietly(source, filename=relative, type_comments=True)
+        tree = ast.parse(source, filename=relative, type_comments=True)
     except (SyntaxError, UnicodeDecodeError, ValueError) as error:
         emit(_diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error), content_hash))
         return

@@ -651,18 +651,41 @@ def test_routes_register_through_an_aliased_fastapi_import(scan_collect, project
     assert handler["attributes"]["python_framework_roles"] == ["fastapi.route_handler"]
 
 
-def test_invalid_escape_sequences_leave_stderr_empty(worker: ModuleType, tmp_path: Path, scan_collect, capfd) -> None:
-    import warnings
+# The interpreter flags the core launches the worker with. The source of truth
+# is the python descriptor in src/Scan/LanguageDescriptor.php; keep the two in
+# step. `-W ignore::SyntaxWarning` is what keeps parser warnings off stderr.
+LAUNCH_FLAGS = ["-I", "-B", "-W", "ignore::SyntaxWarning"]
+
+
+def test_invalid_escape_sequences_leave_stderr_empty(tmp_path: Path) -> None:
+    import json
+    import subprocess
+    import sys
+
+    from conftest import WORKER_PATH
 
     # Python 3.12+ warns on stderr for each invalid escape the parser meets; a
     # file full of them must not turn the worker's stderr into noise.
     (tmp_path / "a.py").write_text("import re\n" + 're.compile("\\d")\n' * 2000, encoding="utf-8")
     (tmp_path / "b.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        contributions = scan_collect(tmp_path, ["a.py", "b.py"])
-    assert [str(warning.message) for warning in caught] == []
-    assert capfd.readouterr().err == ""
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "scan", "params": {"root": str(tmp_path), "files": ["a.py", "b.py"]}},
+        {"jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": {}},
+    ]
+
+    child = subprocess.run(
+        [sys.executable, *LAUNCH_FLAGS, str(WORKER_PATH)],
+        input="".join(json.dumps(request) + "\n" for request in requests),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+
+    assert child.stderr == ""
+    frames = [json.loads(line) for line in child.stdout.splitlines()]
+    contributions = [frame["params"] for frame in frames if frame.get("method") == "scan/contribution"]
     assert len(contributions) == 2
     assert all(contribution["nodes"] for contribution in contributions)
 

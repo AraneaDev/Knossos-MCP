@@ -169,7 +169,7 @@ if in_lane tests; then
 # the optional Rust one. The paths are relative on purpose: that is the form
 # docs/reference/scanner-sdk.md shows worker authors.
 tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- php workers/php/bin/worker
-tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- python3 -I -B workers/python/bin/worker.py
+tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- python3 -I -B -W ignore::SyntaxWarning workers/python/bin/worker.py
 tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- node workers/typescript/bin/worker.js
 fi
 

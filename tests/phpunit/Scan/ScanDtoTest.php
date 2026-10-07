@@ -395,10 +395,13 @@ final class ScanDtoTest extends \Knossos\Tests\Phpunit\KnossosTestCase
 
         // Kills M#5 (ArrayItemRemoval on `['python3', ...]` -> `['-I', ...]`).
         // Enforces exact length so a dropped element fails the count check.
-        assertSame(4, count($command));
+        assertSame(6, count($command));
         assertSame('python3', $command[0]);
+        // The flags are part of the contract: `-W ignore::SyntaxWarning` keeps
+        // the parser's invalid-escape warnings off the worker's stderr.
+        assertSame(['-I', '-B', '-W', 'ignore::SyntaxWarning'], array_slice($command, 1, 4));
 
-        $lastArg = $command[3];
+        $lastArg = $command[5];
 
         // Kills M#4 (ConcatOperandRemoval: suffix `/workers/python/bin/worker.py`
         // dropped, leaving just `$installationRoot`).

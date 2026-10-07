@@ -107,7 +107,7 @@ trait WorkerClients
                 '--source=' . self::repositoryRoot() . '/workers/python/bin',
                 self::repositoryRoot() . '/workers/python/bin/worker.py',
             ]
-            : ['python3', '-I', '-B', self::repositoryRoot() . '/workers/python/bin/worker.py'];
+            : ['python3', '-I', '-B', '-W', 'ignore::SyntaxWarning', self::repositoryRoot() . '/workers/python/bin/worker.py'];
     }
 
     /** @param list<string> $messages @return list<array<string, mixed>> */
