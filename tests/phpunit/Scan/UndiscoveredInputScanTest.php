@@ -127,6 +127,29 @@ final class UndiscoveredInputScanTest extends KnossosTestCase
         assertSame(ScanSnapshotChangedException::inputChangedAfterRead('generated/late.d.ts')->getMessage(), $error->getMessage());
     }
 
+    /**
+     * A reused file sends no request, so nothing this scan's workers report
+     * names what it read. Its stored reads are checked at commit all the same.
+     */
+    public function testAnUndiscoveredReadOfAReusedFileChangedBeforeCommitFailsTheScan(): void
+    {
+        $pdo = $this->freshTestDatabase();
+        $service = $this->service('inputs_undiscovered_edited_unreported', $pdo);
+        file_put_contents($this->root . '/src/Other.php', "<?php\nfinal class Other {}\n");
+        $first = $service->scan($this->root);
+        $owner = (string) $pdo->query("SELECT owner_key FROM contribution_cache WHERE file_path = 'src/Checkout.php'")->fetchColumn();
+        // Checkout read the dependency and nothing it shares with Other, so
+        // editing Other leaves it reusable.
+        $pdo->exec('UPDATE contribution_cache SET read_attribution = 1, read_group = NULL');
+        $pdo->prepare('INSERT INTO contribution_reads(project_id, owner_key, read_path, read_hash) VALUES (?, ?, ?, ?)')
+            ->execute([$first->projectId, $owner, self::DEPENDENCY, hash_file('sha256', $this->root . '/' . self::DEPENDENCY)]);
+        file_put_contents($this->root . '/src/Other.php', "<?php\nfinal class Other { public int \$x = 1; }\n");
+
+        $error = captureThrows(fn() => $service->scan($this->root), ScanSnapshotChangedException::class);
+
+        assertSame(ScanSnapshotChangedException::inputChangedAfterRead(self::DEPENDENCY)->getMessage(), $error->getMessage());
+    }
+
     public function testAnUnchangedUndiscoveredReadScansAndCommits(): void
     {
         $pdo = $this->freshTestDatabase();

@@ -162,12 +162,14 @@ final class ProjectScanService implements ProjectScanner
             $stageMilliseconds['analysis'] = self::elapsedMilliseconds($analysisStarted);
             $cancellation->throwIfCancelled();
 
-            $verifyUndiscovered = function () use ($preparation, $language): void {
-                (new UndiscoveredInputVerifier())->verify(
-                    $preparation->discovery->rootRealpath,
-                    $language->undiscoveredInputs,
-                    $preparation->maxFileBytes,
-                );
+            // What this scan's requests read, and then what every kept entry
+            // read, reused ones included: a reused file sent no request, so a
+            // dependency of it edited since planning shows up only here.
+            $verifyUndiscovered = function () use ($preparation, $language, $plan): void {
+                $verifier = new UndiscoveredInputVerifier();
+                $root = $preparation->discovery->rootRealpath;
+                $verifier->verify($root, $language->undiscoveredInputs, $preparation->maxFileBytes);
+                $verifier->verify($root, self::entryReads($language, $plan, $preparation->discovery->hashedPaths()), $preparation->maxFileBytes);
             };
 
             $reconciliationStarted = hrtime(true);
@@ -314,20 +316,34 @@ final class ProjectScanService implements ProjectScanner
      */
     private static function workerInputs(LanguageScanResult $language, ScanPlan $plan, array $discovered): array
     {
+        $inputs = array_filter(self::entryReads($language, $plan, $discovered), static fn(?string $hash): bool => $hash !== null);
+        ksort($inputs, SORT_STRING);
+
+        return $inputs;
+    }
+
+    /**
+     * Every file a kept contribution read that discovery did not hash, with
+     * the hash it was read at, or null for a probed miss.
+     *
+     * @param array<string, object> $discovered every path discovery hashed
+     * @return array<string, ?string>
+     */
+    private static function entryReads(LanguageScanResult $language, ScanPlan $plan, array $discovered): array
+    {
         $groups = $language->readGroups + ($plan->cachedReads->groupReads ?? []);
-        $inputs = [];
+        $reads = [];
         foreach ($language->cacheEntries as $entry) {
-            foreach ([$entry->reads, $entry->readGroup === null ? [] : ($groups[$entry->readGroup] ?? [])] as $reads) {
-                foreach ($reads as $path => $hash) {
-                    if ($hash !== null && !isset($discovered[(string) $path])) {
-                        $inputs[(string) $path] = $hash;
+            foreach ([$entry->reads, $entry->readGroup === null ? [] : ($groups[$entry->readGroup] ?? [])] as $entryReads) {
+                foreach ($entryReads as $path => $hash) {
+                    if (!isset($discovered[(string) $path])) {
+                        $reads[(string) $path] = $hash;
                     }
                 }
             }
         }
-        ksort($inputs, SORT_STRING);
 
-        return $inputs;
+        return $reads;
     }
 
     /**

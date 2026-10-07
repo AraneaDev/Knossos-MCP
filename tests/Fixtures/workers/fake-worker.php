@@ -252,6 +252,12 @@ while (($line = fgets(STDIN)) !== false) {
                     // the next request: the result without its input_hashes.
                     $inputs[$dependency] = hash('sha256', 'never on disk');
                     $undiscoveredRequests = ($undiscoveredRequests ?? 0) + 1;
+                } elseif ($mode === 'inputs_undiscovered_edited_unreported') {
+                    // Not read by this request at all, but changed while it
+                    // runs: only a stored read of a reused file names it.
+                    if (is_file($root . '/' . $dependency)) {
+                        file_put_contents($root . '/' . $dependency, "// changed while another file was scanned\n", FILE_APPEND);
+                    }
                 } elseif ($mode === 'inputs_undiscovered_per_request') {
                     // A different value in every request that names a
                     // different first file, as two reads of a file rewritten
