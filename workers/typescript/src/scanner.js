@@ -3409,8 +3409,14 @@ function createRestrictedProgram(
         ...parsed.options,
         skipLibCheck: true,
         skipDefaultLibCheck: true,
+        traceResolution: false,
     };
     const host = ts.createCompilerHost(options, true);
+    // Resolution tracing writes through the system host to stdout, which is
+    // the frame channel, so a single trace line makes the reply invalid JSON
+    // and the whole language is dropped. A referenced project's own options
+    // are not overridden above, so the host's trace is silenced as well.
+    host.trace = () => {};
     // What an editor does: a referenced project's outputs stand for its
     // sources, so nothing has to be built before it can be analysed.
     host.useSourceOfProjectReferenceRedirect = () => true;

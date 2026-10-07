@@ -16,7 +16,7 @@ const workerPath = path.resolve(
  * @param {Array<object>} requests
  * @returns {Promise<{responses: Array<object>, stderr: string, loadedCompiler: boolean}>}
  */
-function ask(requests) {
+function ask(requests, { strict = true } = {}) {
     return new Promise((resolve, reject) => {
         // The child reports when it resolves the TypeScript compiler, so
         // "did the handshake load it?" is answered from the module graph rather
@@ -45,11 +45,12 @@ function ask(requests) {
         child.on("close", () => {
             const loadedCompiler = fs.existsSync(marker);
             fs.rmSync(directory, { recursive: true, force: true });
-            const responses = out
-                .split("\n")
-                .filter((line) => line.trim() !== "")
-                .map((line) => JSON.parse(line));
+            const lines = out.split("\n").filter((line) => line.trim() !== "");
+            const responses = strict
+                ? lines.map((line) => JSON.parse(line))
+                : [];
             resolve({
+                lines,
                 responses,
                 stderr: err,
                 loadedCompiler,
@@ -119,6 +120,104 @@ describe("worker startup", () => {
                 "packages/shared/src/contracts.ts",
             );
             expect(loadedCompiler).toBe(true);
+        },
+        SUBPROCESS_AND_PROGRAM_TIMEOUT_MS,
+    );
+});
+
+describe("worker stdout under module resolution tracing", () => {
+    function project(files) {
+        const root = fs.realpathSync(
+            fs.mkdtempSync(path.join(os.tmpdir(), "knossos-ts-trace-")),
+        );
+        for (const [name, content] of Object.entries(files)) {
+            fs.mkdirSync(path.dirname(path.join(root, name)), {
+                recursive: true,
+            });
+            fs.writeFileSync(path.join(root, name), content);
+        }
+        return root;
+    }
+
+    async function scanLines(root, file) {
+        const { lines } = await ask(
+            [
+                { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+                {
+                    jsonrpc: "2.0",
+                    id: 2,
+                    method: "scan",
+                    params: { root, files: [file] },
+                },
+                { jsonrpc: "2.0", id: 3, method: "shutdown", params: {} },
+            ],
+            { strict: false },
+        );
+        return lines;
+    }
+
+    function expectOnlyFrames(lines, file) {
+        const bad = lines.filter((line) => {
+            try {
+                JSON.parse(line);
+                return false;
+            } catch {
+                return true;
+            }
+        });
+        expect(bad).toEqual([]);
+        const scan = lines.map((line) => JSON.parse(line)).find((m) => m.id === 2);
+        expect(scan?.error).toBeUndefined();
+        expect(Object.keys(scan.result.input_hashes)).toContain(file);
+    }
+
+    it(
+        "keeps trace lines off stdout when the root tsconfig turns tracing on",
+        async () => {
+            const root = project({
+                "tsconfig.json": JSON.stringify({
+                    compilerOptions: { traceResolution: true },
+                    include: ["src"],
+                }),
+                "src/a.ts": 'import { b } from "./b";\nexport const a = b;\n',
+                "src/b.ts": "export const b = 1;\n",
+            });
+            try {
+                expectOnlyFrames(await scanLines(root, "src/a.ts"), "src/a.ts");
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+        },
+        SUBPROCESS_AND_PROGRAM_TIMEOUT_MS,
+    );
+
+    it(
+        "keeps trace lines off stdout when only a referenced project turns tracing on",
+        async () => {
+            const root = project({
+                "tsconfig.json": JSON.stringify({
+                    files: [],
+                    references: [{ path: "./lib" }],
+                }),
+                "lib/tsconfig.json": JSON.stringify({
+                    compilerOptions: {
+                        composite: true,
+                        traceResolution: true,
+                    },
+                    include: ["src"],
+                }),
+                "lib/src/a.ts":
+                    'import { b } from "./b";\nexport const a = b;\n',
+                "lib/src/b.ts": "export const b = 1;\n",
+            });
+            try {
+                expectOnlyFrames(
+                    await scanLines(root, "lib/src/a.ts"),
+                    "lib/src/a.ts",
+                );
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
+            }
         },
         SUBPROCESS_AND_PROGRAM_TIMEOUT_MS,
     );
