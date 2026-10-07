@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.19.1](https://github.com/AraneaDev/knossos/compare/v0.19.0...v0.19.1) (2026-10-07)
+
+
+### Fixes
+
+* close code execution through repository git config and project binaries ([#142](https://github.com/AraneaDev/knossos/issues/142)) ([788245d](https://github.com/AraneaDev/knossos/commit/788245db22fde6c3fb15993cc4fc2b1470120341))
+* harden the container, CI and plugin tooling ([#145](https://github.com/AraneaDev/knossos/issues/145)) ([315526c](https://github.com/AraneaDev/knossos/commit/315526c026d08d2980c8003398120fa7afa410ec))
+* **hooks:** drop PATH entries that do not resolve ([#144](https://github.com/AraneaDev/knossos/issues/144)) ([5eef0b5](https://github.com/AraneaDev/knossos/commit/5eef0b51fde976ff20211d0b5e15a555466d3f6c))
+
 ## [0.19.0](https://github.com/AraneaDev/knossos/compare/v0.18.1...v0.19.0) (2026-10-06)
 
 
