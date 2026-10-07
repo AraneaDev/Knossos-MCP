@@ -90,6 +90,26 @@ final readonly class IgnoreMatcher
     ];
 
     /**
+     * POSIX bracket classes as the ASCII ranges PCRE reads them as without the
+     * `u` modifier, for regex engines that do not know the POSIX names.
+     */
+    private const PORTABLE_POSIX_CLASSES = [
+        '[:alnum:]' => 'a-zA-Z0-9',
+        '[:alpha:]' => 'a-zA-Z',
+        '[:blank:]' => ' \t',
+        '[:cntrl:]' => '\x00-\x1f\x7f',
+        '[:digit:]' => '0-9',
+        '[:graph:]' => '\x21-\x7e',
+        '[:lower:]' => 'a-z',
+        '[:print:]' => '\x20-\x7e',
+        '[:punct:]' => '\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e',
+        '[:space:]' => ' \t\n\r\x0b\x0c',
+        '[:upper:]' => 'A-Z',
+        '[:word:]' => 'a-zA-Z0-9_',
+        '[:xdigit:]' => '0-9A-Fa-f',
+    ];
+
+    /**
      * Patterns pre-compiled to `[normalized, anchored, regex, negated]`, so a
      * pattern that cannot compile is rejected at construction rather than
      * silently matching nothing on every path, and the regex is built once per
@@ -133,6 +153,38 @@ final readonly class IgnoreMatcher
             $compiled[] = [$normalized, $anchored, $regex, $negated];
         }
         $this->compiled = $compiled;
+    }
+
+    /**
+     * The rules {@see matches()} applies, in a form a worker in any language
+     * applies to the paths it reads, so it leaves out what discovery leaves out.
+     *
+     * A path is excluded when it, or a directory above it, matches: discovery
+     * never descends into a directory that matches. A pattern's `regex` is a
+     * body to anchor as `^body$` (followed by `(?:/.*)?` when `anchored`, and
+     * matched against each segment when not), with POSIX bracket classes
+     * spelled out, since JavaScript and Python do not read them. The last
+     * pattern that matches decides, and a `negated` one re-includes.
+     *
+     * @return array{segments: list<string>, prefixes: list<string>, sequences: list<array{0: string, 1: string}>, suffixes: list<string>, path_prefixes: list<string>, patterns: list<array{regex: string, anchored: bool, negated: bool}>}
+     */
+    public function workerRules(): array
+    {
+        return [
+            'segments' => self::EXCLUDED_SEGMENTS,
+            'prefixes' => self::EXCLUDED_SEGMENT_PREFIXES,
+            'sequences' => self::EXCLUDED_SEGMENT_SEQUENCES,
+            'suffixes' => self::EXCLUDED_FILE_SUFFIXES,
+            'path_prefixes' => self::EXCLUDED_PREFIXES,
+            'patterns' => array_map(
+                static fn(array $pattern): array => [
+                    'regex' => strtr($pattern[2], self::PORTABLE_POSIX_CLASSES),
+                    'anchored' => $pattern[1],
+                    'negated' => $pattern[3],
+                ],
+                $this->compiled,
+            ),
+        ];
     }
 
     /** Whether a path is ignored, applying built-in exclusions then the user patterns. */

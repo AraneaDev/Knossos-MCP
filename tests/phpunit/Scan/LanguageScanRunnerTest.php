@@ -6,6 +6,7 @@ namespace Knossos\Tests\Scan;
 
 use Knossos\Configuration\ProjectConfiguration;
 use Knossos\Discovery\DiscoveryResult;
+use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\ProjectUnit;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\AnalysisHash;
@@ -1663,14 +1664,17 @@ final class LanguageScanRunnerTest extends TestCase
         );
 
         $limits = ['root' => '/tmp/foo', 'limits' => ['max_files' => 7, 'max_file_bytes' => 9_000]];
+        // What discovery leaves out, for the workers that resolve imports
+        // through the tree.
+        $exclusions = ['exclusions' => (new IgnoreMatcher($base->configuration->ignores))->workerRules()];
         assertSame(
             [
                 [...$limits, 'frameworks' => ['laravel']],
                 // Each manifest's declared TypeScript major, keyed by its
                 // directory; a range naming no version tells the worker nothing.
                 // And the directories whose manifest depends on Vue.
-                [...$limits, 'config_files' => ['web/tsconfig.json'], 'typescript_versions' => ['' => 5, 'web' => 6], 'vue_projects' => ['web'], 'package_directories' => ['', 'docs', 'tools', 'web']],
-                [...$limits, 'frameworks' => ['django']],
+                [...$limits, ...$exclusions, 'config_files' => ['web/tsconfig.json'], 'typescript_versions' => ['' => 5, 'web' => 6], 'vue_projects' => ['web'], 'package_directories' => ['', 'docs', 'tools', 'web']],
+                [...$limits, ...$exclusions, 'frameworks' => ['django']],
                 [...$limits, 'frameworks' => ['axum'], 'config_files' => ['rs/Cargo.toml']],
             ],
             array_map(

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\ProjectUnit;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Worker\ProcessScannerClient;
@@ -292,6 +293,11 @@ final readonly class LanguageScanRunner
             'root' => $plan->preparation->discovery->rootRealpath,
             'limits' => ['max_files' => $plan->preparation->maxFiles, 'max_file_bytes' => $plan->preparation->maxFileBytes],
         ];
+        if (in_array($descriptor->key, ['typescript', 'python'], true)) {
+            // What discovery leaves out, so a worker resolving imports leaves
+            // it out too instead of keeping a copy of the rules that drifts.
+            $request['exclusions'] = (new IgnoreMatcher($plan->preparation->configuration->ignores))->workerRules();
+        }
         if ($descriptor->key === 'php') {
             $request['frameworks'] = array_keys(array_filter(['laravel' => $plan->preparation->laravel, 'symfony' => $plan->preparation->symfony]));
         } elseif ($descriptor->key === 'typescript') {

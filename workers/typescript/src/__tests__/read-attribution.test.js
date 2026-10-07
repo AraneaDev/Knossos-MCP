@@ -285,6 +285,32 @@ describe("read attribution: the other reads a file's facts depend on", () => {
         expect(byOwner["src/a.ts"].reads["src/y.js"]).toBeNull();
     });
 
+    it("keys an imported component by the hash of its own bytes", () => {
+        // A component is offered under an alias of its name, so a probe of the
+        // alias must never stand for a failed read of the component.
+        const card =
+            '<template><p>card</p></template>\n<script setup lang="ts"></script>\n';
+        const root = fixture({
+            "tsconfig.json": JSON.stringify({
+                include: ["src/**/*.ts", "src/**/*.vue"],
+            }),
+            "src/main.ts":
+                'import Card from "./Card.vue";\nexport default Card;\n',
+            "src/Card.vue": card,
+        });
+
+        const { result, byOwner } = scan(
+            root,
+            ["src/main.ts", "src/Card.vue"],
+            {
+                config_files: ["tsconfig.json"],
+            },
+        );
+
+        expect(result.input_hashes["src/Card.vue"]).toBe(sha256(card));
+        expect(byOwner["src/main.ts"].reads["src/Card.vue"]).toBe(sha256(card));
+    });
+
     it("gives a file it could not scan an empty read set", () => {
         const root = fixture({ "src/a.ts": "export const a = 1;\n" });
 

@@ -52,9 +52,23 @@ Version mismatch is fatal and occurs before project paths are sent.
 
 ### `scan`
 
-Accepts a request ID and `params` that carry the project's real root (`root`), the project-relative paths this request must scan (`files`), and the bounds (`limits`: `max_files` and `max_file_bytes`). The core sends only the files that need scanning: a file whose cached contribution is still valid is not sent. The packaged workers receive extra fields for their own language: `frameworks` (PHP, Python and Rust), `config_files` (TypeScript and Rust), and several TypeScript project lists. A worker streams zero or more
+Accepts a request ID and `params` that carry the project's real root (`root`), the project-relative paths this request must scan (`files`), and the bounds (`limits`: `max_files` and `max_file_bytes`). The core sends only the files that need scanning: a file whose cached contribution is still valid is not sent. The packaged workers receive extra fields for their own language: `frameworks` (PHP, Python and Rust), `config_files` (TypeScript and Rust), `exclusions` (TypeScript and Python), and several TypeScript project lists. A worker streams zero or more
 `scan/contribution` notifications, and zero or more `scan/input_hashes`
 notifications (below), followed by a final result containing counts.
+
+`exclusions` holds the rules discovery leaves paths out by, so a worker that
+resolves imports leaves out the same files instead of keeping its own copy of
+the list: `segments` and segment `prefixes` excluded wherever they appear, pairs
+of consecutive segments (`sequences`), file-name `suffixes`, `path_prefixes`
+from the root, and the project's own `patterns`. A pattern is a regular
+expression `regex`, matched as `^regex(?:/.*)?$` against the whole path when
+it is `anchored` and as `^regex$` against each segment when it is not; the
+last pattern that matches decides, and a `negated` one takes the path back. A
+path is left out when it, or a directory above it, matches, since discovery never
+descends into a directory that matches. Inside a `node_modules` or `vendor`
+directory the dependency's own layout governs, so only the part of the path
+above it is checked. A worker reads nothing of a file left out, and reports no
+read of it.
 
 The request's time limit is an inactivity limit: every notification the worker
 sends restarts it, up to a hard cap per request (the maximum worker timeout,

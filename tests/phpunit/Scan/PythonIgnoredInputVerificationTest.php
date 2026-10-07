@@ -6,20 +6,15 @@ namespace Knossos\Tests\Phpunit\Scan;
 
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanService;
-use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * The Python worker reports the modules its index reads under a path the
- * project ignores, and the scan re-reads them before it commits, end to end
- * through the real worker.
- *
- * The project's ignore patterns never reach the worker: its module index
- * resolves an import to whatever file the layout holds, so an ignored module
- * feeds the importer's facts while discovery never hashes it. Only the
- * worker's report of the bytes it read and the pre-commit re-read can tell
- * that such a module changed after the worker read it.
+ * A module under a path the project ignores is left out by the Python worker
+ * as it is by discovery, end to end through the real worker: the core sends
+ * the project's exclusion rules with every request, so an import of an
+ * ignored module resolves to nothing the worker read, and a change to that
+ * module cannot change what the scan commits.
  */
 #[Group('scan')]
 final class PythonIgnoredInputVerificationTest extends KnossosTestCase
@@ -44,7 +39,7 @@ final class PythonIgnoredInputVerificationTest extends KnossosTestCase
         parent::tearDown();
     }
 
-    public function testAStableProjectReadingAnIgnoredModuleScansFullWithTheModuleUndiscovered(): void
+    public function testAnIgnoredModuleIsNeitherDiscoveredNorRead(): void
     {
         $pdo = $this->freshTestDatabase();
 
@@ -61,21 +56,20 @@ final class PythonIgnoredInputVerificationTest extends KnossosTestCase
             ['knossos.python:file:app.py'],
             $pdo->query('SELECT DISTINCT owner_key FROM nodes ORDER BY owner_key')->fetchAll(\PDO::FETCH_COLUMN),
         );
-        // The ignored module's bytes decided the importer's facts: it declares
-        // a class, so the base is one (a plain assignment gives a symbol).
+        // The module declares a class, but its bytes were never read, so the
+        // base is only a name the importer used.
         assertSame(
-            [['external_class', 'generated.models.Model']],
+            [['external_symbol', 'generated.models.Model']],
             $pdo->query("SELECT n.kind, n.canonical_name FROM edges e JOIN nodes n ON n.id = e.target_id WHERE e.kind = 'extends'")->fetchAll(\PDO::FETCH_NUM),
         );
     }
 
     /**
      * Changed at the service's last cancellation poll before validation, once
-     * the worker has returned, and left changed: discovery ignored the module,
-     * so the discovered tree validates and only the re-read of the worker's
-     * read can fail the scan.
+     * the worker has returned: nothing read the module, so nothing the scan
+     * commits depends on it and the scan stands.
      */
-    public function testAnIgnoredModuleChangedAfterTheWorkerReadItFailsTheScanBeforeAnythingIsWritten(): void
+    public function testAnIgnoredModuleChangedDuringTheScanLeavesItStanding(): void
     {
         $pdo = $this->freshTestDatabase();
         $path = $this->root . '/' . self::MODULE;
@@ -89,13 +83,10 @@ final class PythonIgnoredInputVerificationTest extends KnossosTestCase
             return false;
         });
 
-        $error = captureThrows(
-            fn() => (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root, cancellation: $token),
-            ScanSnapshotChangedException::class,
-        );
+        $result = (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root, cancellation: $token);
 
-        assertSame(ScanSnapshotChangedException::inputChangedAfterRead(self::MODULE)->getMessage(), $error->getMessage());
+        assertSame('full', $result->data['mode']);
         assertSame(4, $scanPolls);
-        assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM nodes')->fetchColumn());
+        assertSame(['knossos.python:file:app.py'], $pdo->query('SELECT DISTINCT owner_key FROM nodes')->fetchAll(\PDO::FETCH_COLUMN));
     }
 }

@@ -64,48 +64,138 @@ const COMPONENT_FILE_EXTENSIONS = [".vue", ".svelte", ".astro"].map(
         scriptKind: ts.ScriptKind.Deferred,
     }),
 );
-const EXCLUDED_DIRECTORIES = new Set([
-    ".git",
-    ".knossos",
-    "node_modules",
-    "vendor",
-    "coverage",
-    ".next",
-    ".nuxt",
-    // Kept in sync with the authoritative PHP IgnoreMatcher. Generated build
-    // output and mutation-testing sandboxes (.stryker-tmp holds a full project
-    // copy per sandbox) are not source and would multiply program discovery.
-    ".stryker-tmp",
-    ".pnpm-store",
-    ".yarn",
-    ".worktrees",
-    "build",
-    "dist",
-    "site",
-]);
-
-// Directory-name prefixes, for the namespace this tool owns. ".knossos" alone
-// is in the set above; a CI job parks a checkout of the analyzer or its snapshot
-// database beside the project under the same convention, and those must not be
-// discovered as the project's own source.
-const EXCLUDED_DIRECTORY_PREFIXES = [".knossos-"];
-// Consecutive segments excluded wherever they appear, as the PHP IgnoreMatcher
-// excludes them: VitePress's dependency cache and build below the site.
-const EXCLUDED_SEGMENT_SEQUENCES = [
-    [".vitepress", "cache"],
-    [".vitepress", "dist"],
-];
+// What discovery leaves out, for a request that does not carry the core's own
+// rules: the directories a project builds into, vendors under or keeps tool
+// state in, and the namespace this tool owns (`.knossos-ci` beside a project).
+// A request that carries `exclusions`, the rules the core's IgnoreMatcher
+// applies, uses those instead for its duration.
+const BUILT_IN_EXCLUSIONS = Object.freeze({
+    segments: [
+        ".git",
+        ".knossos",
+        "node_modules",
+        "vendor",
+        "coverage",
+        ".next",
+        ".nuxt",
+        ".stryker-tmp",
+        ".pnpm-store",
+        ".yarn",
+        ".worktrees",
+        "build",
+        "dist",
+        "site",
+    ],
+    prefixes: [".knossos-"],
+    sequences: [
+        [".vitepress", "cache"],
+        [".vitepress", "dist"],
+    ],
+    suffixes: [],
+    path_prefixes: [],
+    patterns: [],
+});
 // Dependency trees may be read for module resolution even though discovery
 // does not scan them as project-owned source. Generated and tool-owned trees
 // remain blocked at this boundary.
 const RESOLUTION_ALLOWED_EXCLUDED = new Set(["node_modules", "vendor"]);
 
-/** Whether a directory entry is excluded from discovery by name alone. */
-function isExcludedDirectoryName(name) {
-    return (
-        EXCLUDED_DIRECTORIES.has(name) ||
-        EXCLUDED_DIRECTORY_PREFIXES.some((prefix) => name.startsWith(prefix))
+/** The exclusion rules of the request in progress (see exclusionRules). */
+let activeExclusions = exclusionRules(BUILT_IN_EXCLUSIONS);
+
+/**
+ * Exclusion rules ready to apply, from the core's `exclusions` object (see
+ * IgnoreMatcher::workerRules in the core), each pattern compiled once.
+ *
+ * @throws {Error} for anything but that object
+ */
+function exclusionRules(input) {
+    const strings = (value) =>
+        Array.isArray(value) && value.every((item) => typeof item === "string");
+    const valid =
+        input !== null &&
+        typeof input === "object" &&
+        ["segments", "prefixes", "suffixes", "path_prefixes"].every((field) =>
+            strings(input[field]),
+        ) &&
+        Array.isArray(input.sequences) &&
+        input.sequences.every((pair) => strings(pair) && pair.length === 2) &&
+        Array.isArray(input.patterns) &&
+        input.patterns.every(
+            (pattern) =>
+                typeof pattern?.regex === "string" &&
+                typeof pattern.anchored === "boolean" &&
+                typeof pattern.negated === "boolean",
+        );
+    if (!valid)
+        throw new Error(
+            "TypeScript exclusions must be an object of segments, prefixes, sequences, suffixes, path_prefixes and patterns.",
+        );
+    return {
+        segments: new Set(input.segments),
+        prefixes: input.prefixes,
+        sequences: input.sequences,
+        suffixes: input.suffixes,
+        pathPrefixes: input.path_prefixes,
+        patterns: input.patterns.map(({ regex, anchored, negated }) => ({
+            expression: new RegExp(
+                anchored ? `^(?:${regex})(?:/.*)?$` : `^(?:${regex})$`,
+            ),
+            anchored,
+            negated,
+        })),
+    };
+}
+
+/**
+ * Whether discovery leaves a project-relative path out: the path, or a
+ * directory above it, matches the request's rules, since discovery never
+ * descends into a directory that matches. A segment rule, a file-name suffix
+ * and a path prefix that match a directory match everything below it; the
+ * patterns are asked of each directory in turn, the last match deciding.
+ */
+function excludedFromDiscovery(relative) {
+    const rules = activeExclusions;
+    const segments = relative.split("/");
+    const bySegment = segments.some(
+        (segment, index) =>
+            rules.segments.has(segment) ||
+            rules.prefixes.some((prefix) => segment.startsWith(prefix)) ||
+            rules.suffixes.some((suffix) => segment.endsWith(suffix)) ||
+            rules.sequences.some(
+                ([first, second]) =>
+                    segment === first && segments[index + 1] === second,
+            ),
     );
+    if (
+        bySegment ||
+        rules.pathPrefixes.some(
+            (prefix) =>
+                relative === prefix || relative.startsWith(`${prefix}/`),
+        )
+    )
+        return true;
+    for (
+        let end = 1;
+        end <= segments.length && rules.patterns.length > 0;
+        ++end
+    ) {
+        if (patternsIgnore(rules.patterns, segments.slice(0, end))) return true;
+    }
+    return false;
+}
+
+/** Whether the last pattern that matches a path ignores it. */
+function patternsIgnore(patterns, segments) {
+    const joined = segments.join("/");
+    let ignored = false;
+    for (const pattern of patterns) {
+        const matched = pattern.anchored
+            ? pattern.expression.test(joined)
+            : segments.some((segment) => pattern.expression.test(segment));
+        if (matched) ignored = !pattern.negated;
+    }
+    return ignored;
 }
 
 // Each retained ts.Program holds its own parsed default library and type
@@ -511,7 +601,7 @@ export class TypeScriptScanner {
     /**
      * Stream deterministic owned contributions for the requested source files.
      *
-     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, declaration_files?: unknown}} params
+     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, declaration_files?: unknown, exclusions?: unknown}} params
      * @param {(contribution: object) => void} emit
      * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>, reads: Record<string, string|null>}}
      */
@@ -520,6 +610,9 @@ export class TypeScriptScanner {
         // read a path again and disagree, which turns its value null, and a
         // contribution's `reads` must carry the value `input_hashes` ends with.
         const contributions = [];
+        activeExclusions = exclusionRules(
+            params.exclusions ?? BUILT_IN_EXCLUSIONS,
+        );
         const { result, attribution } = this.#scanRequest(
             params,
             (contribution) => contributions.push(contribution),
@@ -599,7 +692,7 @@ export class TypeScriptScanner {
 
         const parsedConfigs = configPaths.map((configPath) => [
             configPath,
-            parseConfig(root, configPath, reads, maxFileBytes),
+            parseConfig(root, configPath, reads),
         ]);
         request.owners = configOwners(root, parsedConfigs);
         request.outputSources = outputSources(root, parsedConfigs);
@@ -700,19 +793,7 @@ export class TypeScriptScanner {
                     programConfig(
                         request,
                         directory,
-                        fallbackConfig(
-                            root,
-                            files,
-                            group.parsed,
-                            directory,
-                            (file) =>
-                                probeRecorded(
-                                    request.reads,
-                                    root,
-                                    file,
-                                    request.maxFileBytes,
-                                ),
-                        ),
+                        fallbackConfig(root, files, group.parsed, directory),
                     ),
                     request,
                 ),
@@ -2488,11 +2569,8 @@ class TypeScriptLanguageFactCollector {
     }
 }
 
-function parseConfig(root, configPath, reads, maxFileBytes) {
+function parseConfig(root, configPath, reads) {
     const absolute = validatedInside(root, configPath);
-    // Whether a component has a real `X.vue.ts` beside it decides the name it
-    // is offered under.
-    const exists = (file) => probeRecorded(reads, root, file, maxFileBytes);
     const host = {
         ...ts.sys,
         // A config and every config it extends or references decides the
@@ -2565,11 +2643,9 @@ function parseConfig(root, configPath, reads, maxFileBytes) {
         referencedOutputs.push([referenceConfig, referenced.options]);
         pending.push(...(referenced.projectReferences ?? []));
     }
-    parsed.fileNames = [...fileNames].map((file) =>
-        offeredComponentPath(file, exists),
-    );
+    parsed.fileNames = [...fileNames].map((file) => offeredComponentPath(file));
     parsed.ownFileNames = ownFileNames.map((file) =>
-        offeredComponentPath(file, exists),
+        offeredComponentPath(file),
     );
     parsed.referencedOutputs = referencedOutputs;
     // References are kept, and the host resolves a reference's build output
@@ -2943,7 +3019,10 @@ function probeRecorded(reads, root, file, maxFileBytes) {
     if (!contains(root, absolute)) return false;
     const walked = walkPath(absolute);
     const present = walked.kind === "file" && contains(root, walked.location);
-    recordProbe(reads, root, walked, present, maxFileBytes);
+    // A path discovery leaves out is never read, whatever the answer: the
+    // host refuses it, so no file there can change a fact.
+    if (!excludedByProjectLayoutPath(root, absolute))
+        recordProbe(reads, root, walked, present, maxFileBytes);
     return present;
 }
 
@@ -3916,7 +3995,6 @@ function createRestrictedProgram(
         parsed.vueProject === true,
         parsed.outputSources ?? [],
         (file) => allowedCompilerPath(root, file),
-        (file) => probeRecorded(reads, root, file, maxFileBytes),
     );
     return ts.createProgram({
         rootNames: withSvelteRunes(parsed.fileNames, options, host),
@@ -4010,11 +4088,8 @@ function sourceOfBuildOutput(result, outputs, host) {
  * `resolve.extensions`; the retry probes paths that are then recorded, so it
  * stays off elsewhere. The resolution mode follows a project reference's own
  * options, as the compiler's default loader does.
- *
- * @param {(file: string) => boolean} probe whether a path is a real file, as
- *   a recorded probe: a component's alias is not one
  */
-function componentResolver(host, cache, vueProject, outputs, readable, probe) {
+function componentResolver(host, cache, vueProject, outputs, readable) {
     return (
         literals,
         containingFile,
@@ -4042,7 +4117,6 @@ function componentResolver(host, cache, vueProject, outputs, readable, probe) {
             // Resolved to build output is resolved to nothing: it is never
             // read (see allowedCompilerPath).
             const resolved = componentTarget(
-                probe,
                 literal.text,
                 direct.resolvedModule === undefined ||
                     !readable(direct.resolvedModule.resolvedFileName)
@@ -4081,7 +4155,7 @@ function withFailedLookups(resolution, attempt) {
  * beside `X.vue`, redirected to the component's own alias; anything else as
  * it is.
  */
-function componentTarget(fileExists, specifier, resolved) {
+function componentTarget(specifier, resolved) {
     const dialect = componentDialect(specifier);
     const file = resolved.resolvedModule?.resolvedFileName;
     if (dialect === null || file === undefined) return resolved;
@@ -4090,8 +4164,8 @@ function componentTarget(fileExists, specifier, resolved) {
     if (
         !file.endsWith(suffix) ||
         componentDialect(component) !== dialect ||
-        !fileExists(file) ||
-        !fileExists(component)
+        !isRegularFile(file) ||
+        !isRegularFile(component)
     )
         return resolved;
     return {
@@ -5665,11 +5739,8 @@ const FALLBACK_OPTIONS = {
 /**
  * The options and root files of a fallback program: the files no config's
  * program emitted, under the resolution options of the config beside them.
- *
- * @param {(file: string) => boolean} exists whether a path is a real file, as
- *   a recorded probe (see offeredPath)
  */
-function fallbackConfig(root, remaining, config, directory, exists) {
+function fallbackConfig(root, remaining, config, directory = root) {
     const configOptions = config?.options;
     const inherited = {};
     for (const option of RESOLUTION_OPTIONS)
@@ -5687,7 +5758,7 @@ function fallbackConfig(root, remaining, config, directory, exists) {
         // case, only ever reaches the fallback program: no tsconfig `include`
         // matches either name.
         fileNames: remaining.map((relative) =>
-            offeredPath(path.join(root, relative), exists),
+            offeredPath(path.join(root, relative)),
         ),
         // A referenced project's outputs stand for its sources here as in
         // the config's own program (`#shared/*` naming its `dist`).
@@ -5772,10 +5843,11 @@ function excludedByProjectLayoutPath(root, absolute) {
 }
 
 /**
- * Whether the project's own directory exclusions refuse a project-relative path.
+ * Whether the exclusions discovery applies refuse a project-relative path.
  *
- * The exclusions name directories a project builds into or vendors under, so
- * they describe the project's layout. Inside a dependency tree they describe
+ * The exclusions name directories a project builds into or vendors under, and
+ * whatever the project's own ignores add, so they describe the project's
+ * layout. Inside a dependency tree they describe
  * nothing: a package ships its declarations wherever its own package.json
  * points, and `dist` is the most common answer of all. Applying the project's
  * rules there refused `node_modules/@eslint/core/dist/cjs/types.d.cts`, the one
@@ -5796,25 +5868,8 @@ function excludedByProjectLayout(relative) {
     );
     const governed =
         dependencyRoot === -1 ? segments : segments.slice(0, dependencyRoot);
-    return (
-        governed.some(
-            (segment) =>
-                isExcludedDirectoryName(segment) &&
-                !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
-        ) ||
-        governed.some(
-            (segment, index) =>
-                index + 1 < governed.length &&
-                EXCLUDED_SEGMENT_SEQUENCES.some(
-                    ([first, second]) =>
-                        segment === first && governed[index + 1] === second,
-                ),
-        )
-    );
+    return governed.length > 0 && excludedFromDiscovery(governed.join("/"));
 }
-
-// File-name suffixes the core never discovers: minified bundles.
-const UNDISCOVERED_FILE_SUFFIXES = [".min.js", ".min.mjs", ".min.cjs"];
 
 /**
  * Whether the core scans a project-relative path as one of this worker's own
@@ -5824,14 +5879,7 @@ const UNDISCOVERED_FILE_SUFFIXES = [".min.js", ".min.mjs", ".min.cjs"];
  * requested shebang script.
  */
 function isProjectSource(relative) {
-    if (
-        excludedByProjectLayout(relative) ||
-        relative
-            .split("/")
-            .some((segment) => RESOLUTION_ALLOWED_EXCLUDED.has(segment)) ||
-        UNDISCOVERED_FILE_SUFFIXES.some((suffix) => relative.endsWith(suffix))
-    )
-        return false;
+    if (excludedFromDiscovery(relative)) return false;
     const extension = path.extname(relative);
     return (
         extension === "" ||
@@ -5903,11 +5951,11 @@ function realSourcePath(candidate) {
 // The name a requested file is offered to the program under: an extensionless
 // script as a `.js` alias, a file whose extension is not in lower case under its
 // lower-cased extension, and anything else as itself.
-function offeredPath(absolute, exists) {
+function offeredPath(absolute) {
     const dialect = componentDialect(absolute);
     if (dialect !== null) {
         const suffix = componentAliasSuffix(dialect);
-        return exists(`${absolute}${suffix}`)
+        return isRegularFile(`${absolute}${suffix}`)
             ? `${absolute}${COMPONENT_ALIAS_MARK}${suffix}`
             : `${absolute}${suffix}`;
     }
@@ -5919,8 +5967,8 @@ function offeredPath(absolute, exists) {
 }
 
 /** A component's alias (see offeredPath); any other file as itself. */
-function offeredComponentPath(file, exists) {
-    return componentDialect(file) === null ? file : offeredPath(file, exists);
+function offeredComponentPath(file) {
+    return componentDialect(file) === null ? file : offeredPath(file);
 }
 
 /** Whether a path is a regular file, following links as the compiler does. */
@@ -5948,9 +5996,9 @@ function walk(root, directory, onFile) {
         return;
     }
     for (const entry of entries) {
-        if (isExcludedDirectoryName(entry.name)) continue;
         const absolute = path.join(directory, entry.name);
         const relative = normalize(path.relative(root, absolute));
+        if (excludedFromDiscovery(relative)) continue;
         if (entry.isSymbolicLink()) continue;
         if (entry.isDirectory()) walk(root, absolute, onFile);
         else if (entry.isFile()) onFile(absolute, relative);
