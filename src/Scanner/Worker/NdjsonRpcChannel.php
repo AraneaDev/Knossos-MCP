@@ -569,15 +569,21 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         }
         $this->stderrBuffer = substr($this->stderrBuffer . $chunk, -$max);
     }
-    /** Attach the captured stderr to an error, which is usually the only clue to why a worker failed. */
+    /**
+     * Attach the captured stderr to an error, which is usually the only clue to why a worker failed.
+     *
+     * The tail is cut by byte count, so its first byte can sit inside a
+     * multibyte character, and a worker may write bytes that are not UTF-8 at
+     * all. The message is JSON-encoded later, so the tail is scrubbed first.
+     */
 
     private function withStderr(string $message): string
     {
-        $stderr = trim($this->stderrBuffer);
+        $stderr = trim(mb_scrub($this->stderrBuffer, 'UTF-8'));
         if ($stderr !== '') {
             return $message . ' Worker stderr: ' . $stderr;
         }
-        $earlier = trim($this->lastWords);
+        $earlier = trim(mb_scrub($this->lastWords, 'UTF-8'));
 
         return $earlier === ''
             ? $message

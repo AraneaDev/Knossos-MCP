@@ -632,8 +632,34 @@ final class NdjsonRpcChannelTest extends TestCase
         }
 
         $buffer = new \ReflectionProperty(NdjsonRpcChannel::class, 'stderrBuffer');
-        assertSame('7890abc', substr($buffer->getValue($channel), -7));
-        assertSame(8, strlen($buffer->getValue($channel)));
+        assertSame('67890abc', $buffer->getValue($channel));
+    }
+
+    public function testAStderrTailCutInsideAMultibyteCharacterStaysValidUtf8(): void
+    {
+        // The cap counts bytes, so the oldest retained byte can be the middle
+        // of a character; the message carrying the tail is later JSON-encoded.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 100, maxLineBytes: 128, maxStderrBytes: 15));
+        $deadline = $channel->beginRequest();
+
+        fwrite($process->pipes[2], str_repeat("\u{e9}", 10));
+        fflush($process->pipes[2]);
+        rewind($process->pipes[2]);
+        $process->running = false;
+        ftruncate($process->pipes[1], 0);
+        fclose($process->pipes[1]);
+        $process->pipes[1] = fopen('php://temp', 'r');
+
+        $error = captureThrows(
+            static fn() => $channel->readMessage($deadline),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_EXITED', $error->diagnosticCode);
+        assertSame(true, mb_check_encoding($error->getMessage(), 'UTF-8'));
+        assertContains(str_repeat("\u{e9}", 7), $error->getMessage());
+        assertSame(true, is_string(json_encode(['message' => $error->getMessage()], JSON_THROW_ON_ERROR)));
     }
 
     public function testAWorkerThatWritesStderrAndThenExitsFailsWithItsOwnCodeAndTheTail(): void
