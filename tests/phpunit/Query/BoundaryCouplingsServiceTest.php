@@ -71,10 +71,13 @@ final class BoundaryCouplingsServiceTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
         // The cell holds two and a half times the default edge cap in pairs (the cap is raised below), and a
-        // quarter of a million pairs needs about 512 MB. The limit is only ever raised to that, never lowered, and the old one comes back after.
+        // quarter of a million pairs needs about 512 MB. The limit is only ever raised to that, never lowered, and the old one
+        // comes back after only when this test raised it and what is in use still fits under it: PHP refuses a limit below the
+        // memory already allocated, and a suite that grew past the old limit meanwhile keeps the raised one.
         $memoryLimit = (string) ini_get('memory_limit');
         $current = MemoryLimit::bytes($memoryLimit);
-        if ($current !== null && $current !== -1 && $current < 512 * 1024 ** 2) {
+        $raised = $current !== null && $current !== -1 && $current < 512 * 1024 ** 2;
+        if ($raised) {
             ini_set('memory_limit', '512M');
         }
         try {
@@ -99,7 +102,11 @@ final class BoundaryCouplingsServiceTest extends KnossosTestCase
             assertGreaterThan($copies, $out['edges']);
             assertCount(3, $out['couplings']);
         } finally {
-            ini_set('memory_limit', $memoryLimit);
+            unset($out, $edge);
+            gc_collect_cycles();
+            if ($raised && memory_get_usage(true) < $current) {
+                ini_set('memory_limit', $memoryLimit);
+            }
             $this->removeTempTree($root);
         }
     }

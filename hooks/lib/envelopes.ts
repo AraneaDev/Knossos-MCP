@@ -61,6 +61,19 @@ export function parseDashboard(stdout: string): Dashboard | null {
   return parse(stdout, DASH, DASH_ARRAYS, DASH_OBJECTS) as Dashboard | null
 }
 
+/** The bounds that stop a cycle search before it has seen the whole graph, rather than cut what it found. */
+const SEARCH_STOPS = ['time_limit', 'node_limit', 'edge_limit']
+
+/**
+ * Whether a cycle search stopped before it had seen the whole graph, so its
+ * count is not a count of the graph's cycles: one that names a bound that
+ * stops the search, or a truncated one that found none (an older knossos
+ * names no reasons).
+ */
+export function cycleSearchStopped(cycles: { count: number; truncated: boolean; truncation_reasons?: string[] }): boolean {
+  return cycles.truncated && (cycles.count === 0 || (cycles.truncation_reasons ?? []).some(r => SEARCH_STOPS.includes(r)))
+}
+
 /** A count as shown on the pane: "50+" when the producer stopped counting early. */
 export function countLabel(n: number, truncated: boolean): string {
   return truncated ? `${n}+` : `${n}`

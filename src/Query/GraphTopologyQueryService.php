@@ -61,9 +61,20 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     /**
      * Strongly connected components, bounded by node, edge, and time limits.
      *
+     * The search runs in two phases. The whole selected graph is read as bare
+     * endpoint pairs and searched first; names, file paths and lines are loaded
+     * afterwards, and only for the members and edges of the components that are
+     * reported. Reading every edge with both endpoints and its file attached
+     * cost two orders of magnitude more than the search itself, so on a graph of
+     * a few tens of thousands of edges the deadline ran out while rows were
+     * still being read, and the search reported no cycles at all.
+     *
+     * max_nodes counts only the nodes that take part in a selected edge, so a
+     * symbol nothing depends on and that depends on nothing never uses it up.
+     *
      * @param list<string> $edgeKinds
      */
-    public function dependencyCycles(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeSelfLoops = false): ResultEnvelope
+    public function dependencyCycles(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 50_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeSelfLoops = false): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
@@ -77,157 +88,24 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
 
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
-        $placeholders = implode(',', array_fill(0, count($edgeKinds), '?'));
-        $statement = $this->pdo->prepare(
-            'SELECT e.*, f.relative_path, source.kind AS source_kind, source.canonical_name AS source_name, ' .
-            'source.display_name AS source_display_name, source.confidence AS source_confidence, ' .
-            'target.kind AS target_kind, target.canonical_name AS target_name, ' .
-            'target.display_name AS target_display_name, target.confidence AS target_confidence ' .
-            'FROM edges e JOIN nodes source ON source.id = e.source_id JOIN nodes target ON target.id = e.target_id ' .
-            'LEFT JOIN files f ON f.id = e.file_id WHERE e.project_id = ? ' .
-            sprintf('AND e.kind IN (%s) ', $placeholders) .
-            "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
-            'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
-        );
-        $statement->execute([$projectId, ...$edgeKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
-        $nodes = [];
-        $edges = [];
-        $nodeLimitHit = false;
-        // Streamed rather than fetchAll(): the deadline used to be checked only
-        // after every row was materialised, so a timeout_ms of 1000 could not
-        // bound the phase that dominates the cost, and 100,001 joined rows were
-        // held in memory before the first check.
-        $truncationReasons = $this->streamBounded(
-            $statement,
-            $maxEdges,
-            $deadline,
-            function (array $row) use (&$nodes, &$edges, &$nodeLimitHit, $maxNodes): bool {
-                // Dropped before the node cap sees it, so a pair joined by
-                // nothing but erased type imports contributes neither the edge
-                // nor the two nodes it would have introduced.
-                if (self::isErasedTypeEdge($row)) {
-                    return true;
-                }
-                foreach (['source', 'target'] as $side) {
-                    $id = $row[$side . '_id'];
-                    if (!isset($nodes[$id]) && count($nodes) >= $maxNodes) {
-                        $nodeLimitHit = true;
-
-                        return false;
-                    }
-                    $nodes[$id] ??= [
-                        'id' => $id,
-                        'kind' => $row[$side . '_kind'],
-                        'canonical_name' => $row[$side . '_name'],
-                        'display_name' => $row[$side . '_display_name'],
-                        'confidence' => $row[$side . '_confidence'],
-                    ];
-                }
-                $edges[] = $row;
-
-                return true;
-            },
-        );
-        // The node cap is the one stop condition streamBounded cannot see, so it
-        // reports itself here rather than being folded into a row reason.
-        if ($nodeLimitHit) {
-            $truncationReasons[] = 'node_limit';
-        }
-        $truncated = $truncationReasons !== [];
-
-        $adjacency = $reverse = [];
-        foreach (array_keys($nodes) as $id) {
-            $adjacency[$id] = $reverse[$id] = [];
-        }
-        foreach ($edges as $edge) {
-            $adjacency[$edge['source_id']][] = $edge['target_id'];
-            $reverse[$edge['target_id']][] = $edge['source_id'];
-        }
-        foreach ($adjacency as &$targets) {
-            $targets = array_values(array_unique($targets));
-            sort($targets, SORT_STRING);
-        }
-        unset($targets);
-        foreach ($reverse as &$sources) {
-            $sources = array_values(array_unique($sources));
-            sort($sources, SORT_STRING);
-        }
-        unset($sources);
-
-        $componentScan = $this->stronglyConnectedComponents($adjacency, $reverse, $deadline);
-        if ($componentScan['timed_out']) {
-            $truncated = true;
-            $truncationReasons[] = 'time_limit';
-        }
-        // A single self-recursive symbol is ordinary recursion, not an
-        // architectural tangle, so self-loops are opt-in.
-        $components = array_values(array_filter(
-            $componentScan['components'],
-            fn(array $component): bool => count($component) > 1
-                || ($includeSelfLoops && $this->hasSelfLoop($component[0], $adjacency)),
-        ));
-        usort($components, static fn(array $a, array $b): int => (count($b) <=> count($a)) ?: ($a[0] <=> $b[0]));
-        if (count($components) > $limit) {
-            $components = array_slice($components, 0, $limit);
-            $truncated = true;
-            $truncationReasons[] = 'result_limit';
-        }
-
-        $cycles = [];
-        $evidence = [];
-        foreach ($components as $componentIndex => $component) {
-            $memberSet = array_fill_keys($component, true);
-            $internal = array_values(array_filter($edges, static fn(array $edge): bool => isset($memberSet[$edge['source_id']], $memberSet[$edge['target_id']])));
-            $edgeTruncated = count($internal) > 200;
-            $memberTruncated = count($component) > 100;
-            // Per-cycle member/edge trimming is real result truncation; surface
-            // it on the envelope so dependency_cycles never reports truncated:false
-            // over demonstrably truncated cycle detail.
-            if ($memberTruncated) {
-                $truncated = true;
-                $truncationReasons[] = 'member_limit';
+        // One read transaction over both phases, so the details are loaded
+        // from the same snapshot the search ran over; a scan that commits in
+        // between cannot take away a row the search counted on.
+        $own = !$this->pdo->inTransaction() && $this->pdo->beginTransaction();
+        try {
+            $search = $this->cycleSearch($projectId, $edgeKinds, $confidenceRank, $minConfidence, $limit, $maxNodes, $maxEdges, $deadline, $includeSelfLoops);
+        } finally {
+            if ($own) {
+                $this->pdo->commit();
             }
-            if ($edgeTruncated) {
-                $truncated = true;
-                $truncationReasons[] = 'internal_edge_limit';
-            }
-            $sampledEdges = array_slice($internal, 0, 200);
-            $cycleEdges = [];
-            $minimum = 3;
-            foreach ($sampledEdges as $edge) {
-                $minimum = min($minimum, $confidenceRank[$edge['confidence']]);
-                $cycleEdges[] = [
-                    'id' => $edge['id'], 'kind' => $edge['kind'], 'source_id' => $edge['source_id'],
-                    'target_id' => $edge['target_id'], 'origin' => $edge['origin'], 'confidence' => $edge['confidence'],
-                ];
-                if ($edge['relative_path'] !== null && count($evidence) < 500) {
-                    $evidence[] = [
-                        'component_index' => $componentIndex, 'edge_id' => $edge['id'], 'path' => $edge['relative_path'],
-                        'start_line' => $edge['start_line'], 'end_line' => $edge['end_line'],
-                    ];
-                }
-            }
-            $memberIds = array_slice($component, 0, 100);
-            $boundaryMap = $this->boundaryNames($memberIds);
-            $cycles[] = [
-                'size' => count($component),
-                'minimum_confidence' => array_search($minimum, $confidenceRank, true),
-                // Full membership (pre-slice) so callers such as architecture_health
-                // can flag every participant, not just the first 100.
-                'member_ids' => $component,
-                'members' => array_map(static fn(string $id): array => $nodes[$id] + ['boundaries' => $boundaryMap[$id] ?? []], $memberIds),
-                'relationships' => $cycleEdges,
-                'truncated' => $edgeTruncated || $memberTruncated,
-                'truncation_reasons' => array_values(array_filter([$memberTruncated ? 'member_limit' : null, $edgeTruncated ? 'internal_edge_limit' : null])),
-            ];
         }
-
-        $truncationReasons = array_values(array_unique($truncationReasons));
+        $truncationReasons = $search['truncation_reasons'];
         // A bounded search must not read as an exhaustive one: "Found 0
         // dependency cycle components" is the same sentence a genuinely acyclic
         // project gets, and a cycle living beyond the edge cap is invisible in
         // it. Naming the bound in the summary is what lets a caller tell the two
         // apart without reading bounds.truncation_reasons.
+        $cycles = $search['cycles'];
         $summary = sprintf('Found %d dependency cycle component%s.', count($cycles), count($cycles) === 1 ? '' : 's');
         if ($truncationReasons !== []) {
             $summary .= sprintf(' The search was truncated (%s), so cycles beyond that bound are not reported.', implode(', ', $truncationReasons));
@@ -241,16 +119,16 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 'cycles' => $cycles,
                 'bounds' => [
                     'limit' => $limit, 'max_nodes' => $maxNodes, 'max_edges' => $maxEdges,
-                    'timeout_ms' => $timeoutMs, 'nodes_examined' => count($nodes),
-                    'edges_examined' => count($edges), 'truncation_reasons' => $truncationReasons,
+                    'timeout_ms' => $timeoutMs, 'nodes_examined' => $search['nodes_examined'],
+                    'edges_examined' => $search['edges_examined'], 'truncation_reasons' => $truncationReasons,
                 ],
             ],
-            $evidence,
+            $search['evidence'],
             [
                 'Cycles are derived from the selected static dependency relationships and confidence threshold.',
                 'Imports and re-exports that carry only types are erased at compile time and are not treated as dependencies, so a loop closed by nothing but `import type` is not reported.',
             ],
-            $truncated,
+            $truncationReasons !== [],
         );
     }
 
@@ -259,7 +137,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      *
      * @param list<string> $edgeKinds
      */
-    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false, string $candidateConfidence = 'possible', int $candidateOffset = 0, int $candidateTimeoutMs = 5000): ResultEnvelope
+    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 50_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false, string $candidateConfidence = 'possible', int $candidateOffset = 0, int $candidateTimeoutMs = 5000): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
@@ -282,40 +160,23 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
 
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
-        $nodeStatement = $this->pdo->prepare(
-            'SELECT n.id, n.kind, n.canonical_name, n.display_name, n.origin, n.confidence, n.attributes_json, ' .
-            'n.start_line, n.end_line, f.relative_path FROM nodes n LEFT JOIN files f ON f.id = n.file_id ' .
-            'WHERE n.project_id = :project ORDER BY n.canonical_name, n.id LIMIT :limit',
-        );
-        $nodeStatement->bindValue(':project', $projectId);
-        $nodeStatement->bindValue(':limit', $maxNodes + 1, PDO::PARAM_INT);
-        $nodeStatement->execute();
-        $nodes = [];
-        // Streamed for the same reason as the edge walk below: max_nodes reaches 50,000 joined
-        // rows, and fetchAll() read every one of them before the deadline was ever consulted.
-        $truncationReasons = $this->streamBounded($nodeStatement, $maxNodes, $deadline, function (array $row) use (&$nodes): bool {
-            $nodes[$row['id']] = $row;
-
-            return true;
-        }, 'node_limit');
+        // The walk keeps three facts per node, not its row: names, files,
+        // roles and boundaries are loaded for the reported page alone. A full
+        // row per node, with its roles and boundaries, needed more than 128 MB
+        // well before the 50,000-node default.
+        $slice = $this->healthSlice($projectId, $maxNodes, $deadline);
+        $truncationReasons = $slice['truncation_reasons'];
         $truncated = $truncationReasons !== [];
 
         $placeholders = implode(',', array_fill(0, count($edgeKinds), '?'));
         $edgeStatement = $this->pdo->prepare(
-            'SELECT e.id, e.kind, e.source_id, e.target_id, e.confidence FROM edges e WHERE e.project_id = ? ' .
+            'SELECT e.source_id, e.target_id FROM edges e WHERE e.project_id = ? ' .
             sprintf('AND e.kind IN (%s) ', $placeholders) .
             "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
             'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
         );
-
-        $nodeIds = array_keys($nodes);
-        $roles = $this->roles($nodeIds);
-        $boundaries = $this->boundaryNames($nodeIds);
-        $repositoryWide = array_keys($this->repositoryWideBoundaryIds($projectId));
-        // Executed beside its consumer, not its prepare(): a streamed statement holds its read cursor from
-        // execute() until drained, and the three lookups above would otherwise run inside it — undrained if any threw.
         $edgeStatement->execute([$projectId, ...$edgeKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
-        $walk = $this->walkDegrees($edgeStatement, $nodes, $boundaries, $repositoryWide, $maxEdges, $deadline);
+        $walk = $this->walkDegrees($edgeStatement, $slice, $maxEdges, $deadline);
         $metrics = $walk['metrics'];
         $edgesExamined = $walk['edges_examined'];
         if ($walk['truncation_reasons'] !== []) {
@@ -342,9 +203,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $cycleScanTruncated = true;
         }
 
-        $ranked = $this->rankNodes($nodes, $metrics, $roles, $boundaries, $cycleMembers, $includeExternal, $includeTests);
-        $hubs = $ranked['hubs'];
-        $hotspots = $ranked['hotspots'];
+        $ranked = $this->rankNodes($slice, $metrics, $cycleMembers, $includeExternal, $includeTests, $limit);
         $excludedExternal = $ranked['excluded_external'];
         $excludedTests = $ranked['excluded_tests'];
         $candidateDeadline = $this->now() + ($candidateTimeoutMs * 1_000_000);
@@ -356,20 +215,14 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             'type_declarations' => 0, 'suppressed' => 0, 'annotated_false_positives' => 0, 'annotated_intentional' => 0,
         ];
         $excludedConventionDiscovered = $found['convention_excluded'];
-        $rank = static function (array &$items): void {
-            usort($items, static fn(array $a, array $b): int => ($b['score'] <=> $a['score'])
-                ?: ($a['component']['canonical_name'] <=> $b['component']['canonical_name']));
-        };
-        $rank($hubs);
-        $rank($hotspots);
         // Tallied on the FULL list, not the page: ordering test_only last means
         // the page hides them first, and a summary built from it would then
         // report 0 test-only findings whenever there were enough unreferenced
         // ones to fill the limit on their own.
         $testOnlyCandidates = $found['test_only'];
         $candidatesTotal = $found['total'];
-        foreach ([$hubs, $hotspots] as $items) {
-            if (count($items) > $limit) {
+        foreach (['hub_total', 'hotspot_total'] as $total) {
+            if ($ranked[$total] > $limit) {
                 $truncated = true;
                 $truncationReasons[] = 'result_limit';
             }
@@ -384,20 +237,19 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         if ($candidatesTotal > $candidateOffset + $limit) {
             $candidateTruncationReasons[] = 'result_limit';
         }
-        $hubs = array_slice($hubs, 0, $limit);
-        $hotspots = array_slice($hotspots, 0, $limit);
-        $evidence = [];
         $reported = [];
-        foreach ([$hubs, $hotspots, $deadCandidates] as $items) {
-            foreach ($items as $item) {
-                $reported[$item['component']['id']] = true;
-            }
+        foreach ([...array_keys($ranked['hubs']), ...array_keys($ranked['hotspots'])] as $index) {
+            $reported[$slice['ids'][$index]] = true;
         }
-        // A candidate past the hub window has no row here; only the reported
-        // page's are loaded.
-        $candidateRows = $candidateSearch->rows(array_values(array_diff(array_map('strval', array_keys($reported)), array_map('strval', array_keys($nodes)))));
+        foreach ($deadCandidates as $item) {
+            $reported[$item['component']['id']] = true;
+        }
+        // Rows for the reported page only: the ranked components and the candidates.
+        $rows = $candidateSearch->rows(array_map('strval', array_keys($reported)));
+        [$hubs, $hotspots] = $this->rankedComponents($ranked, $slice, $metrics, $rows, $cycleMembers);
+        $evidence = [];
         foreach (array_keys($reported) as $id) {
-            $row = $nodes[$id] ?? $candidateRows[$id] ?? null;
+            $row = $rows[$id] ?? null;
             if ($row === null) {
                 continue;
             }
@@ -422,7 +274,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'candidates_total' => $candidatesTotal,
                     'candidates_truncated' => $candidateTruncationReasons !== [],
                     'candidate_truncation_reasons' => $candidateTruncationReasons,
-                    'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
+                    'nodes_examined' => count($slice['ids']), 'edges_examined' => $edgesExamined,
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'excluded_inherited_methods' => $excluded['inherited'],
                     'excluded_contract_methods' => $excluded['contracts'],
@@ -448,9 +300,97 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
 
 
     /**
+     * The nodes architecture_health ranks, as the three facts the ranking reads.
+     *
+     * Each node in the slice is numbered in name order and keeps whether it is
+     * external, whether it is test code, and which boundaries it belongs to;
+     * nothing else about it is held. The boundaries are kept as one of a few
+     * distinct sets (most nodes share their set with many others), with the
+     * repository-wide boundaries left out because they partition nothing.
+     *
+     * @return array{ids: list<string>, index: array<string, int>, external: list<bool>, test: array<int, true>, boundary_set: array<int, int>, boundary_sets: list<list<string>>, truncation_reasons: list<string>}
+     */
+    private function healthSlice(string $projectId, int $maxNodes, int $deadline): array
+    {
+        $slice = ['ids' => [], 'index' => [], 'external' => [], 'test' => [], 'boundary_set' => [], 'boundary_sets' => [], 'truncation_reasons' => []];
+        $statement = $this->pdo->prepare('SELECT n.id, n.kind, n.origin FROM nodes n WHERE n.project_id = :project ORDER BY n.canonical_name, n.id LIMIT :limit');
+        $statement->bindValue(':project', $projectId);
+        $statement->bindValue(':limit', $maxNodes + 1, PDO::PARAM_INT);
+        $statement->execute();
+        // Streamed: max_nodes reaches 50,000 rows, and fetchAll() read every
+        // one of them before the deadline was ever consulted.
+        $slice['truncation_reasons'] = $this->streamBounded($statement, $maxNodes, $deadline, static function (array $row) use (&$slice): bool {
+            $slice['index'][$row['id']] = count($slice['ids']);
+            $slice['ids'][] = (string) $row['id'];
+            $slice['external'][] = ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
+
+            return true;
+        }, 'node_limit');
+
+        $tests = $this->pdo->prepare('SELECT DISTINCT node_id FROM classifications WHERE project_id = ? AND role = ?');
+        $tests->execute([$projectId, ReportableComponent::TEST_ROLE]);
+        while (($nodeId = $tests->fetchColumn()) !== false) {
+            if (isset($slice['index'][$nodeId])) {
+                $slice['test'][$slice['index'][$nodeId]] = true;
+            }
+        }
+
+        $repositoryWide = $this->repositoryWideBoundaryIds($projectId);
+        $memberships = $this->pdo->prepare(
+            'SELECT bm.node_id, b.id FROM boundary_memberships bm JOIN boundaries b ON b.id = bm.boundary_id ' .
+            'WHERE bm.project_id = ? ORDER BY bm.node_id, b.id',
+        );
+        $memberships->execute([$projectId]);
+        // Rows arrive grouped by node: each group becomes that node's set.
+        $setIndex = [];
+        $current = null;
+        $members = [];
+        while (($row = $memberships->fetch()) !== false) {
+            $nodeId = (string) $row['node_id'];
+            if ($nodeId !== $current) {
+                if ($current !== null) {
+                    self::assignBoundarySet($slice, $setIndex, $current, $members);
+                }
+                $current = $nodeId;
+                $members = [];
+            }
+            if (!isset($repositoryWide[(string) $row['id']])) {
+                $members[] = (string) $row['id'];
+            }
+        }
+        if ($current !== null) {
+            self::assignBoundarySet($slice, $setIndex, $current, $members);
+        }
+
+        return $slice;
+    }
+
+    /**
+     * Gives a node of the slice its boundary set, adding the set when it is the first node to hold it.
+     *
+     * A node outside the slice, or one whose boundaries are all repository-wide, gets none.
+     *
+     * @param array{index: array<string, int>, boundary_set: array<int, int>, boundary_sets: list<list<string>>} $slice
+     * @param array<string, int> $setIndex the sets so far, keyed by their members
+     * @param list<string> $members the node's boundary ids, sorted
+     */
+    private static function assignBoundarySet(array &$slice, array &$setIndex, string $nodeId, array $members): void
+    {
+        if ($members === [] || !isset($slice['index'][$nodeId])) {
+            return;
+        }
+        $key = implode("\0", $members);
+        if (!isset($setIndex[$key])) {
+            $setIndex[$key] = count($slice['boundary_sets']);
+            $slice['boundary_sets'][] = $members;
+        }
+        $slice['boundary_set'][$slice['index'][$nodeId]] = $setIndex[$key];
+    }
+
+    /**
      * One streamed pass over the edge slice, producing the degrees the hub and
      * hotspot rankings read: in/out degree, and the cross-boundary degree
-     * hotspots rank on.
+     * hotspots rank on. An edge counts only when both ends are in the node slice.
      *
      * Extracted from architectureHealth because that method is up against the
      * repository's own function-length budget, and this is the seam that pays:
@@ -458,34 +398,39 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * here decides what any of it means. Dead-code candidates are decided over
      * the whole graph by DeadCodeCandidates, not from this slice.
      *
-     * @param array<string, array<string, mixed>> $nodes id => node row
-     * @param array<string, list<array<string, mixed>>> $boundaries
-     * @param list<string> $repositoryWide
+     * @param array{index: array<string, int>, boundary_set: array<int, int>, boundary_sets: list<list<string>>} $slice
      * @return array{
-     *     metrics: array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}>,
+     *     metrics: array{in: list<int>, out: list<int>, cross: list<int>},
      *     edges_examined: int,
      *     truncation_reasons: list<string>,
      * }
      */
-    private function walkDegrees(PDOStatement $edges, array $nodes, array $boundaries, array $repositoryWide, int $maxEdges, int $deadline): array
+    private function walkDegrees(PDOStatement $edges, array $slice, int $maxEdges, int $deadline): array
     {
-        $metrics = [];
-        foreach (array_keys($nodes) as $id) {
-            $metrics[$id] = ['in_degree' => 0, 'out_degree' => 0, 'cross_boundary_degree' => 0];
-        }
+        $count = count($slice['index']);
+        $metrics = ['in' => array_fill(0, $count, 0), 'out' => array_fill(0, $count, 0), 'cross' => array_fill(0, $count, 0)];
         $edgesExamined = 0;
-        $reasons = $this->streamBounded($edges, $maxEdges, $deadline, function (array $edge) use (&$edgesExamined, &$metrics, $nodes, $boundaries, $repositoryWide): bool {
+        // Two nodes cross a boundary when both belong to some boundary and
+        // they share none; decided once per pair of distinct sets.
+        $disjoint = [];
+        $reasons = $this->streamBounded($edges, $maxEdges, $deadline, static function (array $edge) use (&$edgesExamined, &$metrics, &$disjoint, $slice): bool {
             ++$edgesExamined;
-            if (!isset($nodes[$edge['source_id']], $nodes[$edge['target_id']])) {
+            $source = $slice['index'][$edge['source_id']] ?? null;
+            $target = $slice['index'][$edge['target_id']] ?? null;
+            if ($source === null || $target === null) {
                 return true;
             }
-            ++$metrics[$edge['source_id']]['out_degree'];
-            ++$metrics[$edge['target_id']]['in_degree'];
-            $sourceBoundaries = array_diff(array_column($boundaries[$edge['source_id']] ?? [], 'id'), $repositoryWide);
-            $targetBoundaries = array_diff(array_column($boundaries[$edge['target_id']] ?? [], 'id'), $repositoryWide);
-            if ($sourceBoundaries !== [] && $targetBoundaries !== [] && array_intersect($sourceBoundaries, $targetBoundaries) === []) {
-                ++$metrics[$edge['source_id']]['cross_boundary_degree'];
-                ++$metrics[$edge['target_id']]['cross_boundary_degree'];
+            ++$metrics['out'][$source];
+            ++$metrics['in'][$target];
+            $a = $slice['boundary_set'][$source] ?? null;
+            $b = $slice['boundary_set'][$target] ?? null;
+            if ($a !== null && $b !== null && $a !== $b) {
+                $pair = $a < $b ? $a . ':' . $b : $b . ':' . $a;
+                $disjoint[$pair] ??= array_intersect($slice['boundary_sets'][$a], $slice['boundary_sets'][$b]) === [];
+                if ($disjoint[$pair]) {
+                    ++$metrics['cross'][$source];
+                    ++$metrics['cross'][$target];
+                }
             }
 
             return true;
@@ -495,59 +440,100 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     }
 
     /**
-     * One pass over the node slice, sorting each component into the two
+     * One pass over the node slice, scoring each component for the two
      * rankings architecture_health reports: hubs and static hotspots. Every
      * component the rankings could hold (degree zero included) is also counted
      * into the in-degree histogram, so a bucket says how many there are and
      * the ranking which few are listed.
      *
-     * Extracted from architectureHealth for length: everything before it
-     * gathers the slice and its degrees, everything after it ranks and renders.
+     * Only the first `$limit` of each ranking are kept, by score and then by
+     * name, which is the slice's own order; the totals say how many there were.
      * Dead-code candidates are not drawn from the slice; DeadCodeCandidates
      * finds them over the whole project. Nothing here reads the database.
      *
-     * @param array<string, array<string, mixed>> $nodes id => node row
-     * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
-     * @param array<string, list<array<string, mixed>>> $roles
-     * @param array<string, list<array<string, mixed>>> $boundaries
+     * @param array{ids: list<string>, external: list<bool>, test: array<int, true>} $slice
+     * @param array{in: list<int>, out: list<int>, cross: list<int>} $metrics
      * @param array<string, true> $cycleMembers
-     * @return array{hubs: list<array<string, mixed>>, hotspots: list<array<string, mixed>>, excluded_external: int, excluded_tests: int, in_degree: list<array{from: int, to: int|null, components: int}>}
+     * @return array{hubs: array<int, int>, hotspots: array<int, int>, hub_total: int, hotspot_total: int, excluded_external: int, excluded_tests: int, in_degree: list<array{from: int, to: int|null, components: int}>}
      */
-    private function rankNodes(array $nodes, array $metrics, array $roles, array $boundaries, array $cycleMembers, bool $includeExternal, bool $includeTests): array
+    private function rankNodes(array $slice, array $metrics, array $cycleMembers, bool $includeExternal, bool $includeTests, int $limit): array
     {
         $hubs = $hotspots = [];
         $excludedExternal = $excludedTests = 0;
         $histogram = array_fill(0, count(self::IN_DEGREE_FROM), 0);
-        foreach ($nodes as $id => $row) {
-            $degree = $metrics[$id]['in_degree'] + $metrics[$id]['out_degree'];
-            $external = !$includeExternal && ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
-            $test = !$external && !$includeTests && ReportableComponent::isTest(array_column($roles[$id] ?? [], 'role'));
+        foreach ($slice['ids'] as $index => $id) {
+            $degree = $metrics['in'][$index] + $metrics['out'][$index];
+            $external = !$includeExternal && $slice['external'][$index];
+            $test = !$external && !$includeTests && isset($slice['test'][$index]);
             if (!$external && !$test) {
-                ++$histogram[self::inDegreeBucket($metrics[$id]['in_degree'])];
+                ++$histogram[self::inDegreeBucket($metrics['in'][$index])];
             }
             if ($degree === 0) {
                 continue;
             }
-            $component = [
-                'id' => $id, 'kind' => $row['kind'], 'canonical_name' => $row['canonical_name'],
-                'display_name' => $row['display_name'], 'origin' => $row['origin'], 'confidence' => $row['confidence'],
-                'roles' => $roles[$id] ?? [], 'boundaries' => $boundaries[$id] ?? [],
-            ];
             if ($external) {
                 ++$excludedExternal;
             } elseif ($test) {
                 ++$excludedTests;
             } else {
-                $hubs[] = ['component' => $component, 'metrics' => $metrics[$id], 'score' => $degree];
-                $hotspots[] = [
-                    'component' => $component,
-                    'factors' => $metrics[$id] + ['cycle_participant' => isset($cycleMembers[$id])],
-                    'score' => $degree + (2 * $metrics[$id]['cross_boundary_degree']) + (isset($cycleMembers[$id]) ? 3 : 0),
+                $hubs[$index] = $degree;
+                $hotspots[$index] = $degree + (2 * $metrics['cross'][$index]) + (isset($cycleMembers[$id]) ? 3 : 0);
+            }
+        }
+        // Stable: equal scores keep the slice's name order.
+        arsort($hubs);
+        arsort($hotspots);
+
+        return [
+            'hubs' => array_slice($hubs, 0, $limit, true), 'hotspots' => array_slice($hotspots, 0, $limit, true),
+            'hub_total' => count($hubs), 'hotspot_total' => count($hotspots),
+            'excluded_external' => $excludedExternal, 'excluded_tests' => $excludedTests, 'in_degree' => self::histogram($histogram),
+        ];
+    }
+
+    /**
+     * The ranked page as reported: each component with its row, roles and boundaries, loaded for the page alone.
+     *
+     * A component whose row is gone (a scan replaced it since the walk) is left out.
+     *
+     * @param array{hubs: array<int, int>, hotspots: array<int, int>} $ranked
+     * @param array{ids: list<string>} $slice
+     * @param array{in: list<int>, out: list<int>, cross: list<int>} $metrics
+     * @param array<string, array<string, mixed>> $rows
+     * @param array<string, true> $cycleMembers
+     * @return array{list<array<string, mixed>>, list<array<string, mixed>>}
+     */
+    private function rankedComponents(array $ranked, array $slice, array $metrics, array $rows, array $cycleMembers): array
+    {
+        $ids = [];
+        foreach ([...array_keys($ranked['hubs']), ...array_keys($ranked['hotspots'])] as $index) {
+            $ids[$slice['ids'][$index]] = true;
+        }
+        $ids = array_map('strval', array_keys($ids));
+        $roles = $this->roles($ids);
+        $boundaries = $this->boundaryNames($ids);
+        $entries = [];
+        foreach (['hubs', 'hotspots'] as $list) {
+            $entries[$list] = [];
+            foreach ($ranked[$list] as $index => $score) {
+                $id = $slice['ids'][$index];
+                $row = $rows[$id] ?? null;
+                if ($row === null) {
+                    continue;
+                }
+                $component = [
+                    'id' => $id, 'kind' => $row['kind'], 'canonical_name' => $row['canonical_name'],
+                    'display_name' => $row['display_name'], 'origin' => $row['origin'], 'confidence' => $row['confidence'],
+                    'roles' => $roles[$id] ?? [], 'boundaries' => $boundaries[$id] ?? [],
                 ];
+                $degrees = ['in_degree' => $metrics['in'][$index], 'out_degree' => $metrics['out'][$index], 'cross_boundary_degree' => $metrics['cross'][$index]];
+                $entries[$list][] = $list === 'hubs'
+                    ? ['component' => $component, 'metrics' => $degrees, 'score' => $score]
+                    : ['component' => $component, 'factors' => $degrees + ['cycle_participant' => isset($cycleMembers[$id])], 'score' => $score];
             }
         }
 
-        return ['hubs' => $hubs, 'hotspots' => $hotspots, 'excluded_external' => $excludedExternal, 'excluded_tests' => $excludedTests, 'in_degree' => self::histogram($histogram)];
+        return [$entries['hubs'], $entries['hotspots']];
     }
 
     /** The bucket of the in-degree histogram `$inDegree` falls in: the last whose lower bound it reaches. */
@@ -1303,14 +1289,264 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return (int) $statement->fetchColumn();
     }
     /**
-     * Whether a node depends on itself, reported separately since that is rarely what a caller means by a cycle.
+     * Both phases of the cycle search: the whole selected graph searched as
+     * numbered endpoint pairs, then the reported components' details loaded.
      *
-     * @param array<string, list<string>> $adjacency
+     * @param list<string> $edgeKinds
+     * @param array<string, int> $confidenceRank
+     * @return array{nodes_examined: int, edges_examined: int, truncation_reasons: list<string>, cycles: list<array<string, mixed>>, evidence: list<array<string, mixed>>}
      */
-    private function hasSelfLoop(string $nodeId, array $adjacency): bool
+    private function cycleSearch(string $projectId, array $edgeKinds, array $confidenceRank, string $minConfidence, int $limit, int $maxNodes, int $maxEdges, int $deadline, bool $includeSelfLoops): array
     {
-        return in_array($nodeId, $adjacency[$nodeId] ?? [], true);
+        $graph = $this->cycleSearchGraph($projectId, $edgeKinds, $confidenceRank[$minConfidence], $maxNodes, $maxEdges, $deadline);
+        $truncationReasons = $graph['truncation_reasons'];
+        $componentScan = $this->stronglyConnectedComponents($graph['adjacency'], $graph['reverse'], $deadline);
+        if ($componentScan['timed_out']) {
+            $truncationReasons[] = 'time_limit';
+        }
+        // A single self-recursive symbol is ordinary recursion, not an
+        // architectural tangle, so self-loops are opt-in.
+        $components = [];
+        foreach ($componentScan['components'] as $component) {
+            if (count($component) > 1 || ($includeSelfLoops && isset($graph['self_loops'][$component[0]]))) {
+                $components[] = $component;
+            }
+        }
+        $nodeIds = $graph['node_ids'];
+        $components = array_map(static function (array $component) use ($nodeIds): array {
+            $members = [];
+            foreach ($component as $index) {
+                $members[] = $nodeIds[$index];
+            }
+            sort($members, SORT_STRING);
+
+            return $members;
+        }, $components);
+        usort($components, static fn(array $a, array $b): int => (count($b) <=> count($a)) ?: ($a[0] <=> $b[0]));
+        if (count($components) > $limit) {
+            $components = array_slice($components, 0, $limit);
+            $truncationReasons[] = 'result_limit';
+        }
+
+        $detail = $this->cycleDetails($components, $graph, $confidenceRank);
+
+        return [
+            'nodes_examined' => count($nodeIds), 'edges_examined' => count($graph['edge_ids']),
+            'truncation_reasons' => array_values(array_unique([...$truncationReasons, ...$detail['truncation_reasons']])),
+            'cycles' => $detail['cycles'], 'evidence' => $detail['evidence'],
+        ];
     }
+
+    /**
+     * The selected dependency graph as numbered adjacency lists, read in one narrow pass.
+     *
+     * Each node is numbered in the order the edge walk first meets it, and the
+     * search runs over those numbers rather than over the ids. An edge keeps its
+     * id and its two ends, so the details of the few edges inside a reported
+     * component can be loaded afterwards in the order the walk read them.
+     *
+     * The walk stops at the first edge whose new node would exceed max_nodes;
+     * that edge's source still counts when it was new, as it always has.
+     *
+     * @param list<string> $edgeKinds
+     * @return array{node_ids: list<string>, node_index: array<string, int>, adjacency: list<list<int>>, reverse: list<list<int>>, self_loops: array<int, true>, edge_ids: list<string>, edge_sources: list<int>, edge_targets: list<int>, truncation_reasons: list<string>}
+     */
+    private function cycleSearchGraph(string $projectId, array $edgeKinds, int $minimumRank, int $maxNodes, int $maxEdges, int $deadline): array
+    {
+        $placeholders = implode(',', array_fill(0, count($edgeKinds), '?'));
+        // Only what the search and the erased-import test read: the attributes
+        // of any other kind are never decoded, so they are not read either.
+        $statement = $this->pdo->prepare(
+            "SELECT e.id, e.kind, e.source_id, e.target_id, CASE WHEN e.kind IN ('imports', 're_exports') THEN e.attributes_json END AS attributes_json " .
+            'FROM edges e WHERE e.project_id = ? ' .
+            sprintf('AND e.kind IN (%s) ', $placeholders) .
+            "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
+            'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
+        );
+        $statement->execute([$projectId, ...$edgeKinds, $minimumRank, $maxEdges + 1]);
+        $graph = [
+            'node_ids' => [], 'node_index' => [], 'adjacency' => [], 'reverse' => [], 'self_loops' => [],
+            'edge_ids' => [], 'edge_sources' => [], 'edge_targets' => [], 'truncation_reasons' => [],
+        ];
+        $nodeLimitHit = false;
+        $graph['truncation_reasons'] = $this->streamBounded(
+            $statement,
+            $maxEdges,
+            $deadline,
+            static function (array $row) use (&$graph, &$nodeLimitHit, $maxNodes): bool {
+                // Dropped before the node cap sees it, so a pair joined by
+                // nothing but erased type imports contributes neither the edge
+                // nor the two nodes it would have introduced.
+                if (self::isErasedTypeEdge($row)) {
+                    return true;
+                }
+                $ends = [];
+                foreach ([$row['source_id'], $row['target_id']] as $id) {
+                    if (!isset($graph['node_index'][$id])) {
+                        if (count($graph['node_ids']) >= $maxNodes) {
+                            $nodeLimitHit = true;
+
+                            return false;
+                        }
+                        $graph['node_index'][$id] = count($graph['node_ids']);
+                        $graph['node_ids'][] = $id;
+                        $graph['adjacency'][] = [];
+                        $graph['reverse'][] = [];
+                    }
+                    $ends[] = $graph['node_index'][$id];
+                }
+                [$source, $target] = $ends;
+                $graph['adjacency'][$source][] = $target;
+                $graph['reverse'][$target][] = $source;
+                if ($source === $target) {
+                    $graph['self_loops'][$source] = true;
+                }
+                $graph['edge_ids'][] = $row['id'];
+                $graph['edge_sources'][] = $source;
+                $graph['edge_targets'][] = $target;
+
+                return true;
+            },
+        );
+        // The node cap is the one stop condition streamBounded cannot see, so it
+        // reports itself here rather than being folded into a row reason.
+        if ($nodeLimitHit) {
+            $graph['truncation_reasons'][] = 'node_limit';
+        }
+
+        return $graph;
+    }
+
+    /**
+     * Members, relationships and evidence for the reported components, loaded for those alone.
+     *
+     * Each component lists its first 100 members and the first 200 edges that
+     * join two of them, in the order the search read them; trimming either is
+     * reported as member_limit or internal_edge_limit, and a member or edge
+     * whose row cannot be loaded as missing_detail.
+     *
+     * @param list<list<string>> $components member ids, each component sorted
+     * @param array{node_index: array<string, int>, edge_ids: list<string>, edge_sources: list<int>, edge_targets: list<int>} $graph
+     * @param array<string, int> $confidenceRank
+     * @return array{cycles: list<array<string, mixed>>, evidence: list<array<string, mixed>>, truncation_reasons: list<string>}
+     */
+    private function cycleDetails(array $components, array $graph, array $confidenceRank): array
+    {
+        $componentOf = [];
+        foreach ($components as $componentIndex => $component) {
+            foreach ($component as $id) {
+                $componentOf[$graph['node_index'][$id]] = $componentIndex;
+            }
+        }
+        $internal = array_fill(0, count($components), []);
+        if ($componentOf !== []) {
+            foreach ($graph['edge_sources'] as $position => $source) {
+                $componentIndex = $componentOf[$source] ?? null;
+                if ($componentIndex !== null && ($componentOf[$graph['edge_targets'][$position]] ?? null) === $componentIndex) {
+                    $internal[$componentIndex][] = $position;
+                }
+            }
+        }
+        $sampledIds = $memberIds = [];
+        foreach ($components as $componentIndex => $component) {
+            foreach (array_slice($internal[$componentIndex], 0, 200) as $position) {
+                $sampledIds[] = $graph['edge_ids'][$position];
+            }
+            array_push($memberIds, ...array_slice($component, 0, 100));
+        }
+        $edgeRows = $this->rowsByIds(
+            'SELECT e.id, e.kind, e.source_id, e.target_id, e.origin, e.confidence, e.start_line, e.end_line, f.relative_path ' .
+            'FROM edges e LEFT JOIN files f ON f.id = e.file_id WHERE e.id IN (%s)',
+            $sampledIds,
+        );
+        $nodeRows = $this->rowsByIds('SELECT id, kind, canonical_name, display_name, confidence FROM nodes WHERE id IN (%s)', $memberIds);
+        $boundaryMap = $this->boundaryNames($memberIds);
+
+        $cycles = $evidence = $truncationReasons = [];
+        foreach ($components as $componentIndex => $component) {
+            $edgeTruncated = count($internal[$componentIndex]) > 200;
+            $memberTruncated = count($component) > 100;
+            // Per-cycle member/edge trimming is real result truncation; surface
+            // it on the envelope so dependency_cycles never reports truncated:false
+            // over demonstrably truncated cycle detail.
+            if ($memberTruncated) {
+                $truncationReasons[] = 'member_limit';
+            }
+            if ($edgeTruncated) {
+                $truncationReasons[] = 'internal_edge_limit';
+            }
+            $cycleEdges = [];
+            $minimum = 3;
+            // Both phases read one snapshot, so a row is missing only where the
+            // graph itself lacks it: an edge left pointing at a node that is
+            // gone. The cycle says so rather than shrinking without a word.
+            $missing = false;
+            foreach (array_slice($internal[$componentIndex], 0, 200) as $position) {
+                $edge = $edgeRows[$graph['edge_ids'][$position]] ?? null;
+                if ($edge === null) {
+                    $missing = true;
+                    continue;
+                }
+                $minimum = min($minimum, $confidenceRank[$edge['confidence']]);
+                $cycleEdges[] = [
+                    'id' => $edge['id'], 'kind' => $edge['kind'], 'source_id' => $edge['source_id'],
+                    'target_id' => $edge['target_id'], 'origin' => $edge['origin'], 'confidence' => $edge['confidence'],
+                ];
+                if ($edge['relative_path'] !== null && count($evidence) < 500) {
+                    $evidence[] = [
+                        'component_index' => $componentIndex, 'edge_id' => $edge['id'], 'path' => $edge['relative_path'],
+                        'start_line' => $edge['start_line'], 'end_line' => $edge['end_line'],
+                    ];
+                }
+            }
+            $members = [];
+            foreach (array_slice($component, 0, 100) as $id) {
+                if (isset($nodeRows[$id])) {
+                    $members[] = $nodeRows[$id] + ['boundaries' => $boundaryMap[$id] ?? []];
+                } else {
+                    $missing = true;
+                }
+            }
+            if ($missing) {
+                $truncationReasons[] = 'missing_detail';
+            }
+            $cycles[] = [
+                'size' => count($component),
+                'minimum_confidence' => array_search($minimum, $confidenceRank, true),
+                // Full membership (pre-slice) so callers such as architecture_health
+                // can flag every participant, not just the first 100.
+                'member_ids' => $component,
+                'members' => $members,
+                'relationships' => $cycleEdges,
+                'truncated' => $edgeTruncated || $memberTruncated || $missing,
+                'truncation_reasons' => array_values(array_filter([$memberTruncated ? 'member_limit' : null, $edgeTruncated ? 'internal_edge_limit' : null, $missing ? 'missing_detail' : null])),
+            ];
+        }
+
+        return ['cycles' => $cycles, 'evidence' => $evidence, 'truncation_reasons' => $truncationReasons];
+    }
+
+    /**
+     * Rows keyed by their id column, fetched in chunks small enough for SQLite's parameter limit.
+     *
+     * @param string $sql a query whose `%s` is replaced by the placeholders of one chunk
+     * @param list<string> $ids
+     * @return array<string, array<string, mixed>>
+     */
+    private function rowsByIds(string $sql, array $ids): array
+    {
+        $rows = [];
+        foreach (array_chunk(array_values(array_unique($ids)), 500) as $chunk) {
+            $statement = $this->pdo->prepare(sprintf($sql, implode(',', array_fill(0, count($chunk), '?'))));
+            $statement->execute($chunk);
+            foreach ($statement->fetchAll() as $row) {
+                $rows[$row['id']] = $row;
+            }
+        }
+
+        return $rows;
+    }
+
     /** Count of distinct values, used for the graph-size figures. */
     private function distinctCount(string $table, string $projectId, string $column = 'kind'): int
     {

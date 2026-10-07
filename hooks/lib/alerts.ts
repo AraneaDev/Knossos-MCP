@@ -12,6 +12,7 @@
  * rest are said as one count.
  */
 import type { Dashboard } from '../../types'
+import { cycleSearchStopped } from './envelopes'
 import { shortName } from './rows'
 
 /** One thing to say: its key (said once) and its words. */
@@ -45,7 +46,8 @@ export function freshAlerts(before: Dashboard | null, after: Dashboard, told: Re
   const had = new Set(before.cycles.largest.map(c => cycleKey(c.members)))
   const cycles = cyclesWhole ? after.cycles.largest.filter(c => !had.has(cycleKey(c.members))) : []
   for (const c of cycles) alerts.push({ key: cycleKey(c.members), text: `knossos: a new dependency cycle of ${c.size}: ${chain(c.members)}` })
-  if (cycles.length === 0 && after.cycles.count > before.cycles.count) {
+  // A count against a search that stopped early is no baseline: what it did not count was not absent.
+  if (cycles.length === 0 && !cycleSearchStopped(before.cycles) && after.cycles.count > before.cycles.count) {
     alerts.push({ key: `cycles:${after.cycles.count}`, text: `knossos: the graph now has ${after.cycles.count} dependency cycles, ${after.cycles.count - before.cycles.count} more than before` })
   }
   const policy = (d: Dashboard) => (d.policy?.status === 'evaluated' ? d.policy : null)

@@ -8,6 +8,7 @@ import type { PluginOptions, Timer } from 'claude-code'
 
 import type { Dashboard, SessionChanges } from '../../types'
 import { noActivity } from '../lib/activity'
+import { cycleSearchStopped } from '../lib/envelopes'
 import type { Activity } from '../lib/activity'
 import { watchPollMsOf } from '../lib/live'
 import { SingleFlight } from '../lib/scheduler'
@@ -305,10 +306,15 @@ export function editedPath(e: object): string | null {
 /** The cycles a dashboard holds, by members: what tells a cycle new since the session began. */
 const cycleKeys = (d: Dashboard): string[] => d.cycles.largest.map(c => [...c.members].sort().join('\u0000'))
 
-/** The cycles the graph holds as a session begins: the count, the listed ones, and whether the list is all of them. */
-export type StartCycles = { count: number; keys: string[]; complete: boolean }
+/**
+ * The cycles the graph holds as a session begins: the count, the listed ones,
+ * whether the list is all of them, and whether the count is a whole count
+ * rather than what a search that stopped early reached. `exact` is absent in
+ * state recorded before it existed.
+ */
+export type StartCycles = { count: number; keys: string[]; complete: boolean; exact?: boolean }
 
-export const cyclesOf = (d: Dashboard): StartCycles => ({ count: d.cycles.count, keys: cycleKeys(d), complete: !d.cycles.truncated && d.cycles.largest.length >= d.cycles.count })
+export const cyclesOf = (d: Dashboard): StartCycles => ({ count: d.cycles.count, keys: cycleKeys(d), complete: !d.cycles.truncated && d.cycles.largest.length >= d.cycles.count, exact: !cycleSearchStopped(d.cycles) })
 
 /** Whether `path`'s change is this session's own: always, without the scan ledger's origins (the turns reported it). */
 export const ownChange = (session: SessionChanges, path: string): boolean => session.origins === undefined || session.origins[path] === 'session'

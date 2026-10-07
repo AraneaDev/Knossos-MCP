@@ -63,7 +63,7 @@ import { litAt } from './flash'
 import { finderBlock, finderInput, finderList } from './finder'
 import type { FinderInput } from './finder'
 import type { Flash } from './flash'
-import { cycleSteps, cyclesArrangement, cyclesInput, cyclesList, unfoldPress } from './cycles'
+import { cycleCount, cycleSteps, cyclesArrangement, cyclesInput, cyclesList, unfoldPress } from './cycles'
 import type { CyclesInput } from './cycles'
 import { detailArrangement, detailList, issueCount, issuesArrangement, issuesInput, issuesList, locIn, superscript } from './views'
 import { arrange, besideRows, cardInner, DEFAULT_ROWS, fillColumn, fitBlocks, gridColumns, moreRows, noteOf, windowOf } from './cards'
@@ -357,7 +357,7 @@ const languagesOf = (d: Dashboard): string => (d.summary?.languages ?? []).map(l
  */
 export function statsOf(d: Dashboard, summary: string[], policy: string | null, diagnostics: number | null, drift: boolean): Stat[] {
   const above = (value: string) => value !== '0'
-  const cycles = countLabel(d.cycles.count, d.cycles.truncated)
+  const cycles = cycleCount(d.cycles)
   const dead = countLabel(d.dead_code_candidates, d.dead_code_truncated)
   const maxDegree = d.trend.at(-1)?.max_degree ?? null
   const drifted = d.freshness.drift_files
@@ -403,7 +403,7 @@ export function summaryParts(d: Dashboard, hubs: number): string[] {
   if (d.summary === undefined) {
     return [
       plural(hubs, 'hub', 'hubs'),
-      `${countLabel(d.cycles.count, d.cycles.truncated)} ${d.cycles.count === 1 && !d.cycles.truncated ? 'cycle' : 'cycles'}`,
+      `${cycleCount(d.cycles)} ${d.cycles.count === 1 && !d.cycles.truncated ? 'cycle' : 'cycles'}`,
       `${countLabel(d.dead_code_candidates, d.dead_code_truncated)} dead code`,
       drift,
     ]

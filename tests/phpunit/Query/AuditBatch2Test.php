@@ -114,6 +114,33 @@ final class AuditBatch2Test extends KnossosTestCase
         assertSame([], $result['components']);
     }
 
+    /**
+     * A chain far deeper than any call stack is walked without recursion, and
+     * numbered nodes work as well as ids do.
+     */
+    #[Group('query')]
+    public function testStronglyConnectedComponentsWalkADeepNumberedChain(): void
+    {
+        $count = 20_000;
+        $adjacency = $reverse = [];
+        for ($i = 0; $i < $count; $i++) {
+            $adjacency[$i] = [($i + 1) % $count];
+            $reverse[$i] = [($i + $count - 1) % $count];
+        }
+        // A tail hanging off the ring stays outside it.
+        $adjacency[$count] = [0];
+        $reverse[$count] = [];
+        $reverse[0][] = $count;
+
+        $result = (new SccProbe($this->freshTestDatabase()))->scc($adjacency, $reverse, null);
+
+        assertSame(false, $result['timed_out']);
+        assertSame(2, count($result['components']));
+        $sizes = array_map('count', $result['components']);
+        sort($sizes);
+        assertSame([1, $count], $sizes);
+    }
+
     #[Group('query')]
     public function testImpactAnalysisSignalsPerNodeEdgeLimitWhenHubExceeds500Edges(): void
     {

@@ -774,6 +774,15 @@ describe('the cycles tab', () => {
   it('says when there is none', () => {
     expect(textOf(paneRows(fullInput({ tab: 'cycles' }, full({ cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] } })), 60))).toContain('No dependency cycles.')
   })
+  it('says a search that stopped before it found any is incomplete, not that there are none', () => {
+    const stopped = full({ cycles: { count: 0, truncated: true, truncation_reasons: ['time_limit'], largest: [] } })
+    const text = textOf(paneRows(fullInput({ tab: 'cycles' }, stopped), 60))
+    expect(text).not.toContain('No dependency cycles.')
+    expect(text).toContain('Search stopped early; none found before it did.')
+    expect(text).toContain('incomplete · time limit')
+    expect(text).not.toContain('time_limit')
+    expect(summaryParts({ ...stopped, summary: undefined }, 0)[1]).toBe('? cycles')
+  })
 })
 
 describe('the detail view', () => {

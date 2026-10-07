@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query;
 
+use Closure;
 use InvalidArgumentException;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Tests\Phpunit\Support\RowCountingStatement;
+use Knossos\Tests\Phpunit\Support\SyntheticGraph;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 final class CyclesTest extends KnossosTestCase
 {
@@ -288,5 +291,123 @@ final class CyclesTest extends KnossosTestCase
         $live = (new ArchitectureQueryService($pdo))->dependencyCycles($projectId, timeoutMs: 1);
         assertSame(true, $live->truncated);
         assertSame(true, in_array('time_limit', $live->data['bounds']['truncation_reasons'], true));
+    }
+
+    /**
+     * The default bounds cover a graph of a mid-sized repository.
+     *
+     * Twelve thousand symbols and sixty thousand dependency edges is an
+     * ordinary project, yet the search used to stop at its 10,000-node cap or
+     * at its one-second deadline long before it got there, because every edge
+     * was read with both endpoints' names and its file path attached. A search
+     * that stops early finds nothing, so the answer was "0 cycles" over a graph
+     * that has two.
+     *
+     * Run in a process of its own, like the other large-graph tests: what the
+     * graph leaves behind in the heap would otherwise count against the 128 MB
+     * of every test after it.
+     */
+    #[Group('cycles')]
+    #[RunInSeparateProcess]
+    public function testTheDefaultSearchCoversALargeGraphCompletely(): void
+    {
+        [$pdo, $project, $nodes, $node] = $this->largeGraph();
+
+        $result = (new ArchitectureQueryService($pdo))->dependencyCycles($project);
+
+        assertSame(false, $result->truncated);
+        assertSame([], $result->data['bounds']['truncation_reasons']);
+        assertSame([13, 3], array_column($result->data['cycles'], 'size'));
+        assertSame(array_map($node, range(100, 112)), $result->data['cycles'][0]['member_ids']);
+        assertSame(array_map($node, range(5000, 5002)), $result->data['cycles'][1]['member_ids']);
+        assertSame('App\\Synthetic00100', $result->data['cycles'][0]['members'][0]['canonical_name']);
+        assertSame('certain', $result->data['cycles'][1]['minimum_confidence']);
+        // 5000 -> 5001, 5001 -> 5002 and the back edge; nothing else joins two members.
+        assertSame(['edge:5000:0', 'edge:5001:0', 'edge:back:b'], array_column($result->data['cycles'][1]['relationships'], 'id'));
+        assertSame(true, str_starts_with($result->summary, 'Found 2 dependency cycle components.'));
+        // The fixture's own two nodes and their edge are part of the graph too.
+        assertSame($nodes + 2, $result->data['bounds']['nodes_examined']);
+    }
+
+    /**
+     * architecture_health flags cycle participants from its own cycle search,
+     * which it used to run with its 10,000-node cap: on a graph past that size
+     * the search was cut short and no participant was flagged.
+     */
+    #[Group('cycles')]
+    #[RunInSeparateProcess]
+    public function testArchitectureHealthFlagsEveryCycleOfALargeGraph(): void
+    {
+        [$pdo, $project, , $node] = $this->largeGraph();
+
+        $result = (new ArchitectureQueryService($pdo))->architectureHealth($project);
+
+        assertSame(false, $result->data['bounds']['cycle_scan_truncated']);
+        assertSame([], array_values(array_diff($result->data['bounds']['truncation_reasons'], ['result_limit'])));
+        $flagged = array_column(array_filter($result->data['static_hotspots'], static fn(array $hotspot): bool => $hotspot['factors']['cycle_participant']), 'component');
+        $flaggedIds = array_column($flagged, 'id');
+        sort($flaggedIds);
+        assertSame([...array_map($node, range(100, 112)), ...array_map($node, range(5000, 5002))], $flaggedIds);
+    }
+
+    /**
+     * A cycle whose detail cannot be loaded says so instead of shrinking.
+     *
+     * The search reads endpoint pairs and loads names and edge details
+     * afterwards. An edge left pointing at a node that no longer exists (a
+     * graph written before foreign keys were enforced) closes a loop the
+     * search sees, but has no row to describe; the cycle is reported with the
+     * members it could load and marked truncated.
+     */
+    #[Group('cycles')]
+    public function testACycleThroughAMissingNodeIsReportedTruncated(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $ghost = 'node:ghost';
+        $pdo->exec('PRAGMA foreign_keys = OFF');
+        $insert = $pdo->prepare(
+            'INSERT INTO edges (id, project_id, kind, source_id, target_id, file_id, start_line, end_line, origin, ' .
+            "confidence, attributes_json, owner_key, last_scan_id) VALUES (?, ?, 'calls', ?, ?, ?, 3, 3, 'ast', 'certain', '{}', 'php:file:src/Checkout.php', ?)",
+        );
+        $insert->execute(['edge:to-ghost', $ids['project'], $ids['invoice'], $ghost, $ids['file'], $ids['scan']]);
+        $insert->execute(['edge:from-ghost', $ids['project'], $ghost, $ids['checkout'], $ids['file'], $ids['scan']]);
+        $pdo->exec('PRAGMA foreign_keys = ON');
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->dependencyCycles($ids['project']);
+
+        assertSame([3], array_column($result->data['cycles'], 'size'));
+        $cycle = $result->data['cycles'][0];
+        assertSame(['App\\Checkout', 'App\\InvoiceService'], array_column($cycle['members'], 'canonical_name'));
+        assertSame(true, $cycle['truncated']);
+        assertSame(['missing_detail'], $cycle['truncation_reasons']);
+        assertSame(true, $result->truncated);
+        assertSame(['missing_detail'], $result->data['bounds']['truncation_reasons']);
+    }
+
+    /**
+     * Twelve thousand synthetic symbols and about sixty thousand dependency
+     * edges, two of which close a loop: 100 -> ... -> 112 -> 100 (thirteen
+     * members) and 5000 -> 5001 -> 5002 -> 5000 (three). A third back edge is
+     * an erased type import and closes nothing.
+     *
+     * @return array{PDO, string, int, Closure(int): string} the connection, the project, the node count and the id of node i
+     */
+    private function largeGraph(): array
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $nodes = 12_000;
+        $pdo->beginTransaction();
+        SyntheticGraph::seed($pdo, $ids, $nodes, 5);
+        // 100 -> 101 -> ... -> 112 -> 100: thirteen members.
+        SyntheticGraph::edge($pdo, $ids, 'edge:back:a', 'calls', 112, 100);
+        // 5000 -> 5001 -> 5002 -> 5000: three members.
+        SyntheticGraph::edge($pdo, $ids, 'edge:back:b', 'calls', 5002, 5000);
+        // A loop closed only by an erased type import is not a cycle.
+        SyntheticGraph::edge($pdo, $ids, 'edge:back:type', 'imports', 9002, 9000, '{"type_only":true}');
+        $pdo->commit();
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        return [$pdo, $ids['project'], $nodes, SyntheticGraph::node(...)];
     }
 }

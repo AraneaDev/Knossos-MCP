@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { commitNote, committedSince, madeCommit, stillReported } from './agent'
+import { commitNote, committedSince, cyclesSinceStart, madeCommit, stillReported } from './agent'
 
 describe('a commit', () => {
   it('is told by the line git prints for a commit, never by the command text', () => {
@@ -75,5 +75,19 @@ describe('a commit', () => {
       'knossos: this session\'s changes carry 1 boundary-policy violation this session introduced (A → B); 2 changed files no test reaches (src/Kernel.php, src/Config.php); 1 dependency cycle new since the session began (A → B → A). Check them before you push.',
     )
     expect(commitNote([], Array.from({ length: 8 }, (_, i) => `f${i}`), { count: 0, chains: [] })).toBe("knossos: this session's changes carry 8 changed files no test reaches (f0, f1, f2, f3, f4, and 3 more). Check them before you push.")
+  })
+
+  it('counts cycles new since the session began only against a start that counted them all', () => {
+    const cycle = (members: string[]) => ({ size: members.length, members })
+    const now = { count: 2, truncated: false, largest: [cycle(['A', 'B']), cycle(['C', 'D'])] }
+    // A start whose search stopped early counted none it could vouch for: neither cycle is new on its word.
+    expect(cyclesSinceStart({ count: 0, keys: [], complete: false, exact: false }, now)).toEqual({ count: 0, fresh: [] })
+    // A start that listed every cycle names the new one.
+    expect(cyclesSinceStart({ count: 1, keys: ['A\u0000B'], complete: true, exact: true }, now)).toEqual({ count: 1, fresh: [cycle(['C', 'D'])] })
+    // A start that counted them all but listed only some says how many more there are.
+    expect(cyclesSinceStart({ count: 1, keys: [], complete: false, exact: true }, now)).toEqual({ count: 1, fresh: [] })
+    // A start recorded before `exact` existed keeps the count it always had.
+    expect(cyclesSinceStart({ count: 1, keys: [], complete: false }, now)).toEqual({ count: 1, fresh: [] })
+    expect(cyclesSinceStart(null, now)).toEqual({ count: 0, fresh: [] })
   })
 })

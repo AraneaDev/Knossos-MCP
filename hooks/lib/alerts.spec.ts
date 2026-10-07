@@ -61,6 +61,12 @@ describe('alerts for what a scan brought', () => {
     expect(freshAlerts(dash({ policy: { status: 'skipped', total: 0, truncated: false, truncation_reasons: [], items: [] } }), dash({ snapshot_id: 's2', policy: { status: 'evaluated', total: 2, truncated: false, truncation_reasons: [], items: [violation(0), violation(1)] } }))).toEqual([])
   })
 
+  it('says no count grew against an earlier search that stopped before it counted them', () => {
+    const before = dash({ cycles: { count: 0, truncated: true, truncation_reasons: ['time_limit'], largest: [] } })
+    const after = dash({ snapshot_id: 's2', cycles: { count: 2, truncated: false, truncation_reasons: [], largest: [cycle('App\\A', 'App\\B'), cycle('App\\C', 'App\\D')] } })
+    expect(freshAlerts(before, after)).toEqual([])
+  })
+
   it('names nothing new against an earlier list that was cut: only a count that grew is said', () => {
     // Before: 12 cycles, 2 listed. After: a cycle listed that was not, 13 in all.
     const before = dash({ cycles: { count: 12, truncated: true, truncation_reasons: [], largest: [cycle('App\\A', 'App\\B'), cycle('App\\C', 'App\\D')] } })

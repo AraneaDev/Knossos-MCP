@@ -2,7 +2,7 @@
  * What the model is told: the note on a Read or an edit, the note after a
  * turn and after a commit, and how a note is delivered.
  */
-import { commitNote, REFLOG_READ, stillReported } from '../lib/agent'
+import { commitNote, cyclesSinceStart, REFLOG_READ, stillReported } from '../lib/agent'
 import type { TurnBrief } from '../lib/envelopes'
 import { editNote, fanInIndex, freshViolations, readNote, testsNote, violationKey, violationNote } from '../lib/notes'
 import { declaredOf } from '../lib/palette'
@@ -64,9 +64,7 @@ export async function commitNoteFor(io: Port, loop: string): Promise<string | nu
     .map(([path]) => path)
     .sort()
   const start = await io.state.startCycles.read()
-  const keys = new Set(start?.keys ?? [])
-  const fresh = start?.complete === true ? d.cycles.largest.filter(c => !keys.has([...c.members].sort().join('\u0000'))) : []
-  const count = start === null ? 0 : Math.max(d.cycles.count - start.count, fresh.length)
+  const { count, fresh } = cyclesSinceStart(start, d.cycles)
   const chains = fresh.map(c => `${c.members.slice(0, 4).join(' → ')}${c.members.length > 4 ? ' → …' : ''}`)
   const note = commitNote(mod.enforce ? stillReported(session.violations, session.violation_snapshots, d) : [], untested, { count, chains })
   if (note === null) return null
