@@ -56,7 +56,7 @@ final readonly class LanguageScanRunner
             // Keyed on the owner, like workerDiagnostics and scannerMetadata, so
             // a consumer can join the three. Recorded for every descriptor,
             // including one with nothing to scan, so the shape is stable.
-            $owner = 'knossos.' . $descriptor->key;
+            $owner = $descriptor->scannerId();
             $batchBudgets[$owner] = [
                 'files' => $descriptor->scanBatchFiles,
                 'source_bytes' => $descriptor->scanBatchSourceBytes,
@@ -91,7 +91,7 @@ final readonly class LanguageScanRunner
                 // Everything else costs this language only. The other languages'
                 // facts are already collected and are still worth a graph.
                 $workerDiagnostics[] = [
-                    'owner' => 'knossos.' . $descriptor->key,
+                    'owner' => $descriptor->scannerId(),
                     'code' => $error instanceof WorkerException ? $error->diagnosticCode : 'WORKER_FAILED',
                     'message' => self::withRemedy(
                         sprintf('%s scanner failed: %s', $descriptor->key, $error->getMessage()),

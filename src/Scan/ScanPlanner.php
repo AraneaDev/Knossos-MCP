@@ -237,7 +237,7 @@ final readonly class ScanPlanner
 
     /**
      * The discovered files each scanner has no cache row for, keyed by the
-     * scanner id its worker answers under (`knossos.<language key>`).
+     * scanner id its worker answers under ({@see LanguageDescriptor::scannerId()}).
      *
      * @param list<object> $files
      * @param array<string, array<string, mixed>> $cache keyed by scanner id and path
@@ -245,12 +245,7 @@ final readonly class ScanPlanner
      */
     private static function addedByScanner(array $files, array $cache): array
     {
-        $scannerOf = [];
-        foreach (LanguageDescriptor::defaults('') as $descriptor) {
-            foreach ($descriptor->languages as $language) {
-                $scannerOf[$language] = 'knossos.' . $descriptor->key;
-            }
-        }
+        $scannerOf = LanguageDescriptor::scannerIdsByLanguage();
         $added = [];
         foreach ($files as $file) {
             $scanner = $scannerOf[$file->language] ?? null;

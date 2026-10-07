@@ -6,6 +6,7 @@ namespace Knossos\Tests\Scan;
 
 use InvalidArgumentException;
 use Knossos\Configuration\ProjectConfiguration;
+use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\DiscoveryResult;
 use Knossos\Scan\ScanPlan;
 use Knossos\Scan\ScanPlanner;
@@ -55,13 +56,14 @@ final class ScanPlannerTest extends TestCase
         return $pdo;
     }
 
-    private function makePreparation(string $rootRealpath = '/tmp/foo'): ScanPreparation
+    /** @param list<DiscoveredFile> $files */
+    private function makePreparation(string $rootRealpath = '/tmp/foo', array $files = []): ScanPreparation
     {
         return new ScanPreparation(
             configuration: new ProjectConfiguration(),
             discovery: new DiscoveryResult(
                 rootRealpath: $rootRealpath,
-                files: [],
+                files: $files,
                 units: [],
                 diagnostics: [],
                 inputHash: '',
@@ -316,6 +318,37 @@ TOML);
 
         assertSame([], $full->invalidatedOwners);
         self::assertNull($full->cachedReads);
+    }
+
+    /**
+     * A TypeScript file with no cache row is an added file, and the TypeScript
+     * worker does not say which file read what, so every cached TypeScript
+     * file is rebuilt even though none of their own bytes changed.
+     */
+    public function testAnAddedFileRebuildsEveryRowOfAnUnattributedScanner(): void
+    {
+        $pdo = $this->createSchema();
+        $planner = new ScanPlanner($pdo, ['/tmp']);
+        $root = '/tmp/added-project';
+        $projectId = StableId::project('root:' . $root);
+        $pdo->prepare("INSERT INTO projects(id, name, root_realpath, active_scan_id, created_at, updated_at) VALUES (?, 'added', ?, 'scan-existing', 'now', 'now')")
+            ->execute([$projectId, $root]);
+        $insert = $pdo->prepare("INSERT INTO contribution_cache(project_id, owner_key, file_path, content_hash, scanner_id, scanner_version, configuration_hash, payload_json, updated_at, read_attribution) VALUES (?, ?, ?, ?, 'knossos.typescript', '1.0', '', '{}', 'now', 0)");
+        $files = [];
+        foreach (['a.ts', 'b.ts', 'new.ts'] as $path) {
+            $files[] = new DiscoveredFile($path, $root . '/' . $path, 'typescript', 10, 0, hash('sha256', $path));
+            if ($path !== 'new.ts') {
+                $insert->execute([$projectId, 'knossos.typescript:file:' . $path, $path, hash('sha256', $path)]);
+            }
+        }
+
+        $unchanged = $planner->finalize($this->makePreparation($root, array_slice($files, 0, 2)));
+        $added = $planner->finalize($this->makePreparation($root, $files));
+
+        assertSame([], $unchanged->invalidatedOwners);
+        $invalidated = $added->invalidatedOwners;
+        ksort($invalidated, SORT_STRING);
+        assertSame(['knossos.typescript:file:a.ts' => true, 'knossos.typescript:file:b.ts' => true], $invalidated);
     }
 
     public function testFinalizeReturnsEmptyCacheByDefault(): void

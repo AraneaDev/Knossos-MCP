@@ -124,6 +124,34 @@ final readonly class LanguageDescriptor
     }
 
     /**
+     * The scanner id this language's worker answers under, which is also the
+     * owner its worker diagnostics, metadata and cache rows are keyed by.
+     */
+    public function scannerId(): string
+    {
+        return 'knossos.' . $this->key;
+    }
+
+    /**
+     * The scanner id each source language is scanned by, from the default
+     * descriptors. Which worker claims a language does not depend on where
+     * the workers are installed.
+     *
+     * @return array<string, string> language to scanner id
+     */
+    public static function scannerIdsByLanguage(): array
+    {
+        $scanners = [];
+        foreach (self::defaults('') as $descriptor) {
+            foreach ($descriptor->languages as $language) {
+                $scanners[$language] = $descriptor->scannerId();
+            }
+        }
+
+        return $scanners;
+    }
+
+    /**
      * Return a copy with the runtime's memory cap adjusted to the given
      * mebibytes, leaving scan-batch and other settings unchanged. A null
      * argument or null $workerMemoryMb returns the descriptor unchanged.
