@@ -405,13 +405,24 @@ expect_output 'container session-diff is bounded at 15 s' '15' env -u KNOSSOS_RU
 expect_output 'container dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj"
 
 # A timed-out container hook removes its container, not only the docker client.
+# The stand-in timeout reports the run as timed out and records its kill delay;
+# any other call it records as bounded and runs. The kill delay and the bounded
+# removal together must fit inside the mod's own limit, which is the script's
+# limit plus 5 s, or the mod kills the wrapper before the removal runs.
 mkdir -p "$STUBS/timeoutkill"
-# shellcheck disable=SC2016 # $1 belongs to the stub, not to this script
-printf '#!/bin/sh\nif [ "$1" = -k ]; then shift 2; fi\nexit 124\n' > "$STUBS/timeoutkill/timeout"
+cat > "$STUBS/timeoutkill/timeout" <<'STUB'
+#!/bin/sh
+if [ "$1" = -k ]; then printf 'kill-after=%s\n' "$2" >> "${0%/*}/calls"; exit 124; fi
+printf 'bounded=%s %s\n' "$1" "$2" >> "${0%/*}/calls"
+shift
+exec "$@"
+STUB
 chmod +x "$STUBS/timeoutkill/timeout"
 : > "$STUBS/dockerbin/removed"
 env PATH="$STUBS/timeoutkill:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj" >/dev/null 2>&1
 if grep -q '^rm -f knossos-hook-' "$STUBS/dockerbin/removed"; then printf 'ok   timed-out container is removed\n'; else printf 'FAIL timed-out container is removed\n'; failures=$((failures + 1)); fi
+if grep -qx 'kill-after=2' "$STUBS/timeoutkill/calls"; then printf 'ok   timed-out client is killed 2 s after the signal\n'; else printf 'FAIL timed-out client is killed 2 s after the signal (calls %s)\n' "$(cat "$STUBS/timeoutkill/calls" 2>/dev/null)"; failures=$((failures + 1)); fi
+if grep -qx 'bounded=2 docker' "$STUBS/timeoutkill/calls"; then printf 'ok   container removal is bounded at 2 s\n'; else printf 'FAIL container removal is bounded at 2 s (calls %s)\n' "$(cat "$STUBS/timeoutkill/calls" 2>/dev/null)"; failures=$((failures + 1)); fi
 # Every run carries an init process and a name the removal can address.
 rm -f "$STUBS/dockerbin/flags"
 env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard "$STUBS/proj" >/dev/null 2>&1
