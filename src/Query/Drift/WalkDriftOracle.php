@@ -141,12 +141,10 @@ final readonly class WalkDriftOracle implements DriftOracle
             // buys nothing as a prefilter; it only tells us the file is still
             // there.
             //
-            // The bytes are read the way discovery reads them, through the
-            // regular-file opener: a plain read of a tracked path that became
-            // a named pipe blocks until a writer appears, and the probe runs
-            // on every tool result. Anything that is no longer a regular file
-            // reads as gone, which is what a rescan would conclude too.
-            if (@filemtime($absolute) === false || ($hash = FileFingerprint::contentHashOf($absolute)) === null) {
+            // Not a plain hash_file(): a tracked path that became a named pipe
+            // would block it until a writer appears, and this runs on every
+            // tool result. A path that is no longer a regular file reads as gone.
+            if (@filemtime($absolute) === false || ($hash = FileFingerprint::probeHashOf($absolute)) === null) {
                 ++$deleted;
                 $named = DriftCounts::name($named, (string) $relativePath, 'deleted');
                 continue;

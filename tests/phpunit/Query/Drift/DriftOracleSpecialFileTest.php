@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query\Drift;
 
+use Knossos\Discovery\FileFingerprint;
+use Knossos\Filesystem\RegularFileOpener;
 use Knossos\Git\DirtyPathSet;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
@@ -52,6 +54,72 @@ final class DriftOracleSpecialFileTest extends KnossosTestCase
         );
 
         self::assertSame(['changed' => 0, 'deleted' => 1], $result);
+    }
+
+    /** Without the FFI opener a regular file still hashes as discovery hashes it, in-process. */
+    #[Group('query')]
+    public function testTheHelperPathHashesARegularFileLikeDiscoveryDoes(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'knossos-stale-');
+        self::assertIsString($file);
+        file_put_contents($file, "<?php\necho 1;\n");
+        try {
+            $expected = FileFingerprint::contentHashOf($file);
+            self::assertNotNull($expected);
+
+            $actual = null;
+            $this->throughTheHelper(static function () use ($file, &$actual): void {
+                $actual = FileFingerprint::probeHashOf($file);
+            });
+
+            self::assertSame($expected, $actual);
+        } finally {
+            @unlink($file);
+        }
+    }
+
+    /** Without the FFI opener a pipe must still read as gone rather than block the probe. */
+    #[Group('query')]
+    public function testTheHelperPathReadsAPipeAsDeletedWithoutHanging(): void
+    {
+        if (!function_exists('posix_mkfifo')) {
+            self::markTestSkipped('posix_mkfifo is not available.');
+        }
+        $fifo = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        if (!posix_mkfifo($fifo, 0o644)) {
+            self::markTestSkipped('The filesystem cannot hold a named pipe.');
+        }
+        try {
+            $script = 'require $argv[1] . "/vendor/autoload.php";'
+                . '$o = new ReflectionClass(Knossos\Filesystem\RegularFileOpener::class);'
+                . '$o->getProperty("ffiAttempted")->setValue(null, true);'
+                . '$o->getProperty("libc")->setValue(null, null);'
+                . 'echo json_encode(Knossos\Discovery\FileFingerprint::probeHashOf($argv[2]));';
+            $output = $this->runWithDeadline([PHP_BINARY, '-r', $script, '--', self::repositoryRoot(), $fifo]);
+
+            self::assertNotNull($output, 'The probe did not return: it blocked reading the pipe.');
+            self::assertSame('null', $output);
+        } finally {
+            @unlink($fifo);
+        }
+    }
+
+    /** Run the callback with the FFI binding marked unavailable, so the opener reports the helper. */
+    private function throughTheHelper(callable $run): void
+    {
+        $opener = new \ReflectionClass(RegularFileOpener::class);
+        $attempted = $opener->getProperty('ffiAttempted');
+        $libc = $opener->getProperty('libc');
+        $before = [$attempted->getValue(), $libc->getValue()];
+        $attempted->setValue(null, true);
+        $libc->setValue(null, null);
+        try {
+            self::assertTrue(RegularFileOpener::usesHelper());
+            $run();
+        } finally {
+            $attempted->setValue(null, $before[0]);
+            $libc->setValue(null, $before[1]);
+        }
     }
 
     /** @return array{changed: int, deleted: int} */
