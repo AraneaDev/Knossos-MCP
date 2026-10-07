@@ -41,8 +41,12 @@ final class ScanPlannerTest extends TestCase
             scanner_version TEXT NOT NULL,
             configuration_hash TEXT NOT NULL,
             payload_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            read_attribution INTEGER NOT NULL DEFAULT 0,
+            read_group TEXT
         )');
+        $pdo->exec('CREATE TABLE contribution_reads (project_id TEXT NOT NULL, owner_key TEXT NOT NULL, read_path TEXT NOT NULL, read_hash TEXT)');
+        $pdo->exec('CREATE TABLE contribution_read_groups (project_id TEXT NOT NULL, group_id TEXT NOT NULL, read_path TEXT NOT NULL, read_hash TEXT)');
         $pdo->exec('CREATE TABLE scans (
             id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
@@ -278,6 +282,40 @@ TOML);
         $plan = $planner->finalize($this->makePreparation($root));
 
         assertSame(1, $plan->deletedFiles);
+    }
+
+    /**
+     * An incremental plan names the cached owners a change reached, here a
+     * deleted file and the file that read it; a full plan rebuilds everything
+     * and loads no read sets at all.
+     */
+    public function testFinalizeNamesTheOwnersAChangeReachedOnlyForAnIncrementalScan(): void
+    {
+        $pdo = $this->createSchema();
+        $planner = new ScanPlanner($pdo, ['/tmp']);
+        $root = '/tmp/reads-project';
+        $projectId = StableId::project('root:' . $root);
+        $pdo->prepare("INSERT INTO projects(id, name, root_realpath, active_scan_id, created_at, updated_at) VALUES (?, 'reads', ?, 'scan-existing', 'now', 'now')")
+            ->execute([$projectId, $root]);
+        $insert = $pdo->prepare("INSERT INTO contribution_cache(project_id, owner_key, file_path, content_hash, scanner_id, scanner_version, configuration_hash, payload_json, updated_at, read_attribution) VALUES (?, ?, ?, 'abc', 'php-scanner', '1.0', '', '{}', 'now', 1)");
+        $insert->execute([$projectId, 'php-scanner:file:gone.php', 'gone.php']);
+        $insert->execute([$projectId, 'php-scanner:file:reader.php', 'reader.php']);
+        $pdo->prepare("INSERT INTO contribution_reads(project_id, owner_key, read_path, read_hash) VALUES (?, 'php-scanner:file:reader.php', 'gone.php', ?)")
+            ->execute([$projectId, hash('sha256', 'gone')]);
+
+        $incremental = $planner->finalize($this->makePreparation($root));
+
+        $invalidated = $incremental->invalidatedOwners;
+        ksort($invalidated, SORT_STRING);
+        assertSame(['php-scanner:file:gone.php' => true, 'php-scanner:file:reader.php' => true], $invalidated);
+        self::assertNotNull($incremental->cachedReads);
+        self::assertArrayNotHasKey('payload_json', $incremental->cacheByScannerPath["php-scanner\0reader.php"]);
+
+        $pdo->exec("UPDATE projects SET active_scan_id = NULL");
+        $full = $planner->finalize($this->makePreparation($root));
+
+        assertSame([], $full->invalidatedOwners);
+        self::assertNull($full->cachedReads);
     }
 
     public function testFinalizeReturnsEmptyCacheByDefault(): void

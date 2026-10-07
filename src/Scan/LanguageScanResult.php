@@ -30,6 +30,9 @@ final readonly class LanguageScanResult
      *        {@see UndiscoveredInputVerifier} to re-read before the scan commits
      *        and to retain successful dependency reads for later freshness checks.
      *        A degraded language's reads are left out with its facts.
+     * @param array<string, array<string, ?string>> $readGroups
+     *        The shared read sets the new cache entries name, group id to
+     *        path and hash, for the writer to store beside them.
      */
     public function __construct(
         public array $manifests,
@@ -51,5 +54,6 @@ final readonly class LanguageScanResult
         public int $leftOut = 0,
         /** @var list<string> the paths of those files, in the order they were found */
         public array $leftOutPaths = [],
+        public array $readGroups = [],
     ) {}
 }

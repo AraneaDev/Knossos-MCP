@@ -24,14 +24,16 @@ use Knossos\Scanner\Protocol\RelativePath;
  * path is one the scanner tracks at all, so a manifest that appears where
  * there was none reads as an addition rather than as nothing.
  *
- * {@see self::MAX_INPUTS} bounds what is persisted, and past it the set is
- * marked incomplete rather than trimmed, because a trimmed set would read as
- * a complete one.
+ * {@see self::MAX_INPUTS} bounds the manifests persisted, and past it the
+ * set is marked incomplete rather than trimmed, because a trimmed set would
+ * read as a complete one. Worker reads are not bounded: they are what every
+ * kept contribution depends on, and dropping any of them would hide a change
+ * that should make the graph stale.
  */
 final readonly class UnitInputSet
 {
     /**
-     * Inputs persisted before the set is declared incomplete.
+     * Manifest inputs persisted before the set is declared incomplete.
      *
      * A manifest per package is the shape of this set, so even a large
      * monorepo is hundreds. The bound exists so a pathological tree cannot put
@@ -101,7 +103,8 @@ final readonly class UnitInputSet
      * to guess at. Worker input hashes are successful reads of files discovery
      * did not hash, such as dependency declarations under `node_modules`.
      * Null worker reads are verification evidence, not dependency bytes, so
-     * they are deliberately not retained for freshness tracking.
+     * they are deliberately not retained for freshness tracking. The worker
+     * set is always written whole and marked complete.
      *
      * @param array<array-key, string|null> $workerInputs
      */
@@ -117,25 +120,21 @@ final readonly class UnitInputSet
             $recordedWorkerInputs[$path] = $hash;
         }
         ksort($recordedWorkerInputs, SORT_STRING);
-        $workerComplete = count($recordedWorkerInputs) <= self::MAX_INPUTS;
-        if (!$workerComplete) {
-            $recordedWorkerInputs = array_slice($recordedWorkerInputs, 0, self::MAX_INPUTS, true);
-        }
 
         return (string) json_encode([
             'inputs' => $this->inputs,
             'complete' => $this->complete,
             'worker_inputs' => [
                 'inputs' => $recordedWorkerInputs,
-                'complete' => $workerComplete,
+                'complete' => true,
             ],
         ], JSON_THROW_ON_ERROR);
     }
 
     /**
      * Worker dependency hashes in a scan record, or null when the record was
-     * written before worker inputs were persisted, is malformed, or exceeded
-     * the safe retention bound.
+     * written before worker inputs were persisted, is malformed, or was cut
+     * short and marked incomplete by an older version.
      *
      * @return array<string, string>|null relative path => content hash
      */

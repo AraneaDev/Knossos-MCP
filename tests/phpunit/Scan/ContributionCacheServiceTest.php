@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Scan;
 
 use Knossos\Discovery\DiscoveredFile;
+use Knossos\Scan\CachedReads;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\ContributionPartition;
@@ -159,6 +160,46 @@ final class ContributionCacheServiceTest extends TestCase
 
         assertSame(0, count($partition->cached));
         assertSame([$file], $partition->filesToScan);
+        assertSame(1, $partition->changed);
+    }
+
+    /**
+     * Cache rows arrive without payloads. A row that passes every check has its
+     * payload read from the database and is reused with the reads it was
+     * stored with; an owner a change reached is rescanned as changed even
+     * though its own bytes match.
+     */
+    public function testReusedRowsReadTheirPayloadLazilyAndAnInvalidatedOwnerIsRescanned(): void
+    {
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $version = ContributionCacheService::cacheVersion($manifest, 'analysis');
+        $pdo = new \PDO('sqlite::memory:');
+        $pdo->exec('CREATE TABLE contribution_cache (project_id TEXT, owner_key TEXT, payload_json TEXT)');
+        $cache = [];
+        $files = [];
+        foreach (['A', 'B'] as $name) {
+            $file = $this->writeFile($name . '.php', '<?php class ' . $name . ' {}');
+            $owner = 'knossos.php:file:' . $name . '.php';
+            $files[] = $file;
+            $cache["knossos.php\0" . $name . '.php'] = ['owner_key' => $owner, 'content_hash' => $file->contentHash, 'scanner_version' => $version, 'configuration_hash' => 'cfg', 'read_attribution' => 1, 'read_group' => null];
+            $pdo->prepare("INSERT INTO contribution_cache VALUES ('project', ?, ?)")
+                ->execute([$owner, json_encode(new ScanContribution($owner, [$this->node($name . '.php')]), JSON_THROW_ON_ERROR)]);
+        }
+        $read = hash('sha256', 'dep');
+        $cachedReads = new CachedReads(
+            ['knossos.php:file:A.php' => ['scanner_id' => 'knossos.php', 'file_path' => 'A.php', 'content_hash' => $files[0]->contentHash, 'read_attribution' => true, 'read_group' => null]],
+            ['knossos.php:file:A.php' => ['dep.php' => $read]],
+            [],
+        );
+
+        $partition = $service->partition($files, $manifest, 'cfg', $cache, false, 'analysis', null, null, ['knossos.php:file:B.php' => true], $pdo, 'project', $cachedReads);
+
+        assertSame(['knossos.php:file:A.php'], array_map(static fn(ScanContribution $contribution): string => $contribution->ownerKey, $partition->cached));
+        assertSame(true, $partition->cacheEntries[0]->fromCache);
+        assertSame(['dep.php' => $read], $partition->cacheEntries[0]->reads);
+        assertSame(true, $partition->cacheEntries[0]->readAttribution);
+        assertSame([$files[1]], $partition->filesToScan);
         assertSame(1, $partition->changed);
     }
 

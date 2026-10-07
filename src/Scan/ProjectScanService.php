@@ -50,6 +50,7 @@ final class ProjectScanService implements ProjectScanner
             $this->workerPool,
             new ContributionCacheService(),
             installationRoot: $installationRoot,
+            pdo: $pdo,
         );
         $this->analysisPipeline = new ScanAnalysisPipeline();
         $this->snapshotValidator = new ScanSnapshotValidator();
@@ -199,7 +200,8 @@ final class ProjectScanService implements ProjectScanner
                 // scan records is one its own bytes cannot predate.
                 $preparation->gitHead,
                 $preparation->dirtyPaths,
-                $language->undiscoveredInputs,
+                self::workerInputs($language, $plan, $preparation->discovery->hashedPaths()),
+                $language->readGroups,
             ), $verifyUndiscovered);
             foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
                 $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;
@@ -299,6 +301,36 @@ final class ProjectScanService implements ProjectScanner
     }
 
     /**
+     * Every file a kept contribution read that discovery did not hash, with
+     * the hash it was read at, recorded on the scan for drift checks.
+     *
+     * Derived from the cache entries rather than from this scan's requests: a
+     * contribution reused from the cache still depends on what it read when it
+     * was built, and a scan that sent no request for it must record that too.
+     * A probed miss is left out; it names no bytes to compare.
+     *
+     * @param array<string, object> $discovered every path discovery hashed
+     * @return array<string, string>
+     */
+    private static function workerInputs(LanguageScanResult $language, ScanPlan $plan, array $discovered): array
+    {
+        $groups = $language->readGroups + ($plan->cachedReads->groupReads ?? []);
+        $inputs = [];
+        foreach ($language->cacheEntries as $entry) {
+            foreach ([$entry->reads, $entry->readGroup === null ? [] : ($groups[$entry->readGroup] ?? [])] as $reads) {
+                foreach ($reads as $path => $hash) {
+                    if ($hash !== null && !isset($discovered[(string) $path])) {
+                        $inputs[(string) $path] = $hash;
+                    }
+                }
+            }
+        }
+        ksort($inputs, SORT_STRING);
+
+        return $inputs;
+    }
+
+    /**
      * When an incremental scan discovered zero added/changed/deleted files and
      * neither the scanner set nor the persisted configuration moved, the
      * stored graph is already the correct result: skip teardown/rebuild and
@@ -317,7 +349,7 @@ final class ProjectScanService implements ProjectScanner
         // scan to discover a language whose worker is missing would take the fast
         // path and never reconcile, so the error diagnostic this scan produced would
         // never reach the graph. A degraded scan is by definition not a no-change one.
-        if ($plan->effectiveMode !== 'incremental' || $plan->workerInputsChanged || $language->added !== 0 || $language->changed !== 0 || $plan->deletedFiles !== 0 || $language->workerDiagnostics !== []) {
+        if ($plan->effectiveMode !== 'incremental' || $language->added !== 0 || $language->changed !== 0 || $plan->deletedFiles !== 0 || $language->workerDiagnostics !== []) {
             return null;
         }
         // Explicit boundary overrides and rename requests arrive as call arguments,

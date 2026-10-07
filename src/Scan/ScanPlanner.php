@@ -6,7 +6,7 @@ namespace Knossos\Scan;
 
 use InvalidArgumentException;
 use Knossos\Configuration\ProjectConfigurationLoader;
-use Knossos\Discovery\{AllowedRoots, DiscoveryConfig, ProjectDiscoverer, RootGuard};
+use Knossos\Discovery\{AllowedRoots, DiscoveryConfig, FileFingerprint, ProjectDiscoverer, RootGuard};
 use Knossos\Git\DirtyPathResolver;
 use Knossos\Git\DirtyPathSet;
 use Knossos\Git\GitHeadResolver;
@@ -177,8 +177,14 @@ final readonly class ScanPlanner
             dirtyPaths: $dirtyPaths,
         );
     }
-    /** Complete the plan once the analyzer set is known. */
-
+    /**
+     * Complete the plan once the analyzer set is known.
+     *
+     * An incremental scan also decides here which cached contributions a
+     * change reached ({@see ReadSetInvalidator}); a full scan rebuilds every
+     * one and skips that work. Payloads are not read: only the entries that
+     * survive need them, and the partition fetches those.
+     */
     public function finalize(ScanPreparation $preparation): ScanPlan
     {
         $projectId = StableId::project('root:' . $preparation->discovery->rootRealpath);
@@ -186,7 +192,10 @@ final readonly class ScanPlanner
         $statement->execute(['id' => $projectId]);
         $existing = $statement->fetch();
         $effectiveMode = $preparation->requestedMode === 'full' || $existing === false || $existing['active_scan_id'] === null ? 'full' : 'incremental';
-        $statement = $this->pdo->prepare('SELECT * FROM contribution_cache WHERE project_id = :project');
+        $statement = $this->pdo->prepare(
+            'SELECT owner_key, file_path, content_hash, scanner_id, scanner_version, configuration_hash, read_attribution, read_group '
+            . 'FROM contribution_cache WHERE project_id = :project',
+        );
         $statement->execute(['project' => $projectId]);
         $cachedRows = $statement->fetchAll();
         $cache = [];
@@ -196,9 +205,13 @@ final readonly class ScanPlanner
         $current = array_fill_keys(array_map(static fn($file): string => $file->relativePath, $preparation->discovery->files), true);
         $old = array_fill_keys(array_column($cachedRows, 'file_path'), true);
 
-        $workerInputsChanged = $effectiveMode === 'incremental'
-            && is_string($existing['active_scan_id'] ?? null)
-            && WorkerInputFreshness::changed($this->pdo, $existing['active_scan_id'], $preparation->discovery->rootRealpath);
+        $cachedReads = null;
+        $invalidated = [];
+        if ($effectiveMode === 'incremental') {
+            $cachedReads = CachedReads::load($this->pdo, $projectId);
+            $discovered = array_map(static fn($hashed): string => $hashed->contentHash, $preparation->discovery->hashedPaths());
+            $invalidated = ReadSetInvalidator::invalidated($cachedReads, $discovered, self::probe($preparation->discovery->rootRealpath));
+        }
 
         return new ScanPlan(
             $preparation,
@@ -206,9 +219,31 @@ final readonly class ScanPlanner
             $effectiveMode,
             $cache,
             count(array_diff_key($old, $current)),
-            $workerInputsChanged,
+            $invalidated,
             $existing !== false && $existing['active_scan_id'] !== null,
+            $cachedReads,
         );
+    }
+
+    /**
+     * The current hash of a path discovery did not hash, or null when it is
+     * absent, not a regular file, or resolves outside the project root.
+     *
+     * @return callable(string): ?string
+     */
+    private static function probe(string $root): callable
+    {
+        $root = rtrim($root, '/');
+
+        return static function (string $relativePath) use ($root): ?string {
+            clearstatcache(true);
+            $resolved = realpath($root . '/' . $relativePath);
+            if ($resolved === false || !RootGuard::contains($root, $resolved)) {
+                return null;
+            }
+
+            return FileFingerprint::probeHashOf($resolved);
+        };
     }
 
     /**
