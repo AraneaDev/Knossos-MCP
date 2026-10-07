@@ -416,7 +416,7 @@ final class SqliteGraphWriter
                 'scanner' => $entry->scannerId,
                 'version' => $entry->scannerVersion,
                 'config' => $entry->configurationHash,
-                'payload' => json_encode($entry->contribution, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                'payload' => self::cachePayload($entry->contribution),
                 'updated' => SqliteValues::now(),
                 'attributed' => $entry->readAttribution ? 1 : 0,
                 'group' => $entry->readGroup,
@@ -427,6 +427,19 @@ final class SqliteGraphWriter
             }
         }
         $this->storeReadGroups($projectId, $readGroups);
+    }
+
+    /**
+     * The stored form of a cached contribution: its wire shape without the
+     * reads, which contribution_reads already holds and which a reused entry
+     * takes from there.
+     */
+    private static function cachePayload(\Knossos\Scanner\Protocol\ScanContribution $contribution): string
+    {
+        $payload = $contribution->jsonSerialize();
+        unset($payload['reads']);
+
+        return json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
     }
 
     /**

@@ -52,6 +52,23 @@ final class IncrementalReadsScanTest extends KnossosTestCase
         assertSame('0', (string) $pdo->query('SELECT COUNT(*) FROM contribution_reads')->fetchColumn());
     }
 
+    /** What a contribution read is stored in its own table, never a second time inside the cached payload. */
+    public function testACachedPayloadCarriesNoReads(): void
+    {
+        $this->write('composer.json', '{"name": "app/reads", "autoload": {"psr-4": {"App\\\\": "src/"}}}' . "\n");
+        $this->write('src/A.php', "<?php\nnamespace App;\nfinal class A extends B {}\n");
+        $this->write('src/B.php', "<?php\nnamespace App;\nclass B {}\n");
+        $pdo = $this->freshTestDatabase();
+
+        $this->scan($pdo);
+
+        $payloads = $pdo->query("SELECT payload_json FROM contribution_cache WHERE scanner_id = 'knossos.php'")->fetchAll(PDO::FETCH_COLUMN);
+        self::assertCount(2, $payloads);
+        foreach ($payloads as $payload) {
+            self::assertArrayNotHasKey('reads', json_decode((string) $payload, true, 512, JSON_THROW_ON_ERROR));
+        }
+    }
+
     public function testEditingAnImportedTypescriptFileRescansItsImporterAndMatchesAFullScan(): void
     {
         self::requireNode();
