@@ -1746,6 +1746,48 @@ final class LanguageScanRunnerTest extends TestCase
         );
     }
 
+    /**
+     * The guard judges the files sent in this scan. Two files left out once
+     * and reused from the cache say nothing about a limit set too low now:
+     * a rescan that sends nothing must not fail the language again.
+     */
+    public function testReusedLeftOutFilesDoNotTripTheEveryFileLeftOutGuard(): void
+    {
+        $this->allocateRecordPath();
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_frame_too_large_for_huge', tightCap: true),
+            $this->descriptorFor('typescript', batchSourceBytes: 400_000),
+        );
+        $first = $runner->run(
+            $this->planForFiles(['src/a.ts' => 'typescript', 'src/Huge.js' => 'typescript', 'src/Huge2.js' => 'typescript'], 100_000),
+            new CancellationToken(),
+        );
+        $cache = [];
+        foreach ($first->cacheEntries as $entry) {
+            if (!str_contains($entry->filePath, 'Huge')) {
+                continue;
+            }
+            $cache[$entry->scannerId . "\0" . $entry->filePath] = [
+                'content_hash' => $entry->contentHash,
+                'scanner_version' => $entry->scannerVersion,
+                'configuration_hash' => $entry->configurationHash,
+                'payload_json' => json_encode($entry->contribution, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            ];
+        }
+        assertSame(2, count($cache));
+        $requestsBefore = count($this->recordedBatches());
+
+        $plan = $this->planForFiles(['src/Huge.js' => 'typescript', 'src/Huge2.js' => 'typescript'], 100_000);
+        $second = $runner->run(
+            new ScanPlan($plan->preparation, $plan->projectId, 'incremental', $cache, 0),
+            new CancellationToken(),
+        );
+
+        assertSame($requestsBefore, count($this->recordedBatches()), 'Nothing was sent: both files were reused.');
+        assertSame([], $second->workerDiagnostics);
+        assertSame(2, $second->leftOut);
+    }
+
     /** Every language's new and changed files are counted, not only the last language's. */
     public function testAddedAndChangedFilesAreSummedAcrossLanguages(): void
     {
