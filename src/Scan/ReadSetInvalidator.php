@@ -11,8 +11,9 @@ namespace Knossos\Scan;
  * different bytes, including a file that did not exist when it was read and a
  * file that has since been deleted. A rebuilt owner counts as a change to its
  * own file, so its readers are rebuilt too, transitively. A scanner that does
- * not say which file read what is treated as one unit: any change it could see
- * rebuilds all of its files.
+ * not say which file read what is treated as one unit: any change it could see,
+ * or a file added in one of its languages, rebuilds all of its files, and each
+ * of those counts as a change to its readers in other scanners.
  */
 final class ReadSetInvalidator
 {
@@ -49,12 +50,25 @@ final class ReadSetInvalidator
         };
 
         $changed = [];
+        // Path to the owners that read it themselves, path to the groups that
+        // hold it, group to its owners. A group is expanded only when the walk
+        // reaches it: copying its owners onto every path it holds made memory
+        // grow with owners times reads.
         $readersOf = [];
+        $groupsOf = [];
         $ownersOfGroup = [];
+        $ownersOfFile = [];
+        $rowsOfScanner = [];
+        $unattributed = [];
         foreach ($cached->rows as $owner => $row) {
             $owner = (string) $owner;
             if (($discovered[$row['file_path']] ?? null) !== $row['content_hash']) {
                 $changed[$row['file_path']] = true;
+            }
+            $ownersOfFile[$row['file_path']][$owner] = true;
+            $rowsOfScanner[$row['scanner_id']][] = $owner;
+            if (!$row['read_attribution']) {
+                $unattributed[$row['scanner_id']] = true;
             }
             $reads = $cached->ownerReads[$owner] ?? [];
             self::collectChanged($reads, $unchanged, $changed);
@@ -66,39 +80,68 @@ final class ReadSetInvalidator
             }
         }
         foreach ($cached->groupReads as $group => $reads) {
-            if (!isset($ownersOfGroup[(string) $group])) {
+            $group = (string) $group;
+            if (!isset($ownersOfGroup[$group])) {
                 continue;
             }
             self::collectChanged($reads, $unchanged, $changed);
             foreach ($reads as $path => $hash) {
-                $readersOf[(string) $path] = ($readersOf[(string) $path] ?? []) + $ownersOfGroup[(string) $group];
+                $groupsOf[(string) $path][$group] = true;
             }
-        }
-
-        $ownersOfFile = [];
-        foreach ($cached->rows as $owner => $row) {
-            $ownersOfFile[$row['file_path']][(string) $owner] = true;
         }
 
         $invalidated = [];
+        $expandedGroups = [];
+        $rebuiltScanners = [];
         $queue = array_map('strval', array_keys($changed));
+        $invalidate = static function (string $owner) use ($cached, &$invalidated, &$changed, &$queue): bool {
+            if (isset($invalidated[$owner])) {
+                return false;
+            }
+            $invalidated[$owner] = true;
+            $ownPath = $cached->rows[$owner]['file_path'];
+            if (!isset($changed[$ownPath])) {
+                $changed[$ownPath] = true;
+                $queue[] = $ownPath;
+            }
+
+            return true;
+        };
+        // A scanner that does not attribute reads is rebuilt whole as soon as
+        // any of its files is, and every file it rebuilds is a change its
+        // readers in other scanners see.
+        $rebuildScanner = static function (string $scanner) use ($rowsOfScanner, $invalidate, &$rebuiltScanners): void {
+            if (isset($rebuiltScanners[$scanner])) {
+                return;
+            }
+            $rebuiltScanners[$scanner] = true;
+            foreach ($rowsOfScanner[$scanner] ?? [] as $owner) {
+                $invalidate($owner);
+            }
+        };
+        foreach ($addedByScanner as $scanner => $paths) {
+            if ($paths !== [] && isset($unattributed[(string) $scanner])) {
+                $rebuildScanner((string) $scanner);
+            }
+        }
         while ($queue !== []) {
             $path = array_pop($queue);
-            foreach (($ownersOfFile[$path] ?? []) + ($readersOf[$path] ?? []) as $owner => $true) {
-                $owner = (string) $owner;
-                if (isset($invalidated[$owner])) {
-                    continue;
+            $owners = ($ownersOfFile[$path] ?? []) + ($readersOf[$path] ?? []);
+            foreach ($groupsOf[$path] ?? [] as $group => $true) {
+                if (!isset($expandedGroups[$group])) {
+                    $expandedGroups[$group] = true;
+                    $owners += $ownersOfGroup[(string) $group];
                 }
-                $invalidated[$owner] = true;
-                $ownPath = $cached->rows[$owner]['file_path'];
-                if (!isset($changed[$ownPath])) {
-                    $changed[$ownPath] = true;
-                    $queue[] = $ownPath;
+            }
+            foreach ($owners as $owner => $true) {
+                $owner = (string) $owner;
+                if ($invalidate($owner) && isset($unattributed[$cached->rows[$owner]['scanner_id']])) {
+                    $rebuildScanner($cached->rows[$owner]['scanner_id']);
                 }
             }
         }
 
-        return self::withUnattributedScanners($cached, $changed, $readersOf, $invalidated, $addedByScanner);
+        return $invalidated;
     }
 
     /**
@@ -116,51 +159,5 @@ final class ReadSetInvalidator
                 $changed[$path] = true;
             }
         }
-    }
-
-    /**
-     * Rebuild a whole scanner that does not attribute reads once any change touches it.
-     *
-     * @param array<string, true> $changed
-     * @param array<string, array<string, true>> $readersOf
-     * @param array<string, true> $invalidated
-     * @param array<string, list<string>> $addedByScanner
-     * @return array<string, true>
-     */
-    private static function withUnattributedScanners(CachedReads $cached, array $changed, array $readersOf, array $invalidated, array $addedByScanner): array
-    {
-        $unattributed = [];
-        foreach ($cached->rows as $row) {
-            if (!$row['read_attribution']) {
-                $unattributed[$row['scanner_id']] = true;
-            }
-        }
-        if ($unattributed === []) {
-            return $invalidated;
-        }
-        $touched = [];
-        foreach ($addedByScanner as $scanner => $paths) {
-            if ($paths !== []) {
-                $touched[(string) $scanner] = true;
-            }
-        }
-        foreach ($cached->rows as $owner => $row) {
-            $scanner = $row['scanner_id'];
-            if (isset($unattributed[$scanner]) && !isset($touched[$scanner]) && isset($changed[$row['file_path']])) {
-                $touched[$scanner] = true;
-            }
-        }
-        foreach (array_keys($changed) as $path) {
-            foreach ($readersOf[(string) $path] ?? [] as $owner => $true) {
-                $touched[$cached->rows[(string) $owner]['scanner_id']] = true;
-            }
-        }
-        foreach ($cached->rows as $owner => $row) {
-            if (isset($unattributed[$row['scanner_id']], $touched[$row['scanner_id']])) {
-                $invalidated[(string) $owner] = true;
-            }
-        }
-
-        return $invalidated;
     }
 }

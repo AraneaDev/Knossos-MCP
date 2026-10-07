@@ -109,6 +109,82 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
     }
 
     #[Group('scan')]
+    public function testAFileTheFallbackRebuildsReachesItsReadersInAnotherScanner(): void
+    {
+        $cached = self::cached([
+            'm.ts' => self::row('m.ts', [], scanner: 'knossos.typescript', attributed: false),
+            'n.ts' => self::row('n.ts', [], scanner: 'knossos.typescript', attributed: false),
+            'View.php' => self::row('View.php', ['n.ts' => self::hash('n.ts')]),
+            'Other.php' => self::row('Other.php', []),
+        ]);
+        $discovered = self::discovered(['n.ts', 'View.php', 'Other.php']) + ['m.ts' => self::hash('m2')];
+
+        assertSame(['View.php', 'm.ts', 'n.ts'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe())));
+    }
+
+    #[Group('scan')]
+    public function testEveryRouteIntoAnUnattributedScannerRebuildsAllOfIt(): void
+    {
+        $rows = [
+            'm.ts' => self::row('m.ts', [], scanner: 'knossos.typescript', attributed: false, group: 'G'),
+            'n.ts' => self::row('n.ts', ['own.d.ts' => self::hash('own')], scanner: 'knossos.typescript', attributed: false),
+            'o.ts' => self::row('o.ts', [], scanner: 'knossos.typescript', attributed: false),
+        ];
+        $cached = new CachedReads(
+            array_map(static function (array $row): array {
+                unset($row['reads']);
+
+                return $row;
+            }, $rows),
+            array_map(static fn(array $row): array => $row['reads'], $rows),
+            ['G' => ['node_modules/g.d.ts' => self::hash('g')]],
+        );
+        $all = ['m.ts', 'n.ts', 'o.ts'];
+        $same = static fn(string $path, ?string $stored): bool => $stored === self::hash($path === 'node_modules/g.d.ts' ? 'g' : 'own');
+
+        // A changed undiscovered group read.
+        $groupChanged = static fn(string $path, ?string $stored): bool => $path !== 'node_modules/g.d.ts' && $same($path, $stored);
+        assertSame($all, self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered($all), $groupChanged)));
+        // A changed read of one owner's own.
+        $ownChanged = static fn(string $path, ?string $stored): bool => $path !== 'own.d.ts' && $same($path, $stored);
+        assertSame($all, self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered($all), $ownChanged)));
+        // A deleted file of the scanner.
+        assertSame($all, self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered(['m.ts', 'n.ts']), $same)));
+        // Nothing changed.
+        assertSame([], ReadSetInvalidator::invalidated($cached, self::discovered($all), $same));
+    }
+
+    /**
+     * Many owners sharing a group with many reads must not cost memory in
+     * owners times reads: run under the CI memory limit.
+     */
+    #[Group('scan')]
+    public function testLargeSharedGroupsStayWithinMemory(): void
+    {
+        $rows = [];
+        $owners = [];
+        $groups = [];
+        for ($group = 0; $group < 15; ++$group) {
+            for ($read = 0; $read < 2000; ++$read) {
+                $groups['G' . $group][sprintf('node_modules/g%d/%04d.d.ts', $group, $read)] = self::hash('r' . $read);
+            }
+            for ($owner = 0; $owner < 200; ++$owner) {
+                $path = sprintf('src/g%d/f%03d.ts', $group, $owner);
+                $rows[$path] = ['scanner_id' => 'knossos.typescript', 'file_path' => $path, 'content_hash' => self::hash($path), 'read_attribution' => true, 'read_group' => 'G' . $group];
+                $owners[$path] = [];
+            }
+        }
+        $cached = new CachedReads($rows, $owners, $groups);
+        $discovered = self::discovered(array_keys($rows));
+        $probe = static fn(string $path, ?string $stored): bool => $path !== 'node_modules/g3/0007.d.ts' && $stored !== null;
+
+        $invalidated = ReadSetInvalidator::invalidated($cached, $discovered, $probe);
+
+        self::assertCount(200, $invalidated);
+        self::assertArrayHasKey('src/g3/f000.ts', $invalidated);
+    }
+
+    #[Group('scan')]
     public function testNothingChangedInvalidatesNothing(): void
     {
         $cached = self::cached([
