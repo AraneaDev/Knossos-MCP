@@ -7,7 +7,7 @@ namespace Knossos\Scan;
 use Knossos\Scanner\Protocol\Protocol;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
-use Knossos\Scanner\Worker\ContributionDecoder;
+use Knossos\Scanner\Worker\ReadsMap;
 use Knossos\Scanner\Worker\WorkerException;
 
 /**
@@ -38,7 +38,7 @@ final class RequestReads
     {
         $attributing = in_array(Protocol::CAPABILITY_READ_ATTRIBUTION, $manifest->capabilities, true);
         $shared = $attributing
-            ? (array_key_exists('reads', $result) ? ContributionDecoder::reads($result['reads']) : [])
+            ? (array_key_exists('reads', $result) ? ReadsMap::decode($result['reads']) : [])
             : $verifiedInputs;
         if ($attributing) {
             self::assertConfirmed($shared, $verifiedInputs, $manifest, 'the scan result');
