@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Store;
 
+use Knossos\Scan\ScanBusyException;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;
 use PHPUnit\Framework\Attributes\Group;
@@ -381,6 +382,24 @@ final class MigrationRunnerTest extends TestCase
 
         assertSame(['001_create_a', '002_create_b'], $this->appliedVersions(SqliteConnection::open($this->tempSqlite)));
         assertSame([], $applied);
+    }
+
+    /** A write lock held past every retry is reported as busy, not as a raw driver error. */
+    public function testALockHeldForGoodIsReportedAsBusy(): void
+    {
+        [$pdo, $dir] = $this->freshEnvironment();
+        (new MigrationRunner($pdo, $dir))->migrate();
+        file_put_contents($dir . '/003_create_c.sql', 'CREATE TABLE c (id INTEGER PRIMARY KEY);');
+        $holder = SqliteConnection::open($this->tempSqlite);
+        $pdo->exec('PRAGMA busy_timeout = 50');
+        $holder->exec('BEGIN IMMEDIATE');
+
+        try {
+            assertThrows(static fn() => (new MigrationRunner($pdo, $dir))->migrate(), ScanBusyException::class);
+        } finally {
+            $holder->exec('ROLLBACK');
+        }
+        assertSame(['001_create_a', '002_create_b'], $this->appliedVersions($pdo));
     }
 
     public function testConcurrentRunnersApplyANoTransactionMigrationOnce(): void

@@ -84,7 +84,7 @@ final readonly class MigrationRunner
             // and look again: the loser of the race waits here and then skips.
             // For a no-transaction migration the lock is only a probe, because
             // the body must run outside a transaction.
-            $this->pdo->exec('BEGIN IMMEDIATE');
+            SqliteBusy::beginImmediate($this->pdo);
             try {
                 $existing = $this->recordedChecksum($version);
                 if ($existing !== null) {
