@@ -324,11 +324,43 @@ final class FastPathTest extends KnossosTestCase
             $failure = captureThrows(fn() => (new ProjectScanService($pdo, $dead, [$root]))->scan($root, mode: 'full'), WorkerException::class);
 
             assertSame('WORKER_DEGRADED_INCREMENTAL', $failure->diagnosticCode);
+            assertContains('Fix the worker (run `knossos doctor`) and rescan; the graph is unchanged.', $failure->getMessage());
             assertSame($activeBefore, (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn());
             assertSame($graphBefore, $this->graphSignature($pdo));
         } finally {
             $this->removeTempTree($root);
             $this->removeTempTree($dead);
+        }
+    }
+
+    /**
+     * Failing closed protects facts the graph holds. A language that already
+     * failed on the first scan has none, so a full rescan with that worker
+     * still broken degrades it again and updates every other language,
+     * exactly as the first scan did.
+     */
+    #[Group('scan')]
+    public function testFullRescanProceedsWhenTheFailedLanguageHasNoFactsInTheGraph(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
+        $installation = $this->installationRootWithDeadTypescriptWorker();
+        try {
+            $pdo = $this->freshTestDatabase();
+            $service = new ProjectScanService($pdo, $installation, [$root]);
+            $first = $service->scan($root);
+            assertSame(['knossos.typescript'], $first->data['degraded_languages']);
+
+            file_put_contents($root . '/src/RefundService.php', "<?php\nfinal class RefundService {}\n");
+            $second = $service->scan($root, mode: 'full');
+
+            assertSame(['knossos.typescript'], $second->data['degraded_languages']);
+            assertSame($second->snapshotId, (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn());
+            $owners = $pdo->query('SELECT DISTINCT owner_key FROM nodes')->fetchAll(\PDO::FETCH_COLUMN);
+            assertSame(true, in_array('knossos.php:file:src/RefundService.php', $owners, true));
+        } finally {
+            $this->removeTempTree($root);
+            $this->removeTempTree($installation);
         }
     }
 

@@ -28,6 +28,15 @@ Do not repeatedly force full mode as a substitute for investigating a stable
 diagnostic. Normal operation should use `auto`, which verifies fingerprints and
 selects safe incremental work.
 
+Full mode is not a way around a broken worker. When a worker fails during a
+rescan and the graph already holds facts for its language, the scan aborts with
+`WORKER_DEGRADED_INCREMENTAL` in every mode, `--mode=full` included, and the
+graph stays as it was. Fix the worker (run `knossos doctor`) and rescan. When
+the failed language holds no facts in the graph, for example because its worker
+already failed on the first scan, there is nothing to protect: a `--mode=full`
+rescan proceeds, degrades that language to a diagnostic, and updates every
+other language.
+
 ## Common symptoms
 
 | Symptom or code                 | Meaning                                                               | Safe action                                                                                                                        |
