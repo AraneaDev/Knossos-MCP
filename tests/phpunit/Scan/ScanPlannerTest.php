@@ -402,24 +402,23 @@ TOML);
     }
 
     /**
-     * The analysis salt is part of the configuration hash.
-     *
-     * The salt is the scanner version, so a worker whose facts change
-     * invalidates cached contributions without a manifest change or a replay
-     * of every contribution.
+     * The configuration hash is of the project's units alone. The worker's own
+     * files are keyed separately, so no hand-kept version string is in it.
      */
-    public function testConfigurationHashIncludesTheAnalysisVersionSalt(): void
+    public function testConfigurationHashIsOfTheMatchingUnitsOnly(): void
     {
         $pdo = $this->createSchema();
         $planner = new ScanPlanner($pdo, [sys_get_temp_dir()]);
         $method = new \ReflectionMethod(ScanPlanner::class, 'configurationHash');
+        $unit = static fn(string $kind, string $path, string $hash): object => (object) ['kind' => $kind, 'configPath' => $path, 'contentHash' => $hash];
+        $composer = $unit('composer', 'composer.json', 'aa');
+        $other = $unit('node', 'package.json', 'bb');
 
-        $first = $method->invoke($planner, [], ['composer'], 'test-salt-v1');
-        $second = $method->invoke($planner, [], ['composer'], 'test-salt-v2');
-        $repeat = $method->invoke($planner, [], ['composer'], 'test-salt-v1');
+        $hash = $method->invoke($planner, [$other, $composer], ['composer']);
 
-        assertNotSame($first, $second, 'Different salts must produce different configuration hashes.');
-        assertSame($first, $repeat, 'The same salt with the same inputs must produce the same hash.');
+        assertSame(hash('sha256', 'composer:composer.json=aa'), $hash);
+        assertNotSame($hash, $method->invoke($planner, [$unit('composer', 'composer.json', 'cc')], ['composer']));
+        assertSame($hash, $method->invoke($planner, [$composer, $other], ['composer']));
     }
 
     public function testPrepareRejectsSnapshotRetentionOutOfRange(): void

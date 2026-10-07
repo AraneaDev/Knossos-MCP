@@ -20,6 +20,8 @@ final readonly class LanguageDescriptor
      * @param int $scanBatchFiles most files in one scan request, guarding the deadline
      * @param int $scanBatchSourceBytes most source bytes in one scan request, guarding the output-byte cap
      * @param bool $optional whether a missing worker binary is tolerated
+     * @param list<string> $analysisInputs paths under the installation root, `dir/**` for a tree,
+     *                                     whose bytes decide what the worker emits; see {@see AnalysisHash}
      * @param ?int $workerMemoryMb heap/memory cap in mebibytes, or null when the runtime decides.
      *                             It caps a heap, not the process: the TypeScript worker runs a
      *                             second V8 isolate (the scan thread) that mirrors the same heap
@@ -35,6 +37,7 @@ final readonly class LanguageDescriptor
         public int $scanBatchSourceBytes = WorkerExecutionPolicy::SCAN_BATCH_SOURCE_BYTES,
         public bool $optional = false,
         public ?int $workerMemoryMb = null,
+        public array $analysisInputs = [],
     ) {}
 
     /**
@@ -80,7 +83,7 @@ final readonly class LanguageDescriptor
     public static function defaults(string $installationRoot): array
     {
         return [
-            new self('php', ['php'], [PHP_BINARY, '-d', 'memory_limit=512M', $installationRoot . '/workers/php/bin/worker'], 'scanner_php', workerMemoryMb: 512),
+            new self('php', ['php'], [PHP_BINARY, '-d', 'memory_limit=512M', $installationRoot . '/workers/php/bin/worker'], 'scanner_php', workerMemoryMb: 512, analysisInputs: ['workers/php/src/**', 'workers/php/bin/worker']),
             new self(
                 'typescript',
                 ['typescript', 'javascript'],
@@ -102,11 +105,12 @@ final readonly class LanguageDescriptor
                 scanBatchFiles: 2_000,
                 scanBatchSourceBytes: 3_000_000,
                 workerMemoryMb: 2048,
+                analysisInputs: ['workers/typescript/src/**', 'workers/typescript/bin/worker.js', 'workers/typescript/node_modules/typescript/package.json'],
             ),
             // Python 3.12+ prints a SyntaxWarning to stderr for every invalid
             // escape the parser meets; ignoring that category at start keeps a
             // file full of them from turning stderr into noise.
-            new self('python', ['python'], ['python3', '-I', '-B', '-W', 'ignore::SyntaxWarning', $installationRoot . '/workers/python/bin/worker.py'], 'scanner_python'),
+            new self('python', ['python'], ['python3', '-I', '-B', '-W', 'ignore::SyntaxWarning', $installationRoot . '/workers/python/bin/worker.py'], 'scanner_python', analysisInputs: ['workers/python/bin/worker.py']),
             new self(
                 'rust',
                 ['rust'],
@@ -114,6 +118,7 @@ final readonly class LanguageDescriptor
                 'scanner_rust',
                 scanBatchSourceBytes: 3_000_000,
                 optional: true,
+                analysisInputs: ['workers/rust/bin/knossos-rust-worker'],
             ),
         ];
     }
@@ -165,6 +170,7 @@ final readonly class LanguageDescriptor
             scanBatchSourceBytes: $this->scanBatchSourceBytes,
             optional: $this->optional,
             workerMemoryMb: $mb,
+            analysisInputs: $this->analysisInputs,
         );
     }
 

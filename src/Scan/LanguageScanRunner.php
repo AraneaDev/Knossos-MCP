@@ -29,6 +29,9 @@ final readonly class LanguageScanRunner
         // bound, so only a lower one set here can exercise it. Production
         // never passes it.
         private ?int $maxRequestsPerLanguage = null,
+        // Where the workers' own files live, which is what their cache key
+        // follows. Empty only where no descriptor names any.
+        private string $installationRoot = '',
     ) {}
 
     /** Run each language's worker over the files it claims, degrading a failure to a diagnostic. */
@@ -159,6 +162,9 @@ final readonly class LanguageScanRunner
             $plan->preparation->configurationHashes[$descriptor->key],
             $plan->preparation->executionPolicy->limits(),
         );
+        // The key follows the worker's own files, so editing one invalidates
+        // what it produced without a number to bump.
+        $analysisHash = AnalysisHash::of($this->installationRoot, $descriptor->analysisInputs);
         $partition = $this->cache->partition(
             $files,
             $manifest,
@@ -167,6 +173,7 @@ final readonly class LanguageScanRunner
             $plan->effectiveMode === 'full' || $plan->workerInputsChanged,
             $cancellation,
             $leftOutHash,
+            $analysisHash,
         );
         $request = self::scanRequest($descriptor, $plan, $files);
         // One request per batch: ScannerProtocolSession::scan() calls
@@ -176,7 +183,7 @@ final readonly class LanguageScanRunner
         // rather than to a batch, so a full scan of a mid-sized codebase failed
         // on limits sized for a batch.
         $scanned = $metadata = [];
-        $leftOut = new LeftOutFiles($this->cache, $manifest, $leftOutHash);
+        $leftOut = new LeftOutFiles($this->cache, $manifest, $leftOutHash, $analysisHash);
         // Every path discovery hashed, not only this language's files: a worker
         // may read a file another language claims, or a manifest such as the
         // package.json module resolution reads or the Cargo.toml a crate is
@@ -227,6 +234,7 @@ final readonly class LanguageScanRunner
             )),
             $manifest,
             $plan->preparation->configurationHashes[$descriptor->key],
+            $analysisHash,
         );
 
         return [

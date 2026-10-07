@@ -141,19 +141,19 @@ final readonly class ScanPlanner
             $configuration->frameworks,
         );
         $configurationHashes = [
-            'php' => $this->configurationHash($discovery->units, ['composer', 'knossos'], 'php-analysis-v6'),
+            'php' => $this->configurationHash($discovery->units, ['composer', 'knossos']),
             // tool_config: the worker reads module aliases from vite, svelte, webpack and
             // vue configs, so editing one must invalidate what was resolved under it.
-            'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'tool_config', 'knossos'], 'typescript-analysis-v20'),
+            'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'tool_config', 'knossos']),
             // 'requirements' is in the hash because detectedFramework() reads
             // requirements.txt for the Python framework gating above: without
             // it, adding fastapi to requirements.txt would reuse contributions
             // scanned with enrichment switched off.
-            'python' => $this->configurationHash($discovery->units, ['python', 'requirements', 'knossos'], 'python-analysis-v14'),
+            'python' => $this->configurationHash($discovery->units, ['python', 'requirements', 'knossos']),
             // Cargo.toml is now a recorded unit (kind 'cargo'), so editing it
             // invalidates a Rust contribution's cache entry the same way
             // composer.json and package.json do for PHP and TypeScript.
-            'rust' => $this->configurationHash($discovery->units, ['cargo', 'knossos'], 'rust-analysis-v6'),
+            'rust' => $this->configurationHash($discovery->units, ['cargo', 'knossos']),
         ];
 
         return new ScanPreparation(
@@ -277,13 +277,16 @@ final readonly class ScanPlanner
     }
 
     /**
-     * Identity of the analyzer configuration, so a change invalidates incremental reuse.
+     * Identity of the project's configuration, so a change invalidates incremental reuse.
+     *
+     * The worker's own files are not part of it: the cache version follows them
+     * ({@see AnalysisHash}).
      *
      * @param list<object> $units @param list<string> $kinds
      */
-    private function configurationHash(array $units, array $kinds, string $version): string
+    private function configurationHash(array $units, array $kinds): string
     {
-        $parts = [$version];
+        $parts = [];
         foreach ($units as $unit) {
             if (in_array($unit->kind, $kinds, true)) {
                 $parts[] = $unit->kind . ':' . $unit->configPath . '=' . $unit->contentHash;

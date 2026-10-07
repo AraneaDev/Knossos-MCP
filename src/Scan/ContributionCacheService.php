@@ -38,12 +38,24 @@ final readonly class ContributionCacheService
     }
 
     /**
+     * The version a cached contribution is stored and compared under: the
+     * worker's reported version plus a prefix of the hash of its own files, so
+     * an edit to the worker invalidates what it produced without anyone
+     * remembering to bump a number.
+     */
+    public static function cacheVersion(ScannerManifest $manifest, string $analysisHash): string
+    {
+        return $manifest->version . '+' . substr($analysisHash, 0, 16);
+    }
+
+    /**
      * Split the discovered files into reusable and must-scan sets.
      *
      * @param list<object> $files
      * @param array<string, array<string, mixed>> $cache
      * @param ?string $leftOutConfigurationHash see {@see self::leftOutConfigurationHash()}; a row
      *        stored under it is reused too, and counted as left out
+     * @param string $analysisHash see {@see AnalysisHash}
      */
     public function partition(
         array $files,
@@ -53,7 +65,9 @@ final readonly class ContributionCacheService
         bool $force,
         ?CancellationToken $cancellation = null,
         ?string $leftOutConfigurationHash = null,
+        string $analysisHash = '',
     ): ContributionPartition {
+        $cacheVersion = self::cacheVersion($manifest, $analysisHash);
         $cached = [];
         $entries = [];
         $scan = [];
@@ -74,7 +88,7 @@ final readonly class ContributionCacheService
                 && $row['configuration_hash'] === $leftOutConfigurationHash;
             $valid = !$force && $row !== null
                 && $row['content_hash'] === $file->contentHash
-                && $row['scanner_version'] === $manifest->version
+                && $row['scanner_version'] === $cacheVersion
                 && ($row['configuration_hash'] === $configurationHash || $wasLeftOut);
             if ($valid) {
                 try {
@@ -84,7 +98,7 @@ final readonly class ContributionCacheService
                     }
                     $contribution = ContributionDecoder::decode($payload);
                     $cached[] = $contribution;
-                    $entries[] = $this->entry($file, $manifest, (string) $row['configuration_hash'], $contribution);
+                    $entries[] = $this->entry($file, $manifest, (string) $row['configuration_hash'], $contribution, $cacheVersion);
                     if ($wasLeftOut) {
                         $leftOutPaths[] = $file->relativePath;
                     }
@@ -103,13 +117,13 @@ final readonly class ContributionCacheService
      * The cache entry for a file left out of the graph, or null when its bytes
      * no longer match what discovery hashed and the next scan must look again.
      */
-    public function leftOutEntry(object $file, ScannerManifest $manifest, string $leftOutConfigurationHash, ScanContribution $contribution): ?ContributionCacheEntry
+    public function leftOutEntry(object $file, ScannerManifest $manifest, string $leftOutConfigurationHash, ScanContribution $contribution, string $analysisHash = ''): ?ContributionCacheEntry
     {
         if (!$this->contentStillMatchesDiscovery($file)) {
             return null;
         }
 
-        return $this->entry($file, $manifest, $leftOutConfigurationHash, $contribution);
+        return $this->entry($file, $manifest, $leftOutConfigurationHash, $contribution, self::cacheVersion($manifest, $analysisHash));
     }
 
     /**
@@ -119,8 +133,9 @@ final readonly class ContributionCacheService
      * @param list<object> $files
      * @return array{contributions: list<ScanContribution>, cache_entries: list<ContributionCacheEntry>}
      */
-    public function entriesForScanned(array $scanned, array $files, ScannerManifest $manifest, string $configurationHash): array
+    public function entriesForScanned(array $scanned, array $files, ScannerManifest $manifest, string $configurationHash, string $analysisHash = ''): array
     {
+        $cacheVersion = self::cacheVersion($manifest, $analysisHash);
         $byOwner = [];
         $duplicated = [];
         foreach ($scanned as $contribution) {
@@ -181,7 +196,7 @@ final readonly class ContributionCacheService
             // still match the discovery hash; otherwise keep this scan's contribution but
             // let the next scan re-scan from source.
             if ($cacheable && $this->contentStillMatchesDiscovery($file)) {
-                $entries[] = $this->entry($file, $manifest, $configurationHash, $contribution);
+                $entries[] = $this->entry($file, $manifest, $configurationHash, $contribution, $cacheVersion);
             }
         }
         if ($unexpected !== [] && !$omitted) {
@@ -270,9 +285,9 @@ final readonly class ContributionCacheService
     }
 
     /** One cache entry for a scanned file. */
-    private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution): ContributionCacheEntry
+    private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution, string $cacheVersion): ContributionCacheEntry
     {
-        return new ContributionCacheEntry($file->relativePath, $file->contentHash, $manifest->id, $manifest->version, $configurationHash, $contribution);
+        return new ContributionCacheEntry($file->relativePath, $file->contentHash, $manifest->id, $cacheVersion, $configurationHash, $contribution);
     }
 
     /**

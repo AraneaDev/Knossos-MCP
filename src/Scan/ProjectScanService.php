@@ -49,6 +49,7 @@ final class ProjectScanService implements ProjectScanner
             LanguageDescriptor::installed($installationRoot),
             $this->workerPool,
             new ContributionCacheService(),
+            installationRoot: $installationRoot,
         );
         $this->analysisPipeline = new ScanAnalysisPipeline();
         $this->snapshotValidator = new ScanSnapshotValidator();
