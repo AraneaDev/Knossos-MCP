@@ -175,7 +175,16 @@ final class ContributionCacheServiceTest extends TestCase
         $manifest = $this->manifest();
         $version = ContributionCacheService::cacheVersion($manifest, 'analysis');
         $pdo = new \PDO('sqlite::memory:');
-        $pdo->exec('CREATE TABLE contribution_cache (project_id TEXT, owner_key TEXT, payload_json TEXT)');
+        $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        // Every payload the partition reads goes through read_payload(), which
+        // records whose it was.
+        $payloadsRead = [];
+        $pdo->sqliteCreateFunction('read_payload', static function (string $owner, string $payload) use (&$payloadsRead): string {
+            $payloadsRead[] = $owner;
+
+            return $payload;
+        }, 2, \PDO::SQLITE_DETERMINISTIC);
+        $pdo->exec('CREATE TABLE contribution_cache (project_id TEXT, owner_key TEXT, stored TEXT, payload_json TEXT GENERATED ALWAYS AS (read_payload(owner_key, stored)) VIRTUAL)');
         $cache = [];
         $files = [];
         foreach (['A', 'B'] as $name) {
@@ -183,8 +192,10 @@ final class ContributionCacheServiceTest extends TestCase
             $owner = 'knossos.php:file:' . $name . '.php';
             $files[] = $file;
             $cache["knossos.php\0" . $name . '.php'] = ['owner_key' => $owner, 'content_hash' => $file->contentHash, 'scanner_version' => $version, 'configuration_hash' => 'cfg', 'read_attribution' => 1, 'read_group' => null];
-            $pdo->prepare("INSERT INTO contribution_cache VALUES ('project', ?, ?)")
-                ->execute([$owner, json_encode(new ScanContribution($owner, [$this->node($name . '.php')]), JSON_THROW_ON_ERROR)]);
+            // The invalidated row's payload is corrupt: decoding it would
+            // throw, so the partition succeeding proves it is never read.
+            $payload = $name === 'B' ? '{"owner_key": ' : json_encode(new ScanContribution($owner, [$this->node($name . '.php')]), JSON_THROW_ON_ERROR);
+            $pdo->prepare("INSERT INTO contribution_cache (project_id, owner_key, stored) VALUES ('project', ?, ?)")->execute([$owner, $payload]);
         }
         $read = hash('sha256', 'dep');
         $cachedReads = new CachedReads(
@@ -193,6 +204,8 @@ final class ContributionCacheServiceTest extends TestCase
             [],
         );
 
+        // SQLite also evaluates the column while inserting; only reads count.
+        $payloadsRead = [];
         $partition = $service->partition($files, $manifest, 'cfg', $cache, false, 'analysis', null, null, ['knossos.php:file:B.php' => true], $pdo, 'project', $cachedReads);
 
         assertSame(['knossos.php:file:A.php'], array_map(static fn(ScanContribution $contribution): string => $contribution->ownerKey, $partition->cached));
@@ -201,6 +214,7 @@ final class ContributionCacheServiceTest extends TestCase
         assertSame(true, $partition->cacheEntries[0]->readAttribution);
         assertSame([$files[1]], $partition->filesToScan);
         assertSame(1, $partition->changed);
+        assertSame(['knossos.php:file:A.php'], $payloadsRead);
     }
 
     public function testEntriesForScannedKeepsCacheEntryWhenFileLacksAbsolutePath(): void

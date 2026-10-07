@@ -84,7 +84,7 @@ final readonly class ContributionCacheService
         $cacheVersion = self::cacheVersion($manifest, $analysisHash);
         /** @var list<array{file: object, row: ?array<string, mixed>, owner: string, valid: bool}> $decisions */
         $decisions = [];
-        $reusedOwners = [];
+        $reusedRows = [];
         $sinceLastPoll = 0;
         foreach ($files as $file) {
             // Once per 256 files. A counter that restarts, rather than a
@@ -102,11 +102,11 @@ final readonly class ContributionCacheService
                 && ($row['configuration_hash'] === $configurationHash
                     || ($leftOutConfigurationHash !== null && $row['configuration_hash'] === $leftOutConfigurationHash));
             if ($valid) {
-                $reusedOwners[] = $owner;
+                $reusedRows[$owner] = $row;
             }
             $decisions[] = ['file' => $file, 'row' => $row, 'owner' => $owner, 'valid' => $valid];
         }
-        $payloads = $pdo !== null && $projectId !== null ? self::payloads($pdo, $projectId, $reusedOwners) : [];
+        $reused = self::reusedContributions($reusedRows, $pdo, $projectId);
 
         $cached = [];
         $entries = [];
@@ -115,23 +115,18 @@ final readonly class ContributionCacheService
         $changed = 0;
         $leftOutPaths = [];
         foreach ($decisions as ['file' => $file, 'row' => $row, 'owner' => $owner, 'valid' => $valid]) {
-            if ($valid && $row !== null) {
-                try {
-                    $payload = json_decode((string) ($payloads[$owner] ?? $row['payload_json'] ?? ''), true, 512, JSON_THROW_ON_ERROR);
-                    if (!is_array($payload)) {
-                        throw new InvalidArgumentException('Cached contribution payload is invalid.');
-                    }
-                    $contribution = ContributionDecoder::decode($payload);
-                    $cached[] = $contribution;
-                    $entries[] = $this->reusedEntry($file, $manifest, $row, $contribution, $cachedReads);
-                    if ($row['configuration_hash'] === $leftOutConfigurationHash) {
-                        $leftOutPaths[] = $file->relativePath;
-                    }
-                    continue;
-                } catch (Throwable) {
-                    // Corrupt derived cache is safely rebuilt from source.
+            $contribution = $valid ? ($reused[$owner] ?? null) : null;
+            $entry = $contribution === null || $row === null ? null : $this->reusedEntry($file, $manifest, $row, $contribution, $cachedReads);
+            if ($contribution !== null && $entry !== null && $row !== null) {
+                $cached[] = $contribution;
+                $entries[] = $entry;
+                if ($row['configuration_hash'] === $leftOutConfigurationHash) {
+                    $leftOutPaths[] = $file->relativePath;
                 }
+                continue;
             }
+            // Not reusable, or a corrupt derived cache entry, which is safely
+            // rebuilt from source.
             $scan[] = $file;
             $row === null ? ++$added : ++$changed;
         }
@@ -139,52 +134,84 @@ final readonly class ContributionCacheService
     }
 
     /**
-     * The stored payloads of the given owners, read in chunks so no statement
-     * exceeds SQLite's bound-parameter limit.
+     * Decode the payloads of the rows that passed every check, owner to its
+     * contribution, or null for one that is missing or does not decode.
      *
-     * @param list<string> $owners
-     * @return array<string, string> owner key to payload JSON
+     * Read from the database in chunks, each decoded and released before the
+     * next is fetched, so no statement exceeds SQLite's bound-parameter limit
+     * and the JSON is never held alongside every decoded contribution. Without
+     * a PDO, a row's own `payload_json` is used.
+     *
+     * @param array<string, array<string, mixed>> $rows owner key to its cache row
+     * @return array<string, ?ScanContribution>
      */
-    private static function payloads(PDO $pdo, string $projectId, array $owners): array
+    private static function reusedContributions(array $rows, ?PDO $pdo, ?string $projectId): array
     {
-        $payloads = [];
-        foreach (array_chunk($owners, 500) as $chunk) {
+        $decoded = [];
+        if ($pdo === null || $projectId === null) {
+            foreach ($rows as $owner => $row) {
+                $decoded[(string) $owner] = self::decodePayload((string) ($row['payload_json'] ?? ''));
+            }
+
+            return $decoded;
+        }
+        foreach (array_chunk(array_map('strval', array_keys($rows)), 500) as $chunk) {
             $statement = $pdo->prepare(sprintf(
                 'SELECT owner_key, payload_json FROM contribution_cache WHERE project_id = ? AND owner_key IN (%s)',
                 implode(', ', array_fill(0, count($chunk), '?')),
             ));
             $statement->execute([$projectId, ...$chunk]);
             foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$owner, $payload]) {
-                $payloads[(string) $owner] = (string) $payload;
+                $decoded[(string) $owner] = self::decodePayload((string) $payload);
             }
         }
 
-        return $payloads;
+        return $decoded;
+    }
+
+    /** One stored payload as a contribution, or null when it does not decode. */
+    private static function decodePayload(string $json): ?ScanContribution
+    {
+        try {
+            $payload = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($payload)) {
+                throw new InvalidArgumentException('Cached contribution payload is invalid.');
+            }
+
+            return ContributionDecoder::decode($payload);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**
      * The entry for a contribution carried over from the cache, with the reads
-     * it was stored with.
+     * it was stored with, or null when those reads no longer validate and the
+     * file must be rebuilt from source.
      *
      * @param array<string, mixed> $row
      */
-    private function reusedEntry(object $file, ScannerManifest $manifest, array $row, ScanContribution $contribution, ?CachedReads $cachedReads): ContributionCacheEntry
+    private function reusedEntry(object $file, ScannerManifest $manifest, array $row, ScanContribution $contribution, ?CachedReads $cachedReads): ?ContributionCacheEntry
     {
         $owner = $contribution->ownerKey;
         $stored = $cachedReads?->rows[$owner] ?? null;
 
-        return new ContributionCacheEntry(
-            $file->relativePath,
-            $file->contentHash,
-            $manifest->id,
-            (string) $row['scanner_version'],
-            (string) $row['configuration_hash'],
-            $contribution,
-            $cachedReads?->ownerReads[$owner] ?? [],
-            $stored['read_group'] ?? (isset($row['read_group']) ? (string) $row['read_group'] : null),
-            $stored['read_attribution'] ?? ((int) ($row['read_attribution'] ?? 0) === 1),
-            true,
-        );
+        try {
+            return new ContributionCacheEntry(
+                $file->relativePath,
+                $file->contentHash,
+                $manifest->id,
+                (string) $row['scanner_version'],
+                (string) $row['configuration_hash'],
+                $contribution,
+                $cachedReads?->ownerReads[$owner] ?? [],
+                $stored['read_group'] ?? (isset($row['read_group']) ? (string) $row['read_group'] : null),
+                $stored['read_attribution'] ?? ((int) ($row['read_attribution'] ?? 0) === 1),
+                true,
+            );
+        } catch (InvalidArgumentException) {
+            return null;
+        }
     }
 
     /**
