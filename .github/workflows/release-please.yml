@@ -106,11 +106,25 @@ jobs:
           TAG: ${{ steps.release.outputs.tag_name }}
         run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
 
-      # A failed gate removes the draft so the next release run can produce the
-      # release again after the fix; nothing is ever tagged that did not pass.
-      - name: Remove the draft release when its gate failed
-        if: ${{ failure() && steps.release.outputs.release_created }}
+      # A failed or cancelled gate (the job timeout included) removes the
+      # draft, so nothing is ever tagged that did not pass. Creating the release
+      # also moved the merged Release PR from `autorelease: pending` to
+      # `autorelease: tagged`, and release-please only releases a merged PR
+      # that is still pending. Without putting the label back, no later run
+      # would ever produce this version again. The PR is found from the release
+      # commit, which is the commit the PR merged as.
+      - name: Remove the draft release and re-open it when its gate did not pass
+        if: ${{ !success() && steps.release.outputs.release_created }}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag_name }}
-        run: gh release delete "$TAG" --yes --repo "$GITHUB_REPOSITORY"
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          gh release delete "$TAG" --yes --repo "$GITHUB_REPOSITORY"
+          PR=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/pulls" --jq '.[0].number')
+          if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+            echo "::error::No pull request found for $SHA; relabel the Release PR to 'autorelease: pending' by hand."
+            exit 1
+          fi
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR/labels/autorelease:%20tagged"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f 'labels[]=autorelease: pending'
