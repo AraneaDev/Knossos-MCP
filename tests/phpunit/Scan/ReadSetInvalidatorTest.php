@@ -71,7 +71,7 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
             ['p' => [], 'q' => [], 'r' => []],
             ['G' => ['node_modules/t.d.ts' => self::hash('H1')]],
         );
-        $probe = static fn(string $path): ?string => $path === 'node_modules/t.d.ts' ? self::hash('H2') : null;
+        $probe = static fn(string $path, ?string $stored): bool => $stored === ($path === 'node_modules/t.d.ts' ? self::hash('H2') : null);
 
         assertSame(['p', 'q'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered(['p', 'q', 'r']), $probe)));
     }
@@ -94,6 +94,21 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
     }
 
     #[Group('scan')]
+    public function testAnAddedFileOfAnUnattributedScannersLanguageInvalidatesThatScannerOnly(): void
+    {
+        $cached = self::cached([
+            'm.ts' => self::row('m.ts', [], scanner: 'knossos.typescript', attributed: false),
+            'n.ts' => self::row('n.ts', [], scanner: 'knossos.typescript', attributed: false),
+            'A.php' => self::row('A.php', [], scanner: 'knossos.php'),
+        ]);
+        $discovered = self::discovered(['m.ts', 'n.ts', 'A.php', 'new.ts', 'New.php']);
+
+        assertSame(['m.ts', 'n.ts'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), ['knossos.typescript' => ['new.ts']])));
+        assertSame([], ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), ['knossos.php' => ['New.php']]));
+        assertSame([], ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), ['knossos.typescript' => []]));
+    }
+
+    #[Group('scan')]
     public function testNothingChangedInvalidatesNothing(): void
     {
         $cached = self::cached([
@@ -112,10 +127,10 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
             'q' => self::row('q', ['vendor/a.php' => self::hash('a')]),
         ]);
         $calls = 0;
-        $probe = static function (string $path) use (&$calls): ?string {
+        $probe = static function (string $path, ?string $stored) use (&$calls): bool {
             ++$calls;
 
-            return self::hash('a');
+            return $stored === self::hash('a');
         };
 
         assertSame([], ReadSetInvalidator::invalidated($cached, self::discovered(['p', 'q']), $probe));
@@ -176,10 +191,14 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
         return $hashes;
     }
 
-    /** @return callable(string): ?string */
+    /**
+     * Every undiscovered path is absent: only a stored miss still matches.
+     *
+     * @return callable(string, ?string): bool
+     */
     private static function noProbe(): callable
     {
-        return static fn(string $path): ?string => null;
+        return static fn(string $path, ?string $stored): bool => $stored === null;
     }
 
     /**

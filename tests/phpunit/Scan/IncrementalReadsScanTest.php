@@ -99,6 +99,49 @@ final class IncrementalReadsScanTest extends KnossosTestCase
         self::assertArrayHasKey('node_modules/dep/index.d.ts', $this->recordedWorkerInputs($pdo));
     }
 
+    /**
+     * A file added where an import already pointed changes what the importer
+     * resolves to, and a worker that does not attribute its reads gives no
+     * other way to tell, so every file of its scanner is rebuilt.
+     */
+    public function testAnAddedTypescriptFileThatAnExistingFileImportsMatchesAFullScan(): void
+    {
+        self::requireNode();
+        $this->write('a.ts', "import { C } from './c';\nexport class A extends C {}\n");
+        $this->write('b.ts', "export const b = 1;\n");
+        $pdo = $this->freshTestDatabase();
+        $this->scan($pdo);
+
+        $this->write('c.ts', "export class C {}\n");
+        $incremental = $this->scan($pdo);
+
+        assertSame('incremental', $incremental->data['mode']);
+        assertSame(3, $incremental->data['parsed_files']);
+        $full = $this->freshTestDatabase();
+        $this->scan($full);
+        assertSame($this->graphSignature($full), $this->graphSignature($pdo));
+    }
+
+    /**
+     * A stored miss for a file over the byte cap is what the commit check
+     * accepts as unchanged, so it must not invalidate anything either.
+     */
+    public function testAStoredMissForAnOversizedUndiscoveredFileKeepsTheFastPath(): void
+    {
+        $this->write('composer.json', '{"name": "app/oversized"}' . "\n");
+        $this->write('src/A.php', "<?php\nnamespace App;\nclass A {}\n");
+        $this->write('big.bin', str_repeat('x', 4096));
+        $pdo = $this->freshTestDatabase();
+        $first = $this->scan($pdo, 1000);
+        $pdo->prepare("INSERT INTO contribution_reads(project_id, owner_key, read_path, read_hash) VALUES (?, 'knossos.php:file:src/A.php', 'big.bin', NULL)")
+            ->execute([$first->projectId]);
+
+        $result = $this->scan($pdo, 1000);
+
+        assertSame('no_change', $result->data['fast_path'] ?? null);
+        assertSame(0, $result->data['parsed_files']);
+    }
+
     #[Group('discovery')]
     public function testWorkerInputsBeyondTheOldCapRoundTrip(): void
     {
@@ -155,9 +198,9 @@ final class IncrementalReadsScanTest extends KnossosTestCase
         }
     }
 
-    private function scan(PDO $pdo): \Knossos\Query\ResultEnvelope
+    private function scan(PDO $pdo, ?int $maxFileBytes = null): \Knossos\Query\ResultEnvelope
     {
-        return (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root);
+        return (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root, maxFileBytes: $maxFileBytes);
     }
 
     /** @return array<string, string> */

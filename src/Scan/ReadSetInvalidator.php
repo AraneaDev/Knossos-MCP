@@ -26,22 +26,26 @@ final class ReadSetInvalidator
      * unconditional entry would rebuild every reader of an unchanged manifest on
      * every scan.
      *
+     * A scanner that does not attribute its reads cannot say whether a file
+     * it has never seen would change what its other files produce, so a file
+     * of its languages with no cache row (an added file) rebuilds all of it.
+     *
      * @param array<string, string> $discovered every path discovery hashed, to its content hash
-     * @param callable(string): ?string $currentHash the current hash of an undiscovered path, null when it is absent or outside the root
+     * @param callable(string, ?string): bool $stillMatches whether an undiscovered path still matches a stored read
+     *        (production: {@see UndiscoveredInputVerifier::stillMatches()}, the rule the commit check applies)
+     * @param array<string, list<string>> $addedByScanner scanner id to the discovered paths of its languages it has no row for
      * @return array<string, true> keyed by owner key
      */
-    public static function invalidated(CachedReads $cached, array $discovered, callable $currentHash): array
+    public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = []): array
     {
         $memo = [];
-        $current = static function (string $path) use ($discovered, $currentHash, &$memo): ?string {
+        $unchanged = static function (string $path, ?string $stored) use ($discovered, $stillMatches, &$memo): bool {
             if (array_key_exists($path, $discovered)) {
-                return $discovered[$path];
+                return $discovered[$path] === $stored;
             }
-            if (!array_key_exists($path, $memo)) {
-                $memo[$path] = $currentHash($path);
-            }
+            $key = $path . "\0" . ($stored ?? '');
 
-            return $memo[$path];
+            return $memo[$key] ??= (bool) $stillMatches($path, $stored);
         };
 
         $changed = [];
@@ -53,7 +57,7 @@ final class ReadSetInvalidator
                 $changed[$row['file_path']] = true;
             }
             $reads = $cached->ownerReads[$owner] ?? [];
-            self::collectChanged($reads, $current, $changed);
+            self::collectChanged($reads, $unchanged, $changed);
             foreach ($reads as $path => $hash) {
                 $readersOf[(string) $path][$owner] = true;
             }
@@ -65,7 +69,7 @@ final class ReadSetInvalidator
             if (!isset($ownersOfGroup[(string) $group])) {
                 continue;
             }
-            self::collectChanged($reads, $current, $changed);
+            self::collectChanged($reads, $unchanged, $changed);
             foreach ($reads as $path => $hash) {
                 $readersOf[(string) $path] = ($readersOf[(string) $path] ?? []) + $ownersOfGroup[(string) $group];
             }
@@ -94,21 +98,21 @@ final class ReadSetInvalidator
             }
         }
 
-        return self::withUnattributedScanners($cached, $changed, $readersOf, $invalidated);
+        return self::withUnattributedScanners($cached, $changed, $readersOf, $invalidated, $addedByScanner);
     }
 
     /**
-     * Add every read whose current value differs from the stored one.
+     * Add every read that no longer matches the stored one.
      *
      * @param array<string, ?string> $reads
-     * @param callable(string): ?string $current
+     * @param callable(string, ?string): bool $unchanged
      * @param array<string, true> $changed
      */
-    private static function collectChanged(array $reads, callable $current, array &$changed): void
+    private static function collectChanged(array $reads, callable $unchanged, array &$changed): void
     {
         foreach ($reads as $path => $hash) {
             $path = (string) $path;
-            if (!isset($changed[$path]) && $current($path) !== $hash) {
+            if (!isset($changed[$path]) && !$unchanged($path, $hash)) {
                 $changed[$path] = true;
             }
         }
@@ -120,9 +124,10 @@ final class ReadSetInvalidator
      * @param array<string, true> $changed
      * @param array<string, array<string, true>> $readersOf
      * @param array<string, true> $invalidated
+     * @param array<string, list<string>> $addedByScanner
      * @return array<string, true>
      */
-    private static function withUnattributedScanners(CachedReads $cached, array $changed, array $readersOf, array $invalidated): array
+    private static function withUnattributedScanners(CachedReads $cached, array $changed, array $readersOf, array $invalidated, array $addedByScanner): array
     {
         $unattributed = [];
         foreach ($cached->rows as $row) {
@@ -134,6 +139,11 @@ final class ReadSetInvalidator
             return $invalidated;
         }
         $touched = [];
+        foreach ($addedByScanner as $scanner => $paths) {
+            if ($paths !== []) {
+                $touched[(string) $scanner] = true;
+            }
+        }
         foreach ($cached->rows as $owner => $row) {
             $scanner = $row['scanner_id'];
             if (isset($unattributed[$scanner]) && !isset($touched[$scanner]) && isset($changed[$row['file_path']])) {

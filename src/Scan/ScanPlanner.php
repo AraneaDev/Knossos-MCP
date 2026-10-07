@@ -6,7 +6,7 @@ namespace Knossos\Scan;
 
 use InvalidArgumentException;
 use Knossos\Configuration\ProjectConfigurationLoader;
-use Knossos\Discovery\{AllowedRoots, DiscoveryConfig, FileFingerprint, ProjectDiscoverer, RootGuard};
+use Knossos\Discovery\{AllowedRoots, DiscoveryConfig, ProjectDiscoverer, RootGuard};
 use Knossos\Git\DirtyPathResolver;
 use Knossos\Git\DirtyPathSet;
 use Knossos\Git\GitHeadResolver;
@@ -210,7 +210,17 @@ final readonly class ScanPlanner
         if ($effectiveMode === 'incremental') {
             $cachedReads = CachedReads::load($this->pdo, $projectId);
             $discovered = array_map(static fn($hashed): string => $hashed->contentHash, $preparation->discovery->hashedPaths());
-            $invalidated = ReadSetInvalidator::invalidated($cachedReads, $discovered, self::probe($preparation->discovery->rootRealpath));
+            $root = rtrim($preparation->discovery->rootRealpath, '/');
+            $maxFileBytes = $preparation->maxFileBytes;
+            // See UndiscoveredInputVerifier::verify(): realpath() answers from
+            // a per-process cache a long-running server keeps across scans.
+            clearstatcache(true);
+            $invalidated = ReadSetInvalidator::invalidated(
+                $cachedReads,
+                $discovered,
+                static fn(string $path, ?string $stored): bool => UndiscoveredInputVerifier::stillMatches($root, $path, $stored, $maxFileBytes),
+                self::addedByScanner($preparation->discovery->files, $cache),
+            );
         }
 
         return new ScanPlan(
@@ -226,24 +236,30 @@ final readonly class ScanPlanner
     }
 
     /**
-     * The current hash of a path discovery did not hash, or null when it is
-     * absent, not a regular file, or resolves outside the project root.
+     * The discovered files each scanner has no cache row for, keyed by the
+     * scanner id its worker answers under (`knossos.<language key>`).
      *
-     * @return callable(string): ?string
+     * @param list<object> $files
+     * @param array<string, array<string, mixed>> $cache keyed by scanner id and path
+     * @return array<string, list<string>>
      */
-    private static function probe(string $root): callable
+    private static function addedByScanner(array $files, array $cache): array
     {
-        $root = rtrim($root, '/');
-
-        return static function (string $relativePath) use ($root): ?string {
-            clearstatcache(true);
-            $resolved = realpath($root . '/' . $relativePath);
-            if ($resolved === false || !RootGuard::contains($root, $resolved)) {
-                return null;
+        $scannerOf = [];
+        foreach (LanguageDescriptor::defaults('') as $descriptor) {
+            foreach ($descriptor->languages as $language) {
+                $scannerOf[$language] = 'knossos.' . $descriptor->key;
             }
+        }
+        $added = [];
+        foreach ($files as $file) {
+            $scanner = $scannerOf[$file->language] ?? null;
+            if ($scanner !== null && !isset($cache[$scanner . "\0" . $file->relativePath])) {
+                $added[$scanner][] = $file->relativePath;
+            }
+        }
 
-            return FileFingerprint::probeHashOf($resolved);
-        };
+        return $added;
     }
 
     /**
