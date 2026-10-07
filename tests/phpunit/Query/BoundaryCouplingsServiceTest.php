@@ -9,6 +9,7 @@ use Knossos\Query\BoundaryCouplingsService;
 use Knossos\Query\BoundaryLabels;
 use Knossos\Query\BoundaryMatrix;
 use Knossos\Query\DashboardService;
+use Knossos\Runtime\MemoryLimit;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
@@ -70,9 +71,12 @@ final class BoundaryCouplingsServiceTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
         // The cell holds two and a half times the default edge cap in pairs (the cap is raised below), and a
-        // quarter of a million pairs is more than PHP's default 128 MB leaves room for. The old limit comes back after.
+        // quarter of a million pairs needs about 512 MB. The limit is only ever raised to that, never lowered, and the old one comes back after.
         $memoryLimit = (string) ini_get('memory_limit');
-        ini_set('memory_limit', $memoryLimit === '-1' ? '-1' : '512M');
+        $current = MemoryLimit::bytes($memoryLimit);
+        if ($current !== null && $current !== -1 && $current < 512 * 1024 ** 2) {
+            ini_set('memory_limit', '512M');
+        }
         try {
             // Copies of an Edge component, each depending on a Core one: more ids than SQLite binds in one statement
             // (32,766 by default, 250,000 as some distributions build it).

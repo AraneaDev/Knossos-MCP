@@ -18,6 +18,9 @@
             <directory>tests/phpunit</directory>
         </testsuite>
     </testsuites>
+    <php>
+        <ini name="memory_limit" value="1G"/>
+    </php>
     <source>
         <include>
             <directory>src</directory>

@@ -28,16 +28,27 @@ It does the following, in order, and is safe to re-run:
 6. Registers the server with Claude Code at user scope, through `claude mcp add`.
    Without the `claude` CLI it prints the JSON to paste into your client.
 
-The installer reads these environment variables:
+These environment variables apply to the installer and to the server it registers:
 
-| Variable             | Default                 | Meaning                                   |
-| -------------------- | ----------------------- | ----------------------------------------- |
-| `KNOSSOS_DATA_DIR`   | `~/.knossos`            | Holds the database and the roots file.    |
-| `KNOSSOS_ROOTS_FILE` | `<data dir>/roots.json` | The allow-list file itself.               |
-| `KNOSSOS_ALLOW_ROOT` | the current directory   | The project that seeds the roots file.    |
-| `KNOSSOS_MCP_NAME`   | `knossos`               | The name of the registered server.        |
-| `KNOSSOS_MCP_SCOPE`  | `user`                  | `claude mcp` scope: local, user, project. |
-| `KNOSSOS_SEED_SCAN`  | `1`                     | `0` skips the initial scan.               |
+| Variable               | Default                 | Meaning                                   |
+| ---------------------- | ----------------------- | ----------------------------------------- |
+| `KNOSSOS_DATA_DIR`     | `~/.knossos`            | Holds the database and the roots file.    |
+| `KNOSSOS_ROOTS_FILE`   | `<data dir>/roots.json` | The allow-list file itself.               |
+| `KNOSSOS_ALLOW_ROOT`   | the current directory   | The project that seeds the roots file.    |
+| `KNOSSOS_MCP_NAME`     | `knossos`               | The name of the registered server.        |
+| `KNOSSOS_MCP_SCOPE`    | `user`                  | `claude mcp` scope: local, user, project. |
+| `KNOSSOS_SEED_SCAN`    | `1`                     | `0` skips the initial scan.               |
+| `KNOSSOS_MEMORY_LIMIT` | `1G`                    | The PHP memory limit of the core.         |
+
+`KNOSSOS_MEMORY_LIMIT` is not read by the installer. The CLI, the MCP server and
+the HTTP server all read it when they start. The core sets its own memory limit,
+so a scan behaves the same whatever your `php.ini` says. Without the variable it
+runs at `1G`, or at your `php.ini` value when that is higher or `-1`. A value
+you set is used as given, even when it is lower than `1G`. It takes a PHP size
+such as `512M` or `2G`, or `-1` for no limit. An invalid value is ignored, and
+so is a limit PHP refuses; `knossos doctor` reports either as an error on the
+`php.memory_limit` check, which also shows the effective limit and where it came
+from: `default`, `KNOSSOS_MEMORY_LIMIT` or `php.ini`.
 
 Restart Claude Code afterwards, or reload its MCP servers. Then
 [scan your first project](first-scan.md). To get the session brief and the

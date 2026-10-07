@@ -29,5 +29,9 @@ if (!is_file($autoload)) {
 
 require $autoload;
 
+// The core sets its own memory limit rather than inheriting the host's
+// php.ini, so a scan that fits on one host does not die on another.
+\Knossos\Runtime\MemoryLimit::apply();
+
 exit((new Application())->run(array_slice($argv, 1)));
 

@@ -53,6 +53,17 @@ final readonly class DoctorService
     {
         $checks = [];
         $this->check($checks, 'php.version', static fn(): string => self::requirement('php')->verify(PHP_VERSION));
+        $this->check($checks, 'php.memory_limit', static function (): string {
+            $limit = MemoryLimit::applied();
+            $detail = sprintf('%s (%s)', (string) ini_get('memory_limit'), $limit->source);
+            if ($limit->failure !== null) {
+                throw new \RuntimeException(sprintf('%s; %s', $detail, $limit->failure));
+            }
+            if ($limit->rejected !== null) {
+                throw new \RuntimeException(sprintf('%s; %s=%s is not a valid size', $detail, MemoryLimit::ENVIRONMENT_VARIABLE, $limit->rejected));
+            }
+            return $detail;
+        });
         foreach (['json', 'mbstring', 'pdo', 'pdo_sqlite'] as $extension) {
             $this->check($checks, 'php.extension.' . $extension, static fn(): string => extension_loaded($extension) ? 'loaded' : throw new \RuntimeException('missing'));
         }
