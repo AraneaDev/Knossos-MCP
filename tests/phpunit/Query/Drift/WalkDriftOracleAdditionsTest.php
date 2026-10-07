@@ -134,6 +134,36 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
     }
 
     /**
+     * The per-directory budget bounds how many entries are read, and a name
+     * discovery cannot carry is still an entry that had to be read. Skipping
+     * such names before counting them let a directory full of them be
+     * enumerated in full. With as many unsupported names as trackable ones
+     * in one directory, the budget is spent on both, so fewer than 500
+     * trackable entries can be asked about.
+     */
+    #[Group('query')]
+    public function testUnsupportedNamesCountTowardThePerDirectoryBound(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            for ($index = 0; $index < 600; ++$index) {
+                file_put_contents($root . '/src/noise' . $index . '.log', 'x');
+            }
+            for ($index = 0; $index < 600; ++$index) {
+                file_put_contents($root . "/src/bad\n" . $index . '.log', 'x');
+            }
+            touch($root . '/src', time() + 60);
+            $predicate = $this->countingPredicate();
+
+            (new WalkDriftOracle($pdo, $predicate))->drift($projectId, $this->activeScanId($pdo, $projectId), $root, $this->finishedAt($pdo, $projectId));
+
+            self::assertLessThan(500, $predicate->calls, 'Unsupported names must use up the budget too, not ride past it for free.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * `$added >= self::MAX_ADDITIONS_COUNTED` stops the walk once enough
      * drift is known, mutable to `>`, which would let the loop run one
      * addition past the bound before stopping. Two directories: the first

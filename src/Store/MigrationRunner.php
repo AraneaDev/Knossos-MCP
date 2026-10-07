@@ -168,6 +168,7 @@ final readonly class MigrationRunner
         return $existing === false ? null : (string) $existing;
     }
 
+    /** Refuse a migration whose file no longer matches the checksum recorded when it was applied. */
     private function assertSameChecksum(string $recorded, string $checksum, string $version): void
     {
         if (!hash_equals($recorded, $checksum)) {
@@ -175,6 +176,7 @@ final readonly class MigrationRunner
         }
     }
 
+    /** Roll back an open transaction, tolerating the case where none is active. */
     private function rollBackQuietly(): void
     {
         try {

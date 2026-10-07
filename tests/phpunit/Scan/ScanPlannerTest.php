@@ -402,41 +402,24 @@ TOML);
     }
 
     /**
-     * Worker analysis output changed, invalidating cached contributions.
-     * The scanner version (salt) is hashed into the configuration to
-     * invalidate caches whenever a worker's facts change, without needing
-     * to change manifest files or replay every contribution.
+     * The analysis salt is part of the configuration hash.
+     *
+     * The salt is the scanner version, so a worker whose facts change
+     * invalidates cached contributions without a manifest change or a replay
+     * of every contribution.
      */
     public function testConfigurationHashIncludesTheAnalysisVersionSalt(): void
     {
         $pdo = $this->createSchema();
         $planner = new ScanPlanner($pdo, [sys_get_temp_dir()]);
-
-        // Access the private configurationHash method via reflection
         $method = new \ReflectionMethod(ScanPlanner::class, 'configurationHash');
-        $method->setAccessible(true);
 
-        $emptyUnits = [];
-        $kinds = ['composer'];
+        $first = $method->invoke($planner, [], ['composer'], 'test-salt-v1');
+        $second = $method->invoke($planner, [], ['composer'], 'test-salt-v2');
+        $repeat = $method->invoke($planner, [], ['composer'], 'test-salt-v1');
 
-        // Same units and kinds, different salts should produce different hashes
-        $hash1 = $method->invoke($planner, $emptyUnits, $kinds, 'test-salt-v1');
-        $hash2 = $method->invoke($planner, $emptyUnits, $kinds, 'test-salt-v2');
-
-        $this->assertNotSame(
-            $hash1,
-            $hash2,
-            'Different salts must produce different configuration hashes',
-        );
-
-        // Same units, kinds, and salt should produce the same hash
-        $hash3 = $method->invoke($planner, $emptyUnits, $kinds, 'test-salt-v1');
-
-        $this->assertSame(
-            $hash1,
-            $hash3,
-            'Same salt with same inputs must produce identical hashes',
-        );
+        assertNotSame($first, $second, 'Different salts must produce different configuration hashes.');
+        assertSame($first, $repeat, 'The same salt with the same inputs must produce the same hash.');
     }
 
     public function testPrepareRejectsSnapshotRetentionOutOfRange(): void

@@ -251,6 +251,15 @@ final readonly class WalkDriftOracle implements DriftOracle
                     if ($entry === '.' || $entry === '..' || isset($tracked[$entry])) {
                         continue;
                     }
+                    // Counted before the question is asked, not after it is
+                    // answered. Asking is the expensive half: a stat, and for
+                    // an extensionless file a read of its first line. A
+                    // budget that only counted the entries that passed left a
+                    // directory of a hundred thousand log files enumerated in
+                    // full, which is precisely what the budget exists to stop.
+                    // An unsupported name is counted too, since reading it
+                    // already cost a directory entry.
+                    ++$examined;
                     $absolute = $directory . '/' . $entry;
                     $relative = ltrim(substr($absolute, strlen($root)), '/');
                     // Discovery skips a name it cannot carry, and naming one
@@ -258,13 +267,6 @@ final readonly class WalkDriftOracle implements DriftOracle
                     if (!ProjectDiscoverer::isSupportedPath($relative)) {
                         continue;
                     }
-                    // Counted before the question is asked, not after it is
-                    // answered. Asking is the expensive half — a stat, and for
-                    // an extensionless file a read of its first line — so a
-                    // budget that only counted the entries that passed left a
-                    // directory of a hundred thousand log files enumerated in
-                    // full, which is precisely what the budget exists to stop.
-                    ++$examined;
                     if (!$scanned->tracks($relative, $absolute)) {
                         continue;
                     }
