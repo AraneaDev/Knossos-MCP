@@ -11,6 +11,7 @@ use Knossos\Scanner\Protocol\{Diagnostic, Evidence, Protocol, ScanContribution, 
 use Knossos\Scanner\Worker\ContributionDecoder;
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Scanner\Worker\WorkerLimits;
+use PDO;
 use Throwable;
 
 /**
@@ -38,28 +39,37 @@ final readonly class ContributionCacheService
     }
 
     /**
+     * The version a cached contribution is stored and compared under: the
+     * worker's reported version plus a prefix of the hash of its own files, so
+     * an edit to the worker invalidates what it produced without anyone
+     * remembering to bump a number.
+     */
+    public static function cacheVersion(ScannerManifest $manifest, string $analysisHash): string
+    {
+        return $manifest->version . '+' . substr($analysisHash, 0, 16);
+    }
+
+    /**
      * Split the discovered files into reusable and must-scan sets.
      *
+     * The cache rows are metadata only. The payloads of the rows that pass
+     * every check are fetched afterwards, so an invalidated or stale row is
+     * never decoded. A reused entry carries the reads it was stored with and is
+     * marked as coming from the cache, so the writer keeps its stored row.
+     *
      * @param list<object> $files
-     * @param array<string, array<string, mixed>> $cache
-     * @param ?string $leftOutConfigurationHash see {@see self::leftOutConfigurationHash()}; a row
-     *        stored under it is reused too, and counted as left out
      */
     public function partition(
         array $files,
         ScannerManifest $manifest,
-        string $configurationHash,
-        array $cache,
-        bool $force,
+        PartitionContext $context,
         ?CancellationToken $cancellation = null,
-        ?string $leftOutConfigurationHash = null,
     ): ContributionPartition {
-        $cached = [];
-        $entries = [];
-        $scan = [];
-        $added = 0;
-        $changed = 0;
-        $leftOutPaths = [];
+        $cacheVersion = self::cacheVersion($manifest, $context->analysisHash);
+        $leftOutConfigurationHash = $context->leftOutConfigurationHash;
+        /** @var list<array{file: object, row: ?array<string, mixed>, owner: string, valid: bool}> $decisions */
+        $decisions = [];
+        $reusedRows = [];
         $sinceLastPoll = 0;
         foreach ($files as $file) {
             // Once per 256 files. A counter that restarts, rather than a
@@ -68,31 +78,40 @@ final readonly class ContributionCacheService
                 $sinceLastPoll = 0;
                 $cancellation->throwIfCancelled();
             }
-            $row = $cache[$manifest->id . "\0" . $file->relativePath] ?? null;
-            $wasLeftOut = $leftOutConfigurationHash !== null
-                && $row !== null
-                && $row['configuration_hash'] === $leftOutConfigurationHash;
-            $valid = !$force && $row !== null
+            $row = $context->cache[$manifest->id . "\0" . $file->relativePath] ?? null;
+            $owner = (string) ($row['owner_key'] ?? $manifest->id . ':file:' . $file->relativePath);
+            $valid = !$context->force && $row !== null
+                && !isset($context->invalidatedOwners[$owner])
                 && $row['content_hash'] === $file->contentHash
-                && $row['scanner_version'] === $manifest->version
-                && ($row['configuration_hash'] === $configurationHash || $wasLeftOut);
+                && $row['scanner_version'] === $cacheVersion
+                && ($row['configuration_hash'] === $context->configurationHash
+                    || ($leftOutConfigurationHash !== null && $row['configuration_hash'] === $leftOutConfigurationHash));
             if ($valid) {
-                try {
-                    $payload = json_decode($row['payload_json'], true, 512, JSON_THROW_ON_ERROR);
-                    if (!is_array($payload)) {
-                        throw new InvalidArgumentException('Cached contribution payload is invalid.');
-                    }
-                    $contribution = ContributionDecoder::decode($payload);
-                    $cached[] = $contribution;
-                    $entries[] = $this->entry($file, $manifest, (string) $row['configuration_hash'], $contribution);
-                    if ($wasLeftOut) {
-                        $leftOutPaths[] = $file->relativePath;
-                    }
-                    continue;
-                } catch (Throwable) {
-                    // Corrupt derived cache is safely rebuilt from source.
-                }
+                $reusedRows[$owner] = $row;
             }
+            $decisions[] = ['file' => $file, 'row' => $row, 'owner' => $owner, 'valid' => $valid];
+        }
+        $reused = self::reusedContributions($reusedRows, $context->pdo, $context->projectId);
+
+        $cached = [];
+        $entries = [];
+        $scan = [];
+        $added = 0;
+        $changed = 0;
+        $leftOutPaths = [];
+        foreach ($decisions as ['file' => $file, 'row' => $row, 'owner' => $owner, 'valid' => $valid]) {
+            $contribution = $valid ? ($reused[$owner] ?? null) : null;
+            $entry = $contribution === null || $row === null ? null : $this->reusedEntry($file, $manifest, $row, $contribution, $context->cachedReads);
+            if ($contribution !== null && $entry !== null && $row !== null) {
+                $cached[] = $contribution;
+                $entries[] = $entry;
+                if ($row['configuration_hash'] === $leftOutConfigurationHash) {
+                    $leftOutPaths[] = $file->relativePath;
+                }
+                continue;
+            }
+            // Not reusable, or a corrupt derived cache entry, which is safely
+            // rebuilt from source.
             $scan[] = $file;
             $row === null ? ++$added : ++$changed;
         }
@@ -100,16 +119,99 @@ final readonly class ContributionCacheService
     }
 
     /**
+     * Decode the payloads of the rows that passed every check, owner to its
+     * contribution, or null for one that is missing or does not decode.
+     *
+     * Read from the database in chunks, each decoded and released before the
+     * next is fetched, so no statement exceeds SQLite's bound-parameter limit
+     * and the JSON is never held alongside every decoded contribution. Without
+     * a PDO, a row's own `payload_json` is used.
+     *
+     * @param array<string, array<string, mixed>> $rows owner key to its cache row
+     * @return array<string, ?ScanContribution>
+     */
+    private static function reusedContributions(array $rows, ?PDO $pdo, ?string $projectId): array
+    {
+        $decoded = [];
+        if ($pdo === null || $projectId === null) {
+            foreach ($rows as $owner => $row) {
+                $decoded[(string) $owner] = self::decodePayload((string) ($row['payload_json'] ?? ''));
+            }
+
+            return $decoded;
+        }
+        foreach (array_chunk(array_map('strval', array_keys($rows)), 500) as $chunk) {
+            $statement = $pdo->prepare(sprintf(
+                'SELECT owner_key, payload_json FROM contribution_cache WHERE project_id = ? AND owner_key IN (%s)',
+                implode(', ', array_fill(0, count($chunk), '?')),
+            ));
+            $statement->execute([$projectId, ...$chunk]);
+            foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$owner, $payload]) {
+                $decoded[(string) $owner] = self::decodePayload((string) $payload);
+            }
+        }
+
+        return $decoded;
+    }
+
+    /** One stored payload as a contribution, or null when it does not decode. */
+    private static function decodePayload(string $json): ?ScanContribution
+    {
+        try {
+            $payload = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($payload)) {
+                throw new InvalidArgumentException('Cached contribution payload is invalid.');
+            }
+
+            return ContributionDecoder::decode($payload);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * The entry for a contribution carried over from the cache, with the reads
+     * it was stored with, or null when those reads no longer validate and the
+     * file must be rebuilt from source.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function reusedEntry(object $file, ScannerManifest $manifest, array $row, ScanContribution $contribution, ?CachedReads $cachedReads): ?ContributionCacheEntry
+    {
+        $owner = $contribution->ownerKey;
+        $stored = $cachedReads?->rows[$owner] ?? null;
+
+        try {
+            return new ContributionCacheEntry(
+                $file->relativePath,
+                $file->contentHash,
+                $manifest->id,
+                (string) $row['scanner_version'],
+                (string) $row['configuration_hash'],
+                $contribution,
+                $cachedReads?->ownerReads[$owner] ?? [],
+                $stored['read_group'] ?? (isset($row['read_group']) ? (string) $row['read_group'] : null),
+                $stored['read_attribution'] ?? ((int) ($row['read_attribution'] ?? 0) === 1),
+                true,
+            );
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+    }
+
+    /**
      * The cache entry for a file left out of the graph, or null when its bytes
      * no longer match what discovery hashed and the next scan must look again.
      */
-    public function leftOutEntry(object $file, ScannerManifest $manifest, string $leftOutConfigurationHash, ScanContribution $contribution): ?ContributionCacheEntry
+    public function leftOutEntry(object $file, ScannerManifest $manifest, string $leftOutConfigurationHash, ScanContribution $contribution, string $analysisHash): ?ContributionCacheEntry
     {
         if (!$this->contentStillMatchesDiscovery($file)) {
             return null;
         }
 
-        return $this->entry($file, $manifest, $leftOutConfigurationHash, $contribution);
+        // Its contribution is a diagnostic about its own bytes and nothing
+        // else, so it read nothing a change elsewhere could reach.
+        return $this->entry($file, $manifest, $leftOutConfigurationHash, $contribution, self::cacheVersion($manifest, $analysisHash), ['reads' => [], 'group' => null, 'attributed' => true]);
     }
 
     /**
@@ -117,10 +219,13 @@ final readonly class ContributionCacheService
      *
      * @param list<ScanContribution> $scanned
      * @param list<object> $files
+     * @param array<string, array{reads: array<string, ?string>, group: ?string, attributed: bool}> $readsByOwner
+     *        what each contribution read ({@see RequestReads}); an owner missing here is stored with no reads and as unattributed
      * @return array{contributions: list<ScanContribution>, cache_entries: list<ContributionCacheEntry>}
      */
-    public function entriesForScanned(array $scanned, array $files, ScannerManifest $manifest, string $configurationHash): array
+    public function entriesForScanned(array $scanned, array $files, ScannerManifest $manifest, string $configurationHash, string $analysisHash, array $readsByOwner = []): array
     {
+        $cacheVersion = self::cacheVersion($manifest, $analysisHash);
         $byOwner = [];
         $duplicated = [];
         foreach ($scanned as $contribution) {
@@ -181,7 +286,7 @@ final readonly class ContributionCacheService
             // still match the discovery hash; otherwise keep this scan's contribution but
             // let the next scan re-scan from source.
             if ($cacheable && $this->contentStillMatchesDiscovery($file)) {
-                $entries[] = $this->entry($file, $manifest, $configurationHash, $contribution);
+                $entries[] = $this->entry($file, $manifest, $configurationHash, $contribution, $cacheVersion, $readsByOwner[$owner] ?? null);
             }
         }
         if ($unexpected !== [] && !$omitted) {
@@ -269,10 +374,24 @@ final readonly class ContributionCacheService
         return true;
     }
 
-    /** One cache entry for a scanned file. */
-    private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution): ContributionCacheEntry
+    /**
+     * One cache entry for a scanned file.
+     *
+     * @param ?array{reads: array<string, ?string>, group: ?string, attributed: bool} $reads
+     */
+    private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution, string $cacheVersion, ?array $reads = null): ContributionCacheEntry
     {
-        return new ContributionCacheEntry($file->relativePath, $file->contentHash, $manifest->id, $manifest->version, $configurationHash, $contribution);
+        return new ContributionCacheEntry(
+            $file->relativePath,
+            $file->contentHash,
+            $manifest->id,
+            $cacheVersion,
+            $configurationHash,
+            $contribution,
+            $reads['reads'] ?? [],
+            $reads['group'] ?? null,
+            $reads['attributed'] ?? false,
+        );
     }
 
     /**

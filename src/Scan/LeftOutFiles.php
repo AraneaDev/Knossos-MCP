@@ -29,6 +29,7 @@ final class LeftOutFiles
         private readonly ContributionCacheService $cache,
         private readonly ScannerManifest $manifest,
         private readonly string $leftOutHash,
+        private readonly string $analysisHash,
     ) {}
 
     /** Leave one file out, with the failure that its answer alone caused. */
@@ -36,7 +37,7 @@ final class LeftOutFiles
     {
         $contribution = self::contribution($this->manifest->id, $file->relativePath, $error);
         $this->contributions[$file->relativePath] = $contribution;
-        $entry = $this->cache->leftOutEntry($file, $this->manifest, $this->leftOutHash, $contribution);
+        $entry = $this->cache->leftOutEntry($file, $this->manifest, $this->leftOutHash, $contribution, $this->analysisHash);
         if ($entry !== null) {
             $this->entries[] = $entry;
         }

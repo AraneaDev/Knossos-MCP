@@ -6,6 +6,7 @@ namespace Knossos\Store;
 
 use InvalidArgumentException;
 use Knossos\Reconciliation\ContributionCacheEntry;
+use PDO;
 
 /**
  * Every row a scan writes into the graph, one statement per table.
@@ -349,36 +350,123 @@ final class SqliteGraphWriter
     }
 
     /**
-     * Swap a project's incremental-reuse cache wholesale.
+     * Bring a project's incremental-reuse cache to the given entries, writing by difference.
      *
-     * Replaced rather than merged: a stale entry would let the next scan reuse facts
-     * for a file it should have re-analysed.
+     * An entry carried over from the previous scan keeps its row and reads; a
+     * stale one would let the next scan reuse facts for a file it should have
+     * re-analysed, so every other entry is replaced and every owner not named is
+     * removed. Deletes are explicit because a bulk transaction runs with foreign
+     * keys off and cascades do not fire.
      *
      * @param list<ContributionCacheEntry> $entries
+     * @param array<string, array<string, ?string>> $readGroups group id to the reads it shares
      */
-    public function replaceContributionCache(string $projectId, array $entries): void
+    public function replaceContributionCache(string $projectId, array $entries, array $readGroups = []): void
     {
-        $delete = $this->statements->pdo()->prepare('DELETE FROM contribution_cache WHERE project_id = :project');
-        $delete->execute(['project' => $projectId]);
-        $insert = $this->statements->prepare(
-            'INSERT INTO contribution_cache(project_id, owner_key, file_path, content_hash, scanner_id, scanner_version, ' .
-            'configuration_hash, payload_json, updated_at) VALUES (:project, :owner, :path, :hash, :scanner, :version, :config, :payload, :updated)',
-        );
+        $pdo = $this->statements->pdo();
+        $wanted = [];
         foreach ($entries as $entry) {
             if (!$entry instanceof ContributionCacheEntry) {
                 throw new InvalidArgumentException('Invalid contribution cache entry.');
             }
-            $insert->execute([
+            $wanted[$entry->contribution->ownerKey] = true;
+        }
+        $storedGroups = $this->statements->prepare('SELECT 1 FROM contribution_read_groups WHERE project_id = :project AND group_id = :group LIMIT 1');
+        foreach ($entries as $entry) {
+            if ($entry->fromCache || $entry->readGroup === null || isset($readGroups[$entry->readGroup])) {
+                continue;
+            }
+            $storedGroups->execute(['project' => $projectId, 'group' => $entry->readGroup]);
+            if ($storedGroups->fetchColumn() === false) {
+                throw new InvalidArgumentException(sprintf('Contribution cache entry %s names an unknown read group.', $entry->contribution->ownerKey));
+            }
+        }
+        $existing = $pdo->prepare('SELECT owner_key FROM contribution_cache WHERE project_id = :project');
+        $existing->execute(['project' => $projectId]);
+        $deleteReads = $this->statements->prepare('DELETE FROM contribution_reads WHERE project_id = :project AND owner_key = :owner');
+        $deleteOwner = $this->statements->prepare('DELETE FROM contribution_cache WHERE project_id = :project AND owner_key = :owner');
+        foreach ($existing->fetchAll(PDO::FETCH_COLUMN) as $owner) {
+            if (!isset($wanted[(string) $owner])) {
+                $deleteReads->execute(['project' => $projectId, 'owner' => $owner]);
+                $deleteOwner->execute(['project' => $projectId, 'owner' => $owner]);
+            }
+        }
+        $upsert = $this->statements->prepare(
+            'INSERT INTO contribution_cache(project_id, owner_key, file_path, content_hash, scanner_id, scanner_version, ' .
+            'configuration_hash, payload_json, updated_at, read_attribution, read_group) VALUES (:project, :owner, :path, :hash, ' .
+            ':scanner, :version, :config, :payload, :updated, :attributed, :group) ON CONFLICT(project_id, owner_key) DO UPDATE SET ' .
+            'file_path = excluded.file_path, content_hash = excluded.content_hash, scanner_id = excluded.scanner_id, ' .
+            'scanner_version = excluded.scanner_version, configuration_hash = excluded.configuration_hash, ' .
+            'payload_json = excluded.payload_json, updated_at = excluded.updated_at, ' .
+            'read_attribution = excluded.read_attribution, read_group = excluded.read_group',
+        );
+        $insertRead = $this->statements->prepare(
+            'INSERT INTO contribution_reads(project_id, owner_key, read_path, read_hash) VALUES (:project, :owner, :path, :hash)',
+        );
+        foreach ($entries as $entry) {
+            if ($entry->fromCache) {
+                continue;
+            }
+            $owner = $entry->contribution->ownerKey;
+            $upsert->execute([
                 'project' => $projectId,
-                'owner' => $entry->contribution->ownerKey,
+                'owner' => $owner,
                 'path' => $entry->filePath,
                 'hash' => $entry->contentHash,
                 'scanner' => $entry->scannerId,
                 'version' => $entry->scannerVersion,
                 'config' => $entry->configurationHash,
-                'payload' => json_encode($entry->contribution, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                'payload' => self::cachePayload($entry->contribution),
                 'updated' => SqliteValues::now(),
+                'attributed' => $entry->readAttribution ? 1 : 0,
+                'group' => $entry->readGroup,
             ]);
+            $deleteReads->execute(['project' => $projectId, 'owner' => $owner]);
+            foreach ($entry->reads as $path => $hash) {
+                $insertRead->execute(['project' => $projectId, 'owner' => $owner, 'path' => (string) $path, 'hash' => $hash]);
+            }
         }
+        $this->storeReadGroups($projectId, $readGroups);
+    }
+
+    /**
+     * The stored form of a cached contribution: its wire shape without the
+     * reads, which contribution_reads already holds and which a reused entry
+     * takes from there.
+     */
+    private static function cachePayload(\Knossos\Scanner\Protocol\ScanContribution $contribution): string
+    {
+        $payload = $contribution->jsonSerialize();
+        unset($payload['reads']);
+
+        return json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * Store the read groups not yet present and drop those no entry references.
+     *
+     * Groups are content-addressed, so an id that is already stored never changes.
+     *
+     * @param array<string, array<string, ?string>> $readGroups
+     */
+    private function storeReadGroups(string $projectId, array $readGroups): void
+    {
+        $known = $this->statements->prepare('SELECT 1 FROM contribution_read_groups WHERE project_id = :project AND group_id = :group LIMIT 1');
+        $insert = $this->statements->prepare(
+            'INSERT INTO contribution_read_groups(project_id, group_id, read_path, read_hash) VALUES (:project, :group, :path, :hash)',
+        );
+        foreach ($readGroups as $groupId => $reads) {
+            $known->execute(['project' => $projectId, 'group' => (string) $groupId]);
+            if ($known->fetchColumn() !== false) {
+                continue;
+            }
+            foreach ($reads as $path => $hash) {
+                $insert->execute(['project' => $projectId, 'group' => (string) $groupId, 'path' => (string) $path, 'hash' => $hash]);
+            }
+        }
+        $this->statements->prepare(
+            'DELETE FROM contribution_read_groups WHERE project_id = :project AND group_id NOT IN ' .
+            '(SELECT read_group FROM contribution_cache WHERE project_id = :project AND read_group IS NOT NULL)',
+        )->execute(['project' => $projectId]);
     }
 }

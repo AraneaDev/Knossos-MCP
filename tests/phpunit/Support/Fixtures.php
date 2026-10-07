@@ -219,15 +219,25 @@ trait Fixtures
         return [$pdo, $repository, compact('project', 'scan', 'file', 'checkout', 'invoice', 'edge')];
     }
 
+    /**
+     * Everything a scan stores about a project's graph, as one comparable string.
+     *
+     * Covers files, nodes, edges, classifications, boundaries and diagnostics
+     * with their attributes, and leaves out what legitimately differs between
+     * two scans of the same bytes: scan ids, timestamps and mtimes. A
+     * diagnostic's id is derived from the scan that wrote it, so diagnostics
+     * are compared by content, and only the active scan's ones count.
+     */
     public function graphSignature(PDO $pdo): string
     {
         $queries = [
-            'nodes' => 'SELECT n.id, n.kind, n.canonical_name, n.display_name, f.relative_path, n.start_line, n.end_line, n.origin, n.confidence, n.attributes_json, n.owner_key FROM nodes n LEFT JOIN files f ON f.id = n.file_id ORDER BY n.id',
+            'files' => 'SELECT relative_path, content_hash, size, language, scanner_version, line_count FROM files ORDER BY relative_path',
+            'nodes' => 'SELECT n.id, n.language, n.kind, n.canonical_name, n.display_name, p.canonical_name parent_name, f.relative_path, n.start_line, n.end_line, n.origin, n.confidence, n.attributes_json, n.owner_key FROM nodes n LEFT JOIN nodes p ON p.id = n.parent_id LEFT JOIN files f ON f.id = n.file_id ORDER BY n.id',
             'edges' => 'SELECT e.id, e.kind, s.canonical_name source_name, t.canonical_name target_name, f.relative_path, e.start_line, e.end_line, e.origin, e.confidence, e.attributes_json, e.owner_key FROM edges e JOIN nodes s ON s.id = e.source_id JOIN nodes t ON t.id = e.target_id LEFT JOIN files f ON f.id = e.file_id ORDER BY e.id',
-            'classifications' => 'SELECT c.id, n.canonical_name, c.role, c.origin, c.confidence, c.rule_id, c.attributes_json FROM classifications c JOIN nodes n ON n.id = c.node_id ORDER BY c.id',
+            'classifications' => 'SELECT c.id, n.canonical_name, c.role, c.origin, c.confidence, c.rule_id, f.relative_path, c.start_line, c.end_line, c.attributes_json FROM classifications c JOIN nodes n ON n.id = c.node_id LEFT JOIN files f ON f.id = c.file_id ORDER BY c.id',
             'boundaries' => 'SELECT id, name, matcher_json, source FROM boundaries ORDER BY id',
             'memberships' => 'SELECT b.name, n.canonical_name FROM boundary_memberships bm JOIN boundaries b ON b.id = bm.boundary_id JOIN nodes n ON n.id = bm.node_id ORDER BY b.name, n.canonical_name',
-            'diagnostics' => 'SELECT severity, code, message, start_line, end_line, owner_key FROM diagnostics ORDER BY id',
+            'diagnostics' => 'SELECT d.severity, d.code, d.message, f.relative_path, d.start_line, d.end_line, d.owner_key FROM diagnostics d JOIN projects p ON p.id = d.project_id AND p.active_scan_id = d.scan_id LEFT JOIN files f ON f.id = d.file_id ORDER BY d.owner_key, d.code, d.message, f.relative_path, d.start_line, d.end_line, d.severity',
         ];
         $graph = [];
         foreach ($queries as $name => $sql) {

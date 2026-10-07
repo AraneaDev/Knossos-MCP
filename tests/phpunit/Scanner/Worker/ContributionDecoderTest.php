@@ -373,4 +373,45 @@ final class ContributionDecoderTest extends TestCase
             assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode);
         }
     }
+
+    // ----- reads -----
+
+    public function testReadsAreDecodedIncludingAProbedMiss(): void
+    {
+        $hash = hash('sha256', 'dep');
+        $decoded = ContributionDecoder::decode([
+            'owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'reads' => ['b.demo' => $hash, 'gone.demo' => null],
+        ]);
+
+        assertSame(['b.demo' => $hash, 'gone.demo' => null], $decoded->reads);
+    }
+
+    public function testMissingReadsDecodeToNullAndEmptyReadsToAnEmptyMap(): void
+    {
+        $base = ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => []];
+
+        assertSame(null, ContributionDecoder::decode($base)->reads);
+        assertSame([], ContributionDecoder::decode($base + ['reads' => []])->reads);
+    }
+
+    public function testMalformedReadsAreAnInvalidContribution(): void
+    {
+        $bad = [
+            'a list' => [hash('sha256', 'x')],
+            'a string' => 'b.demo',
+            'a non-hex value' => ['b.demo' => 'NOTHEX'],
+            'a number' => ['b.demo' => 7],
+            'an escaping path' => ['../b.demo' => hash('sha256', 'x')],
+            'an empty key' => ['' => hash('sha256', 'x')],
+        ];
+        foreach ($bad as $label => $reads) {
+            $error = captureThrows(
+                fn() => ContributionDecoder::decode([
+                    'owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'reads' => $reads,
+                ]),
+                WorkerException::class,
+            );
+            assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode, $label);
+        }
+    }
 }

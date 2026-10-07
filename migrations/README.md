@@ -11,3 +11,7 @@ corrections go here, not into the file.
   single-column FK indexes for `nodes`, `classifications`, and
   `boundary_memberships`. That was migration **012**; 011 adds the
   `annotations` table.
+- **021_contribution_reads.sql** says the next scan of every project after it
+  is a full one. The scan rescans every file, because the migration empties the
+  contribution cache, but its mode stays incremental. Scans after it reuse the
+  cache again.

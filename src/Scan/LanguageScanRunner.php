@@ -8,6 +8,7 @@ use Knossos\Discovery\ProjectUnit;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Scanner\Worker\WorkerException;
+use PDO;
 use Throwable;
 
 /**
@@ -29,6 +30,12 @@ final readonly class LanguageScanRunner
         // bound, so only a lower one set here can exercise it. Production
         // never passes it.
         private ?int $maxRequestsPerLanguage = null,
+        // Where the workers' own files live, which is what their cache key
+        // follows. Empty only where no descriptor names any.
+        private string $installationRoot = '',
+        // Where the payloads of reused cache rows are read from. Null only in
+        // tests whose plans carry the payloads in the rows themselves.
+        private ?PDO $pdo = null,
     ) {}
 
     /** Run each language's worker over the files it claims, degrading a failure to a diagnostic. */
@@ -37,7 +44,7 @@ final readonly class LanguageScanRunner
         $manifests = $contributions = $cacheEntries = [];
         $parsed = $unchanged = $added = $changed = 0;
         $leftOutPaths = [];
-        $scannerMetadata = $stages = $workerDiagnostics = $batchBudgets = [];
+        $scannerMetadata = $stages = $workerDiagnostics = $batchBudgets = $readGroups = [];
         // One for the whole scan: the same file read with different results
         // by two languages fails the scan just as two requests of one do.
         $undiscoveredInputs = new UndiscoveredInputs();
@@ -49,7 +56,7 @@ final readonly class LanguageScanRunner
             // Keyed on the owner, like workerDiagnostics and scannerMetadata, so
             // a consumer can join the three. Recorded for every descriptor,
             // including one with nothing to scan, so the shape is stable.
-            $owner = 'knossos.' . $descriptor->key;
+            $owner = $descriptor->scannerId();
             $batchBudgets[$owner] = [
                 'files' => $descriptor->scanBatchFiles,
                 'source_bytes' => $descriptor->scanBatchSourceBytes,
@@ -84,7 +91,7 @@ final readonly class LanguageScanRunner
                 // Everything else costs this language only. The other languages'
                 // facts are already collected and are still worth a graph.
                 $workerDiagnostics[] = [
-                    'owner' => 'knossos.' . $descriptor->key,
+                    'owner' => $descriptor->scannerId(),
                     'code' => $error instanceof WorkerException ? $error->diagnosticCode : 'WORKER_FAILED',
                     'message' => self::withRemedy(
                         sprintf('%s scanner failed: %s', $descriptor->key, $error->getMessage()),
@@ -112,10 +119,11 @@ final readonly class LanguageScanRunner
             $changed += $outcome['changed'];
             array_push($leftOutPaths, ...$outcome['left_out_paths']);
             $scannerMetadata += $outcome['scanner_metadata'];
+            $readGroups += $outcome['read_groups'];
             $stages[$descriptor->stage] = $outcome['milliseconds'];
         }
 
-        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all(), count($leftOutPaths), $leftOutPaths);
+        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all(), count($leftOutPaths), $leftOutPaths, $readGroups);
     }
 
     /**
@@ -139,7 +147,8 @@ final readonly class LanguageScanRunner
      *     left_out_paths: list<string>,
      *     scanner_metadata: array<string, mixed>,
      *     milliseconds: float,
-     *     undiscovered_inputs: array<string, string|null>
+     *     undiscovered_inputs: array<string, string|null>,
+     *     read_groups: array<string, array<string, ?string>>
      * }
      */
     private function runLanguage(
@@ -159,15 +168,22 @@ final readonly class LanguageScanRunner
             $plan->preparation->configurationHashes[$descriptor->key],
             $plan->preparation->executionPolicy->limits(),
         );
-        $partition = $this->cache->partition(
-            $files,
-            $manifest,
+        // The key follows the worker's own files, so editing one invalidates
+        // what it produced without a number to bump.
+        $analysisHash = AnalysisHash::of($this->installationRoot, $descriptor->analysisInputs);
+        $partition = $this->cache->partition($files, $manifest, new PartitionContext(
             $plan->preparation->configurationHashes[$descriptor->key],
             $plan->cacheByScannerPath,
-            $plan->effectiveMode === 'full' || $plan->workerInputsChanged,
-            $cancellation,
+            // Only a full scan forces everything. An incremental one rescans
+            // the owners a change reached, which the plan already named.
+            $plan->effectiveMode === 'full',
+            $analysisHash,
             $leftOutHash,
-        );
+            $plan->invalidatedOwners,
+            $this->pdo,
+            $plan->projectId,
+            $plan->cachedReads,
+        ), $cancellation);
         $request = self::scanRequest($descriptor, $plan, $files);
         // One request per batch: ScannerProtocolSession::scan() calls
         // beginRequest() per invocation, which resets both the cumulative
@@ -176,7 +192,7 @@ final readonly class LanguageScanRunner
         // rather than to a batch, so a full scan of a mid-sized codebase failed
         // on limits sized for a batch.
         $scanned = $metadata = [];
-        $leftOut = new LeftOutFiles($this->cache, $manifest, $leftOutHash);
+        $leftOut = new LeftOutFiles($this->cache, $manifest, $leftOutHash, $analysisHash);
         // Every path discovery hashed, not only this language's files: a worker
         // may read a file another language claims, or a manifest such as the
         // package.json module resolution reads or the Cargo.toml a crate is
@@ -185,6 +201,10 @@ final readonly class LanguageScanRunner
         // Reads of anything else, checked across this language's requests as
         // they arrive and handed back for the pre-commit re-read.
         $undiscovered = new UndiscoveredInputs();
+        // What each received contribution read, and the shared sets those
+        // name. A file retried in a later batch is overwritten there, like
+        // its contribution.
+        $readsByOwner = $groups = [];
         $queue = new ScanBatchQueue($partition->filesToScan, $descriptor, $sourceBytes, $this->maxRequestsPerLanguage);
         while (($item = $queue->next()) !== null) {
             // Held aside rather than appended directly: an overflowing
@@ -206,10 +226,14 @@ final readonly class LanguageScanRunner
             $batchResult = $client->lastScanResult();
             // Before this batch's contributions are kept: facts resolved against
             // another file's bytes must match what discovery hashed for it too.
-            $undiscovered->add(ScanInputHashes::verify($batchResult, $manifest, $discoveredByPath));
-            // Evidence for this check only, not a statistic: kept out of the
+            $verified = ScanInputHashes::verifyAll($batchResult, $manifest, $discoveredByPath);
+            $undiscovered->add($verified['undiscovered']);
+            $requestReads = RequestReads::forRequest($batchResult, $manifest, $verified['all'], $received);
+            $readsByOwner = $requestReads['owners'] + $readsByOwner;
+            $groups += $requestReads['groups'];
+            // Evidence for these checks only, not statistics: kept out of the
             // scanner metadata a scan report carries.
-            unset($batchResult['input_hashes']);
+            unset($batchResult['input_hashes'], $batchResult['reads']);
             foreach ($received as $contribution) {
                 $scanned[] = $contribution;
             }
@@ -227,11 +251,19 @@ final readonly class LanguageScanRunner
             )),
             $manifest,
             $plan->preparation->configurationHashes[$descriptor->key],
+            $analysisHash,
+            $readsByOwner,
         );
+
+        // In owner order, not cached-then-scanned: when two files declare one
+        // symbol, the declaration the graph keeps must not depend on which of
+        // them this scan happened to reuse.
+        $contributions = [...$partition->cached, ...$recorded['contributions'], ...$leftOut->contributions()];
+        usort($contributions, static fn(ScanContribution $a, ScanContribution $b): int => strcmp($a->ownerKey, $b->ownerKey));
 
         return [
             'manifest' => $manifest,
-            'contributions' => [...$partition->cached, ...$recorded['contributions'], ...$leftOut->contributions()],
+            'contributions' => $contributions,
             'cache_entries' => [...$partition->cacheEntries, ...$recorded['cache_entries'], ...$leftOut->cacheEntries()],
             'left_out_paths' => [...$partition->leftOutPaths, ...$leftOut->paths()],
             'parsed' => count($scanned),
@@ -243,6 +275,7 @@ final readonly class LanguageScanRunner
             'scanner_metadata' => $partition->filesToScan === [] ? [] : [$manifest->id => $metadata],
             'milliseconds' => self::elapsedMilliseconds($started),
             'undiscovered_inputs' => $undiscovered->all(),
+            'read_groups' => $groups,
         ];
     }
 

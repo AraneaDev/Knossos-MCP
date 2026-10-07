@@ -12,6 +12,7 @@ use Knossos\Discovery\DiscoveryResult;
 use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Reconciliation\FullScanRequest;
 use Knossos\Reconciliation\GraphReconciler;
+use Knossos\Reconciliation\NodeReferenceIndex;
 use Knossos\Reconciliation\ReconciliationException;
 use Knossos\Reconciliation\ReconciliationResult;
 use Knossos\Scanner\Protocol\Confidence;
@@ -25,6 +26,7 @@ use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Store\GraphRepository;
 use Knossos\Store\StableId;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 
 #[Group('graph-reconciler')]
@@ -2380,6 +2382,91 @@ final class GraphReconcilerTest extends TestCase
         );
     }
     /**
+     * Expanding namespace prefixes and directory imports against a large graph
+     * reaches exactly the nodes a plain filter over every node reaches, for
+     * direct and nested prefixes and for patterns with and without matches.
+     *
+     * In a process of its own: the large graph takes megabytes of small
+     * allocations at once, and in the shared process the allocator pages they
+     * spread over stayed held for every test after it.
+     */
+    #[Group('reconciliation')]
+    #[RunInSeparateProcess]
+    public function testPrefixAndContextExpansionOverALargeGraphMatchesAPlainFilter(): void
+    {
+        $caller = $this->minimalNode('php:method:App\\Webhook::post', 'App\\Webhook::post');
+        $nodes = [$caller];
+        $classes = [];
+        for ($index = 0; $index < 2000; ++$index) {
+            $name = $index % 4 === 0
+                ? sprintf('App\\N%d\\Sub\\D%d', $index % 400, $index)
+                : sprintf('App\\N%d\\C%d', $index % 400, $index);
+            $classes[] = $name;
+            $nodes[] = $this->minimalNode('php:class:' . $name, $name);
+        }
+        $modules = [];
+        for ($index = 0; $index < 60; ++$index) {
+            $path = sprintf('web/d%d/%sm%d.%s', $index % 3, $index % 2 === 0 ? 'deep/' : '', $index, $index % 5 === 0 ? 'txt' : 'js');
+            $modules[] = $path;
+            $nodes[] = $this->minimalNode('ts:module:' . $path, 'module ' . $path);
+        }
+        $edges = [];
+        $expected = [];
+        for ($index = 0; $index < 2000; ++$index) {
+            $namespace = sprintf('App\\N%d', $index % 450);
+            $nested = $index % 3 === 0;
+            $edges[] = new EdgeFact(
+                kind: 'references',
+                sourceReference: $caller->localId,
+                targetReference: 'php:class_prefix:' . $namespace . ($nested ? '\\**' : ''),
+                origin: Origin::Ast,
+                confidence: Confidence::Probable,
+                evidence: new Evidence('src/Foo.php', $index + 1, $index + 1),
+            );
+            foreach ($classes as $class) {
+                if (str_starts_with($class, $namespace . '\\') && str_contains(substr($class, strlen($namespace) + 1), '\\') === $nested) {
+                    $expected[] = $class;
+                }
+            }
+        }
+        foreach ([['web/d0', true, '\\.js$'], ['web/d1', false, '\\.js$'], ['web/d2', true, 'nothing-matches'], ['web/none', true, '.']] as $offset => [$directory, $recursive, $pattern]) {
+            $edges[] = new EdgeFact(
+                kind: 'imports',
+                sourceReference: $caller->localId,
+                targetReference: 'ts:module_context:' . json_encode(['directory' => $directory, 'recursive' => $recursive, 'pattern' => $pattern]),
+                origin: Origin::Ast,
+                confidence: Confidence::Probable,
+                evidence: new Evidence('src/Foo.php', 3000 + $offset, 3000 + $offset),
+            );
+            foreach ($modules as $module) {
+                $inner = substr($module, strlen($directory) + 1);
+                if (str_starts_with($module, $directory . '/') && ($recursive || !str_contains($inner, '/')) && preg_match('~' . $pattern . '~', './' . $inner) === 1) {
+                    $expected[] = 'module ' . $module;
+                }
+            }
+        }
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution($nodes, $edges)],
+        ]);
+
+        (new GraphReconciler($this->repo))->reconcile($request);
+
+        $names = [];
+        foreach ($this->repo->nodes as $args) {
+            $names[$args[0]] = $args[4];
+        }
+        $targets = [];
+        foreach ($this->repo->edges as $args) {
+            $targets[] = $names[$args[4]] ?? '?';
+        }
+        sort($targets, SORT_STRING);
+        sort($expected, SORT_STRING);
+        self::assertGreaterThan(2000, count($expected));
+        assertSame($expected, $targets);
+    }
+
+    /**
      * A directory import names its modules by pattern, expanded here against
      * every module the graph holds. A context that is not well formed, or a
      * JavaScript pattern PCRE cannot compile (`[^]` matches any character in
@@ -2396,6 +2483,7 @@ final class GraphReconcilerTest extends TestCase
             'ts:module:js/store/index.js' => 'n4',
             'ts:function:js/store/modules/auth.js#login' => 'n5',
         ];
+        $nodeMap = new NodeReferenceIndex($nodeMap);
         $context = static fn(array $fields): string => 'ts:module_context:' . json_encode($fields);
 
         assertSame(['n1'], $targets->invoke(null, $context(['directory' => 'js/store/modules', 'recursive' => false, 'pattern' => '\\.js$', 'flags' => 'g']), $nodeMap));
@@ -2736,7 +2824,7 @@ final class FakeGraphRepository implements GraphRepository
         $this->boundaryMemberships[] = [$boundaryId, $projectId, $nodeId, $scanId];
     }
 
-    public function replaceContributionCache(string $projectId, array $entries): void
+    public function replaceContributionCache(string $projectId, array $entries, array $readGroups = []): void
     {
         $this->contributionCaches[] = [$projectId, $entries];
     }

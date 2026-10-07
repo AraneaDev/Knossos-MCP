@@ -63,9 +63,10 @@ final class IncrementalLanguageTest extends KnossosTestCase
             $versionChange = $service->scan($root);
             assertSame(1, $versionChange->data['parsed_files']);
             assertSame(1, $versionChange->data['unchanged_files']);
-            assertSame('0.6.0', (string) $pdo->query(
+            // Stored as the worker's version plus a prefix of the hash of its own files.
+            assertSame(1, preg_match('/\A0\.6\.0\+[0-9a-f]{16}\z/', (string) $pdo->query(
                 "SELECT scanner_version FROM contribution_cache WHERE scanner_id = 'knossos.typescript'",
-            )->fetchColumn());
+            )->fetchColumn()));
         } finally {
             unset($service, $pdo);
             $this->removeFixtureTree($root);

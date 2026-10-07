@@ -12,6 +12,7 @@ use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 /** The lists the pane counts, each as a command of its own. */
 #[Group('cli')]
@@ -144,7 +145,12 @@ final class ProjectListCommandTest extends KnossosTestCase
      * project with more is better narrowed by severity or path than printed,
      * and holding every row at once ran a project with 100,000 of them out
      * of PHP's default 128 MB.
+     *
+     * In a process of its own: the peak it measures must not depend on what
+     * the tests before it left allocated, and the ten thousand rows it lists
+     * left allocator pages held in the shared process for every test after it.
      */
+    #[RunInSeparateProcess]
     public function testDiagnosticsStopAtTenThousandAndSaySo(): void
     {
         $pdo = $this->pdo();

@@ -1,0 +1,1 @@
+{"name": "fixture/incremental-mixed", "autoload": {"psr-4": {"Mixed\\": "src/"}}}

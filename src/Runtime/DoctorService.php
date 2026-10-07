@@ -140,7 +140,7 @@ final readonly class DoctorService
             return;
         }
         $command = $descriptor->command;
-        $expectedId = 'knossos.' . $descriptor->key;
+        $expectedId = $descriptor->scannerId();
         $this->check($checks, $name, static function () use ($command, $expectedId): string {
             $client = new ProcessScannerClient($command);
             try {

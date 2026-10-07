@@ -257,6 +257,19 @@ final class ScanInputHashesTest extends TestCase
     }
 
     /** @return array<string, DiscoveredFile> */
+    public function testVerifyAllReturnsEveryEntryAndVerifyOnlyTheUndiscoveredOnes(): void
+    {
+        $other = hash('sha256', self::OTHER);
+        $outside = hash('sha256', 'declaration');
+        $result = ['input_hashes' => ['src/Other.ts' => $other, 'node_modules/x.d.ts' => $outside]];
+
+        $all = ScanInputHashes::verifyAll($result, $this->declaring(), $this->discovery());
+
+        assertSame(['src/Other.ts' => $other, 'node_modules/x.d.ts' => $outside], $all['all']);
+        assertSame(['node_modules/x.d.ts' => $outside], $all['undiscovered']);
+        assertSame($all['undiscovered'], ScanInputHashes::verify($result, $this->declaring(), $this->discovery()));
+    }
+
     private function discovery(): array
     {
         return ['src/Other.ts' => new DiscoveredFile('src/Other.ts', '/nonexistent/src/Other.ts', 'typescript', strlen(self::OTHER), 0, hash('sha256', self::OTHER))];

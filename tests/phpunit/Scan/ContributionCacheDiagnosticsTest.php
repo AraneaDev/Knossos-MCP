@@ -7,6 +7,7 @@ namespace Knossos\Tests\Phpunit\Scan;
 use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ContributionCacheService;
+use Knossos\Scan\PartitionContext;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\Evidence;
@@ -36,10 +37,10 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
         $cancelled = new CancellationToken();
         $cancelled->cancel();
 
-        (new ContributionCacheService())->partition(self::files(255), self::manifest(), 'cfg', [], false, $cancelled);
+        (new ContributionCacheService())->partition(self::files(255), self::manifest(), new PartitionContext('cfg', [], false, 'analysis'), $cancelled);
 
         assertThrows(
-            static fn() => (new ContributionCacheService())->partition(self::files(256), self::manifest(), 'cfg', [], false, $cancelled),
+            static fn() => (new ContributionCacheService())->partition(self::files(256), self::manifest(), new PartitionContext('cfg', [], false, 'analysis'), $cancelled),
             ScanCancelledException::class,
         );
     }
@@ -60,7 +61,7 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
             new ScanContribution($manifest->id . ':file:src/fine.php', [], [], []),
         ];
 
-        $result = (new ContributionCacheService())->entriesForScanned($scanned, $files, $manifest, 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned($scanned, $files, $manifest, 'cfg', 'analysis');
 
         assertSame(
             ['SCANNER_OMITTED_CONTRIBUTION', 'SCANNER_DUPLICATE_CONTRIBUTION'],
@@ -89,6 +90,7 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
             [self::file('src/skipped.php'), self::file('src/twice.php')],
             $manifest,
             'cfg',
+            'analysis',
         );
 
         foreach ([0 => 'src/skipped.php', 1 => 'src/twice.php'] as $index => $path) {
@@ -110,7 +112,7 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
         }
         $scanned[] = new ScanContribution($manifest->id . ':file:src/fine.php', [], [], []);
 
-        $result = (new ContributionCacheService())->entriesForScanned($scanned, [self::file('src/fine.php')], $manifest, 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned($scanned, [self::file('src/fine.php')], $manifest, 'cfg', 'analysis');
 
         $message = $result['contributions'][1]->diagnostics[0]->message;
         assertSame(
@@ -133,11 +135,11 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
             return false;
         });
 
-        (new ContributionCacheService())->partition(self::files(767), self::manifest(), 'cfg', [], false, $counting);
+        (new ContributionCacheService())->partition(self::files(767), self::manifest(), new PartitionContext('cfg', [], false, 'analysis'), $counting);
         assertSame(2, $polls);
 
         $polls = 0;
-        (new ContributionCacheService())->partition(self::files(768), self::manifest(), 'cfg', [], false, $counting);
+        (new ContributionCacheService())->partition(self::files(768), self::manifest(), new PartitionContext('cfg', [], false, 'analysis'), $counting);
         assertSame(3, $polls);
     }
 
@@ -154,7 +156,7 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
             $scanned[] = new ScanContribution($manifest->id . ':file:stray-' . $stray . '.php', [], [], []);
         }
 
-        $result = (new ContributionCacheService())->entriesForScanned($scanned, [self::file('src/skipped.php')], $manifest, 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned($scanned, [self::file('src/skipped.php')], $manifest, 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         $diagnostic = $result['contributions'][0]->diagnostics[0];
@@ -174,7 +176,7 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
         $own = new Diagnostic('warning', 'WORKER_OWN', 'reported by the worker', new Evidence('src/twice.php', 3, 3));
         $scanned = [new ScanContribution($twice, [], [], []), new ScanContribution($twice, [], [], [$own])];
 
-        $result = (new ContributionCacheService())->entriesForScanned($scanned, [self::file('src/twice.php')], $manifest, 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned($scanned, [self::file('src/twice.php')], $manifest, 'cfg', 'analysis');
 
         assertSame(
             ['WORKER_OWN', 'SCANNER_DUPLICATE_CONTRIBUTION'],
@@ -199,7 +201,7 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
         foreach ([$missing, $notAString] as $file) {
             $contribution = new ScanContribution($manifest->id . ':file:src/Unhashed.php', [], [], [], hash('sha256', 'anything'));
             $error = captureThrows(
-                static fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $manifest, 'cfg'),
+                static fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $manifest, 'cfg', 'analysis'),
                 WorkerException::class,
             );
 
@@ -220,7 +222,7 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
         $file->contentHash = 5;
         $contribution = new ScanContribution($manifest->id . ':file:src/Unhashed.php', [], [], []);
 
-        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $manifest, 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $manifest, 'cfg', 'analysis');
 
         assertSame([$contribution], $result['contributions']);
         assertSame([], $result['cache_entries']);

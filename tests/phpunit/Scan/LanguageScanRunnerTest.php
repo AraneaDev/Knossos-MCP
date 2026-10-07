@@ -8,6 +8,7 @@ use Knossos\Configuration\ProjectConfiguration;
 use Knossos\Discovery\DiscoveryResult;
 use Knossos\Discovery\ProjectUnit;
 use Knossos\Scan\CancellationToken;
+use Knossos\Scan\AnalysisHash;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\LanguageDescriptor;
 use Knossos\Scan\LanguageScanResult;
@@ -201,6 +202,44 @@ final class LanguageScanRunnerTest extends TestCase
             cacheByScannerPath: [],
             deletedFiles: 0,
         );
+    }
+
+    /**
+     * A cached contribution is keyed on the bytes of the worker's own files, so
+     * editing one of them re-analyses what that worker produced, on the next
+     * scan of the same long-running process.
+     */
+    public function testEditingAWorkerFileInvalidatesItsCachedContributions(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/worker', 0o777, true);
+        file_put_contents($root . '/worker/analysis.php', "<?php // one\n");
+        try {
+            $descriptor = new LanguageDescriptor(
+                key: 'php',
+                languages: ['php'],
+                command: ['php', '-r', 'echo 1'],
+                stage: 'php-analysis',
+                analysisInputs: ['worker/analysis.php'],
+            );
+            $pool = $this->createStub(LanguageWorkerPool::class);
+            $pool->method('client')->willReturn($this->fakeWorkerClient());
+            $runner = new LanguageScanRunner([$descriptor], $pool, new ContributionCacheService(), installationRoot: $root);
+            $stored = '0.1.0+' . substr(AnalysisHash::of($root, ['worker/analysis.php']), 0, 16);
+            $plan = $this->planWithCachedPhpFile([$this->fileFixture('src/Foo.php', 'php')], $stored);
+
+            $reused = $runner->run($plan, new CancellationToken());
+
+            assertSame(1, $reused->unchanged);
+
+            file_put_contents($root . '/worker/analysis.php', "<?php // two\n");
+            $rescanned = $runner->run($plan, new CancellationToken());
+
+            assertSame(0, $rescanned->unchanged);
+            assertSame(1, $rescanned->changed);
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
+        }
     }
 
     public function testWorkerCancelledExceptionIsTranslatedToScanCancelled(): void
@@ -435,7 +474,7 @@ final class LanguageScanRunnerTest extends TestCase
      *
      * @param list<\stdClass> $files
      */
-    private function planWithCachedPhpFile(array $files): ScanPlan
+    private function planWithCachedPhpFile(array $files, ?string $cachedVersion = null): ScanPlan
     {
         $payload = json_encode(
             ['owner_key' => 'knossos.fake:file:src/Foo.php', 'nodes' => [], 'edges' => [], 'diagnostics' => []],
@@ -452,7 +491,7 @@ final class LanguageScanRunnerTest extends TestCase
             effectiveMode: 'fast',
             cacheByScannerPath: ["knossos.fake\0src/Foo.php" => [
                 'content_hash' => 'hash-src/Foo.php',
-                'scanner_version' => '0.1.0',
+                'scanner_version' => $cachedVersion ?? '0.1.0+' . substr(AnalysisHash::of('', []), 0, 16),
                 'configuration_hash' => 'cfg-php',
                 'payload_json' => $payload,
             ]],

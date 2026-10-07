@@ -103,7 +103,11 @@ final readonly class DatabaseMaintenanceService
             try {
                 $this->pdo->beginTransaction();
                 $delete = $this->pdo->prepare('DELETE FROM scans WHERE id = :scan AND project_id = :project');
+                // Explicitly, so a connection that does not enforce foreign
+                // keys cannot leave metrics behind for a snapshot that is gone.
+                $deleteMetrics = $this->pdo->prepare('DELETE FROM snapshot_metrics WHERE scan_id = :scan');
                 foreach ($removable as $scanId) {
+                    $deleteMetrics->execute(['scan' => $scanId]);
                     $delete->execute(['scan' => $scanId, 'project' => $projectId]);
                 }
                 $this->pdo->commit();

@@ -143,4 +143,14 @@ final class ScanContributionTest extends TestCase
             assertSame('Contribution content hash must be lowercase SHA-256 hex.', $error->getMessage());
         }
     }
+
+    public function testReadsAreSerialisedOnlyWhenReported(): void
+    {
+        assertSame(false, array_key_exists('reads', (new ScanContribution('demo:file:a'))->jsonSerialize()));
+
+        $empty = (new ScanContribution('demo:file:a', reads: []))->jsonSerialize();
+        assertSame('{}', json_encode($empty['reads']));
+        $filled = (new ScanContribution('demo:file:a', reads: ['b.ts' => null]))->jsonSerialize();
+        assertSame('{"b.ts":null}', json_encode($filled['reads']));
+    }
 }

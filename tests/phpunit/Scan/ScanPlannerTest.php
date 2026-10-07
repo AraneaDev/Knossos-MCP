@@ -6,6 +6,7 @@ namespace Knossos\Tests\Scan;
 
 use InvalidArgumentException;
 use Knossos\Configuration\ProjectConfiguration;
+use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\DiscoveryResult;
 use Knossos\Scan\ScanPlan;
 use Knossos\Scan\ScanPlanner;
@@ -41,8 +42,13 @@ final class ScanPlannerTest extends TestCase
             scanner_version TEXT NOT NULL,
             configuration_hash TEXT NOT NULL,
             payload_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            read_attribution INTEGER NOT NULL DEFAULT 0,
+            read_group TEXT
         )');
+        $pdo->exec('CREATE TABLE contribution_reads (project_id TEXT NOT NULL, owner_key TEXT NOT NULL, read_path TEXT NOT NULL, read_hash TEXT)');
+        $pdo->exec('CREATE TABLE contribution_read_groups (project_id TEXT NOT NULL, group_id TEXT NOT NULL, read_path TEXT NOT NULL, read_hash TEXT)');
+        $pdo->exec('CREATE TABLE files (project_id TEXT NOT NULL, relative_path TEXT NOT NULL, content_hash TEXT NOT NULL)');
         $pdo->exec('CREATE TABLE scans (
             id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
@@ -51,13 +57,14 @@ final class ScanPlannerTest extends TestCase
         return $pdo;
     }
 
-    private function makePreparation(string $rootRealpath = '/tmp/foo'): ScanPreparation
+    /** @param list<DiscoveredFile> $files */
+    private function makePreparation(string $rootRealpath = '/tmp/foo', array $files = []): ScanPreparation
     {
         return new ScanPreparation(
             configuration: new ProjectConfiguration(),
             discovery: new DiscoveryResult(
                 rootRealpath: $rootRealpath,
-                files: [],
+                files: $files,
                 units: [],
                 diagnostics: [],
                 inputHash: '',
@@ -280,6 +287,100 @@ TOML);
         assertSame(1, $plan->deletedFiles);
     }
 
+    /**
+     * An incremental plan names the cached owners a change reached, here a
+     * deleted file and the file that read it; a full plan rebuilds everything
+     * and loads no read sets at all.
+     */
+    public function testFinalizeNamesTheOwnersAChangeReachedOnlyForAnIncrementalScan(): void
+    {
+        $pdo = $this->createSchema();
+        $planner = new ScanPlanner($pdo, ['/tmp']);
+        $root = '/tmp/reads-project';
+        $projectId = StableId::project('root:' . $root);
+        $pdo->prepare("INSERT INTO projects(id, name, root_realpath, active_scan_id, created_at, updated_at) VALUES (?, 'reads', ?, 'scan-existing', 'now', 'now')")
+            ->execute([$projectId, $root]);
+        $insert = $pdo->prepare("INSERT INTO contribution_cache(project_id, owner_key, file_path, content_hash, scanner_id, scanner_version, configuration_hash, payload_json, updated_at, read_attribution) VALUES (?, ?, ?, 'abc', 'php-scanner', '1.0', '', '{}', 'now', 1)");
+        $insert->execute([$projectId, 'php-scanner:file:gone.php', 'gone.php']);
+        $insert->execute([$projectId, 'php-scanner:file:reader.php', 'reader.php']);
+        $pdo->prepare("INSERT INTO contribution_reads(project_id, owner_key, read_path, read_hash) VALUES (?, 'php-scanner:file:reader.php', 'gone.php', ?)")
+            ->execute([$projectId, hash('sha256', 'gone')]);
+
+        $incremental = $planner->finalize($this->makePreparation($root));
+
+        $invalidated = $incremental->invalidatedOwners;
+        ksort($invalidated, SORT_STRING);
+        assertSame(['php-scanner:file:gone.php' => true, 'php-scanner:file:reader.php' => true], $invalidated);
+        self::assertNotNull($incremental->cachedReads);
+        self::assertArrayNotHasKey('payload_json', $incremental->cacheByScannerPath["php-scanner\0reader.php"]);
+
+        $pdo->exec("UPDATE projects SET active_scan_id = NULL");
+        $full = $planner->finalize($this->makePreparation($root));
+
+        assertSame([], $full->invalidatedOwners);
+        self::assertNull($full->cachedReads);
+    }
+
+    /**
+     * A TypeScript file with no cache row is an added file, and the TypeScript
+     * worker does not say which file read what, so every cached TypeScript
+     * file is rebuilt even though none of their own bytes changed.
+     */
+    public function testAnAddedFileRebuildsEveryRowOfAnUnattributedScanner(): void
+    {
+        $pdo = $this->createSchema();
+        $planner = new ScanPlanner($pdo, ['/tmp']);
+        $root = '/tmp/added-project';
+        $projectId = StableId::project('root:' . $root);
+        $pdo->prepare("INSERT INTO projects(id, name, root_realpath, active_scan_id, created_at, updated_at) VALUES (?, 'added', ?, 'scan-existing', 'now', 'now')")
+            ->execute([$projectId, $root]);
+        $insert = $pdo->prepare("INSERT INTO contribution_cache(project_id, owner_key, file_path, content_hash, scanner_id, scanner_version, configuration_hash, payload_json, updated_at, read_attribution) VALUES (?, ?, ?, ?, 'knossos.typescript', '1.0', '', '{}', 'now', 0)");
+        $files = [];
+        foreach (['a.ts', 'b.ts', 'new.ts'] as $path) {
+            $files[] = new DiscoveredFile($path, $root . '/' . $path, 'typescript', 10, 0, hash('sha256', $path));
+            if ($path !== 'new.ts') {
+                $insert->execute([$projectId, 'knossos.typescript:file:' . $path, $path, hash('sha256', $path)]);
+            }
+        }
+
+        $unchanged = $planner->finalize($this->makePreparation($root, array_slice($files, 0, 2)));
+        $added = $planner->finalize($this->makePreparation($root, $files));
+
+        assertSame([], $unchanged->invalidatedOwners);
+        $invalidated = $added->invalidatedOwners;
+        ksort($invalidated, SORT_STRING);
+        assertSame(['knossos.typescript:file:a.ts' => true, 'knossos.typescript:file:b.ts' => true], $invalidated);
+    }
+
+    /**
+     * A file the active scan recorded with the same bytes but could not cache
+     * is not an added file, so it rebuilds nothing beyond itself. Recorded
+     * with other bytes, it is a change the scanner cannot attribute.
+     */
+    public function testAFileWithoutACacheRowThatTheActiveScanRecordedIsNotAdded(): void
+    {
+        $pdo = $this->createSchema();
+        $planner = new ScanPlanner($pdo, ['/tmp']);
+        $root = '/tmp/uncached-project';
+        $projectId = StableId::project('root:' . $root);
+        $pdo->prepare("INSERT INTO projects(id, name, root_realpath, active_scan_id, created_at, updated_at) VALUES (?, 'uncached', ?, 'scan-existing', 'now', 'now')")
+            ->execute([$projectId, $root]);
+        $insert = $pdo->prepare("INSERT INTO contribution_cache(project_id, owner_key, file_path, content_hash, scanner_id, scanner_version, configuration_hash, payload_json, updated_at, read_attribution) VALUES (?, ?, ?, ?, 'knossos.typescript', '1.0', '', '{}', 'now', 0)");
+        $recorded = $pdo->prepare('INSERT INTO files(project_id, relative_path, content_hash) VALUES (?, ?, ?)');
+        $files = [];
+        foreach (['a.ts', 'uncached.ts'] as $path) {
+            $files[] = new DiscoveredFile($path, $root . '/' . $path, 'typescript', 10, 0, hash('sha256', $path));
+            $recorded->execute([$projectId, $path, hash('sha256', $path)]);
+        }
+        $insert->execute([$projectId, 'knossos.typescript:file:a.ts', 'a.ts', hash('sha256', 'a.ts')]);
+
+        assertSame([], $planner->finalize($this->makePreparation($root, $files))->invalidatedOwners);
+
+        $pdo->prepare("UPDATE files SET content_hash = ? WHERE relative_path = 'uncached.ts'")->execute([hash('sha256', 'before')]);
+
+        assertSame(['knossos.typescript:file:a.ts' => true], $planner->finalize($this->makePreparation($root, $files))->invalidatedOwners);
+    }
+
     public function testFinalizeReturnsEmptyCacheByDefault(): void
     {
         $pdo = $this->createSchema();
@@ -402,24 +503,23 @@ TOML);
     }
 
     /**
-     * The analysis salt is part of the configuration hash.
-     *
-     * The salt is the scanner version, so a worker whose facts change
-     * invalidates cached contributions without a manifest change or a replay
-     * of every contribution.
+     * The configuration hash is of the project's units alone. The worker's own
+     * files are keyed separately, so no hand-kept version string is in it.
      */
-    public function testConfigurationHashIncludesTheAnalysisVersionSalt(): void
+    public function testConfigurationHashIsOfTheMatchingUnitsOnly(): void
     {
         $pdo = $this->createSchema();
         $planner = new ScanPlanner($pdo, [sys_get_temp_dir()]);
         $method = new \ReflectionMethod(ScanPlanner::class, 'configurationHash');
+        $unit = static fn(string $kind, string $path, string $hash): object => (object) ['kind' => $kind, 'configPath' => $path, 'contentHash' => $hash];
+        $composer = $unit('composer', 'composer.json', 'aa');
+        $other = $unit('node', 'package.json', 'bb');
 
-        $first = $method->invoke($planner, [], ['composer'], 'test-salt-v1');
-        $second = $method->invoke($planner, [], ['composer'], 'test-salt-v2');
-        $repeat = $method->invoke($planner, [], ['composer'], 'test-salt-v1');
+        $hash = $method->invoke($planner, [$other, $composer], ['composer']);
 
-        assertNotSame($first, $second, 'Different salts must produce different configuration hashes.');
-        assertSame($first, $repeat, 'The same salt with the same inputs must produce the same hash.');
+        assertSame(hash('sha256', 'composer:composer.json=aa'), $hash);
+        assertNotSame($hash, $method->invoke($planner, [$unit('composer', 'composer.json', 'cc')], ['composer']));
+        assertSame($hash, $method->invoke($planner, [$composer, $other], ['composer']));
     }
 
     public function testPrepareRejectsSnapshotRetentionOutOfRange(): void

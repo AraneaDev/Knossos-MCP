@@ -72,18 +72,36 @@ final class UndiscoveredInputVerifier
         clearstatcache(true);
         foreach ($inputs as $path => $hash) {
             $path = (string) $path;
-            // Keys were validated on intake; this class must not rely on that
-            // to stay inside the root.
-            RelativePath::assertValid($path, 'undiscovered input ' . $path);
-            $absolute = $root . '/' . $path;
-            $cap = self::byteCapFor($path, $maxFileBytes);
-            $matches = $hash === null
-                ? !self::readableAsItself($root, $absolute, $cap)
-                : self::hashOf($root, $absolute, $cap) === $hash;
-            if (!$matches) {
+            if (!self::stillMatches($root, $path, $hash, $maxFileBytes)) {
                 throw ScanSnapshotChangedException::inputChangedAfterRead($path);
             }
         }
+    }
+
+    /**
+     * Whether one undiscovered read still describes the tree, by the rules in
+     * the class docblock.
+     *
+     * Shared with the incremental scan's invalidation, so a read this check
+     * accepts at commit never invalidates the contribution on the next scan.
+     * The caller clears PHP's stat cache before a batch of these.
+     *
+     * @param string $root the project root as discovery resolved it, without a trailing slash
+     * @param ?string $hash the reported SHA-256 hex, or null for a failed or refused read
+     * @param int $maxFileBytes the discovery byte cap the scan runs under
+     * @throws InvalidArgumentException for a path that is not project-relative
+     */
+    public static function stillMatches(string $root, string $path, ?string $hash, int $maxFileBytes): bool
+    {
+        // Keys were validated on intake; this class must not rely on that
+        // to stay inside the root.
+        RelativePath::assertValid($path, 'undiscovered input ' . $path);
+        $absolute = $root . '/' . $path;
+        $cap = self::byteCapFor($path, $maxFileBytes);
+
+        return $hash === null
+            ? !self::readableAsItself($root, $absolute, $cap)
+            : self::hashOf($root, $absolute, $cap) === $hash;
     }
 
     /**

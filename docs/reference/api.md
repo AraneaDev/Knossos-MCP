@@ -69,7 +69,7 @@ This file is generated from enforced PHP interface docblocks and the isolated PH
 - `saveClassification(string $id, string $projectId, string $nodeId, string $role, string $origin, string $confidence, string $ruleId, ?string $fileId, ?int $startLine, ?int $endLine, array $attributes, string $scanId): void`: Persist one deterministic role classification with rule provenance
 - `saveBoundary(string $id, string $projectId, string $name, array $matcher, string $source, string $scanId): void`: Persist an explicit or inferred architecture boundary
 - `saveBoundaryMembership(string $boundaryId, string $projectId, string $nodeId, string $scanId): void`: Associate a node with one boundary for the active scan
-- `replaceContributionCache(string $projectId, array $entries): void`: Replace all incremental contribution-cache entries for a project
+- `replaceContributionCache(string $projectId, array $entries, array $readGroups = []): void`: Bring a project's incremental contribution cache to the given entries and read groups
 - `findNodesByName(string $projectId, string $name, int $limit = 20): array`: Return bounded exact and display-name component matches
 - `outgoing(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array`: Return bounded outgoing adjacency rows for one node
 - `incoming(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array`: Return bounded incoming adjacency rows for one node

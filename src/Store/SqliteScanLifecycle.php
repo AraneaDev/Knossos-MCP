@@ -221,7 +221,11 @@ final class SqliteScanLifecycle
         $statement->execute(['project' => $projectId]);
         $snapshotIds = $statement->fetchAll(PDO::FETCH_COLUMN);
         $deleteSnapshot = $this->statements->pdo()->prepare('DELETE FROM scan_snapshots WHERE scan_id = :scan AND project_id = :project');
+        // Explicitly, not through the cascade: a scan's own write runs with
+        // foreign keys off, and there the cascade never fires.
+        $deleteMetrics = $this->statements->pdo()->prepare('DELETE FROM snapshot_metrics WHERE scan_id = :scan');
         foreach (array_slice($snapshotIds, $retention) as $snapshotId) {
+            $deleteMetrics->execute(['scan' => $snapshotId]);
             $deleteSnapshot->execute(['scan' => $snapshotId, 'project' => $projectId]);
         }
         $deleteScans = $this->statements->pdo()->prepare(

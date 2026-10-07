@@ -28,6 +28,22 @@ Do not repeatedly force full mode as a substitute for investigating a stable
 diagnostic. Normal operation should use `auto`, which verifies fingerprints and
 selects safe incremental work.
 
+### What an incremental scan reuses
+
+An incremental scan produces the same graph a full scan of the same files
+would. It rescans every changed file, and every cached file that read a changed
+file while it was scanned: an importer, a file that resolved a re-export, a
+file that used a dependency's declarations, or a module that probed a path that
+has since appeared. It follows those readers in turn, so a reader of a reader
+is rescanned too. A worker that does not report which files it read has its
+whole language rescanned whenever any of that language's inputs change.
+
+You do not need to clear anything by hand when a worker changes. Each cached
+result is keyed on a hash of the files of the worker that produced it, so
+updating a worker invalidates its cached results on the next scan. There is no
+limit on how many inputs a scan records for this, so a large `node_modules`
+tree is tracked in full.
+
 Full mode is not a way around a broken worker. When a worker fails during a
 rescan and the graph already holds facts for its language, the scan aborts with
 `WORKER_DEGRADED_INCREMENTAL` in every mode, `--mode=full` included, and the
@@ -80,6 +96,11 @@ Knossos migrations are forward-only, ordered, and recorded in
    promoting the volume.
 5. If verification fails, stop the new process and restore the pre-upgrade
    backup with the previous image. Never copy a live WAL/database pair by hand.
+
+The first scan of each project after upgrading from a release that did not
+record which files each cached result read rescans every file, even in `auto`
+or `incremental` mode, and takes as long as a full scan. Scans after it reuse
+the cache again.
 
 The full quality profile automates this clean install, idempotent upgrade, and
 verified rollback sequence through `tools/release-lifecycle`. Schema downgrades

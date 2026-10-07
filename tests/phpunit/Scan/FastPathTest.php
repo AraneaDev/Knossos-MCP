@@ -32,6 +32,30 @@ final class FastPathTest extends KnossosTestCase
         }
     }
 
+    /**
+     * Stored reads that still match disk invalidate nothing, so a second
+     * unchanged rescan is as cheap as the first.
+     */
+    #[Group('scan')]
+    public function testTwoUnchangedRescansInARowBothTakeTheFastPath(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture('mixed');
+        try {
+            $scansBefore = (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn();
+            $service = new ProjectScanService($pdo, self::repositoryRoot(), [$root]);
+
+            $first = $service->scan($root);
+            $second = $service->scan($root);
+
+            assertSame('no_change', $first->data['fast_path']);
+            assertSame('no_change', $second->data['fast_path']);
+            assertSame(0, $second->data['parsed_files']);
+            assertSame($scansBefore, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn());
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     #[Group('scan')]
     public function testMtimeOnlyTouchTakesFastPathAndRefreshesFreshness(): void
     {

@@ -30,7 +30,10 @@ language file, package and compiler manifest, and checked-in Knossos
 configuration, after the validated ignores apply. Between fingerprints a stat
 pass checks what the last one saw, so an idle tree costs a few hundred `stat`
 calls per poll instead of hashing every file. Ordinary batches request an
-incremental scan, and the contribution cache decides which owners need parsing.
+incremental scan, and the contribution cache decides which owners need parsing:
+the changed files, and every cached file that read one of them. The graph it
+leaves is the one a full scan would produce; see [what an incremental scan
+reuses](troubleshooting-and-migrations.md#what-an-incremental-scan-reuses).
 
 The watcher does not execute project code, does not follow symlinks and does not
 bypass discovery limits. It polls instead of using filesystem notifications,

@@ -141,19 +141,19 @@ final readonly class ScanPlanner
             $configuration->frameworks,
         );
         $configurationHashes = [
-            'php' => $this->configurationHash($discovery->units, ['composer', 'knossos'], 'php-analysis-v6'),
+            'php' => $this->configurationHash($discovery->units, ['composer', 'knossos']),
             // tool_config: the worker reads module aliases from vite, svelte, webpack and
             // vue configs, so editing one must invalidate what was resolved under it.
-            'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'tool_config', 'knossos'], 'typescript-analysis-v20'),
+            'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'tool_config', 'knossos']),
             // 'requirements' is in the hash because detectedFramework() reads
             // requirements.txt for the Python framework gating above: without
             // it, adding fastapi to requirements.txt would reuse contributions
             // scanned with enrichment switched off.
-            'python' => $this->configurationHash($discovery->units, ['python', 'requirements', 'knossos'], 'python-analysis-v14'),
+            'python' => $this->configurationHash($discovery->units, ['python', 'requirements', 'knossos']),
             // Cargo.toml is now a recorded unit (kind 'cargo'), so editing it
             // invalidates a Rust contribution's cache entry the same way
             // composer.json and package.json do for PHP and TypeScript.
-            'rust' => $this->configurationHash($discovery->units, ['cargo', 'knossos'], 'rust-analysis-v6'),
+            'rust' => $this->configurationHash($discovery->units, ['cargo', 'knossos']),
         ];
 
         return new ScanPreparation(
@@ -177,8 +177,14 @@ final readonly class ScanPlanner
             dirtyPaths: $dirtyPaths,
         );
     }
-    /** Complete the plan once the analyzer set is known. */
-
+    /**
+     * Complete the plan once the analyzer set is known.
+     *
+     * An incremental scan also decides here which cached contributions a
+     * change reached ({@see ReadSetInvalidator}); a full scan rebuilds every
+     * one and skips that work. Payloads are not read: only the entries that
+     * survive need them, and the partition fetches those.
+     */
     public function finalize(ScanPreparation $preparation): ScanPlan
     {
         $projectId = StableId::project('root:' . $preparation->discovery->rootRealpath);
@@ -186,19 +192,31 @@ final readonly class ScanPlanner
         $statement->execute(['id' => $projectId]);
         $existing = $statement->fetch();
         $effectiveMode = $preparation->requestedMode === 'full' || $existing === false || $existing['active_scan_id'] === null ? 'full' : 'incremental';
-        $statement = $this->pdo->prepare('SELECT * FROM contribution_cache WHERE project_id = :project');
-        $statement->execute(['project' => $projectId]);
-        $cachedRows = $statement->fetchAll();
-        $cache = [];
-        foreach ($cachedRows as $row) {
-            $cache[$row['scanner_id'] . "\0" . $row['file_path']] = $row;
-        }
+        // One read of the cache metadata serves the partition, the deleted
+        // count and, for an incremental scan, the invalidation below. A full
+        // scan rebuilds every entry, so it leaves the read sets unloaded.
+        $loaded = CachedReads::load($this->pdo, $projectId, $effectiveMode === 'incremental');
+        $cache = $loaded->byScannerPath();
         $current = array_fill_keys(array_map(static fn($file): string => $file->relativePath, $preparation->discovery->files), true);
-        $old = array_fill_keys(array_column($cachedRows, 'file_path'), true);
+        $old = array_fill_keys(array_column($loaded->rows, 'file_path'), true);
 
-        $workerInputsChanged = $effectiveMode === 'incremental'
-            && is_string($existing['active_scan_id'] ?? null)
-            && WorkerInputFreshness::changed($this->pdo, $existing['active_scan_id'], $preparation->discovery->rootRealpath);
+        $cachedReads = null;
+        $invalidated = [];
+        if ($effectiveMode === 'incremental') {
+            $cachedReads = $loaded;
+            $discovered = array_map(static fn($hashed): string => $hashed->contentHash, $preparation->discovery->hashedPaths());
+            $root = rtrim($preparation->discovery->rootRealpath, '/');
+            $maxFileBytes = $preparation->maxFileBytes;
+            // See UndiscoveredInputVerifier::verify(): realpath() answers from
+            // a per-process cache a long-running server keeps across scans.
+            clearstatcache(true);
+            $invalidated = ReadSetInvalidator::invalidated(
+                $cachedReads,
+                $discovered,
+                static fn(string $path, ?string $stored): bool => UndiscoveredInputVerifier::stillMatches($root, $path, $stored, $maxFileBytes),
+                self::addedByScanner($preparation->discovery->files, $cache, $this->previousFiles($projectId)),
+            );
+        }
 
         return new ScanPlan(
             $preparation,
@@ -206,9 +224,55 @@ final readonly class ScanPlanner
             $effectiveMode,
             $cache,
             count(array_diff_key($old, $current)),
-            $workerInputsChanged,
+            $invalidated,
             $existing !== false && $existing['active_scan_id'] !== null,
+            $cachedReads,
         );
+    }
+
+    /**
+     * The discovered files each scanner has no cache row for that are new or
+     * changed since the active scan, keyed by the scanner id its worker
+     * answers under ({@see LanguageDescriptor::scannerId()}).
+     *
+     * A file the active scan recorded with the same bytes is not one of them,
+     * even without a cache row: a file that was omitted, answered twice, or
+     * changed under its worker is never cached, and counting it as added
+     * would rebuild its whole scanner on every scan. It is rescanned alone,
+     * as any file without a row is.
+     *
+     * @param list<object> $files
+     * @param array<string, array<string, mixed>> $cache keyed by scanner id and path
+     * @param array<string, string> $previous path to content hash of every file the active scan recorded
+     * @return array<string, list<string>>
+     */
+    private static function addedByScanner(array $files, array $cache, array $previous): array
+    {
+        $scannerOf = LanguageDescriptor::scannerIdsByLanguage();
+        $added = [];
+        foreach ($files as $file) {
+            $scanner = $scannerOf[$file->language] ?? null;
+            if ($scanner !== null && !isset($cache[$scanner . "\0" . $file->relativePath])
+                && ($previous[$file->relativePath] ?? null) !== $file->contentHash) {
+                $added[$scanner][] = $file->relativePath;
+            }
+        }
+
+        return $added;
+    }
+
+    /**
+     * Path to content hash of every file the active scan recorded. Every
+     * discovered file is recorded, and a file gone from the tree is removed.
+     *
+     * @return array<string, string>
+     */
+    private function previousFiles(string $projectId): array
+    {
+        $statement = $this->pdo->prepare('SELECT relative_path, content_hash FROM files WHERE project_id = :project');
+        $statement->execute(['project' => $projectId]);
+
+        return array_map('strval', $statement->fetchAll(PDO::FETCH_KEY_PAIR));
     }
 
     /**
@@ -277,13 +341,16 @@ final readonly class ScanPlanner
     }
 
     /**
-     * Identity of the analyzer configuration, so a change invalidates incremental reuse.
+     * Identity of the project's configuration, so a change invalidates incremental reuse.
+     *
+     * The worker's own files are not part of it: the cache version follows them
+     * ({@see AnalysisHash}).
      *
      * @param list<object> $units @param list<string> $kinds
      */
-    private function configurationHash(array $units, array $kinds, string $version): string
+    private function configurationHash(array $units, array $kinds): string
     {
-        $parts = [$version];
+        $parts = [];
         foreach ($units as $unit) {
             if (in_array($unit->kind, $kinds, true)) {
                 $parts[] = $unit->kind . ':' . $unit->configPath . '=' . $unit->contentHash;

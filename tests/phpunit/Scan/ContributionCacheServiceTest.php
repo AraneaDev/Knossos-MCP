@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Scan;
 
 use Knossos\Discovery\DiscoveredFile;
+use Knossos\Scan\CachedReads;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\ContributionPartition;
+use Knossos\Scan\PartitionContext;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Protocol\{Confidence, Evidence, NodeFact, Origin};
@@ -68,7 +70,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file = $this->writeFile('Foo.php', "<?php // stable\n");
         $contribution = new ScanContribution('knossos.php:file:Foo.php');
 
-        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         assertSame(1, count($result['cache_entries']));
@@ -84,7 +86,7 @@ final class ContributionCacheServiceTest extends TestCase
         file_put_contents($file->absolutePath, "<?php // mutated after discovery\n");
         $contribution = new ScanContribution('knossos.php:file:Foo.php');
 
-        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg', 'analysis');
 
         // The contribution is still returned for this scan's graph,
         // but no poisoned cache entry is persisted.
@@ -100,7 +102,7 @@ final class ContributionCacheServiceTest extends TestCase
         unlink($file->absolutePath); // vanished before the scan-time re-fingerprint
         $contribution = new ScanContribution('knossos.php:file:Gone.php');
 
-        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         assertSame(0, count($result['cache_entries']));
@@ -121,7 +123,7 @@ final class ContributionCacheServiceTest extends TestCase
         $token->cancel();
 
         $this->expectException(ScanCancelledException::class);
-        $service->partition($files, $manifest, 'cfg', [], false, $token);
+        $service->partition($files, $manifest, new PartitionContext('cfg', [], false, 'analysis'), $token);
     }
 
     public function testPartitionWithoutTokenReturnsPartition(): void
@@ -132,7 +134,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file->relativePath = 'src/Only.php';
         $file->contentHash = 'abc';
 
-        $partition = $service->partition([$file], $manifest, 'cfg', [], false);
+        $partition = $service->partition([$file], $manifest, new PartitionContext('cfg', [], false, 'analysis'));
 
         assertSame(true, $partition instanceof ContributionPartition);
         assertSame(1, $partition->added);
@@ -155,11 +157,74 @@ final class ContributionCacheServiceTest extends TestCase
             ],
         ];
 
-        $partition = $service->partition([$file], $manifest, 'cfg', $cache, false);
+        $partition = $service->partition([$file], $manifest, new PartitionContext('cfg', $cache, false, 'analysis'));
 
         assertSame(0, count($partition->cached));
         assertSame([$file], $partition->filesToScan);
         assertSame(1, $partition->changed);
+    }
+
+    /**
+     * Cache rows arrive without payloads. A row that passes every check has its
+     * payload read from the database and is reused with the reads it was
+     * stored with; an owner a change reached is rescanned as changed even
+     * though its own bytes match.
+     */
+    public function testReusedRowsReadTheirPayloadLazilyAndAnInvalidatedOwnerIsRescanned(): void
+    {
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $version = ContributionCacheService::cacheVersion($manifest, 'analysis');
+        // PHP 8.4 moved the driver-specific API onto Pdo\Sqlite and PHP 8.5
+        // deprecates the old PDO methods and constants, so use the new ones
+        // wherever they exist.
+        $modern = method_exists(\PDO::class, 'connect');
+        $pdo = $modern ? \PDO::connect('sqlite::memory:') : new \PDO('sqlite::memory:');
+        $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        // Every payload the partition reads goes through read_payload(), which
+        // records whose it was.
+        $payloadsRead = [];
+        $readPayload = static function (string $owner, string $payload) use (&$payloadsRead): string {
+            $payloadsRead[] = $owner;
+
+            return $payload;
+        };
+        if ($pdo instanceof \Pdo\Sqlite) {
+            $pdo->createFunction('read_payload', $readPayload, 2, \Pdo\Sqlite::DETERMINISTIC);
+        } else {
+            $pdo->sqliteCreateFunction('read_payload', $readPayload, 2, \PDO::SQLITE_DETERMINISTIC);
+        }
+        $pdo->exec('CREATE TABLE contribution_cache (project_id TEXT, owner_key TEXT, stored TEXT, payload_json TEXT GENERATED ALWAYS AS (read_payload(owner_key, stored)) VIRTUAL)');
+        $cache = [];
+        $files = [];
+        foreach (['A', 'B'] as $name) {
+            $file = $this->writeFile($name . '.php', '<?php class ' . $name . ' {}');
+            $owner = 'knossos.php:file:' . $name . '.php';
+            $files[] = $file;
+            $cache["knossos.php\0" . $name . '.php'] = ['owner_key' => $owner, 'content_hash' => $file->contentHash, 'scanner_version' => $version, 'configuration_hash' => 'cfg', 'read_attribution' => 1, 'read_group' => null];
+            // The invalidated row's payload is corrupt: decoding it would
+            // throw, so the partition succeeding proves it is never read.
+            $payload = $name === 'B' ? '{"owner_key": ' : json_encode(new ScanContribution($owner, [$this->node($name . '.php')]), JSON_THROW_ON_ERROR);
+            $pdo->prepare("INSERT INTO contribution_cache (project_id, owner_key, stored) VALUES ('project', ?, ?)")->execute([$owner, $payload]);
+        }
+        $read = hash('sha256', 'dep');
+        $cachedReads = new CachedReads(
+            ['knossos.php:file:A.php' => ['scanner_id' => 'knossos.php', 'file_path' => 'A.php', 'content_hash' => $files[0]->contentHash, 'read_attribution' => true, 'read_group' => null]],
+            ['knossos.php:file:A.php' => ['dep.php' => $read]],
+            [],
+        );
+
+        // SQLite also evaluates the column while inserting; only reads count.
+        $payloadsRead = [];
+        $partition = $service->partition($files, $manifest, new PartitionContext('cfg', $cache, false, 'analysis', null, ['knossos.php:file:B.php' => true], $pdo, 'project', $cachedReads));
+
+        assertSame(['knossos.php:file:A.php'], array_map(static fn(ScanContribution $contribution): string => $contribution->ownerKey, $partition->cached));
+        assertSame(true, $partition->cacheEntries[0]->fromCache);
+        assertSame(['dep.php' => $read], $partition->cacheEntries[0]->reads);
+        assertSame(true, $partition->cacheEntries[0]->readAttribution);
+        assertSame([$files[1]], $partition->filesToScan);
+        assertSame(1, $partition->changed);
+        assertSame(['knossos.php:file:A.php'], $payloadsRead);
     }
 
     public function testEntriesForScannedKeepsCacheEntryWhenFileLacksAbsolutePath(): void
@@ -173,7 +238,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file->contentHash = 'abc123';
         $contribution = new ScanContribution($manifest->id . ':file:src/NoAbsolutePath.php');
 
-        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         assertSame(1, count($result['cache_entries']));
@@ -189,7 +254,7 @@ final class ContributionCacheServiceTest extends TestCase
         $fileB = $this->writeFile('b.php', "<?php // b\n");
         $contributionA = new ScanContribution($manifest->id . ':file:a.php');
 
-        $result = $service->entriesForScanned([$contributionA], [$fileA, $fileB], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$contributionA], [$fileA, $fileB], $manifest, 'cfg', 'analysis');
 
         self::assertCount(2, $result['contributions']);
         $missing = $result['contributions'][1];
@@ -218,7 +283,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file = $this->writeFile('b.php', "<?php // b\n");
         $misattributed = new ScanContribution($manifest->id . ':file:not/asked/for.php');
 
-        $result = $service->entriesForScanned([$misattributed], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$misattributed], [$file], $manifest, 'cfg', 'analysis');
 
         self::assertCount(1, $result['contributions']);
         $diagnostic = $result['contributions'][0]->diagnostics[0];
@@ -241,7 +306,7 @@ final class ContributionCacheServiceTest extends TestCase
         $answered = new ScanContribution($manifest->id . ':file:b.php');
         $stray = new ScanContribution($manifest->id . ':file:not/asked/for.php');
 
-        $result = $service->entriesForScanned([$answered, $stray], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$answered, $stray], [$file], $manifest, 'cfg', 'analysis');
 
         self::assertCount(2, $result['contributions']);
         $report = $result['contributions'][1];
@@ -265,7 +330,7 @@ final class ContributionCacheServiceTest extends TestCase
         $first = new ScanContribution($manifest->id . ':file:b.php');
         $second = new ScanContribution($manifest->id . ':file:b.php');
 
-        $result = $service->entriesForScanned([$first, $second], [$file], $manifest, 'cfg');
+        $result = $service->entriesForScanned([$first, $second], [$file], $manifest, 'cfg', 'analysis');
 
         self::assertCount(1, $result['contributions']);
         $diagnostic = $result['contributions'][0]->diagnostics[0];
@@ -279,7 +344,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file = $this->writeFile('Foo.php', "<?php // stable\n");
         $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], $file->contentHash);
 
-        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         assertSame(1, count($result['cache_entries']));
@@ -295,7 +360,7 @@ final class ContributionCacheServiceTest extends TestCase
         $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], hash('sha256', "<?php // B\n"));
 
         $error = captureThrows(
-            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg'),
+            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg', 'analysis'),
             ScanSnapshotChangedException::class,
         );
 
@@ -310,7 +375,7 @@ final class ContributionCacheServiceTest extends TestCase
         $contribution = new ScanContribution('knossos.php:file:Foo.php', [], [], [], hash('sha256', "<?php // B\n"));
 
         $error = captureThrows(
-            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->manifest(), 'cfg'),
+            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->manifest(), 'cfg', 'analysis'),
             ScanSnapshotChangedException::class,
         );
 
@@ -323,7 +388,7 @@ final class ContributionCacheServiceTest extends TestCase
         $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')]);
 
         $error = captureThrows(
-            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg'),
+            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg', 'analysis'),
             WorkerException::class,
         );
 
@@ -340,7 +405,7 @@ final class ContributionCacheServiceTest extends TestCase
             new \Knossos\Scanner\Protocol\Diagnostic('error', 'PHP_UNSCANNABLE_FILE', 'unreadable', new Evidence('Foo.php', 1, 1)),
         ]);
 
-        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg', 'analysis');
 
         assertSame(1, count($result['contributions']));
         assertSame(0, count($result['cache_entries']));
@@ -351,7 +416,7 @@ final class ContributionCacheServiceTest extends TestCase
         $file = $this->writeFile('Foo.php', "<?php // A\n");
         $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')]);
 
-        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->manifest(), 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->manifest(), 'cfg', 'analysis');
 
         assertSame(1, count($result['cache_entries']));
     }
@@ -362,13 +427,13 @@ final class ContributionCacheServiceTest extends TestCase
         $first = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], $file->contentHash);
         $second = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], $file->contentHash);
 
-        $result = (new ContributionCacheService())->entriesForScanned([$first, $second], [$file], $this->hashingManifest(), 'cfg');
+        $result = (new ContributionCacheService())->entriesForScanned([$first, $second], [$file], $this->hashingManifest(), 'cfg', 'analysis');
 
         assertSame($file->contentHash, $result['contributions'][0]->contentHash);
 
         $bad = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], hash('sha256', 'other'));
         captureThrows(
-            fn() => (new ContributionCacheService())->entriesForScanned([$first, $bad], [$file], $this->hashingManifest(), 'cfg'),
+            fn() => (new ContributionCacheService())->entriesForScanned([$first, $bad], [$file], $this->hashingManifest(), 'cfg', 'analysis'),
             ScanSnapshotChangedException::class,
         );
     }
