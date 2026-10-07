@@ -166,7 +166,9 @@ describe("worker stdout under module resolution tracing", () => {
             }
         });
         expect(bad).toEqual([]);
-        const scan = lines.map((line) => JSON.parse(line)).find((m) => m.id === 2);
+        const scan = lines
+            .map((line) => JSON.parse(line))
+            .find((m) => m.id === 2);
         expect(scan?.error).toBeUndefined();
         expect(Object.keys(scan.result.input_hashes)).toContain(file);
     }
