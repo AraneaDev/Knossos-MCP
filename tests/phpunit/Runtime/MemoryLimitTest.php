@@ -154,16 +154,55 @@ final class MemoryLimitTest extends KnossosTestCase
         });
     }
 
-    /** A limit below current usage is refused by PHP; that must not write a warning. */
+    /** A limit below current usage is refused by PHP; that must leave stderr empty and the failure recorded. */
     public function testALimitBelowCurrentUsageDoesNotWarn(): void
     {
-        $this->withRestoredState(function (): void {
-            putenv('KNOSSOS_MEMORY_LIMIT=1K');
-            $limit = MemoryLimit::apply();
+        [$stdout, $stderr] = $this->runPhp(
+            ['-d', 'memory_limit=128M', '-r', 'require ' . var_export(self::repositoryRoot() . '/vendor/autoload.php', true)
+                . '; $l = Knossos\\Runtime\\MemoryLimit::apply(); echo $l->source, "|", $l->failure;'],
+            ['KNOSSOS_MEMORY_LIMIT' => '1K'],
+        );
 
-            self::assertNotNull($limit->failure);
-            self::assertNotSame('1K', ini_get('memory_limit'));
-        });
+        self::assertSame('', $stderr);
+        self::assertSame('php.ini|PHP refused a memory limit of 1K', $stdout);
+    }
+
+    /** The HTTP router raises a low host limit before it does anything else, as `php -S` runs it per request. */
+    public function testHttpRouterRaisesTheLimitForARequest(): void
+    {
+        $router = self::repositoryRoot() . '/bin/http-router.php';
+        [$stdout, $stderr] = $this->runPhp(
+            ['-d', 'memory_limit=128M', '-r', '$_SERVER["REQUEST_URI"] = "/not-mcp"; include ' . var_export($router, true) . '; echo "|", ini_get("memory_limit");'],
+            [],
+        );
+
+        self::assertSame('', $stderr);
+        self::assertStringEndsWith('|1G', $stdout);
+    }
+
+    /**
+     * Run PHP with an environment that has no KNOSSOS_MEMORY_LIMIT unless given, and return [stdout, stderr].
+     *
+     * @param list<string> $arguments
+     * @param array<string, string> $environment
+     * @return array{string, string}
+     */
+    private function runPhp(array $arguments, array $environment): array
+    {
+        $out = tempnam(sys_get_temp_dir(), 'knossos-memory-out');
+        $err = tempnam(sys_get_temp_dir(), 'knossos-memory-err');
+        try {
+            $base = getenv();
+            unset($base['KNOSSOS_MEMORY_LIMIT']);
+            $process = proc_open([PHP_BINARY, ...$arguments], [1 => ['file', $out, 'w'], 2 => ['file', $err, 'w']], $pipes, self::repositoryRoot(), array_merge($base, $environment));
+            self::assertIsResource($process);
+            proc_close($process);
+
+            return [(string) file_get_contents($out), (string) file_get_contents($err)];
+        } finally {
+            @unlink($out);
+            @unlink($err);
+        }
     }
 
     /** doctor reports the effective limit, its source, and an invalid or refused request as an error. */
