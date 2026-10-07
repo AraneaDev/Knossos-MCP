@@ -27,6 +27,5 @@ CREATE INDEX contribution_read_groups_by_path ON contribution_read_groups(projec
 CREATE INDEX contribution_cache_read_group ON contribution_cache(project_id, read_group);
 
 -- Entries written before this migration carry no read set and cannot be
--- trusted to be current. The next scan of every project rescans every file;
--- its mode stays incremental, and scans after it reuse the cache again.
+-- trusted to be current; the next scan of every project is a full one.
 DELETE FROM contribution_cache;
