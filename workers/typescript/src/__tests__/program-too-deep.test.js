@@ -235,7 +235,7 @@ describe("a program that fails for a reason other than the stack", () => {
         expect(codes(byPath["other/ok.ts"])).toEqual(["TS_PROGRAM_TOO_DEEP"]);
     });
 
-    it("reports a diagnostic that names no file once, on the first requested file", () => {
+    it("reports a diagnostic that names no file once, on the program's first file", () => {
         const root = fixture({
             ...files,
             "tsconfig.json": JSON.stringify({ include: ["deep", "other"] }),

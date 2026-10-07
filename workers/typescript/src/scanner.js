@@ -588,14 +588,20 @@ export class TypeScriptScanner {
             // describes it under the options the project really uses.
             (owners.has(relative) && owners.get(relative) !== owner);
         // A diagnostic that names no file describes the whole program, so it
-        // is reported once, on the first requested file in path order, rather
-        // than once per file.
-        const carrier = program
-            .getSourceFiles()
-            .map((sourceFile) => relativeInside(root, sourceFile.fileName))
-            .filter((relative) => !skipped(relative))
-            .sort()[0];
-
+        // is reported once, on one fixed file of the program. The carrier is
+        // chosen from the program itself, never from the request: a project is
+        // sent in batches and an incremental scan sends only changed files, so
+        // a carrier taken from each request repeats the diagnostic once per
+        // batch and keeps every copy in the graph. Only a request that names
+        // the carrier reports it.
+        const carrier = programWideCarrier(program, root, owner, owners);
+        const programWide = (relative) =>
+            relative !== carrier
+                ? []
+                : programLevel.map((item) => ({
+                      ...item,
+                      evidence: { path: relative, start_line: 1, end_line: 1 },
+                  }));
         for (const sourceFile of program.getSourceFiles()) {
             const relative = relativeInside(root, sourceFile.fileName);
             if (skipped(relative)) continue;
@@ -630,16 +636,7 @@ export class TypeScriptScanner {
                     edges: collector.edges,
                     diagnostics: [
                         ...(diagnosticsByFile.get(relative) ?? []),
-                        ...(relative === carrier ? programLevel : []).map(
-                            (item) => ({
-                                ...item,
-                                evidence: {
-                                    path: relative,
-                                    start_line: 1,
-                                    end_line: 1,
-                                },
-                            }),
-                        ),
+                        ...programWide(relative),
                     ],
                 };
             } catch (error) {
@@ -661,6 +658,7 @@ export class TypeScriptScanner {
                                 end_line: 1,
                             },
                         },
+                        ...programWide(relative),
                     ],
                 };
             }
@@ -3738,6 +3736,36 @@ function componentTarget(specifier, resolved) {
             resolvedFileName: `${component}${COMPONENT_ALIAS_MARK}${suffix}`,
         },
     };
+}
+
+/**
+ * The one file of a program that carries its program-wide diagnostics.
+ *
+ * The sorted first of the program's own root files that a contribution can be
+ * made for: inside the root, outside node_modules, owned by this config rather
+ * than another that includes it, nameable by the core, loaded, and not a
+ * redirected duplicate of another package copy. It depends only on the
+ * program, so every request agrees on it however the files are batched.
+ */
+function programWideCarrier(program, root, owner, owners) {
+    const candidates = [];
+    for (const fileName of program.getRootFileNames()) {
+        const relative = relativeInside(root, fileName);
+        if (
+            relative === null ||
+            belowNodeModules(relative) ||
+            // Discovery skips a name with a control character, so such a file
+            // is never requested and would carry the diagnostics nowhere.
+            /[\u0000-\u001f\u007f]/.test(relative) ||
+            (owners.has(relative) && owners.get(relative) !== owner)
+        )
+            continue;
+        const sourceFile = program.getSourceFile(fileName);
+        if (sourceFile === undefined || sourceFile.redirectInfo !== undefined)
+            continue;
+        candidates.push(relative);
+    }
+    return candidates.sort()[0];
 }
 
 function diagnosticsForProgram(program, root, maxFileBytes) {

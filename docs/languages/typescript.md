@@ -167,8 +167,10 @@ than a guessed one.
 
 Compiler errors that name a file are attached to that file. An option error that
 names no file, such as a deprecated `moduleResolution` value, appears once per
-program, on its first requested file, and its message says it applies to the
-whole program. If a deprecation is not worth acting on yet, you can silence it
+program, on the program's first file in path order, and its message says it
+applies to the whole program. That file is the same however your files are
+batched, so an incremental scan that does not touch it neither repeats nor
+drops the diagnostic. If a deprecation is not worth acting on yet, you can silence it
 with `"ignoreDeprecations"` in your `tsconfig.json`. A program the compiler
 cannot build or check at all reports `TS_PROGRAM_FAILED` for its files and costs
 no other program's facts.
