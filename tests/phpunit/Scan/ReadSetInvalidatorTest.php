@@ -8,6 +8,7 @@ use Knossos\Scan\CachedReads;
 use Knossos\Scan\ReadSetInvalidator;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 /**
  * A cached contribution is current only while every file it read still has the
@@ -177,19 +178,26 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
 
     /**
      * Many owners sharing a group with many reads must not cost memory in
-     * owners times reads: run under the CI memory limit.
+     * owners times reads. Four groups of 1,000 reads shared by 250 owners each
+     * would index a million owner-read pairs, tens of megabytes, if a group's
+     * owners were copied onto every path it holds; walked lazily they stay at
+     * a few megabytes. The bound is asserted here rather than left to the
+     * process memory limit, which also carries whatever else the run holds,
+     * and in a process of its own so that resetting the peak to measure it
+     * does not hide the suite's own peak from the run's report.
      */
     #[Group('scan')]
+    #[RunInSeparateProcess]
     public function testLargeSharedGroupsStayWithinMemory(): void
     {
         $rows = [];
         $owners = [];
         $groups = [];
-        for ($group = 0; $group < 15; ++$group) {
-            for ($read = 0; $read < 2000; ++$read) {
+        for ($group = 0; $group < 4; ++$group) {
+            for ($read = 0; $read < 1000; ++$read) {
                 $groups['G' . $group][sprintf('node_modules/g%d/%04d.d.ts', $group, $read)] = self::hash('r' . $read);
             }
-            for ($owner = 0; $owner < 200; ++$owner) {
+            for ($owner = 0; $owner < 250; ++$owner) {
                 $path = sprintf('src/g%d/f%03d.ts', $group, $owner);
                 $rows[$path] = ['scanner_id' => 'knossos.typescript', 'file_path' => $path, 'content_hash' => self::hash($path), 'read_attribution' => true, 'read_group' => 'G' . $group];
                 $owners[$path] = [];
@@ -198,10 +206,13 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
         $cached = new CachedReads($rows, $owners, $groups);
         $discovered = self::discovered(array_keys($rows));
         $probe = static fn(string $path, ?string $stored): bool => $path !== 'node_modules/g3/0007.d.ts' && $stored !== null;
+        $before = memory_get_usage();
+        memory_reset_peak_usage();
 
         $invalidated = ReadSetInvalidator::invalidated($cached, $discovered, $probe);
 
-        self::assertCount(200, $invalidated);
+        self::assertLessThan(8 * 1024 * 1024, memory_get_peak_usage() - $before);
+        self::assertCount(250, $invalidated);
         self::assertArrayHasKey('src/g3/f000.ts', $invalidated);
     }
 
