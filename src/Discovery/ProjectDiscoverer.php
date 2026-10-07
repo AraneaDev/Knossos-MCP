@@ -63,11 +63,15 @@ final readonly class ProjectDiscoverer
                 // the walk is not filed as an unreadable directory.
                 $entries = new DirectoryIterator($directory);
             } catch (RuntimeException $error) {
+                $directoryPath = $this->relative($root, $directory);
+                // The iterator's own message quotes the raw path, so an
+                // unsupported name must not reach it either.
+                $supported = self::isSupportedPath($directoryPath);
                 $diagnostics[] = new DiscoveryDiagnostic(
                     'warning',
                     'DISCOVERY_DIRECTORY_UNREADABLE',
-                    $error->getMessage(),
-                    $this->relative($root, $directory),
+                    $supported ? $error->getMessage() : 'Could not open a directory whose name is not supported: ' . bin2hex($directoryPath),
+                    $supported ? $directoryPath : null,
                 );
                 continue;
             }
@@ -86,6 +90,18 @@ final readonly class ProjectDiscoverer
 
                 $absolute = str_replace('\\', '/', $entry->getPathname());
                 $relative = $this->relative($root, $absolute);
+                // First, before the entry is classified or a directory is queued:
+                // a name that is not valid UTF-8 cannot be encoded into a stable
+                // id, and one with a control character fails a worker's path
+                // check. Skipping a directory here also skips its children.
+                if (!self::isSupportedPath($relative)) {
+                    $diagnostics[] = new DiscoveryDiagnostic(
+                        'warning',
+                        'DISCOVERY_PATH_UNSUPPORTED',
+                        'Skipped a path whose name is not valid UTF-8 or contains a control character: ' . bin2hex($relative),
+                    );
+                    continue;
+                }
                 if (!self::isConfigurationFile($relative) && $this->ignoreMatcher->matches($relative)) {
                     continue;
                 }
@@ -2894,6 +2910,16 @@ final readonly class ProjectDiscoverer
         }
 
         return '/' . implode('/', $parts);
+    }
+
+    /**
+     * Whether a project-relative path can be carried through ids, protocol
+     * messages and JSON results. Shared with the drift oracles so a name the
+     * walk skips is never reported as an addition.
+     */
+    public static function isSupportedPath(string $relative): bool
+    {
+        return mb_check_encoding($relative, 'UTF-8') && preg_match('/[\x00-\x1f\x7f]/', $relative) !== 1;
     }
 
     /** A path expressed relative to the project root, which is the only form facts carry. */

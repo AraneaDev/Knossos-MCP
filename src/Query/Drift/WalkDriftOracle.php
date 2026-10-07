@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query\Drift;
 
+use Knossos\Discovery\ProjectDiscoverer;
 use PDO;
 
 /**
@@ -247,6 +248,11 @@ final readonly class WalkDriftOracle implements DriftOracle
                     }
                     $absolute = $directory . '/' . $entry;
                     $relative = ltrim(substr($absolute, strlen($root)), '/');
+                    // Discovery skips a name it cannot carry, and naming one
+                    // here would put raw bytes into a JSON result.
+                    if (!ProjectDiscoverer::isSupportedPath($relative)) {
+                        continue;
+                    }
                     // Counted before the question is asked, not after it is
                     // answered. Asking is the expensive half — a stat, and for
                     // an extensionless file a read of its first line — so a

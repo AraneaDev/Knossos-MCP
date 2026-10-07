@@ -24,6 +24,17 @@ final class RelativePathTest extends TestCase
         $this->expectNotToPerformAssertions();
     }
 
+    public function testRejectsControlCharacters(): void
+    {
+        assertThrows(static fn() => RelativePath::assertValid("a\nb.php"), InvalidArgumentException::class);
+        assertThrows(static fn() => RelativePath::assertValid("a\x7fb.php"), InvalidArgumentException::class);
+    }
+
+    public function testRejectsInvalidUtf8(): void
+    {
+        assertThrows(static fn() => RelativePath::assertValid("caf\xe9.php"), InvalidArgumentException::class);
+    }
+
     public function testAcceptsSingleSegmentPath(): void
     {
         RelativePath::assertValid('index.php');

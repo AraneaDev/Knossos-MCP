@@ -50,6 +50,22 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
         }
     }
 
+    /** Discovery skips a name it cannot carry, so the oracle must not report it as drift that no rescan can repair. */
+    #[Group('query')]
+    public function testAnUnsupportedPathNameIsNotDrift(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            file_put_contents($root . "/src/x\xff.php", "<?php\n");
+            file_put_contents($root . "/src/a\nb.php", "<?php\n");
+            touch($root . '/src', time() + 60);
+
+            self::assertSame(0, self::drift($pdo, $projectId, $root)->added);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /** The oracle must honour a project's own configured ignores, not only IgnoreMatcher's built-in defaults. */
     #[Group('query')]
     public function testAProjectIgnoreIsHonoured(): void

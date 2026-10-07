@@ -41,6 +41,36 @@ final class ProjectDiscovererTest extends KnossosTestCase
         $this->rmrf($this->base);
     }
 
+    /** A name json_encode cannot carry would abort the scan; names with control characters would degrade a language later. */
+    public function testUnsupportedPathNamesAreSkippedWithADiagnostic(): void
+    {
+        file_put_contents($this->root . "/caf\xe9.php", "<?php\n");
+        file_put_contents($this->root . "/a\nb.php", "<?php\n");
+        file_put_contents($this->root . '/ok.php', "<?php\n");
+        mkdir($this->root . "/bad\xffdir");
+        file_put_contents($this->root . "/bad\xffdir/inner.php", "<?php\n");
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        self::assertSame(['ok.php'], array_map(static fn(DiscoveredFile $file): string => $file->relativePath, $result->files));
+        $codes = array_column($result->diagnostics, 'code');
+        self::assertGreaterThanOrEqual(2, count(array_keys($codes, 'DISCOVERY_PATH_UNSUPPORTED', true)));
+        foreach ($result->diagnostics as $diagnostic) {
+            if ($diagnostic->code === 'DISCOVERY_PATH_UNSUPPORTED') {
+                self::assertNull($diagnostic->relativePath);
+            }
+        }
+        self::assertStringNotContainsString('inner.php', json_encode($result->diagnostics, JSON_THROW_ON_ERROR));
+    }
+
+    public function testIsSupportedPathAcceptsOrdinaryNamesAndRejectsTheRest(): void
+    {
+        self::assertTrue(ProjectDiscoverer::isSupportedPath('src/caf\u{e9}/a b.php'));
+        self::assertFalse(ProjectDiscoverer::isSupportedPath("caf\xe9.php"));
+        self::assertFalse(ProjectDiscoverer::isSupportedPath("a\x7fb.php"));
+        self::assertFalse(ProjectDiscoverer::isSupportedPath("a\tb.php"));
+    }
+
     // ── Directory-level diagnostics ──────────────────────────────────
 
     /** Vue, Svelte and Astro components are read by the TypeScript worker. */

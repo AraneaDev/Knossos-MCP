@@ -24,6 +24,10 @@ final class RelativePath
             throw new InvalidArgumentException(sprintf('%s must be a normalized project-relative path.', $field));
         }
 
+        if (!mb_check_encoding($path, 'UTF-8') || preg_match('/[\x00-\x1f\x7f]/', $path) === 1) {
+            throw new InvalidArgumentException(sprintf('%s must be valid UTF-8 without control characters.', $field));
+        }
+
         if (str_starts_with($path, '/') || preg_match('/^[A-Za-z]:\//', $path) === 1) {
             throw new InvalidArgumentException(sprintf('%s must not be absolute.', $field));
         }
