@@ -555,33 +555,12 @@ export class TypeScriptScanner {
         fallback,
     ) {
         const checker = program.getTypeChecker();
-        // Compiler diagnostics are best-effort: failing to compute them must
-        // not cost the facts. A stack overflow still reaches the program-level
-        // backstop, which reports the files as too deep.
-        let diagnosticsByFile = new Map();
-        let programLevel = [];
-        try {
-            ({ byFile: diagnosticsByFile, programLevel } =
-                diagnosticsForProgram(program, root, maxFileBytes));
-        } catch (error) {
-            rethrowStackOverflow(error);
-        }
-        // No tsconfig includes these files, and the fallback inherits no
-        // `types` or `lib`: a missing global or type library is its gap.
-        // Its options are partly made up here rather than read from the
-        // user's config, so an option error that names no file describes
-        // those made-up options, not anything the user can fix.
-        if (fallback) {
-            programLevel = [];
-            for (const [relative, items] of diagnosticsByFile) {
-                diagnosticsByFile.set(
-                    relative,
-                    items.filter(
-                        (item) => !UNKNOWN_GLOBAL_CODES.has(item.code),
-                    ),
-                );
-            }
-        }
+        const { byFile: diagnosticsByFile, programLevel } = programDiagnostics(
+            program,
+            root,
+            maxFileBytes,
+            fallback,
+        );
 
         const skipped = (relative) =>
             relative === null ||
@@ -600,12 +579,7 @@ export class TypeScriptScanner {
         // the carrier reports it.
         const carrier = programWideCarrier(program, root, owner, owners);
         const programWide = (relative) =>
-            relative !== carrier
-                ? []
-                : programLevel.map((item) => ({
-                      ...item,
-                      evidence: { path: relative, start_line: 1, end_line: 1 },
-                  }));
+            relative === carrier ? anchoredAt(programLevel, relative) : [];
         for (const sourceFile of program.getSourceFiles()) {
             const relative = relativeInside(root, sourceFile.fileName);
             if (skipped(relative)) continue;
@@ -3743,6 +3717,49 @@ function componentTarget(specifier, resolved) {
 }
 
 /**
+ * A program's compiler diagnostics, by file and program-wide.
+ *
+ * Compiler diagnostics are best-effort: failing to compute them must not cost
+ * the facts. A stack overflow still reaches the program-level backstop, which
+ * reports the files as too deep.
+ *
+ * No tsconfig includes a fallback program's files, and the fallback inherits
+ * no `types` or `lib`: a missing global or type library is its gap. Its
+ * options are partly made up by the scanner rather than read from the user's
+ * config, so an option error that names no file describes those made-up
+ * options, not anything the user can fix, and is dropped.
+ */
+function programDiagnostics(program, root, maxFileBytes, fallback) {
+    let byFile = new Map();
+    let programLevel = [];
+    try {
+        ({ byFile, programLevel } = diagnosticsForProgram(
+            program,
+            root,
+            maxFileBytes,
+        ));
+    } catch (error) {
+        rethrowStackOverflow(error);
+    }
+    if (!fallback) return { byFile, programLevel };
+    for (const [relative, items] of byFile) {
+        byFile.set(
+            relative,
+            items.filter((item) => !UNKNOWN_GLOBAL_CODES.has(item.code)),
+        );
+    }
+    return { byFile, programLevel: [] };
+}
+
+/** Program-wide diagnostics, each anchored at the first line of one file. */
+function anchoredAt(programLevel, relative) {
+    return programLevel.map((item) => ({
+        ...item,
+        evidence: { path: relative, start_line: 1, end_line: 1 },
+    }));
+}
+
+/**
  * The one file of a program that carries its program-wide diagnostics.
  *
  * The sorted first of the program's own root files that a contribution can be
@@ -3760,7 +3777,7 @@ function programWideCarrier(program, root, owner, owners) {
             belowNodeModules(relative) ||
             // Discovery skips a name with a control character, so such a file
             // is never requested and would carry the diagnostics nowhere.
-            /[\u0000-\u001f\u007f]/.test(relative) ||
+            hasControlCharacter(relative) ||
             (owners.has(relative) && owners.get(relative) !== owner)
         )
             continue;
@@ -3770,6 +3787,15 @@ function programWideCarrier(program, root, owner, owners) {
         candidates.push(relative);
     }
     return candidates.sort()[0];
+}
+
+/** Whether a name holds a C0 control character or DEL, which the core cannot carry. */
+function hasControlCharacter(name) {
+    for (let index = 0; index < name.length; index++) {
+        const code = name.charCodeAt(index);
+        if (code < 32 || code === 127) return true;
+    }
+    return false;
 }
 
 function diagnosticsForProgram(program, root, maxFileBytes) {
