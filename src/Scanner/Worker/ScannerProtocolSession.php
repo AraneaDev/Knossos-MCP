@@ -18,6 +18,9 @@ use Throwable;
  */
 final class ScannerProtocolSession
 {
+    /** The field of a result, and of an `input_hashes` part, holding a request's shared reads. */
+    private const SHARED_READS = 'reads';
+
     private int $nextId = 1;
     private ?ScannerManifest $manifest = null;
     /** @var array<string, mixed> */
@@ -107,8 +110,10 @@ final class ScannerProtocolSession
 
         $completed = false;
         // Parts of this request's input_hashes map sent ahead of the result,
-        // null until the first one arrives.
+        // null until the first one arrives, and of its shared reads, which
+        // the same parts may carry.
         $inputHashes = null;
+        $sharedReads = null;
         try {
             while (true) {
                 if ($cancelled !== null && $cancelled()) {
@@ -126,6 +131,10 @@ final class ScannerProtocolSession
                         // parameter to it.
                         $inputHashes ??= [];
                         InputHashesMap::merge($inputHashes, $this->decodeInputHashesPart($message, $manifest));
+                        if (array_key_exists(self::SHARED_READS, $message['params'])) {
+                            $sharedReads ??= [];
+                            InputHashesMap::merge($sharedReads, ReadsMap::decode($message['params'][self::SHARED_READS]));
+                        }
                         continue;
                     }
                     $contribution = $this->decodeContribution($message);
@@ -143,6 +152,9 @@ final class ScannerProtocolSession
                 }
                 if ($inputHashes !== null) {
                     $result = $this->withInputHashesParts($result, $inputHashes, $manifest);
+                }
+                if ($sharedReads !== null) {
+                    $result = self::withSharedReadsParts($result, $sharedReads);
                 }
                 $this->lastScanResult = $result;
                 $completed = true;
@@ -325,6 +337,27 @@ final class ScannerProtocolSession
         } elseif (!in_array(Protocol::CAPABILITY_INPUT_HASHES, $manifest->capabilities, true)) {
             $result[InputHashesMap::FIELD] = $parts;
         }
+
+        return $result;
+    }
+
+    /**
+     * Fold the shared reads sent in parts into the result's own `reads`.
+     *
+     * A path two parts, or a part and the result, report with different values
+     * becomes null, the rule `input_hashes` follows, so the two stay comparable.
+     *
+     * @param array<string, mixed> $result
+     * @param array<string, string|null> $parts
+     * @return array<string, mixed>
+     * @throws WorkerException WORKER_CONTRIBUTION_INVALID for a result field that is not a reads map
+     */
+    private static function withSharedReadsParts(array $result, array $parts): array
+    {
+        if (array_key_exists(self::SHARED_READS, $result)) {
+            InputHashesMap::merge($parts, ReadsMap::decode($result[self::SHARED_READS]));
+        }
+        $result[self::SHARED_READS] = $parts;
 
         return $result;
     }

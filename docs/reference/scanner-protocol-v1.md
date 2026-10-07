@@ -189,6 +189,15 @@ beyond itself sends `{}`. It may also send `reads` on the result, for reads
 shared by every file of the request, such as a configuration file or a global
 declaration.
 
+The result's `reads` can outgrow the one line a result travels on, as
+`input_hashes` can: everything a type checker read for a dependency's
+declarations is shared by every file of the request. A `scan/input_hashes`
+part (below) may carry a `reads` object beside its `input_hashes`, holding
+part of the result's `reads`, and its `input_hashes` may then be `{}`. The core
+merges every such part with the result's own `reads` under the rule it applies
+to `input_hashes` parts: a path two of them report with different values
+becomes `null`.
+
 Every entry in any `reads` must also appear in the result's `input_hashes` with
 the same value; a worker reporting one that `input_hashes` does not confirm, or
 omitting `reads` from a contribution after declaring the capability, is refused
