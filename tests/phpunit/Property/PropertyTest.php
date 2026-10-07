@@ -13,8 +13,6 @@ use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scanner\Worker\WorkerException;
-use Knossos\Store\MigrationRunner;
-use Knossos\Store\SqliteConnection;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
@@ -90,47 +88,25 @@ final class PropertyTest extends KnossosTestCase
         }
     }
 
+    /**
+     * A project scanned only incrementally after its first scan ends every
+     * step with the graph a full scan of the same bytes produces, across PHP,
+     * TypeScript, Python and Rust, including edits whose effect crosses files:
+     * a re-export repointed, a module renamed, a dependency's declaration
+     * changed, a file deleted and re-created, a probed path added, and one of
+     * two duplicate declarations edited. A language whose runtime or worker
+     * is missing is left out of the project.
+     */
     #[Group('property')]
     public function testSeededEditSequencesKeepIncrementalAndFullGraphsEquivalent(): void
     {
-        $root = sys_get_temp_dir() . '/knossos-incremental-' . bin2hex(random_bytes(6));
-        $database = tempnam(sys_get_temp_dir(), 'knossos-differential-');
-        if ($database === false || !mkdir($root . '/src', 0700, true)) {
-            throw new RuntimeException('Unable to create differential fixture.');
-        }
-        file_put_contents($root . '/composer.json', '{"name":"fixture/differential","autoload":{"psr-4":{"Fixture\\\\":"src/"}}}');
-        foreach (range(0, 4) as $index) {
-            file_put_contents(
-                sprintf('%s/src/Service%d.php', $root, $index),
-                sprintf("<?php\nnamespace Fixture;\nfinal class Service%d { public const REVISION = 0; }\n", $index),
-            );
-        }
-        try {
-            $pdo = SqliteConnection::open($database);
-            (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
-            $service = new ProjectScanService($pdo, self::repositoryRoot(), [$root]);
-            $service->scan($root, mode: 'full');
-            $state = 0xC0FFEE;
-            for ($round = 1; $round <= 5; ++$round) {
-                $state = (int) (($state * 1664525 + 1013904223) & 0x7fffffff);
-                $index = $state % 5;
-                file_put_contents(
-                    sprintf('%s/src/Service%d.php', $root, $index),
-                    sprintf("<?php\nnamespace Fixture;\nfinal class Service%d { public const REVISION = %d; }\n", $index, $round),
-                );
-                $incremental = $service->scan($root, mode: 'incremental');
-                assertSame('incremental', $incremental->data['mode']);
-                assertSame(1, $incremental->data['parsed_files']);
-                $incrementalGraph = $this->graphSignature($pdo);
-                $service->scan($root, mode: 'full');
-                assertSame($incrementalGraph, $this->graphSignature($pdo));
-            }
-        } finally {
-            unset($service, $pdo);
-            $this->removeFixtureTree($root);
-            foreach ([$database, $database . '-shm', $database . '-wal'] as $candidate) {
-                @unlink($candidate);
-            }
+        $languages = [
+            'typescript' => trim((string) @shell_exec('command -v node 2>/dev/null')) !== '',
+            'python' => trim((string) @shell_exec('command -v python3 2>/dev/null')) !== '',
+            'rust' => is_file(self::rustWorkerBinary()),
+        ];
+        foreach ([0xC0FFEE, 0xBADC0DE, 0x5EED] as $seed) {
+            $this->assertEditSequenceKeepsGraphsEquivalent($seed, 12, $languages);
         }
     }
 
@@ -166,5 +142,208 @@ final class PropertyTest extends KnossosTestCase
                 assertSame(true, isset($response['error']) || isset($response['result']));
             }
         }
+    }
+
+    /**
+     * Runs one seeded edit sequence over a fresh copy of the mixed fixture.
+     *
+     * Two databases see the same root, so both derive the same project id:
+     * one is scanned incrementally after its first full scan, the other is
+     * always scanned in full, and their graphs are compared after every step.
+     *
+     * @param array{typescript: bool, python: bool, rust: bool} $languages
+     */
+    private function assertEditSequenceKeepsGraphsEquivalent(int $seed, int $steps, array $languages): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-mixed-' . bin2hex(random_bytes(6));
+        $this->copyMixedFixture($root, $languages);
+        try {
+            $incrementalDatabase = $this->freshTestDatabase();
+            $fullDatabase = $this->freshTestDatabase();
+            $incremental = new ProjectScanService($incrementalDatabase, self::repositoryRoot(), [$root]);
+            $full = new ProjectScanService($fullDatabase, self::repositoryRoot(), [$root]);
+            $incremental->scan($root, mode: 'full');
+            $full->scan($root, mode: 'full');
+            assertSame($this->graphSignature($fullDatabase), $this->graphSignature($incrementalDatabase), sprintf('seed 0x%X before any step', $seed));
+
+            $state = $seed;
+            $edits = ['deleted' => [], 'revision' => 0];
+            for ($step = 1; $step <= $steps; ++$step) {
+                $state = (int) (($state * 1664525 + 1013904223) & 0x7fffffff);
+                $applicable = $this->applicableEdits($root, $languages, $edits);
+                $edit = $applicable[$state % count($applicable)];
+                $state = (int) (($state * 1664525 + 1013904223) & 0x7fffffff);
+                $description = $this->applyEdit($edit, $root, $state, $step, $edits);
+
+                $result = $incremental->scan($root, mode: 'incremental');
+                $full->scan($root, mode: 'full');
+                $label = sprintf('seed 0x%X step %d: %s', $seed, $step, $description);
+                assertSame('incremental', $result->data['mode'], $label);
+                assertSame($this->graphSignature($fullDatabase), $this->graphSignature($incrementalDatabase), $label);
+            }
+        } finally {
+            unset($incremental, $full, $incrementalDatabase, $fullDatabase);
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Copies the mixed fixture to `$root`, leaving out each language whose
+     * runtime or worker is missing. The dependency package is stored under
+     * `installed-packages/` in the fixture, because the repository ignores
+     * `node_modules/`, and is copied to `node_modules/` here.
+     *
+     * @param array{typescript: bool, python: bool, rust: bool} $languages
+     */
+    private function copyMixedFixture(string $root, array $languages): void
+    {
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/incremental-mixed', $root);
+        rename($root . '/installed-packages', $root . '/node_modules');
+        $omitted = [
+            'typescript' => ['tsconfig.json', 'web', 'node_modules'],
+            'python' => ['py'],
+            'rust' => ['Cargo.toml', 'src/main.rs', 'src/engine.rs', 'src/engine'],
+        ];
+        foreach ($omitted as $language => $paths) {
+            if ($languages[$language]) {
+                continue;
+            }
+            foreach ($paths as $path) {
+                is_dir($root . '/' . $path) ? $this->removeTempSubtree($root . '/' . $path) : unlink($root . '/' . $path);
+            }
+        }
+    }
+
+    /** Removes a directory below a temp fixture root, contents first. */
+    private function removeTempSubtree(string $directory): void
+    {
+        foreach (scandir($directory) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $directory . '/' . $entry;
+            is_dir($path) ? $this->removeTempSubtree($path) : unlink($path);
+        }
+        rmdir($directory);
+    }
+
+    /**
+     * The edits that make sense for the project as it stands now.
+     *
+     * @param array{typescript: bool, python: bool, rust: bool} $languages
+     * @param array{deleted: array<string, string>, revision: int} $edits
+     * @return non-empty-list<string>
+     */
+    private function applicableEdits(string $root, array $languages, array $edits): array
+    {
+        $applicable = ['edit-body', 'edit-duplicate'];
+        if ($languages['typescript']) {
+            $applicable[] = 'move-foo';
+            $applicable[] = 'rename-dep';
+        }
+        if ($languages['python']) {
+            $applicable[] = 'rename-python-module';
+        }
+        if (is_file($root . '/src/Helper.php')) {
+            $applicable[] = 'delete-helper';
+        }
+        if ($edits['deleted'] !== []) {
+            $applicable[] = 'recreate-deleted';
+        }
+        if ($languages['rust']) {
+            $applicable[] = 'toggle-lib-rs';
+        }
+
+        return $applicable;
+    }
+
+    /**
+     * Applies one edit to the project and describes it for a failure message.
+     *
+     * @param array{deleted: array<string, string>, revision: int} $edits
+     */
+    private function applyEdit(string $edit, string $root, int $state, int $step, array &$edits): string
+    {
+        switch ($edit) {
+            case 'edit-body':
+                $candidates = array_values(array_filter(
+                    ['src/Service.php', 'src/Helper.php', 'web/main.ts', 'web/impl.ts', 'py/app.py', 'py/pkg/impl.py', 'py/pkg/impl_b.py', 'src/engine.rs', 'src/engine/sign.rs'],
+                    static fn(string $path): bool => is_file($root . '/' . $path),
+                ));
+                $path = $candidates[$state % count($candidates)];
+                $this->appendFunction($root . '/' . $path, $step);
+                return 'append a function to ' . $path;
+            case 'edit-duplicate':
+                $path = $state % 2 === 0 ? 'src/Duplicate.php' : 'src/DuplicateToo.php';
+                $this->appendFunction($root . '/' . $path, $step);
+                return 'add a method to the duplicate declaration in ' . $path;
+            case 'move-foo':
+                $foo = "export function foo(): void {}\n";
+                if (is_file($root . '/web/impl2.ts')) {
+                    unlink($root . '/web/impl2.ts');
+                    file_put_contents($root . '/web/impl.ts', $foo . (string) file_get_contents($root . '/web/impl.ts'));
+                    $this->replaceIn($root . '/web/barrel.ts', "'./impl2'", "'./impl'");
+                    return 'move foo back to web/impl.ts and repoint the barrel';
+                }
+                $this->replaceIn($root . '/web/impl.ts', $foo, '');
+                file_put_contents($root . '/web/impl2.ts', $foo);
+                $this->replaceIn($root . '/web/barrel.ts', "'./impl'", "'./impl2'");
+                return 'move foo to web/impl2.ts and repoint the barrel';
+            case 'rename-dep':
+                $declaration = $root . '/node_modules/dep/index.d.ts';
+                if (str_contains((string) file_get_contents($declaration), 'dep2(')) {
+                    $this->replaceIn($declaration, 'dep2(', 'dep(');
+                    return 'rename dep2 back to dep in node_modules/dep/index.d.ts';
+                }
+                $this->replaceIn($declaration, 'dep(', 'dep2(');
+                return 'rename dep to dep2 in node_modules/dep/index.d.ts';
+            case 'rename-python-module':
+                [$from, $to] = is_file($root . '/py/pkg/impl.py') ? ['impl', 'impl_b'] : ['impl_b', 'impl'];
+                rename(sprintf('%s/py/pkg/%s.py', $root, $from), sprintf('%s/py/pkg/%s.py', $root, $to));
+                $this->replaceIn($root . '/py/pkg/__init__.py', sprintf('from .%s import', $from), sprintf('from .%s import', $to));
+                return sprintf('rename py/pkg/%s.py to %s.py and fix its importer', $from, $to);
+            case 'delete-helper':
+                $edits['deleted']['src/Helper.php'] = (string) file_get_contents($root . '/src/Helper.php');
+                unlink($root . '/src/Helper.php');
+                return 'delete src/Helper.php';
+            case 'recreate-deleted':
+                $path = array_key_first($edits['deleted']);
+                file_put_contents($root . '/' . $path, $edits['deleted'][$path]);
+                unset($edits['deleted'][$path]);
+                return 're-create ' . $path;
+            default:
+                if (is_file($root . '/src/lib.rs')) {
+                    unlink($root . '/src/lib.rs');
+                    return 'delete src/lib.rs';
+                }
+                file_put_contents($root . '/src/lib.rs', "pub fn library() {}\n");
+                return 'add src/lib.rs, a crate root the Rust worker probes';
+        }
+    }
+
+    /**
+     * Adds a uniquely named function to a source file: a method inside a PHP
+     * class, a top-level function in any other language.
+     */
+    private function appendFunction(string $path, int $step): void
+    {
+        $contents = (string) file_get_contents($path);
+        $contents = match (pathinfo($path, PATHINFO_EXTENSION)) {
+            'php' => substr_replace($contents, sprintf("    public function extra%d(): void\n    {\n    }\n}", $step), (int) strrpos($contents, '}'), 1),
+            'ts' => $contents . sprintf("export function extra%d(): void {}\n", $step),
+            'py' => $contents . sprintf("\n\ndef extra_%d():\n    return None\n", $step),
+            default => $contents . sprintf("\npub fn extra_%d() {}\n", $step),
+        };
+        file_put_contents($path, $contents);
+    }
+
+    /** Replaces text in a fixture file, failing loudly when it is not there. */
+    private function replaceIn(string $path, string $search, string $replace): void
+    {
+        $contents = (string) file_get_contents($path);
+        if (!str_contains($contents, $search)) {
+            throw new RuntimeException(sprintf('Expected %s in %s.', json_encode($search), $path));
+        }
+        file_put_contents($path, str_replace($search, $replace, $contents));
     }
 }

@@ -15,7 +15,9 @@ The standard test suite includes fixed-seed generated cases for:
   families;
 - JSON-RPC request shapes and bounded responses;
 - stable ID determinism, domain separation, and collision checks; and
-- seeded edit sequences compared after incremental and full scans.
+- seeded edit sequences over a PHP, TypeScript, Python and Rust project, where
+  the graph after each incremental scan must equal the graph of a full scan of
+  the same files. A language whose runtime or worker is missing is left out.
 
 Run only these checks with:
 
