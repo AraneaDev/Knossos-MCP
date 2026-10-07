@@ -44,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         with:
           registry: ghcr.io
@@ -184,7 +184,7 @@ jobs:
       # Same-repo runs pull the commit's images from the registry; a fork's
       # run loads the tarballs the image job uploaded. Both routes end with
       # the same local names, so every later step is shared.
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         with:
           registry: ghcr.io
