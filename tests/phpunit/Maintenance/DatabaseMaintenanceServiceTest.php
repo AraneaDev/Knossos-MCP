@@ -302,6 +302,23 @@ final class DatabaseMaintenanceServiceTest extends TestCase
         assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM scan_locks WHERE project_id = 'proj-1'")->fetchColumn());
     }
 
+    /**
+     * A removed scan takes the metrics of its snapshot with it, also on a
+     * connection that does not enforce foreign keys.
+     */
+    public function testCleanupStaleScansExecuteDeletesTheMetricsOfARemovedScan(): void
+    {
+        $this->seedProject();
+        $this->seedScan('old', 'proj-1', 'failed', '2000-01-01T00:00:00Z');
+        $this->pdo->exec("INSERT INTO scan_snapshots(scan_id, project_id, scanner_set_hash, config_hash, complete, fact_count, byte_size, payload_json, captured_at) VALUES ('old', 'proj-1', 'h', 'c', 1, 0, 2, '{}', '2000-01-01T00:00:00Z')");
+        $this->pdo->exec("INSERT INTO snapshot_metrics(scan_id, fingerprint, captured_at, byte_size, payload_json) VALUES ('old', 'f', '2000-01-01T00:00:00Z', 2, '{}')");
+        $this->pdo->exec('PRAGMA foreign_keys = OFF');
+
+        $this->makeService()->cleanupStaleScans('proj-1', 24, true);
+
+        assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM snapshot_metrics WHERE scan_id = 'old'")->fetchColumn());
+    }
+
     public function testCleanupStaleScansExecuteSkipsWhenNoRemovable(): void
     {
         $this->seedProject();

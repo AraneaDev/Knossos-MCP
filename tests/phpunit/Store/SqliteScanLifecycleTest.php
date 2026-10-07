@@ -132,6 +132,39 @@ final class SqliteScanLifecycleTest extends KnossosTestCase
         assertSame(true, in_array($ids['scan'], $scans, true));
     }
 
+    /**
+     * The metrics computed for a retained snapshot go when retention prunes
+     * that snapshot, including when the prune runs inside the scan's own
+     * write, where foreign keys are not enforced.
+     */
+    #[Group('store')]
+    public function testPruningASnapshotDeletesItsMetrics(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-metrics-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        try {
+            $pdo = $this->freshTestDatabase();
+            $service = new \Knossos\Scan\ProjectScanService($pdo, self::repositoryRoot(), [$root]);
+            $metrics = $pdo->prepare(
+                "INSERT OR IGNORE INTO snapshot_metrics(scan_id, fingerprint, captured_at, byte_size, payload_json) " .
+                "SELECT scan_id, 'f', captured_at, byte_size, '{}' FROM scan_snapshots",
+            );
+            foreach ([1, 2, 3] as $version) {
+                file_put_contents($root . '/src/A.php', sprintf("<?php\nnamespace App;\nclass A%d {}\n", $version));
+                $service->scan($root, mode: 'full', snapshotRetention: 1);
+                $metrics->execute();
+            }
+            self::assertGreaterThan(0, (int) $pdo->query('SELECT COUNT(*) FROM snapshot_metrics')->fetchColumn());
+
+            file_put_contents($root . '/src/A.php', "<?php\nnamespace App;\nclass A4 {}\n");
+            $service->scan($root, mode: 'full', snapshotRetention: 1);
+
+            assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM snapshot_metrics WHERE scan_id NOT IN (SELECT scan_id FROM scan_snapshots)')->fetchColumn());
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /** With no retention set, completing a scan keeps the default five snapshots. */
     #[Group('store')]
     public function testCompleteScanKeepsTheDefaultRetentionWhenNoneIsSet(): void
