@@ -111,6 +111,9 @@ function world(
   const repo = { made: 1, head: '1'.padStart(40, '0'), reflog: [{ sha: '1'.padStart(40, '0'), subject: 'commit (initial): start' }] }
   // The plugin's own store, in memory, readable by the test: what an earlier process left, and what this one keeps.
   const store = new Map<string, unknown>(Object.entries(answers.store ?? {}))
+  // The kit's own answer to a plugin's session.append differs by version (a refusal, or an echo that resolves), so
+  // the world refuses it itself: every turn-end note then lands in the debug log, the same on any kit.
+  on('session.append', () => ({ deny: 'refused by the test world' }))
   on('store.get', (_$, e) => ({ value: structuredClone(store.get(e.key)) }))
   on('store.set', (_$, e) => {
     store.set(e.key, structuredClone(e.value))
@@ -390,7 +393,7 @@ const policedDashboard = () =>
     },
   })
 
-/** The turn-end notes the mod tried to hand the model (the kit refuses the append, so they land in the debug log). */
+/** The turn-end notes the mod tried to hand the model (the world refuses the append, so they land in the debug log). */
 const turnNotes = (w: { logs: { text: string; to: string }[] }) => w.logs.filter(l => l.to === 'debug' && l.text.includes('did not reach the model'))
 
 /** A dashboard with something on the pane: one hub, one hotspot, a cycle and two snapshots of trend. */
@@ -1110,10 +1113,10 @@ describe('knossos mod', () => {
     await $.turn.complete(TURN)
     await w.clock.settle()
     // Delivery of the user row itself is checked in the live-session task.
-    // The 2.1.287 kit runs no hook for a plugin's own $.session.append (not
-    // the test's, not another plugin's at any tier): the call always rejects
-    // with "no implementation". The mod's fallback for an undelivered note is
-    // the observable trace: one debug line carrying the note it tried to append.
+    // The test world refuses the plugin's $.session.append (older kits reject it
+    // with "no implementation", newer ones resolve it, so the world answers
+    // itself). The mod's fallback for an undelivered note is the observable
+    // trace: one debug line carrying the note it tried to append.
     const lines = w.logs.filter(l => l.text.includes('this turn introduced'))
     expect(lines).toHaveLength(1)
     expect(lines[0]?.to).toBe('debug')
