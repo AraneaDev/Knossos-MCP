@@ -175,16 +175,25 @@ final class ContributionCacheServiceTest extends TestCase
         $service = new ContributionCacheService();
         $manifest = $this->manifest();
         $version = ContributionCacheService::cacheVersion($manifest, 'analysis');
-        $pdo = new \PDO('sqlite::memory:');
+        // PHP 8.4 moved the driver-specific API onto Pdo\Sqlite and PHP 8.5
+        // deprecates the old PDO methods and constants, so use the new ones
+        // wherever they exist.
+        $modern = method_exists(\PDO::class, 'connect');
+        $pdo = $modern ? \PDO::connect('sqlite::memory:') : new \PDO('sqlite::memory:');
         $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
         // Every payload the partition reads goes through read_payload(), which
         // records whose it was.
         $payloadsRead = [];
-        $pdo->sqliteCreateFunction('read_payload', static function (string $owner, string $payload) use (&$payloadsRead): string {
+        $readPayload = static function (string $owner, string $payload) use (&$payloadsRead): string {
             $payloadsRead[] = $owner;
 
             return $payload;
-        }, 2, \PDO::SQLITE_DETERMINISTIC);
+        };
+        if ($pdo instanceof \Pdo\Sqlite) {
+            $pdo->createFunction('read_payload', $readPayload, 2, \Pdo\Sqlite::DETERMINISTIC);
+        } else {
+            $pdo->sqliteCreateFunction('read_payload', $readPayload, 2, \PDO::SQLITE_DETERMINISTIC);
+        }
         $pdo->exec('CREATE TABLE contribution_cache (project_id TEXT, owner_key TEXT, stored TEXT, payload_json TEXT GENERATED ALWAYS AS (read_payload(owner_key, stored)) VIRTUAL)');
         $cache = [];
         $files = [];
