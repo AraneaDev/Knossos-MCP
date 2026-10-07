@@ -730,7 +730,7 @@ final readonly class ToolService
             self::strings($arguments, 'edge_kinds'),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'limit', 20, 1, 100),
-            self::integer($arguments, 'max_nodes', 10_000, 1, 50_000),
+            self::integer($arguments, 'max_nodes', 50_000, 1, 50_000),
             self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
             self::boolean($arguments, 'include_self_loops', false),

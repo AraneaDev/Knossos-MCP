@@ -289,4 +289,72 @@ final class CyclesTest extends KnossosTestCase
         assertSame(true, $live->truncated);
         assertSame(true, in_array('time_limit', $live->data['bounds']['truncation_reasons'], true));
     }
+
+    /**
+     * The default bounds cover a graph of a mid-sized repository.
+     *
+     * Twelve thousand symbols and sixty thousand dependency edges is an
+     * ordinary project, yet the search used to stop at its 10,000-node cap or
+     * at its one-second deadline long before it got there, because every edge
+     * was read with both endpoints' names and its file path attached. A search
+     * that stops early finds nothing, so the answer was "0 cycles" over a graph
+     * that has two.
+     */
+    #[Group('cycles')]
+    public function testTheDefaultSearchCoversALargeGraphCompletely(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $nodes = 12_000;
+        $node = static fn(int $i): string => 'node:' . sprintf('%064d', $i);
+        $pdo->beginTransaction();
+        // The bound is spelled into the SQL: a bound parameter arrives as text,
+        // and an integer compares below any text, so the recursion never ends.
+        $last = sprintf('%d', $nodes - 1);
+        $pdo->prepare(
+            'INSERT INTO nodes (id, project_id, language, kind, canonical_name, display_name, parent_id, file_id, ' .
+            'start_line, end_line, origin, confidence, attributes_json, owner_key, last_scan_id) ' .
+            'WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < ' . $last . ') ' .
+            "SELECT 'node:' || printf('%064d', i), :project, 'php', 'class', 'App\\Synthetic' || printf('%05d', i), " .
+            "'Synthetic' || printf('%05d', i), NULL, :file, 1, 1, 'ast', 'certain', '{}', 'php:file:src/Checkout.php', :scan FROM seq",
+        )->execute(['project' => $project, 'file' => $ids['file'], 'scan' => $ids['scan']]);
+        // Every edge points from a lower index to a higher one, so the bulk of
+        // the graph is acyclic and only the back edges below close a loop.
+        $pdo->prepare(
+            'INSERT INTO edges (id, project_id, kind, source_id, target_id, file_id, start_line, end_line, origin, ' .
+            'confidence, attributes_json, owner_key, last_scan_id) ' .
+            'WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < ' . $last . '), ' .
+            'step(k) AS (VALUES (0), (1), (2), (3), (4)) ' .
+            "SELECT 'edge:' || i || ':' || k, :project, CASE k % 2 WHEN 0 THEN 'calls' ELSE 'imports' END, " .
+            "'node:' || printf('%064d', i), 'node:' || printf('%064d', i + k * 7 + 1), :file, 1, 1, 'ast', 'certain', " .
+            "'{}', 'php:file:src/Checkout.php', :scan FROM seq, step WHERE i + k * 7 + 1 <= " . $last,
+        )->execute(['project' => $project, 'file' => $ids['file'], 'scan' => $ids['scan']]);
+        $back = $pdo->prepare(
+            'INSERT INTO edges (id, project_id, kind, source_id, target_id, file_id, start_line, end_line, origin, ' .
+            "confidence, attributes_json, owner_key, last_scan_id) VALUES (?, ?, ?, ?, ?, ?, 7, 7, 'ast', 'certain', ?, 'php:file:src/Checkout.php', ?)",
+        );
+        // 100 -> 101 -> ... -> 112 -> 100: thirteen members.
+        $back->execute(['edge:back:a', $project, 'calls', $node(112), $node(100), $ids['file'], '{}', $ids['scan']]);
+        // 5000 -> 5001 -> 5002 -> 5000: three members.
+        $back->execute(['edge:back:b', $project, 'calls', $node(5002), $node(5000), $ids['file'], '{}', $ids['scan']]);
+        // A loop closed only by an erased type import is not a cycle.
+        $back->execute(['edge:back:type', $project, 'imports', $node(9002), $node(9000), $ids['file'], '{"type_only":true}', $ids['scan']]);
+        $pdo->commit();
+        $repository->completeScan($project, $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->dependencyCycles($project);
+
+        assertSame(false, $result->truncated);
+        assertSame([], $result->data['bounds']['truncation_reasons']);
+        assertSame([13, 3], array_column($result->data['cycles'], 'size'));
+        assertSame(array_map($node, range(100, 112)), $result->data['cycles'][0]['member_ids']);
+        assertSame(array_map($node, range(5000, 5002)), $result->data['cycles'][1]['member_ids']);
+        assertSame('App\\Synthetic00100', $result->data['cycles'][0]['members'][0]['canonical_name']);
+        assertSame('certain', $result->data['cycles'][1]['minimum_confidence']);
+        // 5000 -> 5001, 5001 -> 5002 and the back edge; nothing else joins two members.
+        assertSame(['edge:5000:0', 'edge:5001:0', 'edge:back:b'], array_column($result->data['cycles'][1]['relationships'], 'id'));
+        assertSame(true, str_starts_with($result->summary, 'Found 2 dependency cycle components.'));
+        // The fixture's own two nodes and their edge are part of the graph too.
+        assertSame($nodes + 2, $result->data['bounds']['nodes_examined']);
+    }
 }

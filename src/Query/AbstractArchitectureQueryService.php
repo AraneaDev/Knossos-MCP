@@ -272,11 +272,18 @@ abstract readonly class AbstractArchitectureQueryService
     }
 
     /**
-     * Tarjan's algorithm over the edge set, bounded so a large graph cannot run unchecked.
+     * Kosaraju's algorithm over the edge set, bounded so a large graph cannot run unchecked.
      *
-     * @param array<string, list<string>> $adjacency
-     * @param array<string, list<string>> $reverse
-     * @return array{components: list<list<string>>, timed_out: bool}
+     * Both passes are iterative and linear in nodes plus edges: the depth-first
+     * walk keeps the node and its next edge on two parallel stacks rather than a
+     * pair per frame, so a chain a hundred thousand nodes deep needs no
+     * recursion and no per-node array. Node keys may be ids or the integers a
+     * caller numbered them with; every node must have an entry in both maps.
+     *
+     * @template TNode of array-key
+     * @param array<TNode, list<TNode>> $adjacency
+     * @param array<TNode, list<TNode>> $reverse
+     * @return array{components: list<list<TNode>>, timed_out: bool}
      */
     protected function stronglyConnectedComponents(array $adjacency, array $reverse, ?int $deadline = null): array
     {
@@ -289,25 +296,31 @@ abstract readonly class AbstractArchitectureQueryService
                 continue;
             }
             $seen[$start] = true;
-            $stack = [[$start, 0]];
-            while ($stack !== []) {
+            $nodes = [$start];
+            $next = [0];
+            $top = 0;
+            while ($top >= 0) {
                 if ($deadline !== null && (++$operations % 256) === 0 && $this->now() > $deadline) {
                     $timedOut = true;
                     break 2;
                 }
-                $top = array_key_last($stack);
-                [$nodeId, $index] = $stack[$top];
+                $nodeId = $nodes[$top];
+                $index = $next[$top];
                 if ($index < count($adjacency[$nodeId])) {
-                    $next = $adjacency[$nodeId][$index];
-                    ++$stack[$top][1];
-                    if (!isset($seen[$next])) {
-                        $seen[$next] = true;
-                        $stack[] = [$next, 0];
+                    $next[$top] = $index + 1;
+                    $target = $adjacency[$nodeId][$index];
+                    if (!isset($seen[$target])) {
+                        $seen[$target] = true;
+                        $nodes[] = $target;
+                        $next[] = 0;
+                        ++$top;
                     }
                     continue;
                 }
                 $finish[] = $nodeId;
-                array_pop($stack);
+                array_pop($nodes);
+                array_pop($next);
+                --$top;
             }
         }
 

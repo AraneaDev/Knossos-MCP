@@ -432,7 +432,7 @@ final readonly class ToolCatalog
                         'edge_kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string']],
                         'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
-                        'max_nodes' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 50000, 'default' => 10000],
+                        'max_nodes' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 50000, 'default' => 50000],
                         'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 100000],
                         'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1000],
                         'include_self_loops' => ['type' => 'boolean', 'default' => false, 'description' => 'Include single-symbol self-recursion; excluded by default because recursion is not an architectural cycle.'],
