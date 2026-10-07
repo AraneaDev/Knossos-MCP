@@ -258,9 +258,15 @@ final readonly class LanguageScanRunner
             $readsByOwner,
         );
 
+        // In owner order, not cached-then-scanned: when two files declare one
+        // symbol, the declaration the graph keeps must not depend on which of
+        // them this scan happened to reuse.
+        $contributions = [...$partition->cached, ...$recorded['contributions'], ...$leftOut->contributions()];
+        usort($contributions, static fn(ScanContribution $a, ScanContribution $b): int => strcmp($a->ownerKey, $b->ownerKey));
+
         return [
             'manifest' => $manifest,
-            'contributions' => [...$partition->cached, ...$recorded['contributions'], ...$leftOut->contributions()],
+            'contributions' => $contributions,
             'cache_entries' => [...$partition->cacheEntries, ...$recorded['cache_entries'], ...$leftOut->cacheEntries()],
             'left_out_paths' => [...$partition->leftOutPaths, ...$leftOut->paths()],
             'parsed' => count($scanned),
