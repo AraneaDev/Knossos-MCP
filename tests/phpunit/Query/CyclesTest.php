@@ -10,6 +10,7 @@ use Knossos\Query\ArchitectureQueryService;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Tests\Phpunit\Support\RowCountingStatement;
+use Knossos\Tests\Phpunit\Support\SyntheticGraph;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
@@ -350,6 +351,41 @@ final class CyclesTest extends KnossosTestCase
     }
 
     /**
+     * A cycle whose detail cannot be loaded says so instead of shrinking.
+     *
+     * The search reads endpoint pairs and loads names and edge details
+     * afterwards. An edge left pointing at a node that no longer exists (a
+     * graph written before foreign keys were enforced) closes a loop the
+     * search sees, but has no row to describe; the cycle is reported with the
+     * members it could load and marked truncated.
+     */
+    #[Group('cycles')]
+    public function testACycleThroughAMissingNodeIsReportedTruncated(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $ghost = 'node:ghost';
+        $pdo->exec('PRAGMA foreign_keys = OFF');
+        $insert = $pdo->prepare(
+            'INSERT INTO edges (id, project_id, kind, source_id, target_id, file_id, start_line, end_line, origin, ' .
+            "confidence, attributes_json, owner_key, last_scan_id) VALUES (?, ?, 'calls', ?, ?, ?, 3, 3, 'ast', 'certain', '{}', 'php:file:src/Checkout.php', ?)",
+        );
+        $insert->execute(['edge:to-ghost', $ids['project'], $ids['invoice'], $ghost, $ids['file'], $ids['scan']]);
+        $insert->execute(['edge:from-ghost', $ids['project'], $ghost, $ids['checkout'], $ids['file'], $ids['scan']]);
+        $pdo->exec('PRAGMA foreign_keys = ON');
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->dependencyCycles($ids['project']);
+
+        assertSame([3], array_column($result->data['cycles'], 'size'));
+        $cycle = $result->data['cycles'][0];
+        assertSame(['App\\Checkout', 'App\\InvoiceService'], array_column($cycle['members'], 'canonical_name'));
+        assertSame(true, $cycle['truncated']);
+        assertSame(['missing_detail'], $cycle['truncation_reasons']);
+        assertSame(true, $result->truncated);
+        assertSame(['missing_detail'], $result->data['bounds']['truncation_reasons']);
+    }
+
+    /**
      * Twelve thousand synthetic symbols and about sixty thousand dependency
      * edges, two of which close a loop: 100 -> ... -> 112 -> 100 (thirteen
      * members) and 5000 -> 5001 -> 5002 -> 5000 (three). A third back edge is
@@ -360,44 +396,18 @@ final class CyclesTest extends KnossosTestCase
     private function largeGraph(): array
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
-        $project = $ids['project'];
         $nodes = 12_000;
-        $node = static fn(int $i): string => 'node:' . sprintf('%064d', $i);
         $pdo->beginTransaction();
-        // The bound is spelled into the SQL: a bound parameter arrives as text,
-        // and an integer compares below any text, so the recursion never ends.
-        $last = sprintf('%d', $nodes - 1);
-        $pdo->prepare(
-            'INSERT INTO nodes (id, project_id, language, kind, canonical_name, display_name, parent_id, file_id, ' .
-            'start_line, end_line, origin, confidence, attributes_json, owner_key, last_scan_id) ' .
-            'WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < ' . $last . ') ' .
-            "SELECT 'node:' || printf('%064d', i), :project, 'php', 'class', 'App\\Synthetic' || printf('%05d', i), " .
-            "'Synthetic' || printf('%05d', i), NULL, :file, 1, 1, 'ast', 'certain', '{}', 'php:file:src/Checkout.php', :scan FROM seq",
-        )->execute(['project' => $project, 'file' => $ids['file'], 'scan' => $ids['scan']]);
-        // Every edge points from a lower index to a higher one, so the bulk of
-        // the graph is acyclic and only the back edges below close a loop.
-        $pdo->prepare(
-            'INSERT INTO edges (id, project_id, kind, source_id, target_id, file_id, start_line, end_line, origin, ' .
-            'confidence, attributes_json, owner_key, last_scan_id) ' .
-            'WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < ' . $last . '), ' .
-            'step(k) AS (VALUES (0), (1), (2), (3), (4)) ' .
-            "SELECT 'edge:' || i || ':' || k, :project, CASE k % 2 WHEN 0 THEN 'calls' ELSE 'imports' END, " .
-            "'node:' || printf('%064d', i), 'node:' || printf('%064d', i + k * 7 + 1), :file, 1, 1, 'ast', 'certain', " .
-            "'{}', 'php:file:src/Checkout.php', :scan FROM seq, step WHERE i + k * 7 + 1 <= " . $last,
-        )->execute(['project' => $project, 'file' => $ids['file'], 'scan' => $ids['scan']]);
-        $back = $pdo->prepare(
-            'INSERT INTO edges (id, project_id, kind, source_id, target_id, file_id, start_line, end_line, origin, ' .
-            "confidence, attributes_json, owner_key, last_scan_id) VALUES (?, ?, ?, ?, ?, ?, 7, 7, 'ast', 'certain', ?, 'php:file:src/Checkout.php', ?)",
-        );
+        SyntheticGraph::seed($pdo, $ids, $nodes, 5);
         // 100 -> 101 -> ... -> 112 -> 100: thirteen members.
-        $back->execute(['edge:back:a', $project, 'calls', $node(112), $node(100), $ids['file'], '{}', $ids['scan']]);
+        SyntheticGraph::edge($pdo, $ids, 'edge:back:a', 'calls', 112, 100);
         // 5000 -> 5001 -> 5002 -> 5000: three members.
-        $back->execute(['edge:back:b', $project, 'calls', $node(5002), $node(5000), $ids['file'], '{}', $ids['scan']]);
+        SyntheticGraph::edge($pdo, $ids, 'edge:back:b', 'calls', 5002, 5000);
         // A loop closed only by an erased type import is not a cycle.
-        $back->execute(['edge:back:type', $project, 'imports', $node(9002), $node(9000), $ids['file'], '{"type_only":true}', $ids['scan']]);
+        SyntheticGraph::edge($pdo, $ids, 'edge:back:type', 'imports', 9002, 9000, '{"type_only":true}');
         $pdo->commit();
-        $repository->completeScan($project, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
 
-        return [$pdo, $project, $nodes, $node];
+        return [$pdo, $ids['project'], $nodes, SyntheticGraph::node(...)];
     }
 }

@@ -98,7 +98,10 @@ endpoint pairs first and loads names, files and lines only for the cycles it
 reports, so a graph of tens of thousands of relationships is searched well
 inside the default `timeout_ms` of one second. When a bound does stop the
 search, the summary names it, and the Claude Code pane shows the count as `?`
-rather than `0+` when nothing was found before the stop.
+rather than `0+` when nothing was found before the stop. A cycle that runs
+through an edge whose node no longer exists, which only a graph written before
+foreign keys were enforced can hold, lists the members it could load and is
+marked truncated with `missing_detail`.
 
 ![The Cycles tab: a 13-member dependency cycle drawn as a serpentine of boxes with a return edge labelled back to the start, and the list of all cycles below](../images/claude-code/cycles.png)
 
