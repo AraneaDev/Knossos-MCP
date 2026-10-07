@@ -101,6 +101,26 @@ export function stillReported(violations: string[], recordedAt: Readonly<Record<
   })
 }
 
+/** A cycle as the dashboard lists it: its size and members. */
+type ListedCycle = { size: number; members: string[] }
+
+/**
+ * The cycles new since the session began, against what the graph held then:
+ * `keys` the listed cycles by sorted members, `complete` whether that list
+ * was every cycle, `exact` whether the count was a whole count (absent in
+ * state recorded before it existed, and then taken as whole).
+ *
+ * A cycle is named new only against a complete list. The count that grew is
+ * said only against a whole count: a search that stopped early counted what
+ * it reached, and every cycle past that would read as new.
+ */
+export function cyclesSinceStart<C extends ListedCycle>(start: { count: number; keys: string[]; complete: boolean; exact?: boolean } | null, now: { count: number; largest: C[] }): { count: number; fresh: C[] } {
+  if (start === null) return { count: 0, fresh: [] }
+  const keys = new Set(start.keys)
+  const fresh = start.complete ? now.largest.filter(c => !keys.has([...c.members].sort().join('\u0000'))) : []
+  return { count: start.exact === false ? fresh.length : Math.max(now.count - start.count, fresh.length), fresh }
+}
+
 /**
  * The note after a commit: what this session's changes leave behind, as far
  * as the graph says: boundary-policy violations its turns introduced that

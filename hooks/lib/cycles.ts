@@ -183,7 +183,8 @@ export function cyclesArrangement(input: CyclesInput, tier: Tier, hues: Hues = N
     grow: { length: shown, min: CYCLES_MIN },
     make: (columns, limit) => {
       const stopped = input.stopped ?? []
-      const empty = stopped.length > 0 ? ['incomplete', ...stopped].join(' · ') : 'none'
+      // The bounds as words, the way the rest of the pane speaks: `time_limit` reads `time limit`.
+      const empty = stopped.length > 0 ? ['incomplete', ...stopped.map(r => r.replaceAll('_', ' '))].join(' · ') : 'none'
       const note = shown === 0 ? empty : `${input.count}${String(shown) === input.count ? '' : ` · ${shown} shown`} · largest first`
       const section = (body: Row[]): Section => ({ key: 'cycles', title: shown > 1 ? 'All cycles' : 'Cycles', note: noteOf(note), body })
       // A search cut short has not shown there are none, so it does not say so.
