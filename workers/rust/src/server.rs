@@ -396,6 +396,19 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
             };
         }
     };
+    if let Some(depth) = nesting_beyond(&source, MAX_NESTING) {
+        facts.diagnostic(
+            "error",
+            "RS_TOO_DEEP",
+            &format!("Delimiters nest {depth} levels deep, past the limit of {MAX_NESTING}."),
+            1,
+        );
+        return Prepared::Err {
+            relative: relative.to_owned(),
+            contribution: facts.finish(),
+            read_failed: false,
+        };
+    }
     match syn::parse_file(&source) {
         Ok(parsed) => Prepared::Parsed {
             relative: relative.to_owned(),
@@ -412,6 +425,126 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
             }
         }
     }
+}
+
+/// Deepest delimiter nesting a file may have before it is not parsed.
+///
+/// Parsing, walking and dropping a syntax tree recurse once per level, and
+/// running out of stack aborts the process instead of unwinding, so a file
+/// nested far past real code would take every other file of the scan with it.
+const MAX_NESTING: usize = 256;
+
+/// The depth of `(`, `[` and `{` nesting in `source` once it passes `limit`,
+/// or `None` while it stays within it.
+///
+/// A small state machine skips comments (block comments nest), string, raw
+/// string and character literals, and lifetimes, so delimiters inside them do
+/// not count. It may over-count on odd input; the limit sits far above real code.
+fn nesting_beyond(source: &str, limit: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                if depth > limit {
+                    return Some(depth);
+                }
+            }
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let mut level = 1usize;
+                i += 2;
+                while i < bytes.len() && level > 0 {
+                    if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                        level += 1;
+                        i += 2;
+                    } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        level -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            b'"' => {
+                i = skip_quoted(bytes, i + 1, b'"');
+                continue;
+            }
+            b'r' if is_raw_string_start(bytes, i) => {
+                let mut hashes = 0;
+                let mut j = i + 1;
+                while bytes.get(j) == Some(&b'#') {
+                    hashes += 1;
+                    j += 1;
+                }
+                // `j` is the opening quote; look for a quote plus as many hashes.
+                j += 1;
+                while j < bytes.len() {
+                    if bytes[j] == b'"' && (1..=hashes).all(|k| bytes.get(j + k) == Some(&b'#')) {
+                        j += 1 + hashes;
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+            b'\'' => {
+                let next = bytes.get(i + 1).copied();
+                let is_lifetime = next.is_some_and(|c| c == b'_' || c.is_ascii_alphabetic())
+                    && bytes.get(i + 2) != Some(&b'\'');
+                if !is_lifetime {
+                    i = skip_quoted(bytes, i + 1, b'\'');
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Whether the `r` at `at` opens a raw string (`r"`, `r#"`), not an identifier.
+fn is_raw_string_start(bytes: &[u8], at: usize) -> bool {
+    let after_ident = at > 0 && (bytes[at - 1] == b'_' || bytes[at - 1].is_ascii_alphanumeric());
+    // A `b` prefix (`br"..."`) still opens a raw string.
+    if after_ident && !(bytes[at - 1] == b'b' && !(at > 1 && is_ident_byte(bytes[at - 2]))) {
+        return false;
+    }
+    let mut j = at + 1;
+    while bytes.get(j) == Some(&b'#') {
+        j += 1;
+    }
+    bytes.get(j) == Some(&b'"')
+}
+
+/// Whether `byte` can be part of an identifier.
+fn is_ident_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+/// The index after the `quote` that closes a literal whose body starts at
+/// `from`, honouring backslash escapes. An unterminated literal ends the source.
+fn skip_quoted(bytes: &[u8], from: usize, quote: u8) -> usize {
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            byte if byte == quote => return i + 1,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
 }
 
 /// Read at most `max_file_bytes + 1` bytes of `path`, so a caller can tell a
