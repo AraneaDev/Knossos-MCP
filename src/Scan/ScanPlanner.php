@@ -219,7 +219,7 @@ final readonly class ScanPlanner
                 $cachedReads,
                 $discovered,
                 static fn(string $path, ?string $stored): bool => UndiscoveredInputVerifier::stillMatches($root, $path, $stored, $maxFileBytes),
-                self::addedByScanner($preparation->discovery->files, $cache),
+                self::addedByScanner($preparation->discovery->files, $cache, $this->previousFiles($projectId)),
             );
         }
 
@@ -236,25 +236,48 @@ final readonly class ScanPlanner
     }
 
     /**
-     * The discovered files each scanner has no cache row for, keyed by the
-     * scanner id its worker answers under ({@see LanguageDescriptor::scannerId()}).
+     * The discovered files each scanner has no cache row for that are new or
+     * changed since the active scan, keyed by the scanner id its worker
+     * answers under ({@see LanguageDescriptor::scannerId()}).
+     *
+     * A file the active scan recorded with the same bytes is not one of them,
+     * even without a cache row: a file that was omitted, answered twice, or
+     * changed under its worker is never cached, and counting it as added
+     * would rebuild its whole scanner on every scan. It is rescanned alone,
+     * as any file without a row is.
      *
      * @param list<object> $files
      * @param array<string, array<string, mixed>> $cache keyed by scanner id and path
+     * @param array<string, string> $previous path to content hash of every file the active scan recorded
      * @return array<string, list<string>>
      */
-    private static function addedByScanner(array $files, array $cache): array
+    private static function addedByScanner(array $files, array $cache, array $previous): array
     {
         $scannerOf = LanguageDescriptor::scannerIdsByLanguage();
         $added = [];
         foreach ($files as $file) {
             $scanner = $scannerOf[$file->language] ?? null;
-            if ($scanner !== null && !isset($cache[$scanner . "\0" . $file->relativePath])) {
+            if ($scanner !== null && !isset($cache[$scanner . "\0" . $file->relativePath])
+                && ($previous[$file->relativePath] ?? null) !== $file->contentHash) {
                 $added[$scanner][] = $file->relativePath;
             }
         }
 
         return $added;
+    }
+
+    /**
+     * Path to content hash of every file the active scan recorded. Every
+     * discovered file is recorded, and a file gone from the tree is removed.
+     *
+     * @return array<string, string>
+     */
+    private function previousFiles(string $projectId): array
+    {
+        $statement = $this->pdo->prepare('SELECT relative_path, content_hash FROM files WHERE project_id = :project');
+        $statement->execute(['project' => $projectId]);
+
+        return array_map('strval', $statement->fetchAll(PDO::FETCH_KEY_PAIR));
     }
 
     /**

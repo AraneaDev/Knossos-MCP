@@ -48,6 +48,7 @@ final class ScanPlannerTest extends TestCase
         )');
         $pdo->exec('CREATE TABLE contribution_reads (project_id TEXT NOT NULL, owner_key TEXT NOT NULL, read_path TEXT NOT NULL, read_hash TEXT)');
         $pdo->exec('CREATE TABLE contribution_read_groups (project_id TEXT NOT NULL, group_id TEXT NOT NULL, read_path TEXT NOT NULL, read_hash TEXT)');
+        $pdo->exec('CREATE TABLE files (project_id TEXT NOT NULL, relative_path TEXT NOT NULL, content_hash TEXT NOT NULL)');
         $pdo->exec('CREATE TABLE scans (
             id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
@@ -349,6 +350,35 @@ TOML);
         $invalidated = $added->invalidatedOwners;
         ksort($invalidated, SORT_STRING);
         assertSame(['knossos.typescript:file:a.ts' => true, 'knossos.typescript:file:b.ts' => true], $invalidated);
+    }
+
+    /**
+     * A file the active scan recorded with the same bytes but could not cache
+     * is not an added file, so it rebuilds nothing beyond itself. Recorded
+     * with other bytes, it is a change the scanner cannot attribute.
+     */
+    public function testAFileWithoutACacheRowThatTheActiveScanRecordedIsNotAdded(): void
+    {
+        $pdo = $this->createSchema();
+        $planner = new ScanPlanner($pdo, ['/tmp']);
+        $root = '/tmp/uncached-project';
+        $projectId = StableId::project('root:' . $root);
+        $pdo->prepare("INSERT INTO projects(id, name, root_realpath, active_scan_id, created_at, updated_at) VALUES (?, 'uncached', ?, 'scan-existing', 'now', 'now')")
+            ->execute([$projectId, $root]);
+        $insert = $pdo->prepare("INSERT INTO contribution_cache(project_id, owner_key, file_path, content_hash, scanner_id, scanner_version, configuration_hash, payload_json, updated_at, read_attribution) VALUES (?, ?, ?, ?, 'knossos.typescript', '1.0', '', '{}', 'now', 0)");
+        $recorded = $pdo->prepare('INSERT INTO files(project_id, relative_path, content_hash) VALUES (?, ?, ?)');
+        $files = [];
+        foreach (['a.ts', 'uncached.ts'] as $path) {
+            $files[] = new DiscoveredFile($path, $root . '/' . $path, 'typescript', 10, 0, hash('sha256', $path));
+            $recorded->execute([$projectId, $path, hash('sha256', $path)]);
+        }
+        $insert->execute([$projectId, 'knossos.typescript:file:a.ts', 'a.ts', hash('sha256', 'a.ts')]);
+
+        assertSame([], $planner->finalize($this->makePreparation($root, $files))->invalidatedOwners);
+
+        $pdo->prepare("UPDATE files SET content_hash = ? WHERE relative_path = 'uncached.ts'")->execute([hash('sha256', 'before')]);
+
+        assertSame(['knossos.typescript:file:a.ts' => true], $planner->finalize($this->makePreparation($root, $files))->invalidatedOwners);
     }
 
     public function testFinalizeReturnsEmptyCacheByDefault(): void

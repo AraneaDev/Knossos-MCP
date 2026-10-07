@@ -29,12 +29,14 @@ final class ReadSetInvalidator
      *
      * A scanner that does not attribute its reads cannot say whether a file
      * it has never seen would change what its other files produce, so a file
-     * of its languages with no cache row (an added file) rebuilds all of it.
+     * of its languages that is new, or changed while it had no cache row,
+     * rebuilds all of it.
      *
      * @param array<string, string> $discovered every path discovery hashed, to its content hash
      * @param callable(string, ?string): bool $stillMatches whether an undiscovered path still matches a stored read
      *        (production: {@see UndiscoveredInputVerifier::stillMatches()}, the rule the commit check applies)
      * @param array<string, list<string>> $addedByScanner scanner id to the discovered paths of its languages it has no row for
+     *        that the active scan did not record with the same bytes
      * @return array<string, true> keyed by owner key
      */
     public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = []): array

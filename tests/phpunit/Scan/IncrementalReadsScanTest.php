@@ -140,6 +140,39 @@ final class IncrementalReadsScanTest extends KnossosTestCase
     }
 
     /**
+     * A file the previous scan saw but could not cache is not an added file:
+     * only it is rescanned, and once it is cached the next scan changes
+     * nothing. Edited while it has no cache row, it rebuilds its scanner like
+     * an added file would.
+     */
+    public function testAFileTheLastScanCouldNotCacheIsRescannedAloneUntilItChanges(): void
+    {
+        self::requireNode();
+        $this->write('a.ts', "import { C } from './c';\nexport class A extends C {}\n");
+        $this->write('b.ts', "export const b = 1;\n");
+        $this->write('c.ts', "export class C {}\n");
+        $pdo = $this->freshTestDatabase();
+        $this->scan($pdo);
+        $forgetC = static fn() => $pdo->exec("DELETE FROM contribution_cache WHERE file_path = 'c.ts'");
+
+        $forgetC();
+        $rescanned = $this->scan($pdo);
+
+        assertSame('incremental', $rescanned->data['mode']);
+        assertSame(1, $rescanned->data['parsed_files']);
+        assertSame('no_change', $this->scan($pdo)->data['fast_path'] ?? null);
+
+        $forgetC();
+        $this->write('c.ts', "export class C {}\nexport class D extends C {}\n");
+        $edited = $this->scan($pdo);
+
+        assertSame(3, $edited->data['parsed_files']);
+        $full = $this->freshTestDatabase();
+        $this->scan($full);
+        assertSame($this->graphSignature($full), $this->graphSignature($pdo));
+    }
+
+    /**
      * A stored miss for a file over the byte cap is what the commit check
      * accepts as unchanged, so it must not invalidate anything either.
      */
