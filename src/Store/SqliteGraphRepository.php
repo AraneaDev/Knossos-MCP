@@ -421,10 +421,11 @@ final class SqliteGraphRepository implements GraphRepository
      * for a file it should have re-analysed.
      *
      * @param list<\Knossos\Reconciliation\ContributionCacheEntry> $entries
+     * @param array<string, array<string, ?string>> $readGroups
      */
-    public function replaceContributionCache(string $projectId, array $entries): void
+    public function replaceContributionCache(string $projectId, array $entries, array $readGroups = []): void
     {
-        $this->writer->replaceContributionCache($projectId, $entries);
+        $this->writer->replaceContributionCache($projectId, $entries, $readGroups);
     }
 
     /**

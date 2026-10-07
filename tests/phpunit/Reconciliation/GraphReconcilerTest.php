@@ -2736,7 +2736,7 @@ final class FakeGraphRepository implements GraphRepository
         $this->boundaryMemberships[] = [$boundaryId, $projectId, $nodeId, $scanId];
     }
 
-    public function replaceContributionCache(string $projectId, array $entries): void
+    public function replaceContributionCache(string $projectId, array $entries, array $readGroups = []): void
     {
         $this->contributionCaches[] = [$projectId, $entries];
     }

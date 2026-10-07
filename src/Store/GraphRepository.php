@@ -243,11 +243,12 @@ interface GraphRepository
     public function saveBoundaryMembership(string $boundaryId, string $projectId, string $nodeId, string $scanId): void;
 
     /**
-     * Replace all incremental contribution-cache entries for a project.
+     * Bring a project's incremental contribution cache to the given entries and read groups.
      *
      * @param list<ContributionCacheEntry> $entries
+     * @param array<string, array<string, ?string>> $readGroups group id to the reads it shares
      */
-    public function replaceContributionCache(string $projectId, array $entries): void;
+    public function replaceContributionCache(string $projectId, array $entries, array $readGroups = []): void;
 
     /**
      * Return bounded exact and display-name component matches.

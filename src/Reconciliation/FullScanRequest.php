@@ -38,6 +38,8 @@ final readonly class FullScanRequest
      * @param array<string, string|null> $workerInputs successful reads of files
      *        discovery did not hash, retained so dependency changes invalidate
      *        cached contributions and mark the graph stale.
+     * @param array<string, array<string, ?string>> $readGroups the read sets shared
+     *        by every file of one worker request, by group id, stored once.
      */
     public function __construct(
         public string $projectIdentity,
@@ -54,6 +56,7 @@ final readonly class FullScanRequest
         public ?string $gitHead = null,
         public ?DirtyPathSet $dirtyPaths = null,
         public array $workerInputs = [],
+        public array $readGroups = [],
     ) {
         if ($projectIdentity === '' || $projectName === '') {
             throw new InvalidArgumentException('Project identity and name must not be empty.');

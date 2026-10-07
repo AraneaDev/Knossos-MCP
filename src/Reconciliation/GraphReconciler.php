@@ -234,7 +234,7 @@ final readonly class GraphReconciler
             $this->repository->stampGraphScan($projectId, $scanId);
             $mark('prune');
 
-            $this->repository->replaceContributionCache($projectId, $request->contributionCache);
+            $this->repository->replaceContributionCache($projectId, $request->contributionCache, $request->readGroups);
             $mark('contribution_cache');
 
             // Diagnostics belong to the scan that produced them, so the previous
