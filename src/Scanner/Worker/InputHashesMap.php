@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scanner\Worker;
 
 use InvalidArgumentException;
+use Knossos\Discovery\ProjectDiscoverer;
 use Knossos\Scanner\Protocol\RelativePath;
 
 /**
@@ -33,6 +34,7 @@ final class InputHashesMap
      *
      * The whole map is checked before it is returned, so a malformed entry is
      * reported as such even when an earlier entry would have failed the scan.
+     * A key whose name discovery cannot carry is dropped rather than refused.
      *
      * @return array<string, string|null> path to lowercase SHA-256 hex, or null for a failed read
      * @throws WorkerException WORKER_RESPONSE_INVALID naming the worker, for any map that is not the protocol's object
@@ -48,6 +50,13 @@ final class InputHashesMap
         foreach ($inputHashes as $key => $hash) {
             // A key like "123" arrives as the int 123; it is still that path.
             $path = (string) $key;
+            // A compiler reads files its own include globs match, including
+            // one discovery skipped because its name is not valid UTF-8 or
+            // holds a control character. The graph cannot name that file, so
+            // its read is dropped; refusing it would cost the whole response.
+            if (!ProjectDiscoverer::isSupportedPath($path)) {
+                continue;
+            }
             try {
                 RelativePath::assertValid($path, self::FIELD . ' key ' . $path);
             } catch (InvalidArgumentException $error) {

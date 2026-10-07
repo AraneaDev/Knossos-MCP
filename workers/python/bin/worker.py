@@ -389,6 +389,10 @@ class ProjectModuleIndex:
                 except UnicodeEncodeError:
                     # Keeps input_hashes keys valid UTF-8 for the PHP side.
                     continue
+                if any(ord(c) < 32 or ord(c) == 127 for c in child.name):
+                    # Discovery cannot name a path with a control character,
+                    # so a probe below it would be a read of no known file.
+                    continue
                 marker = child / "__init__.py"
                 present = marker.is_file()
                 self._record_probe(walk_path(marker), present)

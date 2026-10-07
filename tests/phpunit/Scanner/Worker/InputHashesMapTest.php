@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Scanner\Worker;
 
 use Knossos\Scanner\Worker\InputHashesMap;
+use Knossos\Scanner\Worker\WorkerException;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -104,5 +105,30 @@ final class InputHashesMapTest extends TestCase
         $returned = InputHashesMap::merge($accumulator, ['src/b.ts' => str_repeat('b', 64)]);
 
         assertSame($accumulator, $returned);
+    }
+    /**
+     * A compiler can read a file that discovery skipped because its name is
+     * not valid UTF-8 or holds a control character. The graph cannot name such
+     * a file, so the read is dropped instead of failing the whole response.
+     */
+    public function testDecodeDropsAKeyDiscoveryCannotName(): void
+    {
+        $hash = str_repeat('a', 64);
+
+        $reads = InputHashesMap::decode(["src/a\nb.ts" => $hash, "src/x\xff.ts" => $hash, 'src/ok.ts' => $hash], 'knossos.typescript');
+
+        assertSame(['src/ok.ts' => $hash], $reads);
+    }
+
+    /** Every other malformed key still fails the response: it is a worker defect, not an odd file name. */
+    public function testDecodeStillRejectsAnEscapingAbsoluteOrEmptyKey(): void
+    {
+        foreach (['../x', '/etc/passwd', '', 'src/../x'] as $key) {
+            $error = captureThrows(
+                static fn() => InputHashesMap::decode([$key => str_repeat('a', 64)], 'knossos.typescript'),
+                WorkerException::class,
+            );
+            assertSame('WORKER_RESPONSE_INVALID', $error->diagnosticCode);
+        }
     }
 }

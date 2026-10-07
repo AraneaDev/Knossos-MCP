@@ -685,6 +685,20 @@ def test_directory_name_that_is_not_utf8_does_not_break_output(worker: ModuleTyp
         json.dumps(part, ensure_ascii=False).encode("utf-8")
 
 
+def test_directory_name_with_a_control_character_is_not_reported_as_read(worker: ModuleType, tmp_path: Path) -> None:
+    # Discovery cannot name such a directory, so a probe below it would be a
+    # read of a path the core has no file for.
+    try:
+        (tmp_path / "a\nb").mkdir()
+    except OSError:
+        pytest.skip("filesystem rejects control characters in names")
+    (tmp_path / "m.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    emitted: list[dict] = []
+    result = worker.scan({"root": str(tmp_path), "files": ["m.py"]}, emitted.append)
+    assert len(emitted) == 1
+    assert [key for key in result["input_hashes"] if any(ord(c) < 32 or ord(c) == 127 for c in key)] == []
+
+
 def test_frames_stay_ascii_even_for_names_that_are_not_valid_unicode(worker: ModuleType, capsys) -> None:
     worker.write({"path": "caf\udce9/m.py"})
     out = capsys.readouterr().out
