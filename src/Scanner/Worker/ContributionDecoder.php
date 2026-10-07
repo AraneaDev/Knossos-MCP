@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Knossos\Scanner\Worker;
 
+use InvalidArgumentException;
+use Knossos\Discovery\ProjectDiscoverer;
 use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
+use Knossos\Scanner\Protocol\RelativePath;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Throwable;
 
@@ -43,6 +46,7 @@ final class ContributionDecoder
                 array_map(self::edge(...), $edges),
                 array_map(self::diagnostic(...), $diagnostics),
                 self::contentHash($data),
+                array_key_exists('reads', $data) ? self::reads($data['reads']) : null,
             );
         } catch (WorkerException $error) {
             throw $error;
@@ -181,6 +185,39 @@ final class ContributionDecoder
         }
 
         return $data['content_hash'];
+    }
+
+    /**
+     * Validate a `reads` object: project-relative paths to a SHA-256 or null.
+     *
+     * A key discovery cannot carry is dropped, as it is from `input_hashes`, so
+     * the two stay comparable entry for entry.
+     *
+     * @return array<string, ?string>
+     */
+    public static function reads(mixed $value): array
+    {
+        if (!is_array($value) || ($value !== [] && array_is_list($value))) {
+            throw new WorkerException('WORKER_CONTRIBUTION_INVALID', 'reads must be an object keyed by path.');
+        }
+        $reads = [];
+        foreach ($value as $key => $hash) {
+            $path = (string) $key;
+            if (!ProjectDiscoverer::isSupportedPath($path)) {
+                continue;
+            }
+            try {
+                RelativePath::assertValid($path, 'reads key');
+            } catch (InvalidArgumentException $error) {
+                throw new WorkerException('WORKER_CONTRIBUTION_INVALID', $error->getMessage(), $error);
+            }
+            if ($hash !== null && (!is_string($hash) || preg_match('/\A[0-9a-f]{64}\z/', $hash) !== 1)) {
+                throw new WorkerException('WORKER_CONTRIBUTION_INVALID', sprintf('reads for %s must be null or a lowercase SHA-256 hex digest.', $path));
+            }
+            $reads[$path] = $hash;
+        }
+
+        return $reads;
     }
 
     /** @param array<string, mixed> $data @return list<mixed> */

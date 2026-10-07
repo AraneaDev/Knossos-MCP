@@ -64,12 +64,29 @@ final class ScanInputHashes
      */
     public static function verify(array $result, ScannerManifest $manifest, array $discoveredByPath): array
     {
+        return self::verifyAll($result, $manifest, $discoveredByPath)['undiscovered'];
+    }
+
+    /**
+     * Verify the map as {@see verify()} does and also return every entry.
+     *
+     * The whole verified map is what a worker that does not attribute its reads
+     * leaves the core to assume every file depended on.
+     *
+     * @param array<string, mixed> $result the request's final result
+     * @param array<string, object> $discoveredByPath every path discovery hashed, keyed by relative path
+     * @return array{all: array<string, string|null>, undiscovered: array<string, string|null>}
+     * @throws WorkerException when a declaring worker omitted the field, it is malformed, or a hash cannot be verified
+     * @throws ScanSnapshotChangedException when a discovered file was read from other bytes, or could not be read
+     */
+    public static function verifyAll(array $result, ScannerManifest $manifest, array $discoveredByPath): array
+    {
         if (!array_key_exists(self::FIELD, $result)) {
             if (in_array(Protocol::CAPABILITY_INPUT_HASHES, $manifest->capabilities, true)) {
                 throw self::invalid($manifest, sprintf('declares the %s capability but its scan result carries no %s', Protocol::CAPABILITY_INPUT_HASHES, self::FIELD));
             }
 
-            return [];
+            return ['all' => [], 'undiscovered' => []];
         }
         // Shape first, for the whole map, so a malformed entry is reported as
         // such even when an earlier one would have failed the scan.
@@ -94,7 +111,7 @@ final class ScanInputHashes
             }
         }
 
-        return $undiscovered;
+        return ['all' => $reads, 'undiscovered' => $undiscovered];
     }
 
     /** A malformed or unverifiable result, which costs the worker's language rather than the scan. */

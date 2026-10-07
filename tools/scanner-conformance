@@ -59,7 +59,8 @@ try {
         $shaped = is_array($emptyInputHashes) && ($emptyInputHashes === [] || !array_is_list($emptyInputHashes));
         $checks[] = ['name' => 'input_hashes_empty', 'status' => $shaped ? 'pass' : 'fail'];
     }
-    if ($declaresContentHash || $declaresInputHashes) {
+    $declaresReads = in_array(Protocol::CAPABILITY_READ_ATTRIBUTION, $manifest->capabilities, true);
+    if ($declaresContentHash || $declaresInputHashes || $declaresReads) {
         // A declared capability is a promise about every contribution, and an
         // optional schema field cannot enforce it, so check it here: one file,
         // one contribution, carrying the hash of the exact bytes on disk. Both
@@ -79,6 +80,14 @@ try {
                 static fn($contribution): bool => $contribution->contentHash !== $expectedHash,
             ) === [];
             $checks[] = ['name' => 'content_hash', 'status' => $matches ? 'pass' : 'fail'];
+        }
+        if ($declaresReads) {
+            // Every contribution must carry its own `reads`, even an empty one.
+            $attributed = $hashed !== [] && array_filter(
+                $hashed,
+                static fn($contribution): bool => $contribution->reads === null,
+            ) === [];
+            $checks[] = ['name' => 'read_attribution', 'status' => $attributed ? 'pass' : 'fail'];
         }
         if ($declaresInputHashes) {
             $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;

@@ -35,6 +35,15 @@ final class Protocol
      */
     public const CAPABILITY_INPUT_HASHES = 'input_hashes';
 
+    /**
+     * A worker declaring this reports `reads` on every contribution (the files
+     * that contribution's facts were derived from, each a SHA-256 or null for a
+     * path probed and not found) and may report `reads` on the scan result for
+     * reads shared by every file of the request. Every entry must also appear,
+     * with the same value, in `input_hashes`.
+     */
+    public const CAPABILITY_READ_ATTRIBUTION = 'read_attribution';
+
     public const METHOD_INITIALIZE = 'initialize';
     public const METHOD_SCAN = 'scan';
     public const METHOD_CANCEL = 'cancel';

@@ -42,7 +42,8 @@ scanner manifest:
         "project_program",
         "partial_ast",
         "content_hash",
-        "input_hashes"
+        "input_hashes",
+        "read_attribution"
     ]
 }
 ```
@@ -175,6 +176,25 @@ path, is refused as `WORKER_RESPONSE_INVALID` and degrades its language for
 the scan, whether or not the request read anything: an empty result still
 carries `input_hashes` as `{}`. A worker that does not declare the capability
 and simply omits the field triggers none of this.
+
+#### Attributing reads to a contribution
+
+`input_hashes` says what a request read as a whole. A worker that also says which
+file each contribution came from lets the core invalidate only the contributions
+that depended on a changed file. A worker that declares the `read_attribution`
+capability sends `reads` on every contribution: an object mapping each file that
+contribution's facts were derived from to the lowercase SHA-256 hex of the bytes
+read, or to `null` for a path probed and not found. A file that reads nothing
+beyond itself sends `{}`. It may also send `reads` on the result, for reads
+shared by every file of the request, such as a configuration file or a global
+declaration.
+
+Every entry in any `reads` must also appear in the result's `input_hashes` with
+the same value; a worker reporting one that `input_hashes` does not confirm, or
+omitting `reads` from a contribution after declaring the capability, is refused
+as `WORKER_CONTRIBUTION_INVALID`. A worker that does not declare the capability
+is treated as if every file depended on every entry of `input_hashes`, so its
+contributions are invalidated by a change to any of them.
 
 One decoding limitation to know about: an object keyed only by consecutive
 integers starting at `"0"` is indistinguishable on the wire from a JSON array,

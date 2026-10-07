@@ -99,7 +99,7 @@ final class WorkerServer
             'output_schema_version' => '1.0',
             'languages' => ['php'],
             'file_extensions' => ['php'],
-            'capabilities' => ['partial_ast', 'content_hash', 'input_hashes'],
+            'capabilities' => ['partial_ast', 'content_hash', 'input_hashes', 'read_attribution'],
         ];
     }
 
@@ -179,6 +179,8 @@ final class WorkerServer
             if (isset($contribution['content_hash'])) {
                 $inputs[$relativePath] = $contribution['content_hash'];
             }
+            // Nothing beyond the file itself is read to derive its facts.
+            $contribution['reads'] = new \stdClass();
             $this->write([
                 'jsonrpc' => '2.0',
                 'method' => 'scan/contribution',

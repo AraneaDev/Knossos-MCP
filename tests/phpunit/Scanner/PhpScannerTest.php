@@ -1320,6 +1320,32 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     /**
+     * The PHP worker resolves nothing across files, so it attributes reads: every
+     * contribution says it read nothing beyond its own file.
+     */
+    #[Group('php-scanner')]
+    public function testEveryContributionReportsAnEmptyReadSet(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        file_put_contents($root . '/src/A.php', "<?php\nclass A {}\n");
+        file_put_contents($root . '/src/Broken.php', "<?php\nclass {\n");
+        try {
+            $client = $this->phpWorkerClient();
+            assertSame(true, in_array('read_attribution', $client->initialize()->capabilities, true));
+            $reads = [];
+            foreach ($client->scan(['root' => $root, 'files' => ['src/A.php', 'src/Broken.php']]) as $contribution) {
+                $reads[$contribution->ownerKey] = $contribution->reads;
+            }
+            $client->shutdown();
+
+            assertSame(['knossos.php:file:src/A.php' => [], 'knossos.php:file:src/Broken.php' => []], $reads);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * A requested file the filesystem would not let the worker read as the
      * file discovery hashed (over the byte cap, gone, a directory, or leaving
      * the root) is reported as `null`: its contribution carries no facts, so

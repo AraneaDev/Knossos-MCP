@@ -59,6 +59,15 @@ declaring worker's empty scan and its one-file fixture scan both carry the
 field, that the fixture's hash matches, and that the whole map passes the
 core's own check against the fixture's discovery.
 
+The `read_attribution` capability promises that every contribution carries
+`reads`, the files its own facts were derived from, each with the SHA-256 of the
+bytes read or `null` for a path probed and not found, and that every entry also
+appears with the same value in `input_hashes`. Declare it when you can say which
+files each contribution needed: a change to a file then invalidates only the
+contributions that read it, where a worker without it is invalidated by a change
+to any file in `input_hashes`. `tools/scanner-conformance` checks that the
+fixture's contributions carry the field.
+
 Every contribution owns its facts through a stable `owner_key`. Re-emission
 replaces that owner's facts. IDs must be deterministic, evidence paths must be
 project-relative, and repeated edges should be collapsed to the persistence
