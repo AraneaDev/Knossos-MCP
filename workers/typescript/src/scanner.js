@@ -343,6 +343,8 @@ class ReadAttribution {
         this.byFile = new Map();
         // Keys every file of the request shares, whoever else read them.
         this.shared = new Set();
+        // Program key to the keys of its files that declare globally.
+        this.globalsByProgram = new Map();
     }
 
     /**
@@ -359,26 +361,46 @@ class ReadAttribution {
         for (const probe of probes) this.#addProbed(keys, probe);
         keys.delete(relative);
         this.byFile.set(relative, keys);
-        this.#shareIfGlobal(sourceFile, relative);
     }
 
     /**
-     * Share what the files of a program this request did not attribute need
-     * shared whoever else read it: a project source's own declarations when
-     * they are global, and whatever a dependency's file read, since no
-     * contribution of the core's reports it.
+     * Share what the files of a program need shared whoever else read them:
+     * the declarations of every file that declares globally, a dependency's
+     * global script as much as a project's own, and whatever a dependency's
+     * file read, since no contribution of the core's reports it. The global
+     * files are also the program's environment (see environmentOf).
+     *
+     * @param {string} programKey the program's key (see programKeyOf)
      */
-    program(program) {
+    program(program, programKey) {
+        const globals = new Set();
+        this.globalsByProgram.set(programKey, globals);
         for (const sourceFile of program.getSourceFiles()) {
             const relative = relativeInside(this.root, sourceFile.fileName);
-            if (relative === null || this.byFile.has(relative)) continue;
-            // A dependency's global script, such as a type library a config
-            // names, is seen by every file as surely as a project's own.
-            this.#shareIfGlobal(sourceFile, relative);
-            if (isProjectSource(relative)) continue;
+            if (relative === null) continue;
+            for (const key of this.#globalKeys(sourceFile, relative)) {
+                this.shared.add(key);
+                globals.add(key);
+            }
+            if (this.byFile.has(relative) || isProjectSource(relative))
+                continue;
             for (const key of this.#directReads(program, sourceFile, false))
                 this.shared.add(key);
         }
+    }
+
+    /**
+     * A digest of the global declarations a program's files saw: one line,
+     * `path`, NUL and the hash `input_hashes` carries (empty for null), per
+     * file of the program that declares globally, sorted. Two scans that agree
+     * on it agree on every name a file of the program can use without an
+     * import.
+     */
+    environmentOf(programKey) {
+        const lines = [...(this.globalsByProgram.get(programKey) ?? [])]
+            .map((key) => `${key}\0${this.reads.value(key) ?? ""}`)
+            .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+        return createHash("sha256").update(lines.join("\n")).digest("hex");
     }
 
     /** The `reads` of a requested file's contribution; `{}` when it read nothing. */
@@ -403,12 +425,13 @@ class ReadAttribution {
         return this.reads.select(keys);
     }
 
-    #shareIfGlobal(sourceFile, relative) {
-        if (!declaresGlobally(sourceFile)) return;
+    /** The recorded keys of a file that declares globally; none otherwise. */
+    #globalKeys(sourceFile, relative) {
+        if (!declaresGlobally(sourceFile)) return [];
         const { key } = this.#keyOf(sourceFile.fileName);
-        for (const candidate of [relative, key])
-            if (candidate !== null && this.reads.has(candidate))
-                this.shared.add(candidate);
+        return [...new Set([relative, key])].filter(
+            (candidate) => candidate !== null && this.reads.has(candidate),
+        );
     }
 
     /**
@@ -526,6 +549,20 @@ class ReadAttribution {
 const REFERENCE_EXTENSIONS = [".ts", ".tsx", ".d.ts", ".js", ".jsx"];
 
 /**
+ * Whether a config's program could emit one of the requested files not yet
+ * emitted: one it includes itself, or one no config includes, which the first
+ * program holding it emits.
+ */
+function needsProgram(request, requested, configPath) {
+    return requested.some((relative) => {
+        const key = normalize(relative);
+        if (request.emitted.has(key)) return false;
+        const owner = request.owners.get(key);
+        return owner === undefined || owner === configPath;
+    });
+}
+
+/**
  * Whether every file of a program sees a file's declarations without importing
  * it: a script, a module that augments the global scope or another module, or
  * one that exports a UMD global (`export as namespace X`).
@@ -639,6 +676,13 @@ export class TypeScriptScanner {
         for (const contribution of contributions) {
             emit({
                 ...contribution,
+                ...(contribution.program === undefined
+                    ? {}
+                    : {
+                          environment: attribution.environmentOf(
+                              contribution.program,
+                          ),
+                      }),
                 reads: attribution.readsOf(
                     contribution.owner_key.slice(OWNER_KEY_PREFIX.length),
                 ),
@@ -722,7 +766,13 @@ export class TypeScriptScanner {
         request.outputSources = outputSources(root, parsedConfigs);
 
         for (const [configPath, parsed] of parsedConfigs) {
+            // A program emits a requested file another config includes only
+            // from that config's own program, so a program that includes none
+            // of the files still to emit, while each of them has a config of
+            // its own, would emit nothing and only read files for nobody.
+            if (!needsProgram(request, requested, configPath)) continue;
             request.owner = configPath;
+            request.program = configPath;
             tally(
                 this.#scanProgram(
                     `${root}\0${configPath}`,
@@ -811,6 +861,7 @@ export class TypeScriptScanner {
                     ...(declarations.get(directory)?.files ?? []),
                 ]),
             ];
+            request.program = `fallback:${relativeInside(root, directory) || "."}`;
             tally(
                 this.#scanProgram(
                     `${directory}${FALLBACK_KEY}`,
@@ -858,7 +909,7 @@ export class TypeScriptScanner {
             this.#cacheProgram(key, program);
             recordUnreadSourceFiles(root, program, reads, maxFileBytes);
             this.#emitProgram(program, request, key.endsWith(FALLBACK_KEY));
-            request.attribution.program(program);
+            request.attribution.program(program, request.program);
         } catch (error) {
             const overflowed = isStackOverflow(error);
             const covered = [
@@ -1033,6 +1084,7 @@ export class TypeScriptScanner {
             if (contentHash !== undefined) {
                 contribution.content_hash = contentHash;
             }
+            contribution.program = request.program;
             request.attribution.requested(
                 program,
                 sourceFile,
