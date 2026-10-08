@@ -18,6 +18,10 @@ never imports or runs your project.
 - `.py` source files and `.pyi` stubs
 - packages, identified by `__init__.py`
 - ordinary and relative imports, with their aliases
+- the source roots your packages live in: `src/` when it holds no
+  `__init__.py`, and the directories `pyproject.toml` declares through
+  setuptools (`packages.find.where`, the `""` entry of `package-dir`), Poetry
+  (`packages[].from`), Hatch (wheel `packages`) or PDM (`build.package-dir`)
 
 A console script such as `shop.cli:main` maps to the exact path `shop/cli.py`,
 and a `.py` file listed in `[tool.vulture] paths` (a whitelist vulture reads as
@@ -27,6 +31,28 @@ a scanner node, so a manifest cannot invent an entry point.
 Discovery skips `.venv`, `venv`, `__pycache__`, `.tox`, `.mypy_cache` and
 `.pytest_cache` by default, along with the other directories every language
 skips.
+
+## Module names
+
+A module is named by its dotted path below the source root it sits in, and
+the bare project root is always the first source root. So `src/shop/cart.py`
+in a src layout is `shop.cart`, while `app/models/user.py` is
+`app.models.user` whether or not `app/` holds an `__init__.py`: any other
+top-level directory is a package or a namespace package, not a source root.
+
+An import names the module by the file it finds, so `import shop.cart` and
+`import src.shop.cart` both reach `shop.cart`. A bare import in a script, or
+in a module whose directory holds no `__init__.py` (such as a test module
+pytest runs), also finds the file beside it, because that directory is first
+on `sys.path` when it runs.
+
+Two files never share a module id. When an import of a file's name finds
+another file (`utils.py` at the root and `src/utils.py`, or `mod.py` beside a
+`mod/` package), the file the import finds keeps the name and the other one is
+named by its path, `utils.<src/utils.py>`, with a `PY_MODULE_ID_COLLISION`
+warning. A stub beside its module (`mod.pyi` beside `mod.py`) is named the
+same way, `mod.<mod.pyi>`, without a warning, and every symbol of a `.pyi`
+file is a declaration that the dead-code analysis leaves out.
 
 ## What ends up in the graph
 
@@ -90,4 +116,4 @@ same file.
   stops the other files from contributing.
 - A relative import that climbs above the project root emits no edge and reports
   `PY_UNRESOLVED_RELATIVE_IMPORT`. A module file and a package that share one
-  module id report `PY_MODULE_ID_COLLISION`, and the package wins.
+  module id both report `PY_MODULE_ID_COLLISION`; the package keeps the id.

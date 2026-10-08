@@ -141,11 +141,13 @@ final readonly class LanguageDescriptor
                 ['python3', '-I', '-B', '-W', 'ignore::SyntaxWarning', $installationRoot . '/workers/python/bin/worker.py'],
                 'scanner_python',
                 analysisInputs: ['workers/python/bin/worker.py'],
-                // A top-level package marker decides whether its directory is
-                // a source root, so deleting one renames every module below
+                // `src/__init__.py` decides whether `src/` is a source root
+                // (the src layout), so deleting it renames every module below
                 // it and moves imports elsewhere, and none of those files
-                // need have read it.
-                layoutMarkers: '#\A[^/]+/__init__\.py\z#',
+                // need have read it. No other package marker names a source
+                // root; the pyproject's declared roots ride on the
+                // configuration hash.
+                layoutMarkers: '#\Asrc/__init__\.py\z#',
             ),
             new self(
                 'rust',

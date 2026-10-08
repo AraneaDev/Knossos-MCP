@@ -268,16 +268,18 @@ checker resolved for it, not only the file it imports.
 The packaged Python worker uses `unattributed_reads` for the reads a module
 makes for itself. A module's declarations include what it re-exports, so an importer
 that uses them depends on the re-exported modules too. When the module is one
-of the request's `source_files` and its own scan gives it the module id the
-importer used, its own contribution names those modules, and the importer
-names only the module's file and the probes that found it: a change to a
+of the request's `source_files` and its own scan declares it (the worker names
+a module by the file an import finds, so every spelling of the import gives
+the id that file's own scan gives it), its own contribution names those
+modules, and the importer names only the module's file and the probes that found it: a change to a
 re-exported module rebuilds the module, which rebuilds the importer. The
 module's reads for the re-exports go on `unattributed_reads`. A module that
 discovery left out, such as one under `vendor/`, has no contribution of its
 own, so its importer names what it re-exports as well. The request's `reads`
-hold the probes that found no `__init__.py` in a top-level directory, which
-decide every file's module id; a marker that is present is not recorded, and
-deleting one is a layout change the core rebuilds every Python file for.
+hold the probe that found no `src/__init__.py`, which decides whether `src/`
+is a source root and so every module id below it; a marker that is present is
+not recorded, and deleting it is a layout change the core rebuilds every
+Python file for.
 
 The packaged Rust worker reads every file of the request's `source_files` to
 build its declaration index, whichever files the request names. Each
@@ -360,16 +362,21 @@ among its root files, whether a config's program reached it or the fallback
 program of its group emitted it.
 
 The packaged Python worker labels every contribution that holds facts with
-the program `python` and the digest of its source roots: the bare root and
-every top-level directory that holds no `__init__.py`, in the order imports
-search them, one per line. A new top-level directory is a source root no
-import could have probed, and the digest is what makes it reach every file. A
-deleted top-level `__init__.py` turns its directory into a source root,
-renaming every module below it, and none of those files need have read it, so
-the core rebuilds every Python contribution when one is deleted, from its own
-worker descriptors, as it does for an added file of a worker that declares
-`added_files_affect_all`. An added one needs no such rule: the worker read its
-absence, and every file of the request shares that read.
+the program `python` and the digest of its source roots: the bare root, then
+`src/` when it holds no `__init__.py` (the src layout) and each directory the
+root `pyproject.toml` says its packages live in, in the order imports search
+them, one per line. A new `src/` is a source root no import could have probed,
+and the digest is what makes it reach every file. A deleted `src/__init__.py`
+turns `src/` into a source root, renaming every module below it, and none of
+those files need have read it, so the core rebuilds every Python contribution
+when it is deleted, from its own worker descriptors, as it does for an added
+file of a worker that declares `added_files_affect_all`. An added one needs
+no such rule: the worker read its absence, and every file of the request
+shares that read. The worker reads `pyproject.toml` without recording it: the
+core's configuration hash for Python covers every `pyproject.toml`, so an edit
+of one rebuilds every Python file. Any other top-level directory is no source
+root, so creating or deleting one, or a package marker in it, reaches only
+the files that probed it.
 
 A program's environment must not follow the request: the packaged TypeScript
 worker receives `source_files`, every discovered file of its language, and

@@ -165,10 +165,11 @@ final class PythonReadAttributionTest extends KnossosTestCase
     }
 
     /**
-     * `lib/` and `src/` are both source roots, searched in that order. A
-     * module added to the later root changes nothing; one added at the bare
-     * root, searched first, shadows the import, and takes the module id over
-     * from both files that had it, which probed the bare root for it too.
+     * `lib/` (the pyproject's) and `src/` are both source roots, searched in
+     * that order. A module added to the later root changes nothing but its
+     * own id; one added at the bare root, searched first, shadows the import,
+     * and takes the module id over from both files that had it, which probed
+     * the bare root for it too.
      */
     public function testAModuleAddedToASourceRootRescansOnlyTheImportsItShadows(): void
     {
@@ -187,12 +188,22 @@ final class PythonReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
-    /**
-     * A new top-level directory is a new source root, searched before `lib/`,
-     * at a path no import could have probed: the source roots changed, so
-     * every Python file is rebuilt.
-     */
-    public function testANewSourceRootRebuildsEveryPythonFile(): void
+    /** A pyproject that declares another source root, searched before `lib/`, rebuilds every Python file. */
+    public function testDeclaringASourceRootInThePyprojectRebuildsEveryPythonFile(): void
+    {
+        $this->writeSourceRoots();
+        $this->write('aaa/shared.py', "class thing:\n    pass\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('pyproject.toml', "[tool.setuptools.packages.find]\nwhere = [\"aaa\", \"lib\"]\n");
+        $this->scan($pdo);
+
+        assertSame(['aaa/shared.py', 'lib/shared.py', 'other.py', 'src/run.py'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /** A new top-level directory is no source root: nothing else is rebuilt for it. */
+    public function testANewTopLevelDirectoryRescansOnlyItsOwnFiles(): void
     {
         $this->writeSourceRoots();
         $pdo = $this->scannedAndStamped();
@@ -200,35 +211,51 @@ final class PythonReadAttributionTest extends KnossosTestCase
         $this->write('aaa/shared.py', "class thing:\n    pass\n");
         $this->scan($pdo);
 
-        assertSame(['aaa/shared.py', 'lib/shared.py', 'other.py', 'src/run.py'], $this->rescannedFiles($pdo));
+        assertSame(['aaa/shared.py'], $this->rescannedFiles($pdo));
         $this->assertMatchesAFullScan($pdo);
     }
 
-    /** `lib/__init__.py` turns the `lib/` source root into a package, renaming every module below it. */
-    public function testAddingATopLevelPackageMarkerRebuildsEveryPythonFile(): void
+    /** `src/__init__.py` turns the `src/` source root into a package, renaming every module below it. */
+    public function testAddingASrcPackageMarkerRebuildsEveryPythonFile(): void
     {
         $this->writeSourceRoots();
         $pdo = $this->scannedAndStamped();
 
-        $this->write('lib/__init__.py', '');
+        $this->write('src/__init__.py', '');
         $this->scan($pdo);
 
-        assertSame(['lib/__init__.py', 'lib/shared.py', 'other.py', 'src/run.py'], $this->rescannedFiles($pdo));
+        assertSame(['lib/shared.py', 'other.py', 'src/__init__.py', 'src/run.py'], $this->rescannedFiles($pdo));
         $this->assertMatchesAFullScan($pdo);
     }
 
-    /** Nothing imports `core`, and deleting its marker still renames `core.base` to `base`. */
-    public function testDeletingATopLevelPackageMarkerRebuildsEveryPythonFile(): void
+    /** Nothing imports `src.base`, and deleting the marker still renames it to `base`. */
+    public function testDeletingTheSrcPackageMarkerRebuildsEveryPythonFile(): void
+    {
+        $this->write('src/__init__.py', '');
+        $this->write('src/base.py', "class Base:\n    pass\n");
+        $this->write('other.py', "def unrelated():\n    return 2\n");
+        $pdo = $this->scannedAndStamped();
+
+        unlink($this->root . '/src/__init__.py');
+        $this->scan($pdo);
+
+        assertSame(['other.py', 'src/base.py'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /** Below any other directory a marker names no source root, so deleting it rebuilds only what probed it. */
+    public function testDeletingAPackageMarkerOutsideSrcRescansOnlyWhatProbedIt(): void
     {
         $this->writeSourceRoots();
-        $this->write('core/__init__.py', '');
+        $this->write('core/__init__.py', "from .base import Base\n");
         $this->write('core/base.py', "class Base:\n    pass\n");
+        $this->write('usecore.py', "from core import Base\n\n\ndef c():\n    return Base()\n");
         $pdo = $this->scannedAndStamped();
 
         unlink($this->root . '/core/__init__.py');
         $this->scan($pdo);
 
-        assertSame(['core/base.py', 'lib/shared.py', 'other.py', 'src/run.py'], $this->rescannedFiles($pdo));
+        assertSame(['usecore.py'], $this->rescannedFiles($pdo));
         $this->assertMatchesAFullScan($pdo);
     }
 
@@ -249,22 +276,77 @@ final class PythonReadAttributionTest extends KnossosTestCase
     }
 
     /**
-     * `ns/` has no marker, so it is a source root and `import ns.tools` reads
-     * `ns/tools.py` under a name its own scan does not give it; what that
-     * module re-exports is still followed.
+     * `import src.tools` reads `src/tools.py` under another spelling of its own
+     * id `tools`; what that module re-exports is named by its own contribution,
+     * and a change to it still reaches the importer.
      */
-    public function testANamespacePackageModuleReachesItsImporter(): void
+    public function testAModuleReadUnderAnotherSpellingReachesItsImporter(): void
     {
         $this->writeSourceRoots();
-        $this->write('ns/tools.py', "from .impl2 import tool\n");
-        $this->write('ns/impl2.py', "def tool():\n    return 1\n");
-        $this->write('nsuse.py', "from ns.tools import tool\n\n\ndef n():\n    return tool\n");
+        $this->write('src/tools.py', "from .impl2 import tool\n");
+        $this->write('src/impl2.py', "def tool():\n    return 1\n");
+        $this->write('nsuse.py', "from src.tools import tool\n\n\ndef n():\n    return tool\n");
         $pdo = $this->scannedAndStamped();
 
-        $this->write('ns/impl2.py', "class tool:\n    pass\n");
+        $this->write('src/impl2.py', "class tool:\n    pass\n");
         $this->scan($pdo);
 
-        assertSame(['ns/impl2.py', 'ns/tools.py', 'nsuse.py'], $this->rescannedFiles($pdo));
+        assertSame(['nsuse.py', 'src/impl2.py', 'src/tools.py'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /**
+     * `import src.thing` names `src/thing.py` by its own id, `thing`. A
+     * `thing.py` at the bare root takes that id over, so the file in `src/`
+     * is named by its path, and the import that names it changes with it.
+     */
+    public function testAModuleTakingAnotherFilesIdRenamesItForThePlainImportsOfIt(): void
+    {
+        $this->writeSourceRoots();
+        $this->write('src/thing.py', "def t():\n    return 1\n");
+        $this->write('use.py', "import src.thing\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('thing.py', "def t():\n    return 2\n");
+        $this->scan($pdo);
+
+        assertSame(['src/thing.py', 'thing.py', 'use.py'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /** Deleting the module beside a stub gives the stub the module's id; adding it back takes the id again. */
+    public function testAStubIsRenamedWhenTheModuleBesideItComesAndGoes(): void
+    {
+        $this->write('pkg/__init__.py', '');
+        $this->write('pkg/mod.py', "def f():\n    return 1\n");
+        $this->write('pkg/mod.pyi', "def f() -> int: ...\n");
+        $this->write('other.py', "def unrelated():\n    return 2\n");
+        $pdo = $this->scannedAndStamped();
+
+        unlink($this->root . '/pkg/mod.py');
+        $this->scan($pdo);
+        assertSame(['pkg/mod.pyi'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+        $this->stampCacheRows($pdo);
+
+        $this->write('pkg/mod.py', "def f():\n    return 1\n");
+        $this->scan($pdo);
+        assertSame(['pkg/mod.py', 'pkg/mod.pyi'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /** A test module's bare import names its sibling only while its directory is no package. */
+    public function testAPackageMarkerBesideATestModuleRescansItsSiblingImports(): void
+    {
+        $this->write('tests/helpers.py', "def build():\n    return 1\n");
+        $this->write('tests/test_build.py', "from helpers import build\n\n\ndef test_build():\n    return build()\n");
+        $this->write('other.py', "def unrelated():\n    return 2\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('tests/__init__.py', '');
+        $this->scan($pdo);
+
+        assertSame(['tests/__init__.py', 'tests/test_build.py'], $this->rescannedFiles($pdo));
         $this->assertMatchesAFullScan($pdo);
     }
 
@@ -400,9 +482,10 @@ final class PythonReadAttributionTest extends KnossosTestCase
         $this->write('other.py', "def unrelated():\n    return 2\n");
     }
 
-    /** Two source roots, `lib/` and `src/`, and a file that imports from the first. */
+    /** Two source roots, `lib/` (the pyproject's) and `src/` (a src layout), and a file that imports from the first. */
     private function writeSourceRoots(): void
     {
+        $this->write('pyproject.toml', "[tool.setuptools.packages.find]\nwhere = [\"lib\"]\n");
         $this->write('lib/shared.py', "def thing():\n    return 1\n");
         $this->write('src/run.py', "from shared import thing\n\n\ndef r():\n    return thing()\n");
         $this->write('other.py', "def unrelated():\n    return 2\n");

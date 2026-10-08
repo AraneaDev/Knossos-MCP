@@ -49,18 +49,20 @@ final class LanguageDescriptorCapabilityTest extends KnossosTestCase
     }
 
     /**
-     * Only a top-level package marker decides a Python source root; one
-     * below it is an ordinary file the worker's probes cover.
+     * Only `src/__init__.py` decides a Python source root (the src layout);
+     * any other package marker is an ordinary file the worker's probes cover.
      */
-    public function testOnlyPythonHasLayoutMarkersAndTheyAreTopLevelPackageMarkers(): void
+    public function testOnlyPythonHasLayoutMarkersAndTheOnlyOneIsTheSrcPackageMarker(): void
     {
         $markers = LanguageDescriptor::layoutMarkersByScanner();
 
         assertSame(['knossos.python'], array_keys($markers));
-        assertSame(1, preg_match($markers['knossos.python'], 'core/__init__.py'));
-        assertSame(0, preg_match($markers['knossos.python'], 'core/sub/__init__.py'));
+        assertSame(1, preg_match($markers['knossos.python'], 'src/__init__.py'));
+        assertSame(0, preg_match($markers['knossos.python'], 'core/__init__.py'));
+        assertSame(0, preg_match($markers['knossos.python'], 'src/sub/__init__.py'));
+        assertSame(0, preg_match($markers['knossos.python'], 'lib/src/__init__.py'));
         assertSame(0, preg_match($markers['knossos.python'], '__init__.py'));
-        assertSame(0, preg_match($markers['knossos.python'], 'core/__init__.pyi'));
+        assertSame(0, preg_match($markers['knossos.python'], 'src/__init__.pyi'));
     }
 
     public function testAdjustingTheMemoryCapKeepsTheLayoutMarkers(): void

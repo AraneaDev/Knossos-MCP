@@ -137,8 +137,8 @@ def test_a_suffixless_python_script_resolves_to_its_own_file(worker: ModuleType,
     root = project({"scripts/check-thing": "#!/usr/bin/env python3\ndef check() -> int:\n    return 0\n"})
     index = worker.ProjectModuleIndex(root, 2_000_000)
 
-    assert index.module_file("check-thing") == root / "scripts" / "check-thing"
-    assert "check" in index.module_declarations("check-thing")
+    assert index.module_file("scripts.check-thing") == root / "scripts" / "check-thing"
+    assert "check" in index.module_declarations("scripts.check-thing")
 
 
 def test_a_suffixless_script_naming_another_interpreter_is_not_a_module(worker: ModuleType, project) -> None:
@@ -147,7 +147,7 @@ def test_a_suffixless_script_naming_another_interpreter_is_not_a_module(worker: 
     root = project({"scripts/config": "#!/bin/sh\necho hi\n"})
     index = worker.ProjectModuleIndex(root, 2_000_000)
 
-    assert index.module_file("config") is None
+    assert index.module_file("scripts.config") is None
 
 
 def test_a_real_module_still_wins_over_a_suffixless_neighbour(worker: ModuleType, project) -> None:

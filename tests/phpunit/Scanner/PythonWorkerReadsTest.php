@@ -49,16 +49,16 @@ final class PythonWorkerReadsTest extends KnossosTestCase
             'pkg/sub/user.py' => "def use():\n    return 1\n",
             'app.py' => "from pkg import Engine\n",
             'cli.py' => "from pkg import Engine\n",
-            'zz.py' => "from pkg import Engine\nfrom pkg.sub import user\nfrom vendor.lib import Thing\nfrom ns.tools import tool\nfrom config import x\n",
+            'zz.py' => "from pkg import Engine\nfrom pkg.sub import user\nfrom vendor.lib import Thing\nfrom src.tools import tool\nfrom config import x\n",
             'vendor/lib/__init__.py' => "from .core import Thing\n",
             'vendor/lib/core.py' => "class Thing:\n    pass\n",
-            'ns/tools.py' => "from .impl2 import tool\n",
-            'ns/impl2.py' => "def tool():\n    return 1\n",
+            'src/tools.py' => "from .impl2 import tool\n",
+            'src/impl2.py' => "def tool():\n    return 1\n",
             'config' => "#!/bin/sh\necho hi\n",
             'broken.py' => "def (\n",
             'notes.txt' => "x\n",
         ]);
-        $sources = ['app.py', 'broken.py', 'cli.py', 'ns/impl2.py', 'ns/tools.py', 'pkg/__init__.py', 'pkg/impl.py', 'pkg/star.py', 'pkg/sub/__init__.py', 'pkg/sub/user.py', 'zz.py'];
+        $sources = ['app.py', 'broken.py', 'cli.py', 'pkg/__init__.py', 'pkg/impl.py', 'pkg/star.py', 'pkg/sub/__init__.py', 'pkg/sub/user.py', 'src/impl2.py', 'src/tools.py', 'zz.py'];
         $requested = ['app.py', 'broken.py', 'cli.py', 'notes.txt', 'pkg/__init__.py', 'zz.py'];
 
         $client = $this->pythonWorkerClient();
@@ -89,13 +89,17 @@ final class PythonWorkerReadsTest extends KnossosTestCase
         self::assertNull($package['pkg/later.py']);
         self::assertArrayHasKey('pkg/star.py', $result['unattributed_reads']);
         $zz = $byPath['zz.py']->reads ?? [];
-        // Found without being read, by a module discovery left out, under a
-        // name its own scan does not give it, and ruled out by its shebang.
-        foreach (['pkg/sub/user.py', 'vendor/lib/core.py', 'ns/impl2.py', 'config'] as $path) {
+        // Found without being read, by a module discovery left out, under
+        // another spelling of its own id, and ruled out by its shebang.
+        foreach (['pkg/sub/user.py', 'vendor/lib/core.py', 'src/tools.py', 'config'] as $path) {
             self::assertIsString($zz[$path] ?? null, $path);
         }
-        // The only top-level directory that is a source root; `vendor/` is left out.
-        assertSame(['ns/__init__.py' => null], $result['reads']);
+        // `src/tools.py` read as `src.tools` is its own module `tools`: its own
+        // contribution names what it re-exports.
+        self::assertArrayNotHasKey('src/impl2.py', $zz);
+        self::assertArrayHasKey('src/impl2.py', $result['unattributed_reads']);
+        // `src/` is the only top-level directory that is a source root.
+        assertSame(['src/__init__.py' => null], $result['reads']);
 
         // Facts are labelled with the source roots; a file without facts is not.
         $environment = $result['environments']['python'];

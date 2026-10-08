@@ -142,7 +142,7 @@ def test_an_own_read_then_a_differing_index_read_records_null(monkeypatch, worke
 
     assert len(reads) == 2
     assert contributions["pkg/b.py"]["content_hash"] == _sha(broken)
-    assert ("extends", "py:class:c.Local", "py:class:pkg.b.Thing") in [
+    assert ("extends", "py:class:pkg.c.Local", "py:class:pkg.b.Thing") in [
         (edge["kind"], edge["source"], edge["target"]) for edge in contributions["pkg/c.py"]["edges"]
     ]
     assert result["input_hashes"]["pkg/b.py"] is None
@@ -895,9 +895,9 @@ def test_the_source_root_probe_records_an_absent_package_marker_and_not_a_presen
 def test_a_package_marker_absent_while_the_source_roots_are_detected_fails_verification(
     monkeypatch, worker: ModuleType, project
 ) -> None:
-    root = project({"pkg/__init__.py": "", "pkg/a.py": ""})
+    root = project({"src/__init__.py": "", "src/a.py": ""})
     discovery = _discovered(root)
-    marker = root / "pkg" / "__init__.py"
+    marker = root / "src" / "__init__.py"
     marker.unlink()
     try:
         index = worker.ProjectModuleIndex(root, 2_000_000)
@@ -905,8 +905,8 @@ def test_a_package_marker_absent_while_the_source_roots_are_detected_fails_verif
     finally:
         marker.write_text("", encoding="utf-8")
 
-    assert prefixes == [(), ("pkg",)]
-    assert _disagreements(index.read_hashes, discovery) == ["pkg/__init__.py"]
+    assert prefixes == [(), ("src",)]
+    assert _disagreements(index.read_hashes, discovery) == ["src/__init__.py"]
 
 
 def _swapped_for(link: Path, target: str, restore: Callable[[], None], run: Callable[[], Any]) -> Any:
