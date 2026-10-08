@@ -53,7 +53,7 @@ Version mismatch is fatal and occurs before project paths are sent.
 
 ### `scan`
 
-Accepts a request ID and `params` that carry the project's real root (`root`), the project-relative paths this request must scan (`files`), and the bounds (`limits`: `max_files` and `max_file_bytes`). The core sends only the files that need scanning: a file whose cached contribution is still valid is not sent. The packaged workers receive extra fields for their own language: `frameworks` (PHP, Python and Rust), `config_files` (TypeScript and Rust), `exclusions` (TypeScript and Python), and several TypeScript project lists. A worker streams zero or more
+Accepts a request ID and `params` that carry the project's real root (`root`), the project-relative paths this request must scan (`files`), and the bounds (`limits`: `max_files` and `max_file_bytes`). The core sends only the files that need scanning: a file whose cached contribution is still valid is not sent. The packaged workers receive extra fields for their own language: `frameworks` (PHP, Python and Rust), `config_files` (TypeScript and Rust), `exclusions` (TypeScript and Python), `source_files` (TypeScript and Python: every discovered file of the language, sorted), and several TypeScript project lists. A worker streams zero or more
 `scan/contribution` notifications, and zero or more `scan/input_hashes`
 notifications (below), followed by a final result containing counts.
 
@@ -250,6 +250,19 @@ file the core never discovered, since no contribution names them. The
 `unattributed_reads` map can outgrow one line as `reads` can, and travels in
 `scan/input_hashes` parts the same way, under its own field name.
 
+The packaged Python worker uses `unattributed_reads` for the reads a module
+makes for itself. A module's declarations include what it re-exports, so an importer
+that uses them depends on the re-exported modules too. When the module is one
+of the request's `source_files` and its own scan gives it the module id the
+importer used, its own contribution names those modules, and the importer
+names only the module's file and the probes that found it: a change to a
+re-exported module rebuilds the module, which rebuilds the importer. The
+module's reads for the re-exports go on `unattributed_reads`. A module that
+discovery left out, such as one under `vendor/`, has no contribution of its
+own, so its importer names what it re-exports as well. The request's `reads`
+hold the probes for the `__init__.py` of each top-level directory, which
+decide every file's module id.
+
 No read can name a file that did not exist anywhere a worker looked, and for
 some languages a new file still changes what other files mean: a script that
 declares global names any file may use. A worker for such a language also
@@ -262,8 +275,8 @@ scan, before any worker has started, so that a rebuilt file still reaches its
 readers in other languages; the manifest capability states the same thing to
 anyone reading the handshake, and the core does not consult it.
 
-A worker for such a language also says what each file could see without an
-import. Each contribution then carries `program`, the key of the program its
+A worker also says what each file could see without an import, whether or
+not it declares `added_files_affect_all`. Each contribution then carries `program`, the key of the program its
 facts were derived in (the packaged TypeScript worker uses the tsconfig path,
 or `fallback:` and the directory for a file no config includes), and
 `environment`, the lowercase SHA-256 hex of the global declarations that
@@ -307,6 +320,18 @@ no such file, and a fallback program holds its whole group whatever the
 imports say. The packaged TypeScript worker marks a file no tsconfig lists
 among its root files, whether a config's program reached it or the fallback
 program of its group emitted it.
+
+The packaged Python worker labels every contribution that holds facts with
+the program `python` and the digest of its source roots: the bare root and
+every top-level directory that holds no `__init__.py`, in the order imports
+search them, one per line. A new top-level directory is a source root no
+import could have probed, and the digest is what makes it reach every file. A
+deleted top-level `__init__.py` turns its directory into a source root,
+renaming every module below it, and none of those files need have read it, so
+the core rebuilds every Python contribution when one is deleted, from its own
+worker descriptors, as it does for an added file of a worker that declares
+`added_files_affect_all`. An added one needs no such rule: the worker read its
+absence, and every file of the request shares that read.
 
 A program's environment must not follow the request: the packaged TypeScript
 worker receives `source_files`, every discovered file of its language, and

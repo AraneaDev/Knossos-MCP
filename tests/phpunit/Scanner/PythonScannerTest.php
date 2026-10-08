@@ -33,7 +33,7 @@ final class PythonScannerTest extends KnossosTestCase
         // A cancel capability is deliberately absent: handle() returns at once
         // and the process is blocked inside scan(), so a cancel frame is not
         // read until the scan it names has already finished.
-        assertSame(['partial_ast', 'content_hash', 'input_hashes'], $manifest->capabilities);
+        assertSame(['partial_ast', 'content_hash', 'input_hashes', 'read_attribution'], $manifest->capabilities);
 
         $contributions = iterator_to_array($client->scan([
             'root' => $root,

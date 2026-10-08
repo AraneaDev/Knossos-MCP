@@ -25,6 +25,9 @@ use Knossos\Scanner\Worker\WorkerException;
  * one; one that names a program but no environment cannot show it is current
  * and is rebuilt. A contribution derived in no program (a file the worker
  * could not scan, or one the core left out) has no environment to compare.
+ * The Python worker labels its contributions the same way, its environment
+ * being the source roots its imports searched: a new top-level directory is
+ * a source root no read could have named.
  * Contributions cached by a worker from before these fields are never reused:
  * the cache key follows the worker's own files ({@see AnalysisHash}).
  *

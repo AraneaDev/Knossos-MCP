@@ -499,10 +499,8 @@ def test_own_declarations_come_from_the_hashed_bytes(worker: ModuleType, project
     source = b"class Base:\n    pass\n\n\nclass Child(Base):\n    pass\n"
     (root / "pkg/b.py").write_bytes(source)
 
-    emitted: list[dict] = []
-    worker._scan_one((root / "pkg/b.py").resolve(), "pkg/b.py", index, emitted.append)
+    contribution, _ = worker._scan_one((root / "pkg/b.py").resolve(), "pkg/b.py", index)
 
-    [contribution] = emitted
     assert contribution["content_hash"] == hashlib.sha256(source).hexdigest()
     assert ("extends", "py:class:pkg.b.Child", "py:class:pkg.b.Base") in _edges(contribution)
 
