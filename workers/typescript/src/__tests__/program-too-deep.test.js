@@ -75,10 +75,10 @@ function overflow() {
     return new RangeError("Maximum call stack size exceeded");
 }
 
-function scan(root, files, configFiles) {
+function scan(root, files, configFiles, extra = {}) {
     const contributions = [];
     const result = new TypeScriptScanner().scan(
-        { root, files, config_files: configFiles },
+        { root, files, config_files: configFiles, ...extra },
         (contribution) => contributions.push(contribution),
     );
     const byPath = Object.fromEntries(
@@ -463,6 +463,98 @@ describe("scanThreadFailure", () => {
             message:
                 "FATAL ERROR: TypeScript scanner thread exited unexpectedly (exit 3).\n",
             exitCode: 3,
+        });
+    });
+});
+
+describe("a program that fails after reaching another program's files", () => {
+    // A program that builds and then overflows in its checker: its source
+    // files are known, among them files it reached through imports.
+    const overflowingChecker = (createProgram, options) => {
+        const program = createProgram(options);
+        return new Proxy(program, {
+            get(target, property, receiver) {
+                if (property === "getTypeChecker") {
+                    return () => {
+                        throw overflow();
+                    };
+                }
+                return Reflect.get(target, property, receiver);
+            },
+        });
+    };
+    const shape = (contribution) => ({
+        program: contribution.program,
+        codes: codes(contribution),
+        nodes: contribution.nodes.length,
+    });
+
+    it("leaves a file of another fallback group to that group's program", () => {
+        const root = fixture({
+            "tsconfig.json": JSON.stringify({ files: [] }),
+            "pkg/package.json": JSON.stringify({ name: "pkg" }),
+            "pkg/t.ts":
+                "import { x } from '../other/x';\nexport const t = x;\n",
+            "other/x.ts": "export const x = 1;\n",
+        });
+        hook.createProgram = (createProgram, options) =>
+            options.rootNames.some((name) => name.includes("/pkg/"))
+                ? overflowingChecker(createProgram, options)
+                : createProgram(options);
+        const extra = {
+            source_files: ["other/x.ts", "pkg/t.ts"],
+            package_directories: ["pkg"],
+        };
+
+        // pkg's group is built first, and its program reached other/x.ts.
+        const together = scan(
+            root,
+            ["pkg/t.ts", "other/x.ts"],
+            ["tsconfig.json"],
+            extra,
+        ).byPath;
+        const alone = scan(
+            root,
+            ["other/x.ts"],
+            ["tsconfig.json"],
+            extra,
+        ).byPath;
+
+        expect(codes(together["pkg/t.ts"])).toEqual(["TS_PROGRAM_TOO_DEEP"]);
+        expect(shape(together["other/x.ts"])).toEqual(
+            shape(alone["other/x.ts"]),
+        );
+        expect(shape(together["other/x.ts"])).toEqual({
+            program: "fallback:.",
+            codes: [],
+            nodes: 1,
+        });
+    });
+
+    it("leaves a file another config lists to that config's program", () => {
+        const config = JSON.stringify({ include: ["."] });
+        const root = fixture({
+            "a/tsconfig.json": config,
+            "a/m.ts": "import { n } from '../b/n';\nexport const m = n;\n",
+            "b/tsconfig.json": config,
+            "b/n.ts": "export const n = 1;\n",
+        });
+        hook.createProgram = (createProgram, options) =>
+            options.rootNames.some((name) => name.includes("/a/"))
+                ? overflowingChecker(createProgram, options)
+                : createProgram(options);
+        const configs = ["a/tsconfig.json", "b/tsconfig.json"];
+
+        // a's program is built first, and it reached b/n.ts.
+        const together = scan(root, ["a/m.ts", "b/n.ts"], configs).byPath;
+        const alone = scan(root, ["b/n.ts"], configs).byPath;
+
+        expect(codes(together["a/m.ts"])).toEqual(["TS_PROGRAM_TOO_DEEP"]);
+        expect(shape(together["b/n.ts"])).toEqual(shape(alone["b/n.ts"]));
+        expect(shape(together["b/n.ts"])).toEqual({
+            program: "b/tsconfig.json",
+            codes: [],
+            nodes: 1,
         });
     });
 });

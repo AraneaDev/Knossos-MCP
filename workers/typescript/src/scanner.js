@@ -714,6 +714,32 @@ function programOwnership(request) {
 }
 
 /**
+ * Which files of a program it does not emit, whether it was built or failed:
+ * a file outside the project or under node_modules, one the request did not
+ * name, one already emitted, one another config lists (its own program
+ * describes it under the options the project really uses) and, in a fallback
+ * program, one of another fallback group, which its own group's program
+ * emits (see #scanFallback). A failed program marks only the files it would
+ * have emitted, so a file left to another program is answered by that one.
+ *
+ * @param {Map<string, string>} owners the config owners this program defers
+ *   to: the request's for a config's program, none for a fallback program
+ * @returns {(relative: string | null) => boolean}
+ */
+function emissionSkipped(request, owners, fallback) {
+    const { requestedSet, emitted, owner } = request;
+    return (relative) =>
+        relative === null ||
+        belowNodeModules(relative) ||
+        !requestedSet.has(relative) ||
+        emitted.has(relative) ||
+        (owners.has(relative) && owners.get(relative) !== owner) ||
+        (fallback &&
+            request.fallbackGroupOf.get(relative) !==
+                request.fallbackDirectory);
+}
+
+/**
  * Whether every file of a program sees a file's declarations without importing
  * it: a script, a module that augments the global scope or another module, or
  * one that exports a UMD global (`export as namespace X`).
@@ -1094,8 +1120,7 @@ export class TypeScriptScanner {
      * @returns {{reused: boolean}|undefined} undefined when the program failed
      */
     #scanProgram(key, parsed, request) {
-        const { root, maxFileBytes, reads, requestedSet, emitted, emit } =
-            request;
+        const { root, maxFileBytes, reads, emitted, emit } = request;
         this.#reserveProgramSlot(key);
         this.#collectReleasedPrograms();
         const oldProgram = this.programCache.get(key);
@@ -1122,16 +1147,18 @@ export class TypeScriptScanner {
                     (file) => file.fileName,
                 ),
             ];
+            // The same files the program would have emitted: one another
+            // config lists, or one of another fallback group, is answered
+            // by its own program, which this failure says nothing about.
+            const fallback = key.endsWith(FALLBACK_KEY);
+            const skipped = emissionSkipped(
+                request,
+                fallback ? new Map() : request.owners,
+                fallback,
+            );
             for (const fileName of covered) {
                 const relative = relativeInside(root, fileName);
-                if (
-                    relative === null ||
-                    belowNodeModules(relative) ||
-                    !requestedSet.has(relative) ||
-                    emitted.has(relative)
-                ) {
-                    continue;
-                }
+                if (skipped(relative)) continue;
                 emit(
                     overflowed
                         ? factFreeContribution(
@@ -1219,11 +1246,11 @@ export class TypeScriptScanner {
     }
 
     #emitProgram(program, request, fallback) {
-        const { root, requestedSet, emitted, emit, maxFileBytes, owner } =
-            request;
+        const { root, emitted, emit, maxFileBytes, owner } = request;
         // The fallback program emits whatever no config's program did, a
         // file some config lists included, so it is given no owners to defer
-        // to; the request's own map is left as the configs filled it.
+        // to; what it leaves to another program is a file of another group.
+        // The request's own map is left as the configs filled it.
         const owners = fallback ? new Map() : request.owners;
         const tracker = declarationTracker(program.getTypeChecker());
         const { byFile: diagnosticsByFile, programLevel } = programDiagnostics(
@@ -1233,19 +1260,7 @@ export class TypeScriptScanner {
             fallback,
         );
 
-        const skipped = (relative) =>
-            relative === null ||
-            belowNodeModules(relative) ||
-            !requestedSet.has(relative) ||
-            emitted.has(relative) ||
-            // Another config includes this file itself; its program
-            // describes it under the options the project really uses.
-            (owners.has(relative) && owners.get(relative) !== owner) ||
-            // A fallback program reached a file of another group through an
-            // import; that group's own program emits it (see #scanFallback).
-            (fallback &&
-                request.fallbackGroupOf.get(relative) !==
-                    request.fallbackDirectory);
+        const skipped = emissionSkipped(request, owners, fallback);
         // A diagnostic that names no file describes the whole program, so it
         // is reported once, on one fixed file of the program. The carrier is
         // chosen from the program itself, never from the request: a project is
@@ -5934,7 +5949,6 @@ function configOwners(root, parsedConfigs) {
     return owners;
 }
 
-/** The program for requested files no config's program emitted. */
 /**
  * Files no config's program emitted, grouped by the package they sit in: the
  * nearest config's directory, or the nearest package.json's where that is

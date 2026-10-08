@@ -295,8 +295,9 @@ group through an import, but that file is emitted by its own group's program,
 which holds the whole group whatever the imports say, so neither the order
 the groups are built in nor an import between two unlisted files decides
 which program describes one. The facts of a file a config's program reached
-still follow the imports of other files, which no read of its own records. Mark such a contribution `listed: false`; leave the field out of
-every other contribution, so a payload already cached keeps its bytes. Once a
+still follow the imports of other files, which no read of its own records.
+Mark such a contribution `listed: false`; leave the field out of every other
+contribution, so a payload already cached keeps its bytes. Once a
 scan rebuilds any contribution derived in a program a config describes, or
 one derived in no program, the core rebuilds every reused contribution so
 marked, and everything that read it, in other languages too. A change that
