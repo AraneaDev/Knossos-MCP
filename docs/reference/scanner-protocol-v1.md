@@ -211,7 +211,8 @@ part (below) may carry a `reads` object beside its `input_hashes`, holding
 part of the result's `reads`, and its `input_hashes` may then be `{}`. The core
 merges every such part with the result's own `reads` under the rule it applies
 to `input_hashes` parts: a path two of them report with different values
-becomes `null`.
+becomes `null`. A part may carry an `unattributed_reads` object the same way,
+merged into the result's field of that name and never into `reads`.
 
 Every entry in any `reads` must also appear in the result's `input_hashes` with
 the same value; a worker reporting one that `input_hashes` does not confirm, or
@@ -221,11 +222,25 @@ is treated as if every file depended on every entry of `input_hashes`, so its
 contributions are invalidated by a change to any of them.
 
 Every entry of `input_hashes` must also be named by some `reads`, on a
-contribution or on the result, unless it is a file the request named, whose own
-bytes its contribution's `content_hash` covers. A read named nowhere would
-invalidate nothing when it changes, so an attributing worker that leaves one
-out is refused as `WORKER_CONTRIBUTION_INVALID`. Put a read no single file
-caused, such as a dependency's declaration another one imports, on the result.
+contribution or on the result, or by the result's `unattributed_reads`, unless
+it is a file the request named, whose own bytes its contribution's
+`content_hash` covers. A read named nowhere would invalidate nothing when it
+changes, so an attributing worker that leaves one out is refused as
+`WORKER_CONTRIBUTION_INVALID`. Put a read no single file caused, such as a
+dependency's declaration another one imports, on the result.
+
+A worker whose programs load project files beyond the ones a request names
+reads for those files too: an importer's import chain, a config's whole
+`include`. Such a file has a contribution of its own in the core's cache, and
+that contribution names what the file read, so the request owes nobody those
+reads. Report them as `unattributed_reads` on the result, the same shape as
+`reads`. The core confirms each entry against `input_hashes`, counts it as
+named, and stores it for no file and no group. Keep on `reads` only what every
+file of the request genuinely shares: a config and what it extends, a manifest
+read to resolve, a global declaration. Reads of a file the core never
+discovered belong on `reads`, since no contribution names them. The
+`unattributed_reads` map can outgrow one line as `reads` can, and travels in
+`scan/input_hashes` parts the same way, under its own field name.
 
 No read can name a file that did not exist anywhere a worker looked, and for
 some languages a new file still changes what other files mean: a script that
@@ -248,13 +263,27 @@ program held: one line per file of the program that declares globally (a
 script, a module that augments the global scope or another module, a UMD
 global, a type library a config names), the path, a NUL and the hash
 `input_hashes` carries for it (empty for `null`), sorted and joined with
-newlines. Both are kept with the cached contribution. After a scan builds a
-program again, the core rebuilds every contribution it reused from an earlier
-build of that program whose `environment` differs, or is missing, and
-everything that read it, in other languages too. A contribution derived in no
+newlines. Both are kept with the cached contribution. The result also carries
+`environments`, an object mapping the key of every program the request built
+to its digest, since a program built for a file another program emitted
+labels no contribution of its own: the packaged TypeScript worker builds every
+config's program whose own root files hold a requested file, whichever config
+describes that file, so an edit that imports a global script into a file two
+configs include reaches both. After a scan builds a program, the core
+rebuilds every contribution it reused from an earlier build of that program
+whose `environment` differs, or is missing, and everything that read it, in
+other languages too, and repeats the comparison for every program a later
+pass builds until a pass finds nothing new. A contribution derived in no
 program, such as a file the worker could not scan, carries neither field. A
 deleted file of such a worker rebuilds every one of its contributions, since
 the program that held a deleted global may not be built again in that scan.
+
+A program's environment must not follow the request: the packaged TypeScript
+worker receives `source_files`, every discovered file of its language, and
+roots a program for files no config includes on every such file of the same
+package, not only the ones requested, so a test sees the globals its setup
+declares whether or not the setup was requested with it, and an ordinary edit
+beside such a file triggers no second pass.
 
 One decoding limitation to know about: an object keyed only by consecutive
 integers starting at `"0"` is indistinguishable on the wire from a JSON array,

@@ -100,6 +100,52 @@ final class RequestReadsTest extends TestCase
         assertSame('knossos.fake read node_modules/x/index.d.ts but named it in no contribution\'s reads and not in the request\'s shared reads.', $error->getMessage());
     }
 
+    public function testAnUnattributedReadCountsAsNamedAndIsStoredForNobody(): void
+    {
+        // b.ts is in a.ts's program but not in the request: what it read is
+        // named so the request is complete, and belongs to no file or group.
+        $reads = RequestReads::forRequest(
+            ['reads' => ['tsconfig.json' => self::h('t')], 'unattributed_reads' => ['b.ts' => self::h('b'), 'c.ts' => self::h('c')]],
+            $this->manifest(['read_attribution']),
+            ['a.ts' => self::h('a'), 'b.ts' => self::h('b'), 'c.ts' => self::h('c'), 'tsconfig.json' => self::h('t')],
+            [new ScanContribution('o:a', reads: [])],
+            ['a.ts'],
+        );
+
+        $group = $reads['owners']['o:a']['group'];
+        self::assertIsString($group);
+        assertSame(['tsconfig.json' => self::h('t')], $reads['groups'][$group]);
+        assertSame([], $reads['owners']['o:a']['reads']);
+    }
+
+    public function testAnUnattributedReadInputHashesDoesNotConfirmIsRefused(): void
+    {
+        $error = captureThrows(
+            fn() => RequestReads::forRequest(
+                ['unattributed_reads' => ['b.ts' => self::h('other')]],
+                $this->manifest(['read_attribution']),
+                ['a.ts' => self::h('a'), 'b.ts' => self::h('b')],
+                [new ScanContribution('o:a', reads: [])],
+                ['a.ts'],
+            ),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode);
+        assertSame('knossos.fake reported a read of b.ts in the unattributed reads that its input_hashes does not confirm.', $error->getMessage());
+    }
+
+    public function testUnattributedReadsOfAWorkerThatDoesNotAttributeAreIgnored(): void
+    {
+        $inputs = ['a.ts' => self::h('a')];
+
+        $reads = RequestReads::forRequest(['unattributed_reads' => ['b.ts' => 'not a hash']], $this->manifest(['scan']), $inputs, [new ScanContribution('o:a')]);
+
+        $group = $reads['owners']['o:a']['group'];
+        self::assertIsString($group);
+        assertSame($inputs, $reads['groups'][$group]);
+    }
+
     public function testARequestedFilesOwnReadNeedsNoAttribution(): void
     {
         $reads = RequestReads::forRequest(

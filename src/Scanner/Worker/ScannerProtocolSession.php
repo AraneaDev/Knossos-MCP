@@ -21,6 +21,12 @@ final class ScannerProtocolSession
     /** The field of a result, and of an `input_hashes` part, holding a request's shared reads. */
     private const SHARED_READS = 'reads';
 
+    /** The field of a result, and of an `input_hashes` part, holding the reads no contribution owns. */
+    private const UNATTRIBUTED_READS = 'unattributed_reads';
+
+    /** The reads maps a result may carry, each of which parts may split. */
+    private const READS_FIELDS = [self::SHARED_READS, self::UNATTRIBUTED_READS];
+
     private int $nextId = 1;
     private ?ScannerManifest $manifest = null;
     /** @var array<string, mixed> */
@@ -110,10 +116,10 @@ final class ScannerProtocolSession
 
         $completed = false;
         // Parts of this request's input_hashes map sent ahead of the result,
-        // null until the first one arrives, and of its shared reads, which
+        // null until the first one arrives, and of each reads map, which
         // the same parts may carry.
         $inputHashes = null;
-        $sharedReads = null;
+        $readsParts = array_fill_keys(self::READS_FIELDS, null);
         try {
             while (true) {
                 if ($cancelled !== null && $cancelled()) {
@@ -131,9 +137,11 @@ final class ScannerProtocolSession
                         // parameter to it.
                         $inputHashes ??= [];
                         InputHashesMap::merge($inputHashes, $this->decodeInputHashesPart($message, $manifest));
-                        if (array_key_exists(self::SHARED_READS, $message['params'])) {
-                            $sharedReads ??= [];
-                            InputHashesMap::merge($sharedReads, ReadsMap::decode($message['params'][self::SHARED_READS]));
+                        foreach (self::READS_FIELDS as $field) {
+                            if (array_key_exists($field, $message['params'])) {
+                                $readsParts[$field] ??= [];
+                                InputHashesMap::merge($readsParts[$field], ReadsMap::decode($message['params'][$field]));
+                            }
                         }
                         continue;
                     }
@@ -153,8 +161,10 @@ final class ScannerProtocolSession
                 if ($inputHashes !== null) {
                     $result = $this->withInputHashesParts($result, $inputHashes, $manifest);
                 }
-                if ($sharedReads !== null) {
-                    $result = self::withSharedReadsParts($result, $sharedReads);
+                foreach ($readsParts as $field => $parts) {
+                    if ($parts !== null) {
+                        $result = self::withReadsParts($result, $field, $parts);
+                    }
                 }
                 $this->lastScanResult = $result;
                 $completed = true;
@@ -342,7 +352,7 @@ final class ScannerProtocolSession
     }
 
     /**
-     * Fold the shared reads sent in parts into the result's own `reads`.
+     * Fold one reads map sent in parts into the result's own field of that name.
      *
      * A path two parts, or a part and the result, report with different values
      * becomes null, the rule `input_hashes` follows, so the two stay comparable.
@@ -352,12 +362,12 @@ final class ScannerProtocolSession
      * @return array<string, mixed>
      * @throws WorkerException WORKER_CONTRIBUTION_INVALID for a result field that is not a reads map
      */
-    private static function withSharedReadsParts(array $result, array $parts): array
+    private static function withReadsParts(array $result, string $field, array $parts): array
     {
-        if (array_key_exists(self::SHARED_READS, $result)) {
-            InputHashesMap::merge($parts, ReadsMap::decode($result[self::SHARED_READS]));
+        if (array_key_exists($field, $result)) {
+            InputHashesMap::merge($parts, ReadsMap::decode($result[$field]));
         }
-        $result[self::SHARED_READS] = $parts;
+        $result[$field] = $parts;
 
         return $result;
     }

@@ -200,6 +200,20 @@ final class ScannerProtocolSessionInputHashesTest extends TestCase
         assertSame(['src/a.ts' => null], $session->lastScanResult()['reads']);
     }
 
+    public function testUnattributedReadsSentInPartsMergeWithTheResultFieldApartFromTheSharedReads(): void
+    {
+        $session = $this->session([
+            self::part(['src/b.ts' => self::hash('b')], ['tsconfig.json' => self::hash('config')], ['src/b.ts' => self::hash('b')]),
+            self::part([], [], ['src/c.ts' => self::hash('c')]),
+            ['jsonrpc' => '2.0', 'id' => 2, 'result' => ['input_hashes' => [], 'unattributed_reads' => ['src/c.ts' => self::hash('changed')]]],
+        ], capabilities: ['content_hash', 'input_hashes', 'read_attribution']);
+
+        iterator_to_array($session->scan(['files' => []]), false);
+
+        assertSame(['tsconfig.json' => self::hash('config')], $session->lastScanResult()['reads']);
+        assertSame(['src/b.ts' => self::hash('b'), 'src/c.ts' => null], $session->lastScanResult()['unattributed_reads']);
+    }
+
     public function testAMalformedSharedReadsPartFailsTheRequest(): void
     {
         $session = $this->session([
@@ -258,13 +272,17 @@ final class ScannerProtocolSessionInputHashesTest extends TestCase
     /**
      * @param array<array-key, string|null> $inputHashes
      * @param array<array-key, string|null>|null $reads part of the shared reads, when the part carries some
+     * @param array<array-key, string|null>|null $unattributed part of the unattributed reads, when the part carries some
      * @return array<string, mixed>
      */
-    private static function part(array $inputHashes, ?array $reads = null): array
+    private static function part(array $inputHashes, ?array $reads = null, ?array $unattributed = null): array
     {
         $params = ['input_hashes' => $inputHashes];
         if ($reads !== null) {
             $params['reads'] = $reads;
+        }
+        if ($unattributed !== null) {
+            $params['unattributed_reads'] = $unattributed;
         }
 
         return ['jsonrpc' => '2.0', 'method' => 'scan/input_hashes', 'params' => $params];

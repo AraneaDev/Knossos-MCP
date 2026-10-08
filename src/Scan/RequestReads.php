@@ -20,9 +20,19 @@ use Knossos\Scanner\Worker\WorkerException;
  * read, which is its whole verified `input_hashes` map, so the shared set is
  * that map. Shared sets are content-addressed: files of one request point at one
  * group instead of each carrying a copy.
+ *
+ * An attributing worker may also report `unattributed_reads` on the result:
+ * reads it made for project files the request did not name, whose own cached
+ * contributions name those reads already. They are confirmed against
+ * `input_hashes` like any read and count as named, but are stored for nobody,
+ * so a file rescanned in one incremental scan does not come to depend on
+ * every other file its program loaded.
  */
 final class RequestReads
 {
+    /** The result field holding the reads no contribution of the request owns. */
+    public const UNATTRIBUTED = 'unattributed_reads';
+
     private function __construct() {}
 
     /**
@@ -41,8 +51,12 @@ final class RequestReads
         $shared = $attributing
             ? (array_key_exists('reads', $result) ? ReadsMap::decode($result['reads']) : [])
             : $verifiedInputs;
+        $unattributed = $attributing && array_key_exists(self::UNATTRIBUTED, $result)
+            ? ReadsMap::decode($result[self::UNATTRIBUTED])
+            : [];
         if ($attributing) {
             self::assertConfirmed($shared, $verifiedInputs, $manifest, 'the scan result');
+            self::assertConfirmed($unattributed, $verifiedInputs, $manifest, 'the unattributed reads');
         }
         $groupId = self::groupId($shared);
         $owners = [];
@@ -58,7 +72,7 @@ final class RequestReads
             $owners[$contribution->ownerKey] = ['reads' => $reads, 'group' => $groupId, 'attributed' => $attributing];
         }
         if ($attributing) {
-            self::assertAttributed($verifiedInputs, [$shared, ...array_column($owners, 'reads')], $requested, $manifest);
+            self::assertAttributed($verifiedInputs, [$shared, $unattributed, ...array_column($owners, 'reads')], $requested, $manifest);
         }
 
         return ['groups' => $groupId === null ? [] : [$groupId => $shared], 'owners' => $owners];
@@ -81,7 +95,8 @@ final class RequestReads
     }
 
     /**
-     * Refuse a read that no contribution's reads and no shared set name.
+     * Refuse a read that no contribution's reads, no shared set and no
+     * unattributed set name.
      *
      * Such a read changes nothing the planner rescans when it changes, so the
      * contributions derived from it would be reused against bytes they never

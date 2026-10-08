@@ -159,6 +159,10 @@ final readonly class LanguageScanRunner
      * were derived from global declarations the program no longer holds as
      * they were, which only the worker's answer for the rebuilt program shows.
      *
+     * Repeated until a pass finds nothing new: a pass can build a program the
+     * one before it did not, whose reused contributions were never compared.
+     * Each pass adds at least one owner to a finite set, so it ends.
+     *
      * @param array<string, array<string, mixed>> $outcomes by descriptor key
      * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
      * @param array<string, array{files: int, source_bytes: int, source_bytes_used: int}> $batchBudgets
@@ -167,31 +171,37 @@ final readonly class LanguageScanRunner
     private function afterEnvironmentChanges(ScanPlan $plan, CancellationToken $cancellation, array $outcomes, array &$workerDiagnostics, array &$batchBudgets): array
     {
         $stale = [];
-        foreach ($this->descriptors as $descriptor) {
-            if ($descriptor->addedFilesAffectAll && isset($outcomes[$descriptor->key])) {
-                $stale += ProgramEnvironments::staleOwners($outcomes[$descriptor->key]['cache_entries']);
+        $current = $plan;
+        while (true) {
+            foreach ($this->descriptors as $descriptor) {
+                if ($descriptor->addedFilesAffectAll && isset($outcomes[$descriptor->key])) {
+                    $outcome = $outcomes[$descriptor->key];
+                    $stale += ProgramEnvironments::staleOwners($outcome['cache_entries'], $outcome['program_environments']);
+                }
             }
-        }
-        $wider = ProgramEnvironments::widened($plan, $stale);
-        $reached = [];
-        foreach (array_diff_key($wider->invalidatedOwners, $plan->invalidatedOwners) as $owner => $true) {
-            $reached[$wider->cachedReads?->rows[$owner]['scanner_id'] ?? ''] = true;
-        }
-        foreach ($this->descriptors as $descriptor) {
-            if (isset($outcomes[$descriptor->key], $reached[$descriptor->scannerId()])) {
-                $first = $outcomes[$descriptor->key];
-                unset($outcomes[$descriptor->key]);
-                $outcome = $this->attempt($descriptor, $wider, $cancellation, $workerDiagnostics, $batchBudgets);
-                if ($outcome !== null) {
-                    // The language's time is both passes; its counts and
-                    // facts are the second's, which replace the first's.
-                    $outcome['milliseconds'] += $first['milliseconds'];
-                    $outcomes[$descriptor->key] = $outcome;
+            $wider = ProgramEnvironments::widened($plan, $stale);
+            $reached = [];
+            foreach (array_diff_key($wider->invalidatedOwners, $current->invalidatedOwners) as $owner => $true) {
+                $reached[$wider->cachedReads?->rows[$owner]['scanner_id'] ?? ''] = true;
+            }
+            if ($reached === []) {
+                return $outcomes;
+            }
+            $current = $wider;
+            foreach ($this->descriptors as $descriptor) {
+                if (isset($outcomes[$descriptor->key], $reached[$descriptor->scannerId()])) {
+                    $first = $outcomes[$descriptor->key];
+                    unset($outcomes[$descriptor->key]);
+                    $outcome = $this->attempt($descriptor, $wider, $cancellation, $workerDiagnostics, $batchBudgets);
+                    if ($outcome !== null) {
+                        // The language's time is every pass; its counts and
+                        // facts are the last's, which replace the earlier.
+                        $outcome['milliseconds'] += $first['milliseconds'];
+                        $outcomes[$descriptor->key] = $outcome;
+                    }
                 }
             }
         }
-
-        return $outcomes;
     }
 
     /**
@@ -216,7 +226,8 @@ final readonly class LanguageScanRunner
      *     scanner_metadata: array<string, mixed>,
      *     milliseconds: float,
      *     undiscovered_inputs: array<string, string|null>,
-     *     read_groups: array<string, array<string, ?string>>
+     *     read_groups: array<string, array<string, ?string>>,
+     *     program_environments: array<string, string>
      * }
      */
     private function runLanguage(
@@ -271,8 +282,9 @@ final readonly class LanguageScanRunner
         $undiscovered = new UndiscoveredInputs();
         // What each received contribution read, and the shared sets those
         // name. A file retried in a later batch is overwritten there, like
-        // its contribution.
-        $readsByOwner = $groups = [];
+        // its contribution. The environment of every program the requests
+        // built, for the reused contributions to be compared against.
+        $readsByOwner = $groups = $environments = [];
         $queue = new ScanBatchQueue($partition->filesToScan, $descriptor, $sourceBytes, $this->maxRequestsPerLanguage);
         while (($item = $queue->next()) !== null) {
             // Held aside rather than appended directly: an overflowing
@@ -299,9 +311,10 @@ final readonly class LanguageScanRunner
             $requestReads = RequestReads::forRequest($batchResult, $manifest, $verified['all'], $received, $requested);
             $readsByOwner = $requestReads['owners'] + $readsByOwner;
             $groups += $requestReads['groups'];
+            $environments = ProgramEnvironments::fromResult($batchResult, $manifest->id) + $environments;
             // Evidence for these checks only, not statistics: kept out of the
             // scanner metadata a scan report carries.
-            unset($batchResult['input_hashes'], $batchResult['reads']);
+            unset($batchResult['input_hashes'], $batchResult['reads'], $batchResult[RequestReads::UNATTRIBUTED], $batchResult[ProgramEnvironments::FIELD]);
             foreach ($received as $contribution) {
                 $scanned[] = $contribution;
             }
@@ -344,6 +357,7 @@ final readonly class LanguageScanRunner
             'milliseconds' => self::elapsedMilliseconds($started),
             'undiscovered_inputs' => $undiscovered->all(),
             'read_groups' => $groups,
+            'program_environments' => $environments,
         ];
     }
 
@@ -384,10 +398,7 @@ final readonly class LanguageScanRunner
             if ($packages !== []) {
                 $request['package_directories'] = $packages;
             }
-            $declarations = self::declarationFiles($files);
-            if ($declarations !== []) {
-                $request['declaration_files'] = $declarations;
-            }
+            $request['source_files'] = self::sourceFiles($files);
         } elseif ($descriptor->key === 'python') {
             $request['frameworks'] = $plan->preparation->pythonFrameworks;
         } elseif ($descriptor->key === 'rust') {
@@ -567,30 +578,30 @@ final readonly class LanguageScanRunner
     }
 
     /**
-     * Every declaration file (`.d.ts`, `.d.mts`, `.d.cts`) among the
-     * language's files, sorted, whether or not this scan reads it again.
+     * Every file of the language, sorted, whether or not this scan reads it
+     * again.
      *
-     * An ambient `declare module 'x'` satisfies `import … from 'x'` only when
-     * its file is in the importer's program. A tsconfig's program lists its
-     * own declarations, but a file no tsconfig includes is read in a program of
-     * the files requested with it, and an incremental scan of the importer
-     * alone, or a batch that split the two, left the declaration out.
+     * A tsconfig's program lists its own files, but a file no tsconfig
+     * includes is read in a program of its neighbours, and that program must
+     * hold the same files whichever of them a request names: an ambient
+     * `declare module 'x'` satisfies `import ... from 'x'` only from inside
+     * the importer's program, a test sees the globals its setup declares, and
+     * the program's environment must not follow the request. The list also
+     * tells the worker which of the files a program loaded have contributions
+     * of their own, whose reads it then owes nobody.
      *
      * @param list<object> $files
      * @return list<string>
      */
-    private static function declarationFiles(array $files): array
+    private static function sourceFiles(array $files): array
     {
-        $declarations = [];
+        $paths = [];
         foreach ($files as $file) {
-            $path = (string) $file->relativePath;
-            if (preg_match('/\.d\.[cm]?ts$/', $path) === 1) {
-                $declarations[] = $path;
-            }
+            $paths[] = (string) $file->relativePath;
         }
-        sort($declarations, SORT_STRING);
+        sort($paths, SORT_STRING);
 
-        return array_values(array_unique($declarations));
+        return array_values(array_unique($paths));
     }
 
     /**

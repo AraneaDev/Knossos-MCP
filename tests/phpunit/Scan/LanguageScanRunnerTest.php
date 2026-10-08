@@ -1673,7 +1673,9 @@ final class LanguageScanRunnerTest extends TestCase
                 // Each manifest's declared TypeScript major, keyed by its
                 // directory; a range naming no version tells the worker nothing.
                 // And the directories whose manifest depends on Vue.
-                [...$limits, ...$exclusions, 'config_files' => ['web/tsconfig.json'], 'typescript_versions' => ['' => 5, 'web' => 6], 'vue_projects' => ['web'], 'package_directories' => ['', 'docs', 'tools', 'web']],
+                // And every file of the language, so a program for files no
+                // config includes holds the same files whichever are requested.
+                [...$limits, ...$exclusions, 'config_files' => ['web/tsconfig.json'], 'typescript_versions' => ['' => 5, 'web' => 6], 'vue_projects' => ['web'], 'package_directories' => ['', 'docs', 'tools', 'web'], 'source_files' => ['web/a.ts']],
                 [...$limits, ...$exclusions, 'frameworks' => ['django']],
                 [...$limits, 'frameworks' => ['axum'], 'config_files' => ['rs/Cargo.toml']],
             ],
@@ -1685,15 +1687,16 @@ final class LanguageScanRunnerTest extends TestCase
     }
 
     /**
-     * Every TypeScript request names all of the project's declaration files,
-     * whichever batch it is and whichever files it scans.
+     * Every TypeScript request names all of the language's files, whichever
+     * batch it is and whichever files it scans.
      *
-     * An ambient `declare module` in a `.d.ts` satisfies an import only when
-     * that file is in the importer's program. A batch of one file, or an
-     * incremental scan of the importer alone, left the declaration out, and the
-     * compiler reported the import as a missing module.
+     * A file no tsconfig includes is read in a program of its neighbours,
+     * which must hold the same files whichever of them a request names: an
+     * ambient `declare module` in a `.d.ts` satisfies an import only when
+     * that file is in the importer's program, and a batch of one file, or an
+     * incremental scan of the importer alone, left the declaration out.
      */
-    public function testEveryTypescriptRequestNamesTheProjectsDeclarationFiles(): void
+    public function testEveryTypescriptRequestNamesTheLanguagesFiles(): void
     {
         $this->allocateRecordPath();
         $runner = $this->runnerWithClients(
@@ -1717,7 +1720,7 @@ final class LanguageScanRunnerTest extends TestCase
         );
         assertSame(4, count($requests));
         foreach ($requests as $request) {
-            assertSame(['hooks/engine.d.ts', 'src/types.d.mts'], $request['declaration_files']);
+            assertSame(['hooks/engine.d.ts', 'hooks/register.tsx', 'src/a.ts', 'src/types.d.mts'], $request['source_files']);
         }
     }
 
