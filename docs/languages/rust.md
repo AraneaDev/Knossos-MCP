@@ -111,6 +111,10 @@ file. An ambiguous declaration is dropped rather than guessed. The index holds
 every discovered `.rs` file of the project, read from disk within the byte cap,
 whichever files the request names, so a file rescanned on its own resolves the
 same names a full scan resolves. A file that does not parse adds nothing to it.
+The worker keeps what each file gave the index for as long as its process
+lives, keyed by the file's module and the hash of its bytes, so a later batch
+reads and hashes every file but parses only the ones that changed. While
+indexing takes long, it sends `scan/heartbeat`.
 
 A file's module path follows from where it sits, not from `mod` declarations,
 so a module file no `mod` declares is indexed like any other, and `#[path]`
@@ -132,8 +136,11 @@ scan rescans a file only when one of those changes:
 
 Editing `src/engine/sign.rs` therefore rescans the files that looked up a name
 in that module and the files below it, not unrelated modules. Every name is
-looked up below the crate root, so editing `src/lib.rs` rescans most of the
-crate. Editing a `Cargo.toml` rescans every Rust file. A rebuilt file reaches
+looked up below the crate root, so editing `src/lib.rs`, or adding a
+`src/main.rs` or `src/lib.rs`, rescans the whole crate: that follows from what
+the files read, not from a rule. A file that does not parse has no facts and
+reads nothing beyond itself, so it stays an ordinary attributed row and is
+rescanned only when it changes. Editing a `Cargo.toml` rescans every Rust file. A rebuilt file reaches
 its readers only when its own bytes changed: a `pub use` adds nothing to the
 index, so no file's facts depend on what another file read.
 

@@ -285,7 +285,17 @@ only for the index go on `unattributed_reads`. Those reads are direct: a Rust
 file's facts depend on the bytes of the files it names and on nothing those
 files read in turn. For the packaged Rust worker the core takes this from its
 own worker descriptors, and an owner of that worker that a scan rebuilds
-reaches its readers only when its own bytes changed, not transitively.
+reaches its readers only when its own bytes changed, not transitively. Every
+name is looked up below its crate root, so editing a crate's `src/lib.rs`, or
+adding its `src/main.rs` or `src/lib.rs`, rescans the whole crate. A Rust file
+that does not parse keeps an attributed row with no reads: it has no facts,
+so nothing but its own bytes can change it.
+
+A file discovery hashes for the first time reaches every owner that read it
+while discovery left it out, whatever bytes that read saw: the Rust index
+holds no file discovery left out, and a Python importer names what such a
+module re-exports itself, so the file joining the project changes their
+facts even when its bytes did not change.
 
 No read can name a file that did not exist anywhere a worker looked, and for
 some languages a new file still changes what other files mean: a script that

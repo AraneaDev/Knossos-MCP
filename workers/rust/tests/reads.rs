@@ -388,3 +388,32 @@ fn reads_too_large_for_one_line_go_out_in_parts() {
         );
     }
 }
+
+#[test]
+fn a_later_request_indexes_the_bytes_on_disk_not_the_ones_it_saw_before() {
+    // The worker keeps each file's index entries across requests by the hash
+    // of its bytes: an unchanged file is not parsed again, and a changed one
+    // is, whatever the earlier request saw.
+    let files = crate_files();
+    let root = project("memo", &files);
+    let params =
+        serde_json::json!({"config_files": ["Cargo.toml"], "source_files": sources(&files)});
+    let first = scan(&root, &["src/lib.rs"], &params);
+    let again = scan(&root, &["src/lib.rs"], &params);
+    std::fs::write(
+        root.join("src/sign.rs"),
+        "pub fn renamed() -> u32 {\n    1\n}\n",
+    )
+    .unwrap();
+    let edited = scan(&root, &["src/lib.rs"], &params);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(calls(&first, "crate::top", "crate::sign::any"));
+    assert_eq!(first.contributions, again.contributions);
+    assert_eq!(first.result, again.result);
+    assert!(!calls(&edited, "crate::top", "crate::sign::any"));
+    assert_eq!(
+        sha256_hex("pub fn renamed() -> u32 {\n    1\n}\n"),
+        edited.of("src/lib.rs")["reads"]["src/sign.rs"]
+    );
+}

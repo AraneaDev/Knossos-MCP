@@ -63,8 +63,8 @@ final readonly class LanguageDescriptor
     /**
      * The packaged worker descriptors for every supported language.
      *
-     * Only TypeScript overrides the defaults, and both of its overrides exist
-     * for the same reason: it pays for a whole `ts.createProgram` plus
+     * TypeScript overrides the batch defaults the most, and both of its
+     * overrides exist for the same reason: it pays for a whole `ts.createProgram` plus
      * `ts.getPreEmitDiagnostics` on EVERY request, a cost set by the program
      * rather than by how many files the request asked for. Splitting its work
      * into more requests therefore repeats the expensive part. Measured on a
@@ -83,8 +83,10 @@ final readonly class LanguageDescriptor
      * (2.24x and 1.88x respectively), and both pay per file rather than per
      * program, so nothing is gained by widening their batches.
      *
-     * Rust pays per file rather than per program too, like PHP and Python, so
-     * nothing is gained by widening its file cap. Its source-byte budget is
+     * Rust walks per file, like PHP and Python, and reads and indexes every
+     * Rust file of the project once per request, parsing only bytes its
+     * process has not indexed before, so nothing is gained by widening its
+     * file cap. Its source-byte budget is
      * narrower than the 4 MB default, though: measured on real hand-written
      * Rust (`serde-rs/serde`, 208 files / 1.2 MB) it expands 2.59x, and
      * `WorkerLimits::maxOutputBytes` is 20 MB, so the 4 MB default would

@@ -45,6 +45,13 @@ impl Declarations {
         self.counts.get(name)
     }
 
+    /// Count one file's declarations, as [`declaration_paths`] returned them.
+    pub fn add_file(&mut self, paths: &BTreeSet<String>) {
+        for path in paths {
+            *self.counts.entry(path.clone()).or_insert(0) += 1;
+        }
+    }
+
     /// Every name asked about since the last call, leaving the set empty.
     pub fn take_lookups(&self) -> BTreeSet<String> {
         std::mem::take(&mut *self.lookups.borrow_mut())
@@ -1267,11 +1274,17 @@ fn attr_args(
 /// declaration, compiled in whichever form the target takes. Two files
 /// declaring one path still make it ambiguous.
 pub fn collect_declarations(module: &str, items: &[Item], out: &mut Declarations) {
+    out.add_file(&declaration_paths(module, items));
+}
+
+/// The paths one file declares, as [`collect_declarations`] counts them, for
+/// a caller that keeps them apart from the index (see [`Declarations::add_file`]).
+#[must_use]
+pub fn declaration_paths(module: &str, items: &[Item]) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
     collect_declaration_paths(module, items, &mut paths);
-    for path in paths {
-        *out.counts.entry(path).or_insert(0) += 1;
-    }
+
+    paths
 }
 
 /// The paths [`collect_declarations`] indexes for one file, each once.
