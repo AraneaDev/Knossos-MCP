@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Knossos Python scanner worker. Parses target files; never imports them."""
 
-from __future__ import annotations
-
 import ast
 import hashlib
 import json
 import os
 import re
 import sys
+import tomllib
 from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, NamedTuple
@@ -349,6 +348,9 @@ def safe_file(root: Path, value: Any, max_bytes: int) -> tuple[Path, str]:
 # ``sys.stdlib_module_names`` exists from Python 3.10; an older interpreter
 # resolves no script-directory imports rather than risk shadowing the stdlib.
 STDLIB_MODULE_NAMES: frozenset[str] = frozenset(getattr(sys, "stdlib_module_names", ()))
+# Opens the path that qualifies the id of a file another file's id shadows:
+# ``utils.<src/utils.py>``. No dotted import name contains it.
+QUALIFIED = ".<"
 
 
 def module_name(relative: str, strip: int = 0) -> str:
@@ -357,6 +359,43 @@ def module_name(relative: str, strip: int = 0) -> str:
     if parts and parts[-1] == "__init__":
         parts.pop()
     return ".".join(parts) or "__root__"
+
+
+def _table(data: Any, key: str) -> dict[str, Any]:
+    """The table ``data[key]``, or an empty one when either is not a table."""
+    value = data.get(key) if isinstance(data, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def _list(data: dict[str, Any], key: str) -> list[Any]:
+    """The array ``data[key]``, or an empty one when it is not an array."""
+    value = data.get(key)
+    return value if isinstance(value, list) else []
+
+
+def _project_directory(value: Any) -> tuple[str, ...] | None:
+    """A pyproject's project-relative directory as path segments; ``None`` for the root itself or an unsafe path."""
+    # Discovery cannot name a path with a control character, so a probe below
+    # one would be a read of no known file.
+    if not isinstance(value, str) or "\\" in value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        return None
+    path = PurePosixPath(value)
+    parts = tuple(part for part in path.parts if part != ".")
+    if path.is_absolute() or ".." in parts or not parts:
+        return None
+    return parts
+
+
+class PathWalk(NamedTuple):
+    """How the kernel's lookup of one path went; see :func:`walk_path`.
+
+    ``links`` holds each symlink followed, in order, with the components that
+    were still to walk after it at that moment.
+    """
+
+    kind: str
+    location: str | None
+    links: tuple[tuple[str, tuple[str, ...]], ...]
 
 
 class ProjectModuleIndex:
@@ -407,6 +446,8 @@ class ProjectModuleIndex:
         self._hash_found = True
         self._prefixes: list[tuple[str, ...]] | None = None
         self._cache: dict[str, dict[str, str]] = {}
+        # The import that found each path-qualified module, which is how its declarations are read.
+        self._spellings: dict[str, str] = {}
         self._protocols: set[str] = set()
 
     @property
@@ -514,36 +555,69 @@ class ProjectModuleIndex:
         self.record_read(final, content_hash)
 
     def _source_root_prefixes(self) -> list[tuple[str, ...]]:
-        """The source roots: the bare root, and each top-level directory that is not a package.
+        """The source roots: the bare root first, then ``src/`` and the pyproject's package directories, sorted.
 
-        Whether ``child/__init__.py`` is a file decides every module id below
-        ``child``, so that probe is recorded (:meth:`_record_probe`).
+        ``src/`` is a source root when it is a directory and not a package
+        (the src layout). Whether ``src/__init__.py`` is a file decides every
+        module id below it, so that probe is recorded (:meth:`_record_probe`).
+        Any other top-level directory is an ordinary directory, a package or a
+        namespace package below the bare root, so ``app/models/user.py`` is
+        ``app.models.user``, the name an import of it spells. The pyproject's
+        bytes are not recorded: the core's configuration hash covers every
+        ``pyproject.toml``, so editing one rebuilds every Python file.
         """
-        prefixes: list[tuple[str, ...]] = [()]
+        roots = {prefix for prefix in self._declared_roots() if not self.exclusions.excludes(prefix)}
+        source = self.root / "src"
+        if not self.exclusions.excludes(("src",)) and source.is_dir():
+            marker = source / "__init__.py"
+            present = marker.is_file()
+            # Only the marker's absence is a read: deleting it is a layout
+            # change the core rebuilds the whole language for, and an edit
+            # of its bytes moves no source root.
+            self._record_probe(walk_path(marker), present, hashed=False)
+            if not present:
+                roots.add(("src",))
+        return [(), *sorted(roots)]
+
+    def _declared_roots(self) -> set[tuple[str, ...]]:
+        """The directories the project's ``pyproject.toml`` says its packages live in.
+
+        Read from setuptools (``packages.find.where``, the ``""`` entry of
+        ``package-dir``), Poetry (``packages[].from``), Hatch (the parent of
+        each wheel ``packages`` path) and PDM (``build.package-dir``). A file
+        that is missing, excluded, outside the root, over the byte cap or not
+        TOML declares none, and so does a path that is absolute or climbs out.
+
+        The probe is recorded, hashed, as the request's shared read: a
+        pyproject discovery leaves out (a gitignored one) is no unit, so no
+        configuration hash covers it, and editing, creating or deleting it
+        must still reach every file.
+        """
+        walked = walk_path(self.root / "pyproject.toml")
+        location = self._in_root_file(walked)
+        self._record_probe(walked, location is not None)
         try:
-            for child in sorted(self.root.iterdir()):
-                if self.exclusions.excludes((child.name,)) or not child.is_dir():
-                    continue
-                try:
-                    child.name.encode("utf-8")
-                except UnicodeEncodeError:
-                    # Keeps input_hashes keys valid UTF-8 for the PHP side.
-                    continue
-                if any(ord(c) < 32 or ord(c) == 127 for c in child.name):
-                    # Discovery cannot name a path with a control character,
-                    # so a probe below it would be a read of no known file.
-                    continue
-                marker = child / "__init__.py"
-                present = marker.is_file()
-                # Only a marker's absence is a read: deleting one is a layout
-                # change the core rebuilds the whole language for, and an
-                # edit of its bytes moves no source root.
-                self._record_probe(walk_path(marker), present, hashed=False)
-                if not present:
-                    prefixes.append((child.name,))
-        except OSError:
-            pass
-        return prefixes
+            if location is None or self.exclusions.excludes(("pyproject.toml",)):
+                return set()
+            source = read_bounded(location, self.max_bytes)
+            if len(source) > self.max_bytes:
+                return set()
+            data = tomllib.loads(source.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return set()
+        tool = _table(data, "tool")
+        setuptools = _table(tool, "setuptools")
+        declared: list[Any] = list(_list(_table(_table(setuptools, "packages"), "find"), "where"))
+        declared.append(_table(setuptools, "package-dir").get(""))
+        declared.extend(
+            item.get("from") for item in _list(_table(tool, "poetry"), "packages") if isinstance(item, dict)
+        )
+        wheel = _table(_table(_table(_table(tool, "hatch"), "build"), "targets"), "wheel")
+        declared.extend(
+            PurePosixPath(item).parent.as_posix() for item in _list(wheel, "packages") if isinstance(item, str)
+        )
+        declared.append(_table(_table(tool, "pdm"), "build").get("package-dir"))
+        return {prefix for prefix in map(_project_directory, declared) if prefix}
 
     def module_for(self, relative: str) -> str:
         parts = PurePosixPath(relative).parts
@@ -554,9 +628,13 @@ class ProjectModuleIndex:
         return module_name(relative, len(best))
 
     def module_file(self, module: str) -> Path | None:
-        """The file ``module`` resolves to, or ``None``; every candidate tried is recorded."""
+        """The file ``module`` resolves to, or ``None``; every candidate tried is recorded.
+
+        A path-qualified id (:meth:`file_identity`) names a file no import
+        spells, so nothing is probed for it.
+        """
         parts = module.split(".")
-        if not parts or "" in parts:
+        if not parts or "" in parts or QUALIFIED in module:
             return None
         for prefix in self.prefixes:
             base = self.root.joinpath(*prefix).joinpath(*parts)
@@ -565,7 +643,7 @@ class ProjectModuleIndex:
             for candidate in (base / "__init__.py", base.with_suffix(".py")):
                 if self._is_project_file(candidate):
                     return candidate
-            # Last, the suffixless file itself. Discovery admits an extensionless
+            # Then the suffixless file itself. Discovery admits an extensionless
             # script on its shebang, so such a file is scanned and its symbols
             # are emitted, but a name derived from it round-trips only to
             # ``<name>.py`` — which does not exist. Its own declarations were
@@ -576,17 +654,58 @@ class ProjectModuleIndex:
             # named ``config``.
             if self._is_python_script(base):
                 return base
+            # Last, a stub with no module beside it: the declarations of an
+            # extension module, which is all an importer can resolve against.
+            for candidate in (base / "__init__.pyi", base.with_suffix(".pyi")):
+                if self._is_project_file(candidate):
+                    return candidate
         return None
 
+    def file_identity(self, relative: str, absolute: Path, found_as: str | None = None) -> tuple[str, str, Path | None]:
+        """How the module file at ``relative`` is named: its location, its id, and the file its location finds.
+
+        The location is :meth:`module_for`'s dotted name, which relative
+        imports climb from. When an import of the location finds another file
+        (a ``mod.py`` beside ``mod/__init__.py``, a module at the bare root and
+        one in ``src/``, a stub beside its module), this file is named
+        ``<location>.<relative>`` instead, so no two files share one id; the
+        probes deciding that are recorded. A stub with no module beside it owns
+        its location. A location no import finds names the file as it is, its
+        own scan then declares nothing under it, and the owner returned is
+        ``None``. ``found_as`` is a module whose import just found this file;
+        when it is the location, the location is not probed again.
+        """
+        location = self.module_for(relative)
+        owner = Path(absolute) if found_as == location else self.module_file(location)
+        if owner is None or owner.resolve() == absolute.resolve():
+            return location, location, owner
+        return location, f"{location}{QUALIFIED}{relative}>", owner
+
+    def canonical_module(self, module: str) -> str:
+        """The id of the file an import of ``module`` finds, or ``module`` when it finds none.
+
+        ``import src.shop.cart`` finds ``src/shop/cart.py``, whose id is
+        ``shop.cart`` when ``src/`` is a source root, so the import names
+        ``shop.cart``, as that file's own scan does.
+        """
+        path = self.module_file(module)
+        if path is None:
+            return module
+        name = self.file_identity(path.relative_to(self.root).as_posix(), path, module)[1]
+        if QUALIFIED in name:
+            # Only an import spells a path-qualified module, so its declarations are found through that spelling.
+            self._spellings.setdefault(name, module)
+        return name
+
     def script_sibling_module(self, importer: str, module: str) -> str | None:
-        """The module an absolute import names in the importer's own directory.
+        """How to spell the module an absolute import names in the importer's own directory, if one is there.
 
         Running ``python3 app/main.py`` puts ``app/`` first on ``sys.path``, so
         the script's bare ``import monitor`` loads ``app/monitor.py`` whether or
-        not ``app/`` is a package. Only a script gets this: a module something
-        else imports has no directory of its own on the path. A name the
-        standard library owns is left alone, so a sibling ``json.py`` never
-        captures ``import json``.
+        not ``app/`` is a package, and pytest does the same for a test module
+        in a directory that is no package. A module something else imports has
+        no directory of its own on the path. A name the standard library owns
+        is left alone, so a sibling ``json.py`` never captures ``import json``.
         """
         parts = module.split(".")
         if not parts or "" in parts or parts[0] in STDLIB_MODULE_NAMES:
@@ -595,10 +714,23 @@ class ProjectModuleIndex:
         if not directory.parts:
             return None  # the bare root is already a source root
         base = self.root.joinpath(*directory.parts, *parts)
-        for candidate in (base / "__init__.py", base.with_suffix(".py")):
+        for candidate in (
+            base / "__init__.py",
+            base.with_suffix(".py"),
+            base / "__init__.pyi",
+            base.with_suffix(".pyi"),
+        ):
             if self._is_project_file(candidate):
-                return self.module_for(candidate.relative_to(self.root).as_posix())
+                # Spelled from the bare root, which is searched first, so an import of it finds this very file.
+                return module_name(candidate.relative_to(self.root).as_posix())
         return None
+
+    def is_package_directory(self, directory: PurePosixPath) -> bool:
+        """Whether the project directory ``directory`` holds an ``__init__.py``; the probe is recorded."""
+        marker = self.root.joinpath(*directory.parts, "__init__.py")
+        present = marker.is_file()
+        self._record_probe(walk_path(marker), present)
+        return present
 
     def _is_python_script(self, path: Path) -> bool:
         """Whether a suffixless path is a project file whose shebang names Python.
@@ -659,17 +791,27 @@ class ProjectModuleIndex:
         """The top-level declarations of ``module``, memoised, named as read by whatever asked.
 
         Whoever asks, first or from the memo, names what finding and reading
-        the module cost (:meth:`_expose`). What the module re-exports was read
-        for the module's own sake: a discovered module's own contribution
-        names it, so it is reported unattributed rather than charged to every
-        importer; a module with no contribution of its own, or one read under
-        a name its own scan does not give it, passes it on to the importer.
+        the module cost (:meth:`_expose`). The declarations are named by the
+        file found (:meth:`file_identity`), so ``src.shop.cart`` and
+        ``shop.cart`` give the same ids. What the module re-exports was read
+        for the module's own sake: a discovered module whose own scan derives
+        the same declarations names it in its own contribution, so it is
+        reported unattributed rather than charged to every importer; any
+        other module passes it on to the importer.
         """
         cached = self._cache.get(module)
+        if cached is None and QUALIFIED in module:
+            spelled = self._spellings.get(module)
+            return {} if spelled is None else self.module_declarations(spelled)
         if cached is None:
             self.open_scope()
             try:
                 path, tree = self._read_module(module)
+                location, name, owner = (
+                    (module, module, None)
+                    if path is None
+                    else self.file_identity(path.relative_to(self.root).as_posix(), path, module)
+                )
             except BaseException:
                 # What was read before the failure is in input_hashes, so the
                 # caller names it, and the failure reaches the file it fails.
@@ -682,16 +824,21 @@ class ProjectModuleIndex:
             if path is not None and tree is not None:
                 self.open_scope()
                 try:
-                    cached = self._declare(tree, module, path.name == "__init__.py")
+                    cached = self._declare(tree, name, path.stem == "__init__", location, module)
                 except BaseException:
                     located |= self.close_scope()
                     self._note(located)
                     raise
                 declared = self.close_scope()
-                if self._owns(module, path):
+                derived = owner is not None
+                if derived and self._owns(path):
                     self.unattributed_reads |= declared
                 else:
                     located |= declared
+                if derived and name != module:
+                    # Asked for under the file's own id later, the memo answers.
+                    self._cache.setdefault(name, cached)
+                    self._exposed.setdefault(name, located)
         self._expose(module)
         return cached
 
@@ -699,17 +846,13 @@ class ProjectModuleIndex:
         """Name what ``module``'s declarations cost as read by the open scope."""
         self._note(self._exposed.get(module, set()))
 
-    def _owns(self, module: str, path: Path) -> bool:
-        """Whether ``path``, read as ``module``, has a contribution that names what it re-exports.
+    def _owns(self, path: Path) -> bool:
+        """Whether ``path`` has a contribution of its own that names what it re-exports.
 
-        Only a discovered file whose own scan gives it this very module id
-        derives the same declarations; without the request's list of
-        discovered files, none is assumed to.
+        Only a discovered file does, and only one whose own scan declares its
+        id; without the request's list of discovered files, none is assumed to.
         """
-        if self.source_files is None:
-            return False
-        relative = path.relative_to(self.root).as_posix()
-        return relative in self.source_files and self.module_for(relative) == module
+        return self.source_files is not None and path.relative_to(self.root).as_posix() in self.source_files
 
     def _read_module(self, module: str) -> tuple[Path | None, ast.Module | None]:
         """Find and parse ``module``'s file, recording every probe and read; ``None`` parts when it cannot."""
@@ -748,17 +891,22 @@ class ProjectModuleIndex:
         except (SyntaxError, ValueError, RecursionError):
             return path, None
 
-    def _declare(self, tree: ast.Module, module: str, is_package: bool) -> dict[str, str]:
-        """Derive and memoise ``module``'s declarations from its parsed tree.
+    def _declare(
+        self, tree: ast.Module, name: str, is_package: bool, location: str | None = None, key: str | None = None
+    ) -> dict[str, str]:
+        """Derive and memoise the declarations of the module file ``tree`` parsed.
 
-        Memoised before the re-exports are followed, so modules importing
-        each other resolve without recursing.
+        ``name`` is the id its symbols take, ``location`` the dotted name its
+        relative imports climb from, and ``key`` the memo entry; each defaults
+        to ``name``. Memoised before the re-exports are followed, so modules
+        importing each other resolve without recursing.
         """
-        declarations = top_level_declarations(tree, module)
-        self._protocols |= declared_protocols(tree, module)
-        self._cache[module] = declarations
-        self._add_reexports(tree, module, is_package, declarations)
-        self._add_instances(tree, module, is_package, declarations)
+        location = location or name
+        declarations = top_level_declarations(tree, name)
+        self._protocols |= declared_protocols(tree, name)
+        self._cache[key or name] = declarations
+        self._add_reexports(tree, location, is_package, declarations)
+        self._add_instances(tree, location, is_package, declarations, name)
         return declarations
 
     def is_protocol(self, owner: str) -> bool:
@@ -794,17 +942,22 @@ class ProjectModuleIndex:
                 if reexported is not None:
                     declarations.setdefault(alias.asname or alias.name, reexported)
 
-    def _add_instances(self, tree: ast.Module, module: str, is_package: bool, declarations: dict[str, str]) -> None:
+    def _add_instances(
+        self, tree: ast.Module, module: str, is_package: bool, declarations: dict[str, str], name: str
+    ) -> None:
         """Add the module-level instances ``tree`` creates to its declarations.
 
         ``user_repo = UserRepository()`` at module level is how a service hands
         out one shared object, and the rest of the codebase imports that name.
         Recorded as ``py:instance:<class>`` so an importer can type a call on
         it. The class is found among the module's own classes or its
-        ``from ... import`` names; anything else is left out. The declarations
-        are cached before this runs, so two modules importing each other
-        resolve without recursing.
+        ``from ... import`` names; anything else is left out. A FastAPI
+        ``APIRouter`` or Flask ``Blueprint`` is recorded as the ``py:router``
+        node its own scan emits (``name`` is the module's id), so a mount in
+        another module names it. The declarations are cached before this
+        runs, so two modules importing each other resolve without recursing.
         """
+        routers = router_constructors(tree)
         imported: dict[str, str] = {}
         for child in module_statements(tree):
             if not isinstance(child, ast.ImportFrom):
@@ -819,43 +972,47 @@ class ProjectModuleIndex:
                 if target is not None and target.startswith("py:class:"):
                     imported[alias.asname or alias.name] = target
         for child in module_statements(tree):
-            name, constructor = None, None
+            variable, constructor = None, None
             if isinstance(child, ast.Assign) and len(child.targets) == 1 and isinstance(child.targets[0], ast.Name):
-                name, constructor = child.targets[0].id, child.value
+                variable, constructor = child.targets[0].id, child.value
             elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
-                name, constructor = child.target.id, child.value
-            if name is None or name in declarations:
+                variable, constructor = child.target.id, child.value
+            if variable is None or variable in declarations:
+                continue
+            if isinstance(constructor, ast.Call) and dotted(constructor.func) in routers:
+                declarations[variable] = ref("router", f"{name}.{variable}")
                 continue
             value = assigned_declaration(constructor, declarations, imported)
             if value is not None:
-                declarations[name] = value
+                declarations[variable] = value
 
-    def adopt_parsed(self, absolute: Path, relative: str, tree: ast.Module) -> None:
-        """Make a scanned file's own declarations come from the tree just parsed.
+    def adopt_parsed(self, absolute: Path, relative: str, tree: ast.Module) -> tuple[str, str | None]:
+        """Make a scanned file's own declarations come from the tree just parsed; return its id and its id's owner.
 
         ``module_declarations`` reads a module's file on its own, so an earlier
         file in the batch that imports this one may have cached declarations
         from bytes other than the ones this scan hashed. Overwriting the entry
         with the hashed tree ties the file's own local resolution to its
-        ``content_hash``. The entry is only replaced when the module id resolves
-        to this very file: for the loser of a ``mod.py``/``mod/__init__.py``
-        collision the id names the package, and seeding it from the module file
-        would make every later importer's targets depend on batch order.
+        ``content_hash``. A file whose location another file owns (see
+        :meth:`file_identity`) is declared under its path-qualified id, which
+        no import shares, so seeding it never makes another importer's targets
+        depend on batch order. The owner returned is that other file's path,
+        ``None`` when this file owns its id or no import finds it.
         """
-        module = self.module_for(relative)
         self.open_scope()
         try:
-            owner = self.module_file(module)
+            location, name, owner = self.file_identity(relative, absolute)
         finally:
             located = self.close_scope()
         # Which file the id resolves to is this file's fact too: a package
         # added beside it takes the id over.
         self._note(located)
-        if owner is None or owner.resolve() != absolute:
-            return
+        if owner is None:
+            return name, None
         # An importer later in the batch names this file, as a read would.
-        self._exposed[module] = located
-        self._declare(tree, module, PurePosixPath(relative).stem == "__init__")
+        self._exposed[name] = located
+        self._declare(tree, name, PurePosixPath(relative).stem == "__init__", location)
+        return name, None if name == location else owner.relative_to(self.root).as_posix()
 
     def collides(self, absolute: Path, is_package: bool) -> bool:
         """A ``mod.py``/``mod/__init__.py`` pair maps to the same module id.
@@ -885,18 +1042,6 @@ S_IFMT = 0o170000
 S_IFDIR = 0o040000
 S_IFLNK = 0o120000
 S_IFREG = 0o100000
-
-
-class PathWalk(NamedTuple):
-    """How the kernel's lookup of one path went; see :func:`walk_path`.
-
-    ``links`` holds each symlink followed, in order, with the components that
-    were still to walk after it at that moment.
-    """
-
-    kind: str
-    location: str | None
-    links: tuple[tuple[str, tuple[str, ...]], ...]
 
 
 def walk_path(path: str | os.PathLike[str]) -> PathWalk:
@@ -1113,6 +1258,24 @@ def annotated_class_name(value: ast.AST | None) -> str | None:
     return first.id if isinstance(first, ast.Name) else None
 
 
+ROUTER_CLASSES = {"fastapi": ("APIRouter",), "flask": ("Blueprint",)}
+"""The framework classes whose instances another module mounts, by the module that exports them."""
+
+
+def router_constructors(tree: ast.Module) -> set[str]:
+    """The callee names that build a mountable router in ``tree``: ``APIRouter``, ``fastapi.APIRouter`` or an alias."""
+    names: set[str] = set()
+    for child in module_statements(tree):
+        if isinstance(child, ast.ImportFrom) and child.level == 0 and child.module in ROUTER_CLASSES:
+            exported = ROUTER_CLASSES[child.module]
+            names.update(alias.asname or alias.name for alias in child.names if alias.name in exported)
+        elif isinstance(child, ast.Import):
+            for alias in child.names:
+                for name in ROUTER_CLASSES.get(alias.name, ()):
+                    names.add(f"{alias.asname or alias.name}.{name}")
+    return names
+
+
 def is_protocol_base(base: ast.expr) -> bool:
     """Whether a class base is ``Protocol``, generic (``Protocol[T]``) or not."""
     named = base.value if isinstance(base, ast.Subscript) else base
@@ -1181,6 +1344,11 @@ def absolute_import(current_module: str, level: int, imported: str | None, is_pa
     if imported:
         package.extend(imported.split("."))
     return ".".join(package)
+
+
+def prefixed_path(prefix: str, path: str) -> str:
+    """A route path under its router's prefix, one slash between segments: ``/bp`` and ``x/`` give ``/bp/x``."""
+    return "/" + "/".join(part.strip("/") for part in (prefix, path) if part.strip("/"))
 
 
 def decorator_short(name: str) -> str:
@@ -1310,8 +1478,14 @@ class PythonFrameworkRoleEnricher:
         return sorted(set(roles))
 
 
-class FastApiFactEnricher:
-    """Add FastAPI routes, dependencies, routers, and middleware facts."""
+class RouterMounts:
+    """The routers a file assigns and mounts, shared by the FastAPI and Flask enrichers.
+
+    A router assigned here is a ``py:router:<module>.<variable>`` node; one
+    imported from another module is that module's node, which its own scan
+    emits. A mount names the router node it reaches, so no edge points at a
+    router nobody declares.
+    """
 
     def __init__(
         self,
@@ -1320,22 +1494,80 @@ class FastApiFactEnricher:
         module_id: str,
         aliases: dict[str, str],
         resolve_name: Callable[[str, str], str | None],
+        declarations: Callable[[str], dict[str, str]],
     ) -> None:
         self.facts = facts
         self.module = module
         self.module_id = module_id
         self.aliases = aliases
         self.resolve_name = resolve_name
+        # A module's top-level declarations, by module id (ProjectModuleIndex.module_declarations).
+        self.declarations = declarations
+        # Variable to (framework, prefix) for every app, router or blueprint in scope.
         self.framework_objects: dict[str, tuple[str, str]] = {}
+        # The variables this file assigned a router to, each a node it emits.
+        self.routers: set[str] = set()
 
-    def register_assignment(self, variable: str, value: ast.AST | None) -> None:
+    def emit_router(self, variable: str, value: ast.Call, framework: str, prefix: str) -> None:
+        """Declare the router node a module-level ``variable = APIRouter(...)`` or ``Blueprint(...)`` builds."""
+        router_id = ref("router", f"{self.module}.{variable}")
+        self.facts.add_node(
+            router_id,
+            "router",
+            f"{self.module}.{variable}",
+            variable,
+            value,
+            {"framework": framework, "prefix": prefix},
+        )
+        self.facts.add_edge("contains", self.module_id, router_id, value)
+        self.routers.add(variable)
+
+    def mount(self, node: ast.Call, prefix_keyword: str) -> None:
+        """Emit the ``mounts`` edge of ``include_router(router)`` or ``register_blueprint(bp)``.
+
+        A router this file assigns, one a project module declares and an
+        imported third-party name are certain targets. Anything else, such as
+        a router handed in as a parameter, is a guess the core keeps only when
+        it resolves.
+        """
+        router = dotted(node.args[0]) if node.args else None
+        if router is None:
+            return
+        attributes: dict[str, Any] = {"prefix": keyword_string(node, prefix_keyword) or ""}
+        target = ref("router", f"{self.module}.{router}")
+        if router not in self.routers:
+            resolved = self.resolve_name(router, "router") or ""
+            if resolved.startswith("py:external_symbol:") or self.declares(resolved):
+                target = resolved
+            else:
+                target = resolved if resolved.startswith("py:router:") else target
+                attributes["speculative"] = True
+        self.facts.add_edge("mounts", self.module_id, target, node, attributes)
+
+    def declares(self, target: str) -> bool:
+        """Whether ``target`` is a router a project module declares at module level."""
+        if not target.startswith("py:router:"):
+            return False
+        module, _, variable = target.removeprefix("py:router:").rpartition(".")
+        return bool(module) and self.declarations(module).get(variable) == target
+
+
+class FastApiFactEnricher(RouterMounts):
+    """Add FastAPI routes, dependencies, routers, and middleware facts."""
+
+    def register_assignment(self, variable: str, value: ast.AST | None, module_level: bool = True) -> None:
         if not isinstance(value, ast.Call):
             return
         called = dotted(value.func)
-        resolved = self.aliases.get(called or "", "")
-        if resolved.endswith("fastapi.FastAPI") or resolved.endswith("fastapi.APIRouter"):
+        # Through resolve_name, so `fastapi.APIRouter()` off `import fastapi` counts too.
+        resolved = (called and self.resolve_name(called, "class")) or ""
+        if resolved.endswith(("fastapi.FastAPI", "fastapi.APIRouter")):
             prefix = keyword_string(value, "prefix") or ""
             self.framework_objects[variable] = ("fastapi", prefix)
+        # A router built inside a function is that call's own, one per call:
+        # no module-level node names it, though its routes keep its prefix.
+        if module_level and resolved.endswith("fastapi.APIRouter"):
+            self.emit_router(variable, value, "fastapi", keyword_string(value, "prefix") or "")
 
     def register_parameters(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
@@ -1394,7 +1626,7 @@ class FastApiFactEnricher:
                 self.facts.add_diagnostic("PY_DYNAMIC_ROUTE_PATH", "Dynamic FastAPI route path was skipped.", decorator)
                 continue
             prefix = self.framework_objects[owner][1]
-            path = "/" + "/".join(part.strip("/") for part in (prefix, raw_path) if part.strip("/"))
+            path = prefixed_path(prefix, raw_path)
             result.append((method.upper(), path or "/", decorator))
         return result
 
@@ -1426,16 +1658,8 @@ class FastApiFactEnricher:
             target = self.resolve_name(middleware, "class") if middleware else None
             if target:
                 self.facts.add_edge("uses_middleware", self.module_id, target, node, {"framework": "fastapi"})
-        if name and name.endswith(".include_router") and node.args:
-            router = dotted(node.args[0])
-            if router:
-                self.facts.add_edge(
-                    "mounts",
-                    self.module_id,
-                    ref("router", f"{self.module}.{router}"),
-                    node,
-                    {"prefix": keyword_string(node, "prefix") or ""},
-                )
+        if name and name.endswith(".include_router"):
+            self.mount(node, "prefix")
 
     def decorator_dependencies(self, node: ast.FunctionDef | ast.AsyncFunctionDef, source: str) -> None:
         for decorator in node.decorator_list:
@@ -1536,7 +1760,7 @@ class DjangoFactEnricher:
         return value if isinstance(value, (str, int, float, bool, list, tuple, dict, type(None))) else None
 
 
-class FlaskFactEnricher:
+class FlaskFactEnricher(RouterMounts):
     """Add Flask route and blueprint facts.
 
     Flask's primary wiring is `@app.route("/path", methods=[...])` on a
@@ -1547,29 +1771,16 @@ class FlaskFactEnricher:
     `PY_DYNAMIC_ROUTE_PATH`.
     """
 
-    def __init__(
-        self,
-        facts: PythonFactAccumulator,
-        module: str,
-        module_id: str,
-        aliases: dict[str, str],
-        resolve_name: Callable[[str, str], str | None],
-    ) -> None:
-        self.facts = facts
-        self.module = module
-        self.module_id = module_id
-        self.aliases = aliases
-        self.resolve_name = resolve_name
-        self.framework_objects: dict[str, tuple[str, str]] = {}
-
-    def register_assignment(self, variable: str, value: ast.AST | None) -> None:
+    def register_assignment(self, variable: str, value: ast.AST | None, module_level: bool = True) -> None:
         if not isinstance(value, ast.Call):
             return
         called = dotted(value.func)
-        resolved = self.aliases.get(called or "", "")
-        if resolved.endswith("flask.Flask") or resolved.endswith("flask.Blueprint"):
+        resolved = (called and self.resolve_name(called, "class")) or ""
+        if resolved.endswith(("flask.Flask", "flask.Blueprint")):
             prefix = keyword_string(value, "url_prefix") or ""
             self.framework_objects[variable] = ("flask", prefix)
+        if module_level and resolved.endswith("flask.Blueprint"):
+            self.emit_router(variable, value, "flask", keyword_string(value, "url_prefix") or "")
 
     def route_decorators(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple[str, str, ast.AST]]:
         result: list[tuple[str, str, ast.AST]] = []
@@ -1586,7 +1797,7 @@ class FlaskFactEnricher:
                 self.facts.add_diagnostic("PY_DYNAMIC_ROUTE_PATH", "Dynamic Flask route path was skipped.", decorator)
                 continue
             prefix = self.framework_objects[owner][1]
-            path = "/" + "/".join(part.strip("/") for part in (prefix, raw_path) if part.strip("/"))
+            path = prefixed_path(prefix, raw_path)
             methods = self.methods_keyword(decorator)
             if methods is None:
                 methods = ["GET"]  # Flask's default when `methods` is absent
@@ -1630,16 +1841,8 @@ class FlaskFactEnricher:
             self.facts.add_edge("routes_to", route_id, local_id, decorator)
 
     def enrich_call(self, node: ast.Call, name: str | None) -> None:
-        if name and name.endswith(".register_blueprint") and node.args:
-            blueprint = dotted(node.args[0])
-            if blueprint:
-                self.facts.add_edge(
-                    "mounts",
-                    self.module_id,
-                    ref("router", f"{self.module}.{blueprint}"),
-                    node,
-                    {"prefix": keyword_string(node, "url_prefix") or ""},
-                )
+        if name and name.endswith(".register_blueprint"):
+            self.mount(node, "url_prefix")
         if name and name.endswith(".add_url_rule"):
             raw_path = positional_string(node, 0)
             if raw_path is None or any(marker in raw_path for marker in ("<", ">")):
@@ -1662,7 +1865,10 @@ class FlaskFactEnricher:
                 methods = ["GET"]
             if not methods:
                 return  # an explicit empty `methods=[]` rules out every verb
-            path = "/" + raw_path.lstrip("/") or "/"
+            # A blueprint's rule sits under its `url_prefix`, as a decorated route does.
+            owner = dotted(node.func.value) if isinstance(node.func, ast.Attribute) else None
+            prefix = self.framework_objects.get(owner or "", ("flask", ""))[1]
+            path = prefixed_path(prefix, raw_path)
             for method in methods:
                 canonical = f"{method.upper()} {path} => {target.removeprefix('py:function:')}"
                 route_id = ref("route", canonical)
@@ -1687,6 +1893,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
         index: ProjectModuleIndex,
         module_collision: bool = False,
         has_shebang: bool = False,
+        name: str | None = None,
+        owner: str | None = None,
     ) -> None:
         self.relative = relative
         self.has_shebang = has_shebang
@@ -1695,7 +1903,12 @@ class PythonAstFactCollector(ast.NodeVisitor):
         # loader reads it by path and calls the public names it exposes.
         self.loaded_by_path = not PurePosixPath(relative).stem.isidentifier()
         self.index = index
+        # Where the file sits, which relative imports climb from, and the id
+        # its symbols take: the same unless ``owner``, the file an import of
+        # this location finds, is another file (see ProjectModuleIndex.file_identity).
         self.module = index.module_for(relative)
+        self.name = name or self.module
+        self.owner = owner
         self.is_package = PurePosixPath(relative).stem == "__init__"
         self.module_collision = module_collision
         self.tree = tree
@@ -1728,19 +1941,20 @@ class PythonAstFactCollector(ast.NodeVisitor):
         # `visit_<Node>` hooks it dispatches to by name.
         self.ast_visitors: set[str] = set()
         self.serves_app = False
-        self.module_id = ref("module", self.module)
+        self.module_id = ref("module", self.name)
         self.facts = PythonFactAccumulator(relative)
         self.roles = PythonFrameworkRoleEnricher()
-        self.fastapi = FastApiFactEnricher(self.facts, self.module, self.module_id, self.aliases, self.resolve_name)
-        self.django = DjangoFactEnricher(self.facts, self.module, self.module_id, self.aliases, self.resolve_name)
-        self.flask = FlaskFactEnricher(self.facts, self.module, self.module_id, self.aliases, self.resolve_name)
+        routing = (self.facts, self.name, self.module_id, self.aliases, self.resolve_name, index.module_declarations)
+        self.fastapi = FastApiFactEnricher(*routing)
+        self.django = DjangoFactEnricher(self.facts, self.name, self.module_id, self.aliases, self.resolve_name)
+        self.flask = FlaskFactEnricher(*routing)
 
     def collect(self) -> dict[str, Any]:
         self.facts.add_node(
             self.module_id,
             "module",
-            self.module,
-            self.module,
+            self.name,
+            self.name,
             self.tree,
             {
                 "stub": self.relative.endswith(".pyi"),
@@ -1751,18 +1965,14 @@ class PythonAstFactCollector(ast.NodeVisitor):
             | ({"runtime_invoked": True} if self.loaded_by_path else {}),
         )
         if self.is_package:
-            package = self.module
-            self.facts.add_node(ref("package", package), "package", package, package.split(".")[-1], self.tree)
+            package = self.name
+            # Displayed by where it sits: a path-qualified id ends in its path.
+            display = self.module.split(".")[-1]
+            self.facts.add_node(ref("package", package), "package", package, display, self.tree)
             self.facts.add_edge("contains", ref("package", package), self.module_id, self.tree)
-        if self.module_collision:
-            self.facts.add_diagnostic(
-                "PY_MODULE_ID_COLLISION",
-                f"Module id '{self.module}' is shared by a module file and a package; "
-                "the package (__init__.py) owns it.",
-                self.tree,
-            )
+        self.collision_diagnostic()
         # Known before any call is visited: a call may precede the class.
-        self.protocols |= declared_protocols(self.tree, self.module)
+        self.protocols |= declared_protocols(self.tree, self.name)
         self.visit(self.tree)
         if self.serves_app:
             self.facts.nodes[self.module_id]["attributes"]["executable"] = True
@@ -1770,7 +1980,32 @@ class PythonAstFactCollector(ast.NodeVisitor):
             # A method by one of these names may be what such a call reaches,
             # so the core reports it as only possibly dead.
             self.facts.nodes[self.module_id]["attributes"]["unresolved_member_calls"] = sorted(self.untyped_calls)
+        if self.relative.endswith(".pyi"):
+            # A stub describes code rather than being it: its symbols are
+            # reached through the module they describe, never by a call.
+            for fact in self.facts.nodes.values():
+                fact["attributes"]["declaration_file"] = True
         return self.facts.result()
+
+    def collision_diagnostic(self) -> None:
+        """Report a module id this file shares with another file, and the id it takes instead.
+
+        A stub beside its own module shares the id by design and is named
+        apart without a warning.
+        """
+        renamed = f" This file's symbols are named '{self.name}'." if self.name != self.module else ""
+        if self.module_collision:
+            message = (
+                f"Module id '{self.module}' is shared by a module file and a package; "
+                f"the package (__init__.py) owns it.{renamed}"
+            )
+        elif self.owner is not None and not (self.relative.endswith(".pyi") and self.owner == self.relative[:-1]):
+            message = (
+                f"Module id '{self.module}' is also the id of '{self.owner}', which an import of it finds.{renamed}"
+            )
+        else:
+            return
+        self.facts.add_diagnostic("PY_MODULE_ID_COLLISION", message, self.tree)
 
     def current(self) -> str:
         return self.containers[-1][0] if self.containers else self.module_id
@@ -1786,34 +2021,71 @@ class PythonAstFactCollector(ast.NodeVisitor):
                     return scope[name]
         if name in self.aliases:
             return self.aliases[name]
-        local = self.index.module_declarations(self.module).get(name)
+        local = self.index.module_declarations(self.name).get(name)
         if local:
             return local
         if "." in name:
             first, rest = name.split(".", 1)
             base = self.aliases.get(first)
             if base and base.startswith("py:module:"):
-                module = base.removeprefix("py:module:")
-                return self.index.module_declarations(module).get(rest, ref(hint, f"{module}.{rest}"))
+                return self.module_member(base.removeprefix("py:module:"), rest, hint)
         return None
 
+    def module_member(self, module: str, rest: str, hint: str) -> str:
+        """What ``<module>.<rest>`` names: a declaration of the module, or of the submodule ``rest`` reaches into.
+
+        ``import app.models.user`` binds ``app``, so ``app.models.user.make()``
+        names ``make`` in the longest submodule the import system finds,
+        ``app.models.user``, unless ``app`` itself declares ``models``.
+        """
+        parts = rest.split(".")
+        if len(parts) > 1 and parts[0] not in self.index.module_declarations(module):
+            for end in range(len(parts) - 1, 0, -1):
+                spelled = ".".join([module, *parts[:end]])
+                if self.index.module_file(spelled) is not None:
+                    module, parts = self.index.canonical_module(spelled), parts[end:]
+                    break
+        member = ".".join(parts)
+        return self.index.module_declarations(module).get(member, ref(hint, f"{module}.{member}"))
+
     def script_import(self, module: str) -> str:
-        """An absolute import, resolved against a script's own directory when no source root has it."""
-        if not self.executable or self.index.module_file(module) is not None:
+        """An absolute import, resolved in the importer's own directory when no source root has it.
+
+        Only when that directory is on ``sys.path`` (:meth:`runs_from_own_directory`).
+        """
+        if self.index.module_file(module) is not None or not self.runs_from_own_directory():
             return module
         return self.index.script_sibling_module(self.relative, module) or module
 
+    def runs_from_own_directory(self) -> bool:
+        """Whether this file's own directory is first on ``sys.path`` when it runs.
+
+        A script's is (``python3 tools/run.py``). So is a module's in a
+        directory that is no package: pytest puts a test module's directory
+        there, and a script run beside it puts it there for the modules it
+        imports. Inside a package, a bare import never names a sibling.
+        """
+        if self.executable:
+            return True
+        directory = PurePosixPath(self.relative).parent
+        return bool(directory.parts) and not self.index.is_package_directory(directory)
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            target = ref("module", self.script_import(alias.name))
-            self.aliases[alias.asname or alias.name.split(".")[0]] = target
+            spelled = self.script_import(alias.name)
+            target = ref("module", self.index.canonical_module(spelled))
+            # `import a.b` binds `a`, the spelling less the segments after the
+            # first; `import a.b as m` binds `m` to `a.b`.
+            depth = 0 if alias.asname else alias.name.count(".")
+            bound = target if depth == 0 else ref("module", self.index.canonical_module(spelled.rsplit(".", depth)[0]))
+            self.aliases[alias.asname or alias.name.split(".")[0]] = bound
             self.facts.add_edge("imports", self.module_id, target, node, {"alias": alias.asname})
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        module = absolute_import(self.module, node.level, node.module, self.is_package)
-        if node.level == 0 and module:
-            module = self.script_import(module)
-        if not module:
+        spelled = absolute_import(self.module, node.level, node.module, self.is_package)
+        if node.level == 0 and spelled:
+            spelled = self.script_import(spelled)
+        if not spelled:
             # A relative import that climbs past the top of the project: legal to
             # parse, unrunnable at import time, and nameable by nothing in the
             # graph. Report it rather than emitting `py:module:`, which is not a
@@ -1825,21 +2097,22 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 node,
             )
             return
+        # Named by the file the import finds, the id that file's own scan declares.
+        module = self.index.canonical_module(spelled)
         self.facts.add_edge("imports", self.module_id, ref("module", module), node, {"relative_level": node.level})
         for alias in node.names:
             if alias.name == "*":
                 continue
-            target = self.index.module_declarations(module).get(alias.name)
-            if target is None and self.index.module_file(f"{module}.{alias.name}") is not None:
+            target = self.index.module_declarations(spelled).get(alias.name)
+            if target is None and self.index.module_file(f"{spelled}.{alias.name}") is not None:
                 # `from .tools import cors` names the submodule `tools/cors.py`
                 # when the package declares no `cors` of its own.
-                submodule = f"{module}.{alias.name}"
-                target = ref("module", submodule)
+                target = ref("module", self.index.canonical_module(f"{spelled}.{alias.name}"))
                 self.facts.add_edge("imports", self.module_id, target, node, {"relative_level": node.level})
             self.aliases[alias.asname or alias.name] = target or ref("external_symbol", f"{module}.{alias.name}")
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        canonical = f"{self.module}.{node.name}"
+        canonical = f"{self.name}.{node.name}"
         local_id = ref("class", canonical)
         decorators = self.roles.decorators(node)
         roles = self.roles.class_roles(node, decorators)
@@ -1884,7 +2157,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
             parent_id, parent_canonical, _ = self.containers[-1]
             kind, canonical = "function", f"{parent_canonical}.<locals>.{node.name}"
         else:
-            parent_id, kind, canonical = self.current(), "function", f"{self.module}.{node.name}"
+            parent_id, kind, canonical = self.current(), "function", f"{self.name}.{node.name}"
         local_id = ref(kind, canonical)
         decorators = self.roles.decorators(node)
         fastapi_routes = self.fastapi.route_decorators(node)
@@ -1906,7 +2179,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.fastapi.enrich_function(node, local_id, canonical, fastapi_routes)
         self.flask.enrich_function(node, local_id, canonical, flask_routes)
         self.containers.append((local_id, canonical, kind))
-        self.local_function_scopes.append(self.local_function_declarations(node, canonical, self.module))
+        self.local_function_scopes.append(self.local_function_declarations(node, canonical, self.name))
         self.local_variable_types.append({})
         self.parameter_types.append(self.annotated_parameters(node))
         self.bound_names.append(bound_names(node))
@@ -2068,9 +2341,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.emit_value_references(node.value)
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             variable = node.targets[0].id
-            self.fastapi.register_assignment(variable, node.value)
+            self.fastapi.register_assignment(variable, node.value, not self.containers)
             self.django.enrich_assignment(variable, node.value, node)
-            self.flask.register_assignment(variable, node.value)
+            self.flask.register_assignment(variable, node.value, not self.containers)
             self.remember_local(variable, node.value)
         if len(node.targets) == 1:
             attribute = self.self_attribute(node.targets[0])
@@ -2086,8 +2359,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
             # An annotation states the type outright, which beats inferring it.
             self.remember_attribute(attribute, node.value, node.annotation)
         elif isinstance(node.target, ast.Name):
-            self.fastapi.register_assignment(node.target.id, node.value)
-            self.flask.register_assignment(node.target.id, node.value)
+            self.fastapi.register_assignment(node.target.id, node.value, not self.containers)
+            self.flask.register_assignment(node.target.id, node.value, not self.containers)
             self.remember_local(node.target.id, node.value, node.annotation)
         self.generic_visit(node)
 
@@ -2163,7 +2436,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
 
     def shadows_builtin(self, name: str) -> bool:
         """Whether this scope, an import or the module binds ``name`` over the builtin."""
-        return self.is_local_name(name) or name in self.aliases or name in self.index.module_declarations(self.module)
+        return self.is_local_name(name) or name in self.aliases or name in self.index.module_declarations(self.name)
 
     def declares_class(self, held: str) -> bool:
         """Whether a project module declares ``held`` as a top-level class."""
@@ -2188,7 +2461,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 held = self.parameter_types[-1].get(receiver)
             if held is None and not self.is_local_name(receiver):
                 # A module-level instance, this module's own or imported.
-                instance = self.aliases.get(receiver) or self.index.module_declarations(self.module).get(receiver)
+                instance = self.aliases.get(receiver) or self.index.module_declarations(self.name).get(receiver)
                 if instance is not None and instance.startswith("py:instance:"):
                     held = instance.removeprefix("py:instance:")
         return ref("method", f"{held}::{member}") if held else None
@@ -2209,7 +2482,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 None,
             )
             if target is None:
-                target = self.aliases.get(node.id) or self.index.module_declarations(self.module).get(node.id)
+                target = self.aliases.get(node.id) or self.index.module_declarations(self.name).get(node.id)
             if target is not None and target.startswith(("py:function:", "py:class:")) and target != self.current():
                 self.facts.add_edge("references", self.current(), target, node)
         self.generic_visit(node)
@@ -2441,9 +2714,9 @@ def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex) -> tuple
     # the keys read so far, since they are in input_hashes and must be named.
     index.open_scope()
     try:
-        index.adopt_parsed(absolute, relative, tree)
+        name, owner = index.adopt_parsed(absolute, relative, tree)
         collision = index.collides(absolute, PurePosixPath(relative).stem == "__init__")
-        contribution = PythonAstFactCollector(relative, tree, index, collision, shebang).collect()
+        contribution = PythonAstFactCollector(relative, tree, index, collision, shebang, name, owner).collect()
     except Exception as error:
         contribution = _diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash)
         # Only what was read before the failure is named: what the file

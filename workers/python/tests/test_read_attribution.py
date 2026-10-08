@@ -25,7 +25,7 @@ PACKAGE = {
     "cli.py": "from pkg import Engine\n\n\ndef cli():\n    return Engine().run()\n",
     "stars.py": "from pkg import *\n\n\ndef go():\n    return helper()\n",
     "other.py": "def unrelated():\n    return 2\n",
-    "lib/shared.py": "def thing():\n    return 1\n",
+    "src/shared.py": "def thing():\n    return 1\n",
 }
 
 
@@ -113,13 +113,17 @@ def test_source_roots_are_shared_and_labelled(worker: ModuleType, project: Any) 
     root = project(PACKAGE)
     result, contributions = _scan(worker, root, ["other.py"], sorted(PACKAGE))
 
-    assert result["reads"] == {"lib/__init__.py": None}
+    assert result["reads"] == {"pyproject.toml": None, "src/__init__.py": None}
     item = contributions["other.py"]
     assert item["program"] == "python"
     assert result["environments"] == {"python": item["environment"]}
 
+    # A new top-level directory is no source root; one the pyproject declares is.
     (root / "aaa").mkdir()
     (root / "aaa" / "x.py").write_text("X = 1\n")
+    unmoved, _ = _scan(worker, root, ["other.py"], sorted(PACKAGE))
+    assert unmoved["environments"]["python"] == item["environment"]
+    (root / "pyproject.toml").write_text('[tool.setuptools.packages.find]\nwhere = ["aaa"]\n')
     moved, _ = _scan(worker, root, ["other.py"], sorted(PACKAGE))
     assert moved["environments"]["python"] != item["environment"]
 
@@ -139,19 +143,28 @@ def test_an_undiscovered_module_names_what_it_reexports(worker: ModuleType, proj
     _assert_protocol(result, contributions, ["use.py"])
 
 
-def test_a_module_under_another_name_names_what_it_reexports(worker: ModuleType, project: Any) -> None:
-    """``ns/tools.py`` read as ``ns.tools`` is not the module its own scan describes."""
+def test_a_module_read_under_another_spelling_is_still_its_own(worker: ModuleType, project: Any) -> None:
+    """``src/tools.py`` read as ``src.tools`` is named ``tools``, as its own scan names it.
+
+    Its declarations are the ones its own scan derives, so its own
+    contribution names what it re-exports and the importer names only the module.
+    """
     root = project(
         {
-            "ns/tools.py": "from .impl2 import tool\n",
-            "ns/impl2.py": "def tool():\n    return 1\n",
-            "use.py": "from ns.tools import tool\n",
+            "src/tools.py": "from .impl2 import tool\n",
+            "src/impl2.py": "def tool():\n    return 1\n",
+            "use.py": "from src.tools import tool\n\n\ndef u():\n    return tool()\n",
         }
     )
-    files = ["ns/impl2.py", "ns/tools.py", "use.py"]
+    files = ["src/impl2.py", "src/tools.py", "use.py"]
     result, contributions = _scan(worker, root, ["use.py"], files)
 
-    assert "ns/impl2.py" in contributions["use.py"]["reads"]
+    assert ("calls", "py:function:use.u", "py:function:impl2.tool") in [
+        (edge["kind"], edge["source"], edge["target"]) for edge in contributions["use.py"]["edges"]
+    ]
+    assert "src/tools.py" in contributions["use.py"]["reads"]
+    assert "src/impl2.py" not in contributions["use.py"]["reads"]
+    assert "src/impl2.py" in result["unattributed_reads"]
     _assert_protocol(result, contributions, ["use.py"])
 
 
@@ -180,7 +193,7 @@ def test_large_shared_reads_travel_in_parts(
     worker: ModuleType, project: Any, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The request's shared and unattributed reads are split like ``input_hashes``."""
-    root = project(PACKAGE | {f"d{index}/m.py": "" for index in range(3)})
+    root = project(PACKAGE)
     monkeypatch.setattr(worker, "INPUT_HASHES_PART_BYTES", 40)
     params = {"root": str(root), "files": ["app.py"], "source_files": sorted(PACKAGE)}
     worker.handle({"jsonrpc": "2.0", "id": 7, "method": "scan", "params": params})
@@ -193,9 +206,9 @@ def test_large_shared_reads_travel_in_parts(
     for part in parts:
         shared |= part.get("reads", {})
         unattributed |= part.get("unattributed_reads", {})
-    assert set(shared) == {"lib/__init__.py", "d0/__init__.py", "d1/__init__.py", "d2/__init__.py"}
-    assert "pkg/star.py" in unattributed
-    assert any("reads" in part for part in parts)
+    assert set(shared) == {"pyproject.toml", "src/__init__.py"}
+    assert {"pkg/impl.py", "pkg/star.py"} <= set(unattributed)
+    assert any("unattributed_reads" in part for part in parts)
 
 
 def test_a_script_ruled_out_by_its_shebang_is_named_by_its_hash(worker: ModuleType, project: Any) -> None:

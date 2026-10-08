@@ -910,9 +910,10 @@ PYTHON);
             $hash = static fn(string $relative): string => hash('sha256', $files[$relative]);
             self::assertInputHashesInclude(['pkg/b.py' => $hash('one/pkg/b.py'), 'pkg/c.py' => $hash('one/pkg/c.py')], $ownThenIndex);
             self::assertInputHashesVerify($root . '/one', $ownThenIndex, $client->initialize());
-            // Both ids really resolved through src/pkg/b.py, so both reads happened.
+            // Both spellings resolved through src/pkg/b.py, so both reads
+            // happened, and both name the class as that file's own scan does.
             assertArrayContains('extends py:class:app.One py:class:pkg.b.Thing', $edges);
-            assertArrayContains('extends py:class:app.Two py:class:src.pkg.b.Thing', $edges);
+            assertArrayContains('extends py:class:app.Two py:class:pkg.b.Thing', $edges);
             self::assertInputHashesInclude(['app.py' => $hash('two/app.py'), 'src/pkg/b.py' => $hash('two/src/pkg/b.py')], $indexThenIndex);
             self::assertInputHashesVerify($root . '/two', $indexThenIndex, $client->initialize());
         } finally {
