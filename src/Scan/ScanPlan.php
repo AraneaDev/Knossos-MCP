@@ -22,7 +22,5 @@ final readonly class ScanPlan
         public bool $hadActiveScan = false,
         /** The cached read sets, loaded for an incremental scan only. */
         public ?CachedReads $cachedReads = null,
-        /** @var array<string, list<string>> scanner id to the files of its languages this incremental scan adds */
-        public array $addedByScanner = [],
     ) {}
 }

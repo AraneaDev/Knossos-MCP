@@ -13,7 +13,9 @@ namespace Knossos\Scan;
  * own file, so its readers are rebuilt too, transitively. A scanner that does
  * not say which file read what is treated as one unit: any change it could see,
  * or a file added in one of its languages, rebuilds all of its files, and each
- * of those counts as a change to its readers in other scanners.
+ * of those counts as a change to its readers in other scanners. A scanner whose
+ * added files can affect every file it scanned, as a global script can, is
+ * rebuilt the same way when a file of its languages is added.
  */
 final class ReadSetInvalidator
 {
@@ -37,9 +39,11 @@ final class ReadSetInvalidator
      *        (production: {@see UndiscoveredInputVerifier::stillMatches()}, the rule the commit check applies)
      * @param array<string, list<string>> $addedByScanner scanner id to the discovered paths of its languages it has no row for
      *        that the active scan did not record with the same bytes
+     * @param array<string, true> $addedFilesAffectAll scanner ids an added file of whose languages rebuilds all of their rows
+     *        ({@see LanguageDescriptor::$addedFilesAffectAll})
      * @return array<string, true> keyed by owner key
      */
-    public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = []): array
+    public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = [], array $addedFilesAffectAll = []): array
     {
         $memo = [];
         $unchanged = static function (string $path, ?string $stored) use ($discovered, $stillMatches, &$memo): bool {
@@ -127,7 +131,7 @@ final class ReadSetInvalidator
             }
         };
         foreach ($addedByScanner as $scanner => $paths) {
-            if ($paths !== [] && isset($unattributed[(string) $scanner])) {
+            if ($paths !== [] && (isset($unattributed[(string) $scanner]) || isset($addedFilesAffectAll[(string) $scanner]))) {
                 $rebuildScanner((string) $scanner);
             }
         }
@@ -145,32 +149,6 @@ final class ReadSetInvalidator
                 if ($invalidate($owner) && isset($unattributed[$cached->rows[$owner]['scanner_id']])) {
                     $rebuildScanner($cached->rows[$owner]['scanner_id']);
                 }
-            }
-        }
-
-        return $invalidated;
-    }
-
-    /**
-     * The owners to rebuild for a scanner whose added files affect every file
-     * it scanned ({@see \Knossos\Scanner\Protocol\Protocol::CAPABILITY_ADDED_FILES_AFFECT_ALL}):
-     * all of its cached owners once a file of its languages is added, and
-     * otherwise those the reads reached.
-     *
-     * Decided once the worker's manifest is known, which is after planning.
-     *
-     * @param array<string, true> $invalidated what the reads reached
-     * @param array<string, list<string>> $addedByScanner scanner id to its added files
-     * @return array<string, true>
-     */
-    public static function withAddedFilesAffectingAll(?CachedReads $cached, array $invalidated, array $addedByScanner, string $scanner): array
-    {
-        if ($cached === null || ($addedByScanner[$scanner] ?? []) === []) {
-            return $invalidated;
-        }
-        foreach ($cached->rows as $owner => $row) {
-            if ($row['scanner_id'] === $scanner) {
-                $invalidated[(string) $owner] = true;
             }
         }
 

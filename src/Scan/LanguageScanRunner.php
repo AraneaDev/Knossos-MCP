@@ -6,7 +6,6 @@ namespace Knossos\Scan;
 
 use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\ProjectUnit;
-use Knossos\Scanner\Protocol\Protocol;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Scanner\Worker\WorkerException;
@@ -181,9 +180,7 @@ final readonly class LanguageScanRunner
             $plan->effectiveMode === 'full',
             $analysisHash,
             $leftOutHash,
-            in_array(Protocol::CAPABILITY_ADDED_FILES_AFFECT_ALL, $manifest->capabilities, true)
-                ? ReadSetInvalidator::withAddedFilesAffectingAll($plan->cachedReads, $plan->invalidatedOwners, $plan->addedByScanner, $manifest->id)
-                : $plan->invalidatedOwners,
+            $plan->invalidatedOwners,
             $this->pdo,
             $plan->projectId,
             $plan->cachedReads,

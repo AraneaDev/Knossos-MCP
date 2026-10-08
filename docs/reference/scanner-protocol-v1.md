@@ -233,7 +233,11 @@ declares global names any file may use. A worker for such a language also
 declares `added_files_affect_all`. Then a discovered file of its languages that
 has no cached contribution and is new since the last scan rebuilds every
 cached contribution of that worker; an edited or deleted file stays as precise
-as the reads. The packaged TypeScript worker declares it.
+as the reads. The packaged TypeScript worker declares it. For the packaged
+workers the core takes this from its own worker descriptors when it plans a
+scan, before any worker has started, so that a rebuilt file still reaches its
+readers in other languages; the manifest capability states the same thing to
+anyone reading the handshake, and the core does not consult it.
 
 One decoding limitation to know about: an object keyed only by consecutive
 integers starting at `"0"` is indistinguishable on the wire from a JSON array,

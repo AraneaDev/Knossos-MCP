@@ -79,25 +79,29 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
 
     /**
      * A scanner whose added files affect every file it scanned rebuilds all of
-     * its rows once one is added, whatever its reads say; other scanners, and
-     * a scan that adds nothing, keep what the reads reached.
+     * its rows once one is added, whatever its reads say, and each rebuilt row
+     * counts as a change to its readers in other scanners. A scan that adds
+     * nothing, or adds a file of another scanner, keeps what the reads reached.
      */
     #[Group('scan')]
-    public function testAnAddedFileRebuildsEveryRowOfAScannerWhoseAddedFilesAffectAll(): void
+    public function testAnAddedFileRebuildsAScannerWhoseAddedFilesAffectAllAndReachesItsReaders(): void
     {
         $cached = self::cached([
             'a.ts' => self::row('a.ts', [], 'knossos.typescript'),
             'b.ts' => self::row('b.ts', [], 'knossos.typescript'),
-            'p.php' => self::row('p.php', []),
+            'p.php' => self::row('p.php', ['b.ts' => self::hash('b.ts')]),
+            'q.php' => self::row('q.php', []),
         ]);
-        $reached = ['a.ts' => true];
+        $discovered = self::discovered(['a.ts', 'b.ts', 'p.php', 'q.php', 'g.ts']);
+        $affectAll = ['knossos.typescript' => true];
 
-        $rebuilt = ReadSetInvalidator::withAddedFilesAffectingAll($cached, $reached, ['knossos.typescript' => ['g.ts']], 'knossos.typescript');
+        $added = ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), ['knossos.typescript' => ['g.ts']], $affectAll);
+        $otherAdded = ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), ['knossos.php' => ['r.php']], $affectAll);
+        $nothingAdded = ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), [], $affectAll);
 
-        assertSame(['a.ts', 'b.ts'], self::sortedKeys($rebuilt));
-        assertSame($reached, ReadSetInvalidator::withAddedFilesAffectingAll($cached, $reached, [], 'knossos.typescript'));
-        assertSame($reached, ReadSetInvalidator::withAddedFilesAffectingAll($cached, $reached, ['knossos.php' => ['q.php']], 'knossos.typescript'));
-        assertSame($reached, ReadSetInvalidator::withAddedFilesAffectingAll(null, $reached, ['knossos.typescript' => ['g.ts']], 'knossos.typescript'));
+        assertSame(['a.ts', 'b.ts', 'p.php'], self::sortedKeys($added));
+        assertSame([], $otherAdded);
+        assertSame([], $nothingAdded);
     }
 
     /**
