@@ -128,6 +128,32 @@ final class RustModuleIdentityTest extends KnossosTestCase
         self::assertNotContains('crate::renamed_impl::go', $tests);
     }
 
+    /**
+     * `Wrapper(1)` and `Error::Io(e)` build values: they reference the type,
+     * and nothing is called. A rooted call to a name nothing declares is
+     * dropped instead of becoming an external symbol.
+     */
+    public function testAConstructorReferencesItsTypeAndCallsNothing(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod errors;\n\nuse crate::errors::Error;\n\npub struct Wrapper(pub u32);\n\npub fn build() -> u32 {\n    let w = Wrapper(1);\n    w.0\n}\n\npub fn fail(e: std::io::Error) -> u32 {\n    let _ = Error::Io(e);\n    let _ = crate::errors::Error::Other(2);\n    let _ = Some(3);\n    crate::nowhere::gone();\n    crate::errors::make()\n}\n");
+        $this->write('src/errors.rs', "pub enum Error {\n    Io(std::io::Error),\n    Other(u32),\n}\n\npub fn make() -> u32 {\n    1\n}\n");
+        $pdo = $this->scanned();
+
+        $edges = $this->edges($pdo);
+        self::assertContains('references crate::build -> crate::Wrapper', $edges);
+        self::assertContains('references crate::fail -> crate::errors::Error', $edges);
+        self::assertContains('calls crate::fail -> crate::errors::make', $edges);
+        foreach ($edges as $edge) {
+            self::assertStringNotContainsString('calls crate::build', $edge);
+            self::assertStringNotContainsString('-> crate::errors::Error::', $edge);
+        }
+        $nodes = $this->nodes($pdo);
+        foreach (['function crate::Wrapper', 'method crate::errors::Error::Io', 'method crate::errors::Error::Other', 'function crate::nowhere::gone', 'function crate::Some'] as $phantom) {
+            self::assertNotContains($phantom, $nodes);
+        }
+    }
+
     /** Only a predicate that holds solely under `test` makes code test code. */
     public function testOnlyACfgThatRequiresTestMarksTestCode(): void
     {

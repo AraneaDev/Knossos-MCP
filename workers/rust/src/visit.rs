@@ -1673,7 +1673,27 @@ impl Calls<'_, '_> {
     /// contribution of the file that defines it, and the per-contribution
     /// `declared` set here cannot match it. That is a known false negative: a
     /// missing edge, never a wrong one.
+    ///
+    /// A callee named in UpperCamelCase builds a value rather than calling
+    /// anything: `Wrapper(1)` and `Self(x)` construct a tuple struct, which
+    /// they reference, and `Error::Io(e)` an enum variant, whose enum the
+    /// owner reference in [`Calls::visit_expr_call`] already names. Neither
+    /// is a function or a method, so neither becomes a `calls` edge.
+    ///
+    /// A trusted target inside this project (rooted at `crate`, this file's
+    /// crate root or a workspace member) carries a kind guessed from its
+    /// spelling ([`call_kind`]) that no declaration here confirmed, so its
+    /// edge is speculative: kept when the graph declares it, dropped rather
+    /// than invented as an external symbol when it does not. A target in
+    /// another crate stays an ordinary edge, its external node the
+    /// dependency's symbol.
     fn visit_call(&mut self, path: &syn::Path, span: proc_macro2::Span) {
+        if builds_value(path) {
+            if !names_variant(path) {
+                self.type_reference(path, span);
+            }
+            return;
+        }
         let Some((target, unconfirmed)) = self.walk.resolve_path(&self.container, path) else {
             return;
         };
@@ -1684,9 +1704,16 @@ impl Calls<'_, '_> {
                 .conditional_edge(&self.enclosing, &endpoint, span);
             return;
         }
-        self.walk
-            .facts
-            .edge("calls", &self.enclosing, &endpoint, "probable", span);
+        let head = target.split("::").next().unwrap_or(&target);
+        if head == self.walk.crate_root() || self.walk.layout.is_project_root(head) {
+            self.walk
+                .facts
+                .speculative_edge("calls", &self.enclosing, &endpoint, span);
+        } else {
+            self.walk
+                .facts
+                .edge("calls", &self.enclosing, &endpoint, "probable", span);
+        }
     }
 }
 
@@ -2392,6 +2419,21 @@ impl Calls<'_, '_> {
     }
 }
 
+/// Whether a callee path builds a value: its last segment is UpperCamelCase,
+/// as tuple structs and enum variants are and functions are not.
+fn builds_value(path: &syn::Path) -> bool {
+    path.segments
+        .last()
+        .is_some_and(|segment| ident_name(&segment.ident).starts_with(char::is_uppercase))
+}
+
+/// Whether a constructor path names an enum variant (`Error::Io`,
+/// `Self::Empty`): the segment before the last is a type, too.
+fn names_variant(path: &syn::Path) -> bool {
+    let count = path.segments.len();
+    count >= 2 && ident_name(&path.segments[count - 2].ident).starts_with(char::is_uppercase)
+}
+
 /// Guess whether a resolved call target names a free function or a
 /// method/associated function on a type.
 ///
@@ -2495,6 +2537,56 @@ mod tests {
 
     /// The behaviour the index exists for: a call to an impl method becomes a
     /// real `calls` edge instead of being dropped as unconfirmable.
+    /// `Wrapper(1)` and `Kind::Io(e)` build values: no `calls` edge, and the
+    /// type built is referenced. A project call is speculative, so a kind
+    /// guessed wrong is dropped instead of becoming an external symbol.
+    #[test]
+    fn a_constructor_references_its_type_and_calls_nothing() {
+        let file: syn::File = syn::parse_str(
+            "use serde_json::to_value;\nstruct Wrapper(u32);\nenum Kind { Io(u32) }\nfn helper() {}\nfn build() {\n    let _ = Wrapper(1);\n    let _ = Kind::Io(2);\n    crate::helper();\n    to_value();\n}",
+        )
+        .expect("parses");
+        let mut declarations = Declarations::new();
+        collect_declarations("crate", &file.items, &mut declarations);
+        let mut facts = Facts::new("src/lib.rs");
+        walk(
+            &mut facts,
+            "crate",
+            &file,
+            &[],
+            &declarations,
+            &TestModules::new(),
+            &Layout::default(),
+        );
+        let edges = facts.finish().edges;
+        let calls: Vec<(&str, bool)> = edges
+            .iter()
+            .filter(|edge| edge.kind == "calls")
+            .map(|edge| {
+                (
+                    edge.target.as_str(),
+                    edge.attributes.contains_key("speculative"),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            vec![
+                ("rust:function:crate::helper", true),
+                ("rust:function:serde_json::to_value", false),
+            ],
+            calls
+        );
+        for target in ["rust:class:crate::Wrapper", "rust:class:crate::Kind"] {
+            assert!(
+                edges
+                    .iter()
+                    .any(|edge| edge.kind == "references" && edge.target == target),
+                "{target}"
+            );
+        }
+    }
+
     #[test]
     fn a_call_to_an_impl_method_becomes_an_edge() {
         let file: syn::File = syn::parse_str(

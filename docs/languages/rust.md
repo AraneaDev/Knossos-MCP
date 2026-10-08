@@ -43,13 +43,21 @@ for classification. If that path is absent, no node is invented.
 | `imports`    | `use`                                                | certain                |
 | `implements` | `impl Trait for Type`                                | certain                |
 | `extends`    | supertraits                                          | probable               |
-| `calls`      | a resolved call expression                           | probable               |
+| `calls`      | a resolved call expression                           | probable, see below    |
 | `routes_to`  | a route to its handler                               | certain                |
 | `references` | a function or type named without being called        | speculative, see below |
 | `returns`    | a method to the type its signature declares          | speculative, see below |
 
 A name that a glob import (`use crate::components::*;`) brings in resolves
 through it, after the names the enclosing module declares.
+
+A call whose callee is named in UpperCamelCase builds a value: `Wrapper(1)`
+constructs a tuple struct and `Error::Io(e)` an enum variant. Neither is a
+`calls` edge; each is a `references` edge to the type it builds. A call into
+your own crates is speculative, since its kind (function or method) is read
+from the name: the edge is kept when the graph declares that target and
+dropped otherwise, rather than becoming an external symbol. A call into
+another crate keeps its external target.
 
 A node's `local_id` and both ends of an edge are written
 `rust:<kind>:<canonical>`. `canonical_name` itself carries no prefix. A raw
@@ -188,8 +196,10 @@ adds nothing to the index, so no file's facts depend on what another file read.
   no path the worker can confirm. The same holds for a call through an `Fn`
   receiver, `self()`.
 - A call target's kind follows Rust's naming convention: an uppercase segment
-  before the final one means a method, anything else means a function. A crate
-  that breaks the convention can produce a target that matches no declared node.
+  before the final one means a method, anything else means a function, and an
+  uppercase final segment means a constructor. A crate that breaks the
+  convention can produce a target that matches no declared node; inside your
+  own crates that edge is dropped.
 - An import name bound to two different paths in one file resolves to nothing.
 - A bare `mod foo;` declaration emits only a containment edge. The module's own
   node comes from the file that defines it.

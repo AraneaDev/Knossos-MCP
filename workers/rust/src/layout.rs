@@ -185,6 +185,17 @@ impl Layout {
         })
     }
 
+    /// Whether a path's head is one of this project's crate roots in the
+    /// graph: `crate`, or a workspace member's crate name.
+    #[must_use]
+    pub fn is_project_root(&self, head: &str) -> bool {
+        head == "crate"
+            || self
+                .packages
+                .iter()
+                .any(|(directory, name)| !directory.is_empty() && name == head)
+    }
+
     /// Every path a file placed in `module` could have, see [`module_files`].
     #[must_use]
     pub fn module_files(&self, module: &str) -> Vec<String> {
@@ -456,5 +467,9 @@ mod tests {
             layout.library_path("core_lib::x")
         );
         assert_eq!(None, layout.library_path("serde::Serialize"));
+        assert!(layout.is_project_root("crate"));
+        assert!(layout.is_project_root("core_lib"));
+        assert!(!layout.is_project_root("demo"));
+        assert!(!layout.is_project_root("serde"));
     }
 }
