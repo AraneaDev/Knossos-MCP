@@ -259,6 +259,30 @@ final class RustModuleIdentityTest extends KnossosTestCase
         self::assertContains('calls tests::it::t -> tests::common::setup', $edges);
     }
 
+    /**
+     * A target root's `crate::` is the root file itself: `crate::own` is the
+     * function it declares, also from its test module, while `crate::helper`
+     * still reaches the module its `mod helper;` loads beside it.
+     */
+    public function testCrateInsideATargetRootNamesItsOwnItems(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub fn own() {}\n");
+        $this->write('src/bin/tool.rs', "mod helper;\n\nfn own() {}\n\nfn main() {\n    crate::own();\n    crate::helper::aid();\n}\n\n#[cfg(test)]\nmod tests {\n    use crate::own;\n\n    fn t() {\n        own();\n    }\n}\n");
+        $this->write('src/bin/helper.rs', "pub fn aid() {}\n");
+        $this->write('tests/it.rs', "fn setup_here() {}\n\n#[test]\nfn t() {\n    crate::setup_here();\n}\n");
+        $pdo = $this->scanned();
+
+        $edges = $this->edges($pdo);
+        self::assertContains('calls crate::bin::tool::main -> crate::bin::tool::own', $edges);
+        self::assertContains('calls crate::bin::tool::main -> crate::bin::helper::aid', $edges);
+        self::assertContains('calls crate::bin::tool::tests::t -> crate::bin::tool::own', $edges);
+        self::assertContains('calls tests::it::t -> tests::it::setup_here', $edges);
+        self::assertNotContains('calls crate::bin::tool::main -> crate::own', $edges);
+        self::assertNotContains('imports crate::bin::tool -> crate::bin', $edges);
+        self::assertNotContains('module crate::bin', $this->nodes($pdo));
+    }
+
     /** A method compiled only for tests is test code, as a free function is. */
     public function testAMethodCompiledOnlyForTestsIsTestCode(): void
     {

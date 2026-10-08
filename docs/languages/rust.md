@@ -161,9 +161,10 @@ name that load different files (under different `cfg`s) make paths through
 that name resolve to nothing.
 
 Each binary in `src/bin/`, integration test, example and benchmark is a crate
-of its own, and its `crate::` names that crate: `crate::helper` in
-`src/bin/tool.rs` is `crate::bin::helper` (`src/bin/helper.rs`), and
-`crate::common` in `tests/it.rs` is `tests::common`. Only the target's root
+of its own, and its `crate::` names that crate, whose root is the file itself:
+`crate::own` in `src/bin/tool.rs` is the `crate::bin::tool::own` it declares,
+and through its `mod helper;`, `crate::helper` is `crate::bin::helper`
+(`src/bin/helper.rs`); `crate::common` in `tests/it.rs` is `tests::common`. Only the target's root
 file knows this; a module file below `src/bin/<name>/` could belong to that
 binary or to another, so its own `crate::` paths still start at the package's
 `crate`. An out-of-line `#[cfg(test)] mod name;`

@@ -242,14 +242,13 @@ struct Walk<'a> {
     /// name: a path through `name` there names that module. `None` marks a
     /// name two declarations (under different `cfg`s) send to two modules.
     renamed_children: BTreeMap<(String, String), Option<String>>,
-    /// What `crate` alone names in this file: the crate root module, which
-    /// for a target root (a binary in `src/bin/`, a test, an example) is the
-    /// file's own module.
+    /// What `crate` names in this file: the package's crate root, or for a
+    /// target root (a binary in `src/bin/`, a test, an example) the file's
+    /// own module, so `crate::own` in `src/bin/tool.rs` is
+    /// `crate::bin::tool::own`. Its `mod helper;` loads `src/bin/helper.rs`,
+    /// and `crate::helper` reaches that through the renamed declaration (see
+    /// [`Declarations::renamed`]).
     crate_module: String,
-    /// What `crate::x` is placed under: the crate root for a package's own
-    /// files, the directory module a target root keeps its `mod`s in
-    /// (`crate::bin` for `src/bin/tool.rs`, `tests` for `tests/it.rs`).
-    crate_anchor: String,
     /// The files this file's `mod` declarations load, whose own placement
     /// decided the module each declaration names.
     placed: BTreeSet<String>,
@@ -275,10 +274,10 @@ pub fn walk(
     }
     let relative = facts.relative().to_owned();
     let root = module.split("::").next().unwrap_or("crate").to_owned();
-    let (crate_module, crate_anchor) = if layout.is_target_root(&relative) {
-        (module.to_owned(), parent_module(module).to_owned())
+    let crate_module = if layout.is_target_root(&relative) {
+        module.to_owned()
     } else {
-        (root.clone(), root)
+        root
     };
     let mut walker = Walk {
         facts,
@@ -297,7 +296,6 @@ pub fn walk(
         relative,
         renamed_children: BTreeMap::new(),
         crate_module,
-        crate_anchor,
         placed: BTreeSet::new(),
     };
     walker.collect_uses(module, &file.items);
@@ -1195,15 +1193,15 @@ impl Walk<'_> {
     }
 
     /// A path as written, with its root as the graph names it: `crate` is
-    /// this file's crate root (a target root's own module, its `crate::x`
-    /// beside it, see [`Walk::crate_anchor`]), and a project library's crate
+    /// this file's crate root (a target root's own module, see
+    /// [`Walk::crate_module`]), and a project library's crate
     /// name its root (see [`Walk::library_path`]).
     fn anchor_crate(&self, path: &str) -> String {
         if path == "crate" {
             return self.crate_module.clone();
         }
         match path.strip_prefix("crate::") {
-            Some(rest) => format!("{}::{rest}", self.crate_anchor),
+            Some(rest) => format!("{}::{rest}", self.crate_module),
             None => self.library_path(path).unwrap_or_else(|| path.to_owned()),
         }
     }
@@ -1215,7 +1213,7 @@ impl Walk<'_> {
     fn renamed(&self, path: String) -> Option<String> {
         let head = path.split("::").next().unwrap_or(&path);
         if head != self.crate_root()
-            && head != self.crate_anchor.split("::").next().unwrap_or("")
+            && head != self.crate_module.split("::").next().unwrap_or("")
             && !self.layout.is_project_root(head)
         {
             return Some(path);
