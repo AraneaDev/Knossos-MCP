@@ -150,8 +150,11 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # GitHub's release and codeload edges occasionally return a transient 5xx, so
 # every download retries before the checksum turns any partial response into a
 # hard failure.
+#
+# The pinned Python tools live in their own venv, so a Debian-installed Python
+# package (python3-packaging and friends) can never block their install.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates curl docker-cli python3-pip shellcheck $PHPIZE_DEPS \
+    && apt-get install --no-install-recommends -y ca-certificates curl docker-cli python3-venv shellcheck $PHPIZE_DEPS \
     && curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
         --output /tmp/pcov.tar.gz \
         https://codeload.github.com/krakjoe/pcov/tar.gz/refs/tags/v1.0.12 \
@@ -168,7 +171,8 @@ RUN apt-get update \
     && rm -rf /tmp/pcov /tmp/pcov.tar.gz /tmp/pcov.sha256 \
     && docker-php-ext-enable pcov \
     && docker-php-ext-install pcntl \
-    && python3 -m pip install --break-system-packages --no-cache-dir \
+    && python3 -m venv /opt/quality-python \
+    && /opt/quality-python/bin/pip install --no-cache-dir \
         coverage==7.14.3 mypy==2.3.0 pre-commit==4.6.0 pytest==8.4.2 ruff==0.15.12 \
     && curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
         --output /usr/local/bin/hadolint \
@@ -178,6 +182,10 @@ RUN apt-get update \
     && chmod 0755 /usr/local/bin/hadolint \
     && apt-get purge -y --auto-remove $PHPIZE_DEPS \
     && rm -rf /var/lib/apt/lists/* /tmp/hadolint.sha256
+
+# The venv's bin directory leads PATH, so `python3` resolves to it as well and
+# `python3 -m coverage` / `python3 -m pytest` see the pinned tools.
+ENV PATH="/opt/quality-python/bin:${PATH}"
 
 RUN curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
         --output /tmp/trivy.tar.gz \
