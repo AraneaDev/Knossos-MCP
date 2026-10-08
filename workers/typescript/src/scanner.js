@@ -392,13 +392,15 @@ class ReadAttribution {
      * much as a project's own, and so is whatever a dependency's file read,
      * since no contribution of the core's reports it. What a project file the
      * core discovered read, when this request produced no contribution for it
-     * in this program, is unattributed: its own contribution names those
-     * reads. The global files are also the program's environment (see
-     * environmentOf).
+     * and this program is the one that describes it, is unattributed: its own
+     * contribution names those reads. The global files are also the program's
+     * environment (see environmentOf).
      *
      * @param {string} programKey the program's key (see programKeyOf)
+     * @param {(relative: string) => boolean} ownedByProgram whether this
+     *   program is the one a file's own contribution is derived in
      */
-    program(program, programKey) {
+    program(program, programKey, ownedByProgram = () => true) {
         const globals = new Set();
         this.globalsByProgram.set(programKey, globals);
         for (const sourceFile of program.getSourceFiles()) {
@@ -410,7 +412,15 @@ class ReadAttribution {
             }
             if (this.programOf.get(relative) === programKey) continue;
             if (isProjectSource(relative)) {
-                if (!this.sourceFiles.has(relative)) continue;
+                // Its own contribution names its reads only as its owning
+                // program made them: under another program's paths, aliases
+                // and manifests the same import can land elsewhere, and that
+                // read is the request's to keep.
+                if (
+                    !this.sourceFiles.has(relative) ||
+                    !ownedByProgram(relative)
+                )
+                    continue;
                 this.#addRecorded(this.unattributed, sourceFile.fileName);
                 for (const key of this.#directReads(program, sourceFile, false))
                     this.unattributed.add(key);
@@ -658,6 +668,57 @@ function needsProgram(request, requested, configPath, parsed) {
 }
 
 /**
+ * Every discovered file no config lists, with the project's declaration
+ * files, grouped as the fallback reads them: the whole group is a fallback
+ * program's root list, and the group's program is the one such a file's
+ * contribution is derived in.
+ *
+ * @returns {Map<string, {files: string[], parsed: object | undefined}>} directory => group
+ */
+function fallbackMembers(root, request, parsedConfigs) {
+    return fallbackGroups(
+        root,
+        [
+            ...new Set([
+                ...request.declarationFiles,
+                ...request.sourceFiles.filter(
+                    (relative) => !request.owners.has(normalize(relative)),
+                ),
+            ]),
+        ],
+        parsedConfigs,
+        request.packageDirectories,
+    );
+}
+
+/** The program key of the fallback program for a group's directory. */
+function fallbackProgramKey(root, directory) {
+    return `fallback:${relativeInside(root, directory) || "."}`;
+}
+
+/**
+ * Which program a file's own contribution is derived in: the config that
+ * lists it, else the fallback program of its group. A file in neither (one
+ * the core never discovered, or that only an import reached) is owned by no
+ * program, so no program's reads of it are its own.
+ *
+ * @returns {(relative: string, programKey: string) => boolean}
+ */
+function programOwnership(root, request) {
+    const fallbackOwners = new Map();
+    for (const [directory, group] of request.fallbackMembers) {
+        for (const relative of group.files)
+            fallbackOwners.set(
+                normalize(relative),
+                fallbackProgramKey(root, directory),
+            );
+    }
+    return (relative, programKey) =>
+        (request.owners.get(relative) ?? fallbackOwners.get(relative)) ===
+        programKey;
+}
+
+/**
  * Whether every file of a program sees a file's declarations without importing
  * it: a script, a module that augments the global scope or another module, or
  * one that exports a UMD global (`export as namespace X`).
@@ -752,9 +813,19 @@ export class TypeScriptScanner {
     /**
      * Stream deterministic owned contributions for the requested source files.
      *
-     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, declaration_files?: unknown, exclusions?: unknown}} params
+     * `source_files` lists every file of the language the core discovered: a
+     * program for files no config includes is rooted on the whole group such
+     * a file sits in, and only a listed file's reads can be unattributed.
+     *
+     * The result's `reads` are what every file of the request shares;
+     * `unattributed_reads` are what the programs' other discovered files read
+     * in the program that describes them, confirmed by `input_hashes` and
+     * owned by no contribution; `environments` maps every program the request
+     * built to the digest of its global declarations.
+     *
+     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, declaration_files?: unknown, source_files?: unknown, exclusions?: unknown}} params
      * @param {(contribution: object) => void} emit
-     * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>, reads: Record<string, string|null>}}
+     * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>, reads: Record<string, string|null>, unattributed_reads: Record<string, string|null>, environments: Record<string, string>}}
      */
     scan(params, emit) {
         // Held until the request has finished reading: a later program can
@@ -867,6 +938,8 @@ export class TypeScriptScanner {
         ]);
         request.owners = configOwners(root, parsedConfigs);
         request.outputSources = outputSources(root, parsedConfigs);
+        request.fallbackMembers = fallbackMembers(root, request, parsedConfigs);
+        request.ownedByProgram = programOwnership(root, request);
         this.#scanConfigPrograms(parsedConfigs, requested, request, tally);
 
         const remaining = requested.filter(
@@ -960,35 +1033,25 @@ export class TypeScriptScanner {
      * importer's program.
      */
     #scanFallback(root, remaining, parsedConfigs, request, tally) {
-        const owned = request.owners;
         request.owner = undefined;
         request.owners = new Map();
-        const members = fallbackGroups(
-            root,
-            [
-                ...new Set([
-                    ...request.declarationFiles,
-                    ...request.sourceFiles.filter(
-                        (relative) => !owned.has(normalize(relative)),
-                    ),
-                ]),
-            ],
-            parsedConfigs,
-            request.packageDirectories,
-        );
+        const members = request.fallbackMembers;
         for (const [directory, group] of fallbackGroups(
             root,
             remaining,
             parsedConfigs,
             request.packageDirectories,
         )) {
+            // Sorted, so every batch of a request hands the compiler the same
+            // root list and the program built for the first is reused by the
+            // rest instead of being rebuilt for each.
             const files = [
                 ...new Set([
                     ...group.files,
                     ...(members.get(directory)?.files ?? []),
                 ]),
-            ];
-            request.program = `fallback:${relativeInside(root, directory) || "."}`;
+            ].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+            request.program = fallbackProgramKey(root, directory);
             tally(
                 this.#scanProgram(
                     `${directory}${FALLBACK_KEY}`,
@@ -1036,7 +1099,9 @@ export class TypeScriptScanner {
             this.#cacheProgram(key, program);
             recordUnreadSourceFiles(root, program, reads, maxFileBytes);
             this.#emitProgram(program, request, key.endsWith(FALLBACK_KEY));
-            request.attribution.program(program, request.program);
+            request.attribution.program(program, request.program, (relative) =>
+                request.ownedByProgram(relative, request.program),
+            );
         } catch (error) {
             const overflowed = isStackOverflow(error);
             const covered = [

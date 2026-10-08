@@ -198,6 +198,32 @@ describe("the environment of a program no config describes", () => {
             all["test/a.test.ts"].diagnostics,
         );
     });
+
+    it("reuses the program across the batches of one scan", () => {
+        // Every batch roots the same group, in the same order, so the
+        // compiler reuses the program the first batch built.
+        const sourceFiles = ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"];
+        const root = fixture({
+            "package.json": JSON.stringify({ name: "plain" }),
+            "src/a.ts": "export const a = 1;\n",
+            "src/b.ts": "export const b = 1;\n",
+            "src/c.ts": "export const c = 1;\n",
+            "src/d.ts": "export const d = 1;\n",
+        });
+        const scanner = new TypeScriptScanner();
+        const batch = (files) =>
+            scanner.scan(
+                { root, files, config_files: [], source_files: sourceFiles },
+                () => {},
+            );
+
+        const first = batch(["src/c.ts", "src/d.ts"]);
+        const second = batch(["src/a.ts", "src/b.ts"]);
+
+        expect(first.programs_reused).toBe(0);
+        expect(second.programs).toBe(1);
+        expect(second.programs_reused).toBe(1);
+    });
 });
 
 describe("a contribution no program described", () => {

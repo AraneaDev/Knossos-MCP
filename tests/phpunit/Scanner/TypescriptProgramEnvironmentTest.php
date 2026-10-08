@@ -230,6 +230,55 @@ final class TypescriptProgramEnvironmentTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * @param list<array<string, string>> $earlier edits made before the one under test, each followed by a scan
+     */
+    #[DataProvider('editsBeforeThePackageSwitch')]
+    public function testAReadMadeForAnotherProgramsFileUnderThisProgramsResolutionStaysWithTheRequest(array $earlier): void
+    {
+        // shared/b.ts belongs to p1, where `~/c` is p1/lib/c.ts. In p2's
+        // program it resolves `~/c` through p2/vendor/c/package.json, a read
+        // b.ts's own contribution never names, so the request must keep it.
+        $config = static fn(string $paths, string $include): string => '{"compilerOptions": {"strict": true, "module": "esnext", "moduleResolution": "bundler", "baseUrl": ".", "paths": {"~/*": ' . $paths . '}}, "include": ' . $include . '}';
+        $this->write('tsconfig.json', '{"files": []}');
+        $this->write('packages/p1/tsconfig.json', $config('["lib/*"]', '[".", "../shared"]'));
+        $this->write('packages/p2/tsconfig.json', $config('["vendor/*"]', '["."]'));
+        $this->write('packages/p1/lib/c.ts', "export class C { p1(): void {} }\n");
+        $this->write('packages/p2/vendor/c/package.json', '{"name": "c", "types": "one.ts"}');
+        $this->write('packages/p2/vendor/c/one.ts', "export class C { one(): void {} }\n");
+        $this->write('packages/p2/vendor/c/two.ts', "export class C { two(): void {} }\n");
+        $this->write('packages/shared/b.ts', "export { C } from '~/c';\n");
+        $this->write('packages/p2/a.ts', "import { C } from '../shared/b';\nexport class A extends C {}\n");
+        $this->write('packages/p2/o.ts', "export const o = 1;\n");
+        $pdo = $this->freshTestDatabase();
+        $this->scan($pdo);
+        foreach ($earlier as $edit) {
+            foreach ($edit as $relative => $contents) {
+                $this->write($relative, $contents);
+            }
+            $this->scan($pdo);
+        }
+        $facts = $this->facts($pdo, 'packages/p2/a.ts');
+
+        $this->stamp($pdo);
+        $this->write('packages/p2/vendor/c/package.json', '{"name": "c", "types": "two.ts"}');
+        $this->scan($pdo);
+
+        self::assertContains('packages/p2/a.ts', $this->rescanned($pdo));
+        assertNotSame($facts, $this->facts($pdo, 'packages/p2/a.ts'));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /** @return iterable<string, array{list<array<string, string>>}> */
+    public static function editsBeforeThePackageSwitch(): iterable
+    {
+        yield 'right after the full scan' => [[]];
+        yield 'after the reader and a neighbour were rescanned on their own' => [[
+            ['packages/p2/a.ts' => "import { C } from '../shared/b';\nexport class A extends C {}\nexport const k = 1;\n"],
+            ['packages/p2/o.ts' => "export const o = 2;\n"],
+        ]];
+    }
+
     public function testAnUnchangedTreeRescansNothingAfterAnEdit(): void
     {
         $this->write('tsconfig.json', '{"compilerOptions": {"strict": true}, "include": ["src"]}');
