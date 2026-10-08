@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.20.0](https://github.com/AraneaDev/knossos/compare/v0.19.2...v0.20.0) (2026-10-08)
+
+
+### Features
+
+* rescan only what a Python change reaches ([#163](https://github.com/AraneaDev/knossos/issues/163)) ([18be141](https://github.com/AraneaDev/knossos/commit/18be141c9eb836280a21d9aafe354600b86c046f))
+* rescan only what a Rust change reaches ([#164](https://github.com/AraneaDev/knossos/issues/164)) ([50fcb42](https://github.com/AraneaDev/knossos/commit/50fcb42c5d1615f8f2db4152f0aa0fc2a4240a82))
+* rescan only what a TypeScript change reaches ([#161](https://github.com/AraneaDev/knossos/issues/161)) ([969b32d](https://github.com/AraneaDev/knossos/commit/969b32d97494b141a56cd43932081441c41db0cf))
+
+
+### Fixes
+
+* an incremental scan now matches a full one ([#157](https://github.com/AraneaDev/knossos/issues/157)) ([71bd5a5](https://github.com/AraneaDev/knossos/commit/71bd5a50c88dbb7260e539db4c9e9a7e6ca75948))
+* find every dependency cycle in a large graph ([#155](https://github.com/AraneaDev/knossos/issues/155)) ([3c00e2e](https://github.com/AraneaDev/knossos/commit/3c00e2ed3ea864c3b1c453753e10dcb0e2d01bdc))
+* install the quality tools apart from Debian's Python packages ([#160](https://github.com/AraneaDev/knossos/issues/160)) ([c812c0f](https://github.com/AraneaDev/knossos/commit/c812c0f36b08207209bd5b522f074033e944e186))
+* keep a killed worker's signal instead of reading it as a clean exit ([#159](https://github.com/AraneaDev/knossos/issues/159)) ([7ad0ef2](https://github.com/AraneaDev/knossos/commit/7ad0ef295e0d944fe8232715f09af91019dd0a50))
+* keep the data copy test from timing out on a busy machine ([#162](https://github.com/AraneaDev/knossos/issues/162)) ([4ae2191](https://github.com/AraneaDev/knossos/commit/4ae2191b8b7f3002729b5ba6c2d57b19569400ad))
+* keep the plugin spec stable across Claude Code test kits ([#158](https://github.com/AraneaDev/knossos/issues/158)) ([6415f69](https://github.com/AraneaDev/knossos/commit/6415f698b56ce25cef786dd2b978c33a544a7715))
+* set the core's memory limit instead of inheriting the host's ([#154](https://github.com/AraneaDev/knossos/issues/154)) ([5bed1ec](https://github.com/AraneaDev/knossos/commit/5bed1ec10a7e3cdbb8f03d3916acca021b69deb5))
+
 ## [0.19.2](https://github.com/AraneaDev/knossos/compare/v0.19.1...v0.19.2) (2026-10-07)
 
 
