@@ -350,6 +350,22 @@ final class PythonReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /** A mount names the router another module declares, so renaming it there rescans the mounting module. */
+    public function testRenamingAMountedRouterRescansTheModuleThatMountsIt(): void
+    {
+        $this->write('api/__init__.py', '');
+        $this->write('api/users.py', "from fastapi import APIRouter\n\nrouter = APIRouter()\n");
+        $this->write('main.py', "from fastapi import FastAPI\nfrom api.users import router\n\napp = FastAPI()\napp.include_router(router)\n");
+        $this->write('other.py', "def unrelated():\n    return 2\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('api/users.py', "from fastapi import APIRouter\n\nroutes = APIRouter()\nrouter = routes\n");
+        $this->scan($pdo);
+
+        assertSame(['api/users.py', 'main.py'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     /**
      * Discovery leaves `vendor/` out, so no contribution of its own names
      * what `vendor/lib/__init__.py` re-exports: the importer names it.

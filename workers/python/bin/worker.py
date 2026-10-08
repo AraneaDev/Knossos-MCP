@@ -891,7 +891,7 @@ class ProjectModuleIndex:
         self._protocols |= declared_protocols(tree, name)
         self._cache[key or name] = declarations
         self._add_reexports(tree, location, is_package, declarations)
-        self._add_instances(tree, location, is_package, declarations)
+        self._add_instances(tree, location, is_package, declarations, name)
         return declarations
 
     def is_protocol(self, owner: str) -> bool:
@@ -927,17 +927,22 @@ class ProjectModuleIndex:
                 if reexported is not None:
                     declarations.setdefault(alias.asname or alias.name, reexported)
 
-    def _add_instances(self, tree: ast.Module, module: str, is_package: bool, declarations: dict[str, str]) -> None:
+    def _add_instances(
+        self, tree: ast.Module, module: str, is_package: bool, declarations: dict[str, str], name: str
+    ) -> None:
         """Add the module-level instances ``tree`` creates to its declarations.
 
         ``user_repo = UserRepository()`` at module level is how a service hands
         out one shared object, and the rest of the codebase imports that name.
         Recorded as ``py:instance:<class>`` so an importer can type a call on
         it. The class is found among the module's own classes or its
-        ``from ... import`` names; anything else is left out. The declarations
-        are cached before this runs, so two modules importing each other
-        resolve without recursing.
+        ``from ... import`` names; anything else is left out. A FastAPI
+        ``APIRouter`` or Flask ``Blueprint`` is recorded as the ``py:router``
+        node its own scan emits (``name`` is the module's id), so a mount in
+        another module names it. The declarations are cached before this
+        runs, so two modules importing each other resolve without recursing.
         """
+        routers = router_constructors(tree)
         imported: dict[str, str] = {}
         for child in module_statements(tree):
             if not isinstance(child, ast.ImportFrom):
@@ -952,16 +957,19 @@ class ProjectModuleIndex:
                 if target is not None and target.startswith("py:class:"):
                     imported[alias.asname or alias.name] = target
         for child in module_statements(tree):
-            name, constructor = None, None
+            variable, constructor = None, None
             if isinstance(child, ast.Assign) and len(child.targets) == 1 and isinstance(child.targets[0], ast.Name):
-                name, constructor = child.targets[0].id, child.value
+                variable, constructor = child.targets[0].id, child.value
             elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
-                name, constructor = child.target.id, child.value
-            if name is None or name in declarations:
+                variable, constructor = child.target.id, child.value
+            if variable is None or variable in declarations:
+                continue
+            if isinstance(constructor, ast.Call) and dotted(constructor.func) in routers:
+                declarations[variable] = ref("router", f"{name}.{variable}")
                 continue
             value = assigned_declaration(constructor, declarations, imported)
             if value is not None:
-                declarations[name] = value
+                declarations[variable] = value
 
     def adopt_parsed(self, absolute: Path, relative: str, tree: ast.Module) -> tuple[str, str | None]:
         """Make a scanned file's own declarations come from the tree just parsed; return its id and its id's owner.
@@ -1235,6 +1243,24 @@ def annotated_class_name(value: ast.AST | None) -> str | None:
     return first.id if isinstance(first, ast.Name) else None
 
 
+ROUTER_CLASSES = {"fastapi": ("APIRouter",), "flask": ("Blueprint",)}
+"""The framework classes whose instances another module mounts, by the module that exports them."""
+
+
+def router_constructors(tree: ast.Module) -> set[str]:
+    """The callee names that build a mountable router in ``tree``: ``APIRouter``, ``fastapi.APIRouter`` or an alias."""
+    names: set[str] = set()
+    for child in module_statements(tree):
+        if isinstance(child, ast.ImportFrom) and child.level == 0 and child.module in ROUTER_CLASSES:
+            exported = ROUTER_CLASSES[child.module]
+            names.update(alias.asname or alias.name for alias in child.names if alias.name in exported)
+        elif isinstance(child, ast.Import):
+            for alias in child.names:
+                for name in ROUTER_CLASSES.get(alias.name, ()):
+                    names.add(f"{alias.asname or alias.name}.{name}")
+    return names
+
+
 def is_protocol_base(base: ast.expr) -> bool:
     """Whether a class base is ``Protocol``, generic (``Protocol[T]``) or not."""
     named = base.value if isinstance(base, ast.Subscript) else base
@@ -1303,6 +1329,11 @@ def absolute_import(current_module: str, level: int, imported: str | None, is_pa
     if imported:
         package.extend(imported.split("."))
     return ".".join(package)
+
+
+def prefixed_path(prefix: str, path: str) -> str:
+    """A route path under its router's prefix, one slash between segments: ``/bp`` and ``x/`` give ``/bp/x``."""
+    return "/" + "/".join(part.strip("/") for part in (prefix, path) if part.strip("/"))
 
 
 def decorator_short(name: str) -> str:
@@ -1432,8 +1463,14 @@ class PythonFrameworkRoleEnricher:
         return sorted(set(roles))
 
 
-class FastApiFactEnricher:
-    """Add FastAPI routes, dependencies, routers, and middleware facts."""
+class RouterMounts:
+    """The routers a file assigns and mounts, shared by the FastAPI and Flask enrichers.
+
+    A router assigned here is a ``py:router:<module>.<variable>`` node; one
+    imported from another module is that module's node, which its own scan
+    emits. A mount names the router node it reaches, so no edge points at a
+    router nobody declares.
+    """
 
     def __init__(
         self,
@@ -1442,22 +1479,78 @@ class FastApiFactEnricher:
         module_id: str,
         aliases: dict[str, str],
         resolve_name: Callable[[str, str], str | None],
+        declarations: Callable[[str], dict[str, str]],
     ) -> None:
         self.facts = facts
         self.module = module
         self.module_id = module_id
         self.aliases = aliases
         self.resolve_name = resolve_name
+        # A module's top-level declarations, by module id (ProjectModuleIndex.module_declarations).
+        self.declarations = declarations
+        # Variable to (framework, prefix) for every app, router or blueprint in scope.
         self.framework_objects: dict[str, tuple[str, str]] = {}
+        # The variables this file assigned a router to, each a node it emits.
+        self.routers: set[str] = set()
+
+    def emit_router(self, variable: str, value: ast.Call, framework: str, prefix: str) -> None:
+        """Declare the router node ``variable = APIRouter(...)`` or ``Blueprint(...)`` builds."""
+        router_id = ref("router", f"{self.module}.{variable}")
+        self.facts.add_node(
+            router_id,
+            "router",
+            f"{self.module}.{variable}",
+            variable,
+            value,
+            {"framework": framework, "prefix": prefix},
+        )
+        self.facts.add_edge("contains", self.module_id, router_id, value)
+        self.routers.add(variable)
+
+    def mount(self, node: ast.Call, prefix_keyword: str) -> None:
+        """Emit the ``mounts`` edge of ``include_router(router)`` or ``register_blueprint(bp)``.
+
+        A router this file assigns, one a project module declares and an
+        imported third-party name are certain targets. Anything else, such as
+        a router handed in as a parameter, is a guess the core keeps only when
+        it resolves.
+        """
+        router = dotted(node.args[0]) if node.args else None
+        if router is None:
+            return
+        attributes: dict[str, Any] = {"prefix": keyword_string(node, prefix_keyword) or ""}
+        target = ref("router", f"{self.module}.{router}")
+        if router not in self.routers:
+            resolved = self.resolve_name(router, "router") or ""
+            if resolved.startswith("py:external_symbol:") or self.declares(resolved):
+                target = resolved
+            else:
+                target = resolved if resolved.startswith("py:router:") else target
+                attributes["speculative"] = True
+        self.facts.add_edge("mounts", self.module_id, target, node, attributes)
+
+    def declares(self, target: str) -> bool:
+        """Whether ``target`` is a router a project module declares at module level."""
+        if not target.startswith("py:router:"):
+            return False
+        module, _, variable = target.removeprefix("py:router:").rpartition(".")
+        return bool(module) and self.declarations(module).get(variable) == target
+
+
+class FastApiFactEnricher(RouterMounts):
+    """Add FastAPI routes, dependencies, routers, and middleware facts."""
 
     def register_assignment(self, variable: str, value: ast.AST | None) -> None:
         if not isinstance(value, ast.Call):
             return
         called = dotted(value.func)
-        resolved = self.aliases.get(called or "", "")
-        if resolved.endswith("fastapi.FastAPI") or resolved.endswith("fastapi.APIRouter"):
+        # Through resolve_name, so `fastapi.APIRouter()` off `import fastapi` counts too.
+        resolved = (called and self.resolve_name(called, "class")) or ""
+        if resolved.endswith(("fastapi.FastAPI", "fastapi.APIRouter")):
             prefix = keyword_string(value, "prefix") or ""
             self.framework_objects[variable] = ("fastapi", prefix)
+        if resolved.endswith("fastapi.APIRouter"):
+            self.emit_router(variable, value, "fastapi", keyword_string(value, "prefix") or "")
 
     def register_parameters(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
@@ -1516,7 +1609,7 @@ class FastApiFactEnricher:
                 self.facts.add_diagnostic("PY_DYNAMIC_ROUTE_PATH", "Dynamic FastAPI route path was skipped.", decorator)
                 continue
             prefix = self.framework_objects[owner][1]
-            path = "/" + "/".join(part.strip("/") for part in (prefix, raw_path) if part.strip("/"))
+            path = prefixed_path(prefix, raw_path)
             result.append((method.upper(), path or "/", decorator))
         return result
 
@@ -1548,16 +1641,8 @@ class FastApiFactEnricher:
             target = self.resolve_name(middleware, "class") if middleware else None
             if target:
                 self.facts.add_edge("uses_middleware", self.module_id, target, node, {"framework": "fastapi"})
-        if name and name.endswith(".include_router") and node.args:
-            router = dotted(node.args[0])
-            if router:
-                self.facts.add_edge(
-                    "mounts",
-                    self.module_id,
-                    ref("router", f"{self.module}.{router}"),
-                    node,
-                    {"prefix": keyword_string(node, "prefix") or ""},
-                )
+        if name and name.endswith(".include_router"):
+            self.mount(node, "prefix")
 
     def decorator_dependencies(self, node: ast.FunctionDef | ast.AsyncFunctionDef, source: str) -> None:
         for decorator in node.decorator_list:
@@ -1658,7 +1743,7 @@ class DjangoFactEnricher:
         return value if isinstance(value, (str, int, float, bool, list, tuple, dict, type(None))) else None
 
 
-class FlaskFactEnricher:
+class FlaskFactEnricher(RouterMounts):
     """Add Flask route and blueprint facts.
 
     Flask's primary wiring is `@app.route("/path", methods=[...])` on a
@@ -1669,29 +1754,16 @@ class FlaskFactEnricher:
     `PY_DYNAMIC_ROUTE_PATH`.
     """
 
-    def __init__(
-        self,
-        facts: PythonFactAccumulator,
-        module: str,
-        module_id: str,
-        aliases: dict[str, str],
-        resolve_name: Callable[[str, str], str | None],
-    ) -> None:
-        self.facts = facts
-        self.module = module
-        self.module_id = module_id
-        self.aliases = aliases
-        self.resolve_name = resolve_name
-        self.framework_objects: dict[str, tuple[str, str]] = {}
-
     def register_assignment(self, variable: str, value: ast.AST | None) -> None:
         if not isinstance(value, ast.Call):
             return
         called = dotted(value.func)
-        resolved = self.aliases.get(called or "", "")
-        if resolved.endswith("flask.Flask") or resolved.endswith("flask.Blueprint"):
+        resolved = (called and self.resolve_name(called, "class")) or ""
+        if resolved.endswith(("flask.Flask", "flask.Blueprint")):
             prefix = keyword_string(value, "url_prefix") or ""
             self.framework_objects[variable] = ("flask", prefix)
+        if resolved.endswith("flask.Blueprint"):
+            self.emit_router(variable, value, "flask", keyword_string(value, "url_prefix") or "")
 
     def route_decorators(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple[str, str, ast.AST]]:
         result: list[tuple[str, str, ast.AST]] = []
@@ -1708,7 +1780,7 @@ class FlaskFactEnricher:
                 self.facts.add_diagnostic("PY_DYNAMIC_ROUTE_PATH", "Dynamic Flask route path was skipped.", decorator)
                 continue
             prefix = self.framework_objects[owner][1]
-            path = "/" + "/".join(part.strip("/") for part in (prefix, raw_path) if part.strip("/"))
+            path = prefixed_path(prefix, raw_path)
             methods = self.methods_keyword(decorator)
             if methods is None:
                 methods = ["GET"]  # Flask's default when `methods` is absent
@@ -1752,16 +1824,8 @@ class FlaskFactEnricher:
             self.facts.add_edge("routes_to", route_id, local_id, decorator)
 
     def enrich_call(self, node: ast.Call, name: str | None) -> None:
-        if name and name.endswith(".register_blueprint") and node.args:
-            blueprint = dotted(node.args[0])
-            if blueprint:
-                self.facts.add_edge(
-                    "mounts",
-                    self.module_id,
-                    ref("router", f"{self.module}.{blueprint}"),
-                    node,
-                    {"prefix": keyword_string(node, "url_prefix") or ""},
-                )
+        if name and name.endswith(".register_blueprint"):
+            self.mount(node, "url_prefix")
         if name and name.endswith(".add_url_rule"):
             raw_path = positional_string(node, 0)
             if raw_path is None or any(marker in raw_path for marker in ("<", ">")):
@@ -1784,7 +1848,10 @@ class FlaskFactEnricher:
                 methods = ["GET"]
             if not methods:
                 return  # an explicit empty `methods=[]` rules out every verb
-            path = "/" + raw_path.lstrip("/") or "/"
+            # A blueprint's rule sits under its `url_prefix`, as a decorated route does.
+            owner = dotted(node.func.value) if isinstance(node.func, ast.Attribute) else None
+            prefix = self.framework_objects.get(owner or "", ("flask", ""))[1]
+            path = prefixed_path(prefix, raw_path)
             for method in methods:
                 canonical = f"{method.upper()} {path} => {target.removeprefix('py:function:')}"
                 route_id = ref("route", canonical)
@@ -1860,9 +1927,10 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.module_id = ref("module", self.name)
         self.facts = PythonFactAccumulator(relative)
         self.roles = PythonFrameworkRoleEnricher()
-        self.fastapi = FastApiFactEnricher(self.facts, self.name, self.module_id, self.aliases, self.resolve_name)
+        routing = (self.facts, self.name, self.module_id, self.aliases, self.resolve_name, index.module_declarations)
+        self.fastapi = FastApiFactEnricher(*routing)
         self.django = DjangoFactEnricher(self.facts, self.name, self.module_id, self.aliases, self.resolve_name)
-        self.flask = FlaskFactEnricher(self.facts, self.name, self.module_id, self.aliases, self.resolve_name)
+        self.flask = FlaskFactEnricher(*routing)
 
     def collect(self) -> dict[str, Any]:
         self.facts.add_node(

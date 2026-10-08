@@ -14,8 +14,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * Every Python module id is the one its importers use, and no two files
- * share one.
+ * Every Python module id is the one its importers use, no two files share
+ * one, and a framework mount names a router node that exists.
  *
  * Each case scans a small tree through the real worker and checks the node a
  * file declares, the edge an importer emits, and that the phantom the old
@@ -264,6 +264,82 @@ final class PythonModuleIdentityTest extends KnossosTestCase
         self::assertSame('pkg/mod.py', $paths['pkg.mod.f'] ?? null);
         self::assertSame('pkg/mod.pyi', $paths['pkg.mod.<pkg/mod.pyi>.f'] ?? null);
         self::assertSame('src/utils.py', $paths['utils.<src/utils.py>.inner'] ?? null);
+    }
+
+    /**
+     * `include_router` and `register_blueprint` name a router; the router is
+     * now a node wherever it is assigned, so the mount reaches it, and a
+     * blueprint's `add_url_rule` keeps the blueprint's prefix.
+     */
+    public function testAMountedRouterIsANodeAndAUrlRuleKeepsItsBlueprintPrefix(): void
+    {
+        $this->write('api/__init__.py', '');
+        $this->write('api/users.py', implode("\n", [
+            'from fastapi import APIRouter',
+            '',
+            'router = APIRouter(prefix="/users")',
+            '',
+            '',
+            '@router.get("/")',
+            'def list_users():',
+            '    return []',
+            '',
+        ]));
+        $this->write('main.py', implode("\n", [
+            'import fastapi',
+            'from fastapi import APIRouter, FastAPI',
+            'from flask import Blueprint, Flask',
+            'from api import users',
+            'from api.users import router as users_router',
+            '',
+            'app = FastAPI()',
+            'local = fastapi.APIRouter(prefix="/local")',
+            'app.include_router(local, prefix="/v1")',
+            'app.include_router(users_router)',
+            'app.include_router(users.router)',
+            'app.include_router(build_router())',
+            '',
+            '',
+            'def register(target: FastAPI, extra: APIRouter):',
+            '    target.include_router(extra)',
+            '',
+            '',
+            'web = Flask(__name__)',
+            'bp = Blueprint("bp", __name__, url_prefix="/bp")',
+            '',
+            '',
+            'def view():',
+            '    return ""',
+            '',
+            '',
+            'bp.add_url_rule("/x", view_func=view)',
+            'web.add_url_rule("/y", view_func=view)',
+            'web.register_blueprint(bp)',
+            '',
+        ]));
+
+        $facts = $this->scanned();
+
+        $main = $this->nodeIds($facts, 'main.py');
+        self::assertContains('py:router:main.local', $main);
+        self::assertContains('py:router:main.bp', $main);
+        self::assertContains('py:router:api.users.router', $this->nodeIds($facts, 'api/users.py'));
+        $mounts = array_values(array_filter($facts['main.py']->edges, static fn(EdgeFact $edge): bool => $edge->kind === 'mounts'));
+        $targets = [];
+        foreach ($mounts as $edge) {
+            $targets[$edge->targetReference] = $edge->attributes;
+        }
+        self::assertSame(['prefix' => '/v1'], $targets['py:router:main.local'] ?? null);
+        self::assertSame(['prefix' => ''], $targets['py:router:api.users.router'] ?? null);
+        self::assertSame(['prefix' => ''], $targets['py:router:main.bp'] ?? null);
+        // A router handed in as a parameter was built elsewhere: the mount is a guess the graph keeps only if it resolves.
+        self::assertSame(['prefix' => '', 'speculative' => true], $targets['py:router:main.extra'] ?? null);
+        self::assertNotContains('py:router:main.users_router', array_keys($targets));
+        self::assertNotContains('py:router:main.users.router', array_keys($targets));
+
+        self::assertContains('py:route:GET /bp/x => main.view', $main);
+        self::assertNotContains('py:route:GET /x => main.view', $main);
+        self::assertContains('py:route:GET /y => main.view', $main);
     }
 
     /**

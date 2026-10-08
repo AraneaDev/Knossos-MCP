@@ -98,7 +98,12 @@ dependency metadata is incomplete or absent.
 | Celery    | `task` and `shared_task` decorators                                                                                                                                                                                 | the `python.task` role                                                                                                                                  |
 
 Blueprint prefixes and route paths combine only when both are literals in the
-same file.
+same file, for a decorated route and for `add_url_rule` alike. An `APIRouter`
+or `Blueprint` assigned to a name is a `router` node, `py:router:<module>.<name>`,
+and a `mounts` edge from `include_router` or `register_blueprint` reaches the
+router node it names, in the same file or imported from another module. A
+router handed in as a parameter has no node of its own, so its mount is kept
+only when its target resolves.
 
 ## Limits
 

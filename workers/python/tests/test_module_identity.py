@@ -1,12 +1,13 @@
-"""Module ids: which directories are source roots, and which file owns an id.
+"""Module ids: which directories are source roots, which file owns an id, and router nodes.
 
 The PHPUnit suite checks these end to end through the real worker; these cases
-pin the pieces: the pyproject's declared roots, the src layout, and how a file
-whose location another file owns is named.
+pin the pieces: the pyproject's declared roots, the src layout, how a file
+whose location another file owns is named, and the routers a module declares.
 """
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -139,3 +140,28 @@ def test_an_import_of_a_dotted_module_binds_its_first_name(worker: ModuleType, p
     assert ("calls", "py:function:use.u", "py:function:a.b.f") in edges
     assert ("calls", "py:function:use.u", "py:function:os.path.join") in edges
     assert ("imports", "py:module:use", "py:module:a.b") in edges
+
+
+def test_router_constructors_follow_the_imports(worker: ModuleType) -> None:
+    """``APIRouter`` and ``Blueprint`` count under any import form; another module's same-named class does not."""
+    tree = ast.parse(
+        "from fastapi import APIRouter as R, FastAPI\nimport flask\nimport fastapi as fa\nfrom mine import Blueprint\n"
+    )
+    assert worker.router_constructors(tree) == {"R", "flask.Blueprint", "fa.APIRouter"}
+
+
+def test_a_module_level_router_is_a_declaration(worker: ModuleType, project: Any) -> None:
+    """An importer of ``router`` gets the router node its module's own scan emits."""
+    root = project({"api.py": "from fastapi import APIRouter\n\nrouter = APIRouter()\nother = object()\n"})
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    assert index.module_declarations("api") == {"router": "py:router:api.router"}
+
+
+@pytest.mark.parametrize(
+    ("prefix", "path", "joined"),
+    [("", "/", "/"), ("/bp", "x/", "/bp/x"), ("/bp/", "/", "/bp"), ("", "a", "/a")],
+)
+def test_a_route_path_joins_its_prefix_with_one_slash(worker: ModuleType, prefix: str, path: str, joined: str) -> None:
+    """Prefix and path meet at exactly one slash, and an empty pair is the root."""
+    assert worker.prefixed_path(prefix, path) == joined
