@@ -2,7 +2,7 @@ vendor/
 /.phpunit.cache/
 /.mypy_cache/
 /.ruff_cache/
-node_modules/
+node_modules
 /coverage/
 /.knossos/
 *.sqlite
