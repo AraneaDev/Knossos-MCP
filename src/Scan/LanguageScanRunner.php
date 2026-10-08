@@ -89,13 +89,15 @@ final readonly class LanguageScanRunner
      *
      * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
      * @param array<string, array{files: int, source_bytes: int, source_bytes_used: int}> $batchBudgets
+     * @param ?array<string, true> $only the paths to confine the language to, for a later pass; null for all of its files
      * @return array<string, mixed>|null the language's outcome ({@see runLanguage()})
      */
-    private function attempt(LanguageDescriptor $descriptor, ScanPlan $plan, CancellationToken $cancellation, array &$workerDiagnostics, array &$batchBudgets): ?array
+    private function attempt(LanguageDescriptor $descriptor, ScanPlan $plan, CancellationToken $cancellation, array &$workerDiagnostics, array &$batchBudgets, ?array $only = null): ?array
     {
         $files = array_values(array_filter(
             $plan->preparation->discovery->files,
-            static fn($file): bool => in_array($file->language, $descriptor->languages, true),
+            static fn($file): bool => in_array($file->language, $descriptor->languages, true)
+                && ($only === null || isset($only[$file->relativePath])),
         ));
         // Keyed on the owner, like workerDiagnostics and scannerMetadata, so
         // a consumer can join the three. Recorded for every descriptor,
@@ -164,7 +166,9 @@ final readonly class LanguageScanRunner
      *
      * Repeated until a pass finds nothing new: a pass can build a program the
      * one before it did not, whose reused contributions were never compared.
-     * Each pass adds at least one owner to a finite set, so it ends.
+     * Each pass adds at least one owner to a finite set, so it ends. A later
+     * pass is sent only the owners it newly reached, the ones the passes
+     * before it reused, and its answers are laid over theirs.
      *
      * @param array<string, array<string, mixed>> $outcomes by descriptor key
      * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
@@ -186,26 +190,113 @@ final readonly class LanguageScanRunner
             $wider = ProgramEnvironments::widened($plan, $stale);
             $reached = [];
             foreach (array_diff_key($wider->invalidatedOwners, $current->invalidatedOwners) as $owner => $true) {
-                $reached[$wider->cachedReads?->rows[$owner]['scanner_id'] ?? ''] = true;
+                $row = $wider->cachedReads?->rows[$owner] ?? ['scanner_id' => '', 'file_path' => ''];
+                $reached[$row['scanner_id']][$row['file_path']] = true;
             }
             if ($reached === []) {
                 return $outcomes;
             }
             $current = $wider;
             foreach ($this->descriptors as $descriptor) {
-                if (isset($outcomes[$descriptor->key], $reached[$descriptor->scannerId()])) {
-                    $first = $outcomes[$descriptor->key];
-                    unset($outcomes[$descriptor->key]);
-                    $outcome = $this->attempt($descriptor, $wider, $cancellation, $workerDiagnostics, $batchBudgets);
-                    if ($outcome !== null) {
-                        // The language's time is every pass; its counts and
-                        // facts are the last's, which replace the earlier.
-                        $outcome['milliseconds'] += $first['milliseconds'];
-                        $outcomes[$descriptor->key] = $outcome;
-                    }
+                if (!isset($outcomes[$descriptor->key], $reached[$descriptor->scannerId()])) {
+                    continue;
+                }
+                $first = $outcomes[$descriptor->key];
+                $paths = self::reusedAmong($first, $reached[$descriptor->scannerId()]);
+                if ($paths === []) {
+                    // Every owner reached was answered by a pass before: no
+                    // request to make, and the first answer stands.
+                    continue;
+                }
+                unset($outcomes[$descriptor->key]);
+                $outcome = $this->attempt($descriptor, $wider, $cancellation, $workerDiagnostics, $batchBudgets, $paths);
+                if ($outcome !== null) {
+                    $outcomes[$descriptor->key] = self::mergedOutcome($first, $outcome);
                 }
             }
         }
+    }
+
+    /**
+     * Of the given paths, those an outcome reused from the cache and did not
+     * leave out: what a later pass still has to scan. One the pass before
+     * already scanned carries that pass's answer; one left out would be left
+     * out again.
+     *
+     * @param array<string, mixed> $outcome
+     * @param array<string, true> $paths
+     * @return array<string, true>
+     */
+    private static function reusedAmong(array $outcome, array $paths): array
+    {
+        foreach ($outcome['cache_entries'] as $entry) {
+            if (!$entry->fromCache) {
+                unset($paths[$entry->filePath]);
+            }
+        }
+        foreach ($outcome['left_out_paths'] as $path) {
+            unset($paths[$path]);
+        }
+
+        return $paths;
+    }
+
+    /**
+     * The first pass's outcome with a later pass's answers laid over it.
+     *
+     * The later pass scanned only the owners it was sent, so its contributions
+     * and cache entries replace the first's for those owners and nothing else.
+     * Its reads and the environments it saw are merged with the later pass
+     * winning; what it read beyond discovery is checked against the first
+     * pass's reads as one request's are against another's. The counts are
+     * summed, less the reused entries the later pass rescanned; the language's
+     * time is every pass.
+     *
+     * @param array<string, mixed> $first
+     * @param array<string, mixed> $second
+     * @return array<string, mixed>
+     */
+    private static function mergedOutcome(array $first, array $second): array
+    {
+        $replaced = [];
+        foreach ($second['contributions'] as $contribution) {
+            $replaced[$contribution->ownerKey] = true;
+        }
+        $kept = static fn(ScanContribution $contribution): bool => !isset($replaced[$contribution->ownerKey]);
+        $contributions = [...array_filter($first['contributions'], $kept), ...$second['contributions']];
+        usort($contributions, static fn(ScanContribution $a, ScanContribution $b): int => strcmp($a->ownerKey, $b->ownerKey));
+        $reusedBefore = 0;
+        $entries = [];
+        foreach ($first['cache_entries'] as $entry) {
+            if ($kept($entry->contribution)) {
+                $entries[] = $entry;
+            } elseif ($entry->fromCache) {
+                ++$reusedBefore;
+            }
+        }
+        $undiscovered = new UndiscoveredInputs();
+        $undiscovered->add($first['undiscovered_inputs']);
+        $undiscovered->add($second['undiscovered_inputs']);
+        $metadata = [];
+        foreach (array_keys($first['scanner_metadata'] + $second['scanner_metadata']) as $scanner) {
+            $metadata[$scanner] = self::mergeScanResult($first['scanner_metadata'][$scanner] ?? [], $second['scanner_metadata'][$scanner] ?? []);
+        }
+
+        return [
+            'manifest' => $second['manifest'],
+            'contributions' => $contributions,
+            'cache_entries' => [...$entries, ...$second['cache_entries']],
+            'left_out_paths' => array_values(array_unique([...$first['left_out_paths'], ...$second['left_out_paths']])),
+            'parsed' => $first['parsed'] + $second['parsed'],
+            'unchanged' => $first['unchanged'] - $reusedBefore + $second['unchanged'],
+            'added' => $first['added'] + $second['added'],
+            'changed' => $first['changed'] + $second['changed'],
+            'scanner_metadata' => $metadata,
+            'milliseconds' => $first['milliseconds'] + $second['milliseconds'],
+            'undiscovered_inputs' => $undiscovered->all(),
+            'read_groups' => $second['read_groups'] + $first['read_groups'],
+            'program_environments' => $second['program_environments'] + $first['program_environments'],
+        ];
     }
 
     /**

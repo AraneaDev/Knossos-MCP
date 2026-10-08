@@ -454,8 +454,14 @@ while (($line = fgets(STDIN)) !== false) {
                 respond($id, ['count' => 0]);
                 continue;
             }
+            // Every file derived in one program whose global declarations
+            // are always the same, so a cached contribution that remembers
+            // another environment for that program is stale.
+            $program = $mode === 'per_file_program'
+                ? ['program' => 'fake-program', 'environment' => hash('sha256', 'the globals now')]
+                : [];
             foreach ($requested as $relativePath) {
-                notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath) + $program);
             }
             // Shaped like the real TypeScript worker's reply: every integer is a
             // count of what THIS request did, so a caller must sum them, while
@@ -466,7 +472,7 @@ while (($line = fgets(STDIN)) !== false) {
                 'programs' => 1,
                 'programs_reused' => $batch === 1 ? 0 : 1,
                 'parser' => 'fake-' . $batch,
-            ]);
+            ] + ($program === [] ? [] : ['environments' => ['fake-program' => $program['environment']]]));
             continue;
         }
         if ($mode === 'output_flood') {

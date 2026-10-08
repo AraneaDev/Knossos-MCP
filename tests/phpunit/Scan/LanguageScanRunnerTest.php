@@ -10,6 +10,7 @@ use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\ProjectUnit;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\AnalysisHash;
+use Knossos\Scan\CachedReads;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\LanguageDescriptor;
 use Knossos\Scan\LanguageScanResult;
@@ -1149,6 +1150,65 @@ final class LanguageScanRunnerTest extends TestCase
             static fn($contribution): bool => $contribution->ownerKey === 'knossos.fake:file:src/Huge.js',
         ));
         assertContains('Left out of the graph', $huge[0]->diagnostics[0]->message);
+    }
+
+    public function testALaterPassIsSentOnlyTheOwnersItNewlyReached(): void
+    {
+        // The first pass rescans the edited file and learns that the
+        // program's globals changed under two reused files. The pass that
+        // rebuilds those two must not send the edited file again: its
+        // answer is already in, and so are its counts.
+        $this->allocateRecordPath();
+        $descriptor = new LanguageDescriptor(
+            key: 'fake',
+            stage: 'fake-analysis',
+            languages: ['typescript'],
+            command: ['php', '-r', 'echo 1'],
+            addedFilesAffectAll: true,
+        );
+        $runner = $this->runnerWithWorkerFactory(fn(): ProcessScannerClient => $this->workerClient('per_file_program'), $descriptor);
+        $fixtures = [$this->fileFixture('src/a.ts', 'typescript'), $this->fileFixture('src/b.ts', 'typescript'), $this->fileFixture('src/c.ts', 'typescript')];
+        $preparation = $this->makePreparationWithFiles($fixtures, ['fake' => 'cfg-fake']);
+        $first = $runner->run(new ScanPlan($preparation, 'plan-passes', 'fast', [], 0), new CancellationToken());
+
+        // The cache as the last scan left it, except that a.ts changed since
+        // and b.ts and c.ts remember the program with other globals.
+        $cache = $rows = [];
+        foreach ($first->cacheEntries as $entry) {
+            $payload = json_decode(json_encode($entry->contribution, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
+            $payload['environment'] = hash('sha256', 'the globals before');
+            $contentHash = $entry->filePath === 'src/a.ts' ? 'hash-before-the-edit' : $entry->contentHash;
+            $cache[$entry->scannerId . "\0" . $entry->filePath] = [
+                'content_hash' => $contentHash,
+                'scanner_version' => $entry->scannerVersion,
+                'configuration_hash' => $entry->configurationHash,
+                'payload_json' => json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            ];
+            $rows[$entry->contribution->ownerKey] = [
+                'scanner_id' => $entry->scannerId,
+                'file_path' => $entry->filePath,
+                'content_hash' => $contentHash,
+                'scanner_version' => $entry->scannerVersion,
+                'configuration_hash' => $entry->configurationHash,
+                'read_attribution' => true,
+                'read_group' => null,
+            ];
+        }
+        $plan = new ScanPlan($preparation, 'plan-passes', 'incremental', $cache, 0, ['knossos.fake:file:src/a.ts' => true], true, new CachedReads($rows, [], []));
+
+        $second = $runner->run($plan, new CancellationToken());
+
+        assertSame([3, 1, 2], $this->recordedBatches(), 'The full scan, the edited file, then only the two files the environment change reached.');
+        assertSame(3, $second->parsed);
+        assertSame(0, $second->unchanged);
+        assertSame(
+            ['knossos.fake:file:src/a.ts', 'knossos.fake:file:src/b.ts', 'knossos.fake:file:src/c.ts'],
+            array_map(static fn($contribution): string => $contribution->ownerKey, $second->contributions),
+        );
+        assertSame([false, false, false], array_map(static fn($entry): bool => $entry->fromCache, $second->cacheEntries));
+        assertSame(3, $second->scannerMetadata['knossos.fake']['files_scanned']);
+        assertSame(2, $second->scannerMetadata['knossos.fake']['programs']);
+        assertSame([], $second->workerDiagnostics);
     }
 
     public function testASmallFileWithAnOversizedFrameIsFoundAmongManyNeighbours(): void
