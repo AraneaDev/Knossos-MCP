@@ -231,6 +231,29 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
     }
 
     /**
+     * `lib.rs` read `helper.rs` by its bytes while discovery left it out.
+     * Discovered now with the same bytes, it reaches `lib.rs` and the owners
+     * of a group that holds it; a file that was not new reaches nobody.
+     */
+    #[Group('scan')]
+    public function testAFileDiscoveredForTheFirstTimeReachesItsReadersWhateverBytesTheyRead(): void
+    {
+        $cached = new CachedReads(
+            [
+                'src/lib.rs' => ['scanner_id' => 'knossos.rust', 'file_path' => 'src/lib.rs', 'content_hash' => self::hash('src/lib.rs'), 'read_attribution' => true, 'read_group' => null],
+                'a.ts' => ['scanner_id' => 'knossos.typescript', 'file_path' => 'a.ts', 'content_hash' => self::hash('a.ts'), 'read_attribution' => true, 'read_group' => 'g'],
+                'b.ts' => ['scanner_id' => 'knossos.typescript', 'file_path' => 'b.ts', 'content_hash' => self::hash('b.ts'), 'read_attribution' => true, 'read_group' => null],
+            ],
+            ['src/lib.rs' => ['src/helper.rs' => self::hash('src/helper.rs')], 'a.ts' => [], 'b.ts' => []],
+            ['g' => ['vendor/x.d.ts' => self::hash('vendor/x.d.ts')]],
+        );
+        $discovered = self::discovered(['src/lib.rs', 'src/helper.rs', 'a.ts', 'b.ts', 'vendor/x.d.ts']);
+
+        assertSame(['a.ts', 'src/lib.rs'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), ['knossos.rust' => ['src/helper.rs'], 'knossos.typescript' => ['vendor/x.d.ts']], directReads: ['knossos.rust' => true])));
+        assertSame([], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), directReads: ['knossos.rust' => true])));
+    }
+
+    /**
      * A group the owner names but the store no longer holds leaves nothing to
      * compare its reads against, so the owner cannot be shown to be current.
      */

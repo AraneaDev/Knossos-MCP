@@ -253,6 +253,26 @@ final class RustReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * An ignored file at a path `lib.rs` probed was read by its bytes but not
+     * indexed. Once discovery stops ignoring it, the same bytes now declare
+     * `assist`, so `lib.rs` must be rescanned though no read of it changed.
+     */
+    public function testAnIgnoredModuleThatBecomesDiscoveredRescansTheFileThatLooked(): void
+    {
+        $this->writeCrate();
+        $this->write('src/lib.rs', self::LIB . "\npub mod helper;\n\npub fn later() -> u32 {\n    helper::assist()\n}\n");
+        $this->write('src/helper.rs', "pub fn assist() -> u32 {\n    9\n}\n");
+        $this->write('.gitignore', "src/helper.rs\n");
+        $pdo = $this->scannedAndStamped();
+
+        unlink($this->root . '/.gitignore');
+        $this->scan($pdo);
+
+        assertSame(['src/helper.rs', 'src/lib.rs'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     public function testEditingTheManifestRebuildsEveryRustFile(): void
     {
         $this->writeCrate();

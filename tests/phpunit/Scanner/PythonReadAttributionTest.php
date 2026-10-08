@@ -110,6 +110,26 @@ final class PythonReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * An ignored module the importer found was read as a file discovery left
+     * out. Once discovery stops ignoring it, the module has a contribution of
+     * its own, so the importer is rescanned though no read of it changed.
+     */
+    public function testAnIgnoredModuleThatBecomesDiscoveredRescansItsImporter(): void
+    {
+        $this->writePackage();
+        $this->write('late.py', "from pkg.extra import Extra\n\n\ndef f():\n    return Extra()\n");
+        $this->write('pkg/extra.py', "class Extra:\n    pass\n");
+        $this->write('.gitignore', "pkg/extra.py\n");
+        $pdo = $this->scannedAndStamped();
+
+        unlink($this->root . '/.gitignore');
+        $this->scan($pdo);
+
+        assertSame(['late.py', 'pkg/extra.py'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     /** `from pkg.sub import user` found the submodule without reading it; deleting it changes the importer. */
     public function testDeletingAModuleRescansItsReaders(): void
     {

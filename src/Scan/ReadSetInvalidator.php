@@ -22,7 +22,9 @@ namespace Knossos\Scan;
  * deleted, since none of the files it renames need have read it. A row
  * whose reads cannot cover what its file stands for (a file left out, or one
  * the worker failed on) is rebuilt on any change its scanner sees, since its
- * readers named it instead of what it re-exports. A scanner whose reads name
+ * readers named it instead of what it re-exports. A file discovery hashes for
+ * the first time reaches every owner that read it while it was left out,
+ * whatever bytes that read saw. A scanner whose reads name
  * every file its facts came from is the exception to the transitive rule: a
  * rebuilt owner of it reaches its readers only when its own bytes changed.
  */
@@ -120,6 +122,19 @@ final class ReadSetInvalidator
             self::collectChanged($reads, $unchanged, $changed);
             foreach ($reads as $path => $hash) {
                 $groupsOf[(string) $path][$group] = true;
+            }
+        }
+
+        // A file discovery hashes for the first time was, to every owner
+        // that read it, a file discovery left out: read by its bytes, but
+        // never one with a contribution of its own, as the Rust index never
+        // holds one. Those bytes may be the same now, and the reader is
+        // still stale.
+        foreach ($addedByScanner as $paths) {
+            foreach ($paths as $path) {
+                if (isset($readersOf[$path]) || isset($groupsOf[$path])) {
+                    $changed[$path] = true;
+                }
             }
         }
 
