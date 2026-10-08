@@ -97,6 +97,12 @@ impl Facts {
         }
     }
 
+    /// The project-relative path of the file this accumulator owns.
+    #[must_use]
+    pub fn relative(&self) -> &str {
+        &self.relative
+    }
+
     /// Evidence spanning from `start` to `end`, clamped to one-based lines.
     ///
     /// The pinned `proc-macro2` gates `Span::start()`/`end()` behind
@@ -144,6 +150,21 @@ impl Facts {
     /// Leave the innermost `#[cfg(test)]` scope.
     pub fn exit_test_scope(&mut self) {
         self.test_scope = self.test_scope.saturating_sub(1);
+    }
+
+    /// [`Facts::enter_test_scope`] when `test` is set, else nothing, so a
+    /// caller can bracket an item it may or may not mark.
+    pub fn enter_test_scope_if(&mut self, test: bool) {
+        if test {
+            self.enter_test_scope();
+        }
+    }
+
+    /// The closing half of [`Facts::enter_test_scope_if`].
+    pub fn exit_test_scope_if(&mut self, test: bool) {
+        if test {
+            self.exit_test_scope();
+        }
     }
 
     /// The attributes every node emitted at the current scope carries.

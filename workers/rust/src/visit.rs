@@ -12,7 +12,8 @@ use syn::visit::Visit;
 use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
-use crate::resolve::{flatten_use, glob_prefixes, parent_module, rebase, Aliases};
+use crate::layout::{modules_above, Layout};
+use crate::resolve::{flatten_use, glob_prefixes, ident_name, parent_module, rebase, Aliases};
 
 /// Canonical name of every top-level and inline-module declaration of the
 /// project's Rust files, mapped to how many files declared it. The crate-wide
@@ -30,6 +31,11 @@ pub struct Declarations {
     counts: BTreeMap<String, usize>,
     /// Every name asked about since the last [`Declarations::take_lookups`].
     lookups: RefCell<BTreeSet<String>>,
+    /// Each `mod name;` whose module is not the path it is declared at
+    /// (`#[path]`, a binary root's children), by that declared path; `None`
+    /// when two declarations send one path to two modules. See
+    /// [`declared_renames`].
+    renames: BTreeMap<String, Option<String>>,
 }
 
 impl Declarations {
@@ -52,10 +58,109 @@ impl Declarations {
         }
     }
 
+    /// Record one file's renamed `mod` declarations, as [`declared_renames`]
+    /// returned them; a path two declarations send apart resolves to nothing.
+    pub fn add_renames(&mut self, renames: &BTreeMap<String, Option<String>>) {
+        for (declared, placed) in renames {
+            merge_rename(&mut self.renames, declared, placed.clone());
+        }
+    }
+
+    /// `path` with its longest prefix that a `mod` declaration renamed
+    /// rewritten onto the module that declaration loads, repeatedly, so
+    /// `crate::a::x` under `#[path = "impl_a.rs"] mod a;` is
+    /// `crate::impl_a::x`. `Some(None)` when a prefix is ambiguous, `None`
+    /// when no prefix was renamed. Every path asked about is remembered as a
+    /// lookup: the declaring file sits in a module above it.
+    #[allow(clippy::option_option)]
+    pub fn renamed(&self, path: &str) -> Option<Option<String>> {
+        let mut current = path.to_owned();
+        let mut changed = false;
+        for _ in 0..=path.matches("::").count() {
+            self.lookups.borrow_mut().insert(current.clone());
+            let found = std::iter::successors(Some(current.as_str()), |prefix| {
+                prefix.rsplit_once("::").map(|(head, _)| head)
+            })
+            .find_map(|prefix| Some((prefix.len(), self.renames.get(prefix)?)));
+            match found {
+                Some((_, None)) => return Some(None),
+                Some((length, Some(placed))) => {
+                    current = format!("{placed}{}", &current[length..]);
+                    changed = true;
+                }
+                None => break,
+            }
+        }
+
+        changed.then_some(Some(current))
+    }
+
     /// Every name asked about since the last call, leaving the set empty.
     pub fn take_lookups(&self) -> BTreeSet<String> {
         std::mem::take(&mut *self.lookups.borrow_mut())
     }
+}
+
+/// Record that `declared` names `placed`, or that it is ambiguous when an
+/// earlier declaration sent it elsewhere.
+fn merge_rename(
+    renames: &mut BTreeMap<String, Option<String>>,
+    declared: &str,
+    placed: Option<String>,
+) {
+    match renames.get(declared) {
+        Some(existing) if *existing != placed => {
+            renames.insert(declared.to_owned(), None);
+        }
+        Some(_) => {}
+        None => {
+            renames.insert(declared.to_owned(), placed);
+        }
+    }
+}
+
+/// Every `mod name;` in one file whose module (see [`mod_child`]) is not the
+/// path it is declared at, by that path: what another file writing
+/// `crate::name::x` must be rewritten through. `None` marks a path two
+/// declarations of the file send to two modules.
+#[must_use]
+pub fn declared_renames(
+    relative: &str,
+    module: &str,
+    items: &[Item],
+    layout: &Layout,
+) -> BTreeMap<String, Option<String>> {
+    let mut out = BTreeMap::new();
+    collect_renames(relative, module, module, items, layout, &mut out);
+
+    out
+}
+
+/// [`declared_renames`] for the items of `container`.
+fn collect_renames(
+    relative: &str,
+    module: &str,
+    container: &str,
+    items: &[Item],
+    layout: &Layout,
+    out: &mut BTreeMap<String, Option<String>>,
+) {
+    let mut seen = BTreeMap::new();
+    for item in items {
+        let Item::Mod(node) = item else {
+            continue;
+        };
+        let (child, _) = mod_child(relative, module, container, node, layout);
+        let declared = format!("{container}::{}", ident_name(&node.ident));
+        match &node.content {
+            Some((_, inner)) => collect_renames(relative, module, &child, inner, layout, out),
+            None => merge_rename(&mut seen, &declared, Some(child)),
+        }
+    }
+    out.extend(
+        seen.into_iter()
+            .filter(|(declared, placed)| placed.as_deref() != Some(declared.as_str())),
+    );
 }
 
 /// Canonical paths of modules the crate declared `#[cfg(test)] mod name;`
@@ -126,9 +231,31 @@ struct Walk<'a> {
     /// The field types of each struct this file declares, by struct then
     /// field name, so `self.walk.facts.edge()` resolves through the fields.
     struct_fields: BTreeMap<String, BTreeMap<String, String>>,
+    /// Where the project's crates are, which names each `mod` declaration's
+    /// module (see [`mod_child`]).
+    layout: &'a Layout,
+    /// The file's project-relative path, which the `mod` declarations in it
+    /// load their files beside.
+    relative: String,
+    /// Each `mod name;` whose module is not `container::name` (a binary
+    /// root's or a test target's children, `#[path]`), by its container and
+    /// name: a path through `name` there names that module. `None` marks a
+    /// name two declarations (under different `cfg`s) send to two modules.
+    renamed_children: BTreeMap<(String, String), Option<String>>,
+    /// What `crate` names in this file: the package's crate root, or for a
+    /// target root (a binary in `src/bin/`, a test, an example) the file's
+    /// own module, so `crate::own` in `src/bin/tool.rs` is
+    /// `crate::bin::tool::own`. Its `mod helper;` loads `src/bin/helper.rs`,
+    /// and `crate::helper` reaches that through the renamed declaration (see
+    /// [`Declarations::renamed`]).
+    crate_module: String,
+    /// The files this file's `mod` declarations load, whose own placement
+    /// decided the module each declaration names.
+    placed: BTreeSet<String>,
 }
 
-/// Walk every item in a parsed file, attributing each to `module`.
+/// Walk every item in a parsed file, attributing each to `module`, and
+/// return the files its `mod` declarations load (see [`mod_child`]).
 pub fn walk(
     facts: &mut Facts,
     module: &str,
@@ -136,7 +263,8 @@ pub fn walk(
     frameworks: &[String],
     declarations: &Declarations,
     test_modules: &TestModules,
-) {
+    layout: &Layout,
+) -> BTreeSet<String> {
     // A file that IS an out-of-line test module is test code in its entirety,
     // and so is anything nested below it, so the scope opens around the whole
     // walk rather than around a single item.
@@ -144,6 +272,13 @@ pub fn walk(
     if file_is_test {
         facts.enter_test_scope();
     }
+    let relative = facts.relative().to_owned();
+    let root = module.split("::").next().unwrap_or("crate").to_owned();
+    let crate_module = if layout.is_target_root(&relative) {
+        module.to_owned()
+    } else {
+        root
+    };
     let mut walker = Walk {
         facts,
         module: module.to_owned(),
@@ -157,15 +292,23 @@ pub fn walk(
         routes: Vec::new(),
         role_marks: Vec::new(),
         struct_fields: BTreeMap::new(),
+        layout,
+        relative,
+        renamed_children: BTreeMap::new(),
+        crate_module,
+        placed: BTreeSet::new(),
     };
     walker.collect_uses(module, &file.items);
     walker.resolve_globs();
     walker.collect_struct_fields(module, &file.items);
     walker.walk_items(module, "module", &file.items);
     walker.finish_walk();
+    let placed = std::mem::take(&mut walker.placed);
     if file_is_test {
         facts.exit_test_scope();
     }
+
+    placed
 }
 
 /// Whether `module`, or any module above it, was declared `#[cfg(test)]`.
@@ -184,22 +327,129 @@ fn is_test_module_path(module: &str, test_modules: &TestModules) -> bool {
     false
 }
 
-/// Record every out-of-line `#[cfg(test)] mod name;` in one file's items.
+/// The module a `mod` item in `relative` (placed in `module`) declares, and
+/// for a `mod name;` the file it loads.
+///
+/// `mod name { .. }` declares `container::name` in place. `mod name;` names
+/// the module of the file Rust loads for it (see [`Layout::child_file`]), so
+/// a binary root's `mod cli;` is `crate::cli` beside `src/cli.rs`, a test
+/// target's `mod common;` is `tests::common`, and `#[path = "x.rs"]` is the
+/// module of `x.rs`: the declaration and that file's contribution agree on
+/// one node.
+fn mod_child(
+    relative: &str,
+    module: &str,
+    container: &str,
+    node: &syn::ItemMod,
+    layout: &Layout,
+) -> (String, Option<String>) {
+    let name = ident_name(&node.ident);
+    let in_place = format!("{container}::{name}");
+    if node.content.is_some() {
+        return (in_place, None);
+    }
+    let inline: Vec<String> = container
+        .strip_prefix(module)
+        .and_then(|rest| rest.strip_prefix("::"))
+        .map(|rest| rest.split("::").map(str::to_owned).collect())
+        .unwrap_or_default();
+    let path = path_attribute(&node.attrs);
+    match layout.child_file(relative, &inline, &name, path.as_deref()) {
+        Some(file) => (layout.module_of(&file), Some(file)),
+        None => (in_place, None),
+    }
+}
+
+/// A `use` path whose head names a `mod` of the module it is written in,
+/// rewritten onto that module's path (see [`mod_child`]); `Some(None)` when
+/// two declarations of that name load different modules, `None` for any
+/// other path. A leading `::` (`unrooted` false) always names a crate.
+#[allow(clippy::option_option)]
+fn through_child(
+    children: &BTreeMap<String, Option<String>>,
+    unrooted: bool,
+    path: &str,
+) -> Option<Option<String>> {
+    if !unrooted {
+        return None;
+    }
+    let (head, rest) = match path.split_once("::") {
+        Some((head, rest)) => (head, Some(rest)),
+        None => (path, None),
+    };
+    let child = children.get(head)?;
+
+    Some(child.as_ref().map(|child| match rest {
+        Some(rest) => format!("{child}::{rest}"),
+        None => child.clone(),
+    }))
+}
+
+/// The value of a `#[path = "..."]` attribute.
+fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| match &attr.meta {
+        syn::Meta::NameValue(pair) if pair.path.is_ident("path") => match &pair.value {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(text),
+                ..
+            }) => Some(text.value()),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// Record every out-of-line `#[cfg(test)] mod name;` in one file's items, by
+/// the module its file is placed in (see [`mod_child`]).
 ///
 /// Bodiless modules only: one with a body is walked in place, where
-/// `Walk::walk_mod` opens the scope directly.
-pub fn collect_test_modules(module: &str, items: &[Item], out: &mut TestModules) {
+/// `Walk::walk_mod` opens the scope directly. A declaration counts only when
+/// `relative` is a file every file of that module already reads: one of the
+/// paths a module above it could have (`src/net.rs` for `crate::net::tests`,
+/// a binary root's `src/main.rs` for `crate::checks`). A `#[path]` that sends a test
+/// module elsewhere (`src/net.rs` loading `src/net_tests.rs`) is not marked,
+/// since adding or removing the attribute could not reach that file.
+pub fn collect_test_modules(
+    relative: &str,
+    module: &str,
+    items: &[Item],
+    layout: &Layout,
+    out: &mut TestModules,
+) {
+    collect_test_modules_in(relative, module, module, items, layout, out);
+}
+
+/// [`collect_test_modules`] for the items of `container`, `module` itself or
+/// an inline module in it.
+fn collect_test_modules_in(
+    relative: &str,
+    module: &str,
+    container: &str,
+    items: &[Item],
+    layout: &Layout,
+    out: &mut TestModules,
+) {
     for item in items {
-        if let Item::Mod(node) = item {
-            let canonical = format!("{module}::{}", node.ident);
-            match &node.content {
-                Some((_, inner)) => collect_test_modules(&canonical, inner, out),
-                None => {
-                    if is_cfg_test(&node.attrs) {
-                        out.insert(canonical);
-                    }
+        let Item::Mod(node) = item else {
+            continue;
+        };
+        let (canonical, _) = mod_child(relative, module, container, node, layout);
+        match &node.content {
+            Some((_, inner)) => {
+                collect_test_modules_in(relative, module, &canonical, inner, layout, out);
+            }
+            None if is_cfg_test(&node.attrs) => {
+                let read_by_it = modules_above(&canonical).iter().any(|parent| {
+                    layout
+                        .module_files(parent)
+                        .iter()
+                        .any(|file| file == relative)
+                });
+                if read_by_it {
+                    out.insert(canonical);
                 }
             }
+            None => {}
         }
     }
 }
@@ -257,13 +507,30 @@ impl Walk<'_> {
         // since the 2018 edition a path's first segment may be any name in
         // scope, and a module declared here is one. Left as written, the path
         // read as an external crate's.
-        let children: BTreeSet<String> = items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Mod(node) => Some(node.ident.to_string()),
-                _ => None,
-            })
-            .collect();
+        let mut children: BTreeMap<String, Option<String>> = BTreeMap::new();
+        for item in items {
+            if let Item::Mod(node) = item {
+                let (child, file) =
+                    mod_child(&self.relative, &self.module, container, node, self.layout);
+                self.placed.extend(file);
+                let name = ident_name(&node.ident);
+                match children.get(&name) {
+                    Some(Some(existing)) if *existing != child => {
+                        children.insert(name, None);
+                    }
+                    Some(_) => {}
+                    None => {
+                        children.insert(name, Some(child));
+                    }
+                }
+            }
+        }
+        for (name, child) in &children {
+            if child.as_deref() != Some(format!("{container}::{name}").as_str()) {
+                self.renamed_children
+                    .insert((container.to_owned(), name.clone()), child.clone());
+            }
+        }
         for item in items {
             match item {
                 Item::Use(node) => {
@@ -271,13 +538,18 @@ impl Walk<'_> {
                     flatten_use(&node.tree, "", &mut leaves);
                     let source = reference("module", &self.module);
                     for leaf in leaves {
-                        let head = leaf.full.split("::").next().unwrap_or_default();
-                        let written = if node.leading_colon.is_none() && children.contains(head) {
-                            format!("{container}::{}", leaf.full)
-                        } else {
-                            leaf.full.clone()
+                        let written = match through_child(
+                            &children,
+                            node.leading_colon.is_none(),
+                            &leaf.full,
+                        ) {
+                            Some(Some(written)) => written,
+                            Some(None) => continue,
+                            None => leaf.full.clone(),
                         };
-                        let Some(full) = rebase(container, &self.anchor_crate(&written)) else {
+                        let Some(full) = rebase(container, &self.anchor_crate(&written))
+                            .and_then(|full| self.renamed(full))
+                        else {
                             continue;
                         };
                         let module = if leaf.names_module {
@@ -285,13 +557,7 @@ impl Walk<'_> {
                         } else {
                             parent_module(&full).to_owned()
                         };
-                        self.facts.edge(
-                            "imports",
-                            &source,
-                            &reference("module", &module),
-                            "certain",
-                            item.span(),
-                        );
+                        self.import(&source, &module, item.span());
                         let key = (container.to_owned(), leaf.alias.clone());
                         match self.module_aliases.get(&key) {
                             Some(Some(existing)) if existing != &full => {
@@ -307,12 +573,12 @@ impl Walk<'_> {
                     let mut globs = Vec::new();
                     glob_prefixes(&node.tree, "", &mut globs);
                     for glob in globs {
-                        let head = glob.split("::").next().unwrap_or_default();
-                        let written = if node.leading_colon.is_none() && children.contains(head) {
-                            format!("{container}::{glob}")
-                        } else {
-                            glob
-                        };
+                        let written =
+                            match through_child(&children, node.leading_colon.is_none(), &glob) {
+                                Some(Some(written)) => written,
+                                Some(None) => continue,
+                                None => glob,
+                            };
                         self.pending_globs.push((
                             container.to_owned(),
                             written,
@@ -323,7 +589,7 @@ impl Walk<'_> {
                 }
                 Item::Mod(node) => {
                     if let Some((_, inner)) = &node.content {
-                        let nested = format!("{container}::{}", node.ident);
+                        let nested = format!("{container}::{}", ident_name(&node.ident));
                         self.collect_uses(&nested, inner);
                     }
                 }
@@ -332,14 +598,50 @@ impl Walk<'_> {
         }
     }
 
+    /// The edge a `use` leaves from `source` to the scope it imports from.
+    ///
+    /// A scope whose last segment is UpperCamelCase is a type, not a module:
+    /// `use crate::errors::Error::Io;` and `use Error::*;` take variants or
+    /// associated items of `Error`, so they reference the type (speculative,
+    /// struct or trait being unknown) instead of importing a module the graph
+    /// would invent.
+    fn import(&mut self, source: &str, scope: &str, span: proc_macro2::Span) {
+        let last = scope.rsplit("::").next().unwrap_or(scope);
+        if scope.contains("::") && last.starts_with(char::is_uppercase) {
+            for kind in ["class", "interface"] {
+                self.facts
+                    .speculative_edge("references", source, &reference(kind, scope), span);
+            }
+            return;
+        }
+        self.facts.edge(
+            "imports",
+            source,
+            &reference("module", scope),
+            "certain",
+            span,
+        );
+    }
+
     /// Walk one item list whose declarations belong to `container`.
     ///
     /// `container_kind` is the node kind of `container` itself (`module`, `class`,
     /// or `interface`), needed to build the `contains` edge's source reference —
     /// an edge endpoint carries a node kind that isn't always the edge's own kind.
+    ///
+    /// An item compiled only under `test` (`#[cfg(test)] fn helper()`) is
+    /// test code with everything it declares; a module opens that scope in
+    /// [`Walk::walk_mod`], so it is not opened twice here.
     fn walk_items(&mut self, container: &str, container_kind: &str, items: &[Item]) {
         for item in items {
+            let is_test = !matches!(item, Item::Mod(_)) && is_cfg_test(item_attrs(item));
+            if is_test {
+                self.facts.enter_test_scope();
+            }
             self.walk_item(container, container_kind, item);
+            if is_test {
+                self.facts.exit_test_scope();
+            }
         }
     }
 
@@ -350,7 +652,7 @@ impl Walk<'_> {
                 let canonical = self.declare(
                     container,
                     container_kind,
-                    &node.ident.to_string(),
+                    &ident_name(&node.ident),
                     "class",
                     item.span(),
                 );
@@ -366,7 +668,7 @@ impl Walk<'_> {
                 let canonical = self.declare(
                     container,
                     container_kind,
-                    &node.ident.to_string(),
+                    &ident_name(&node.ident),
                     "class",
                     item.span(),
                 );
@@ -391,13 +693,13 @@ impl Walk<'_> {
                 self.declare(
                     container,
                     container_kind,
-                    &node.ident.to_string(),
+                    &ident_name(&node.ident),
                     "class",
                     item.span(),
                 );
             }
             Item::Fn(node) => {
-                let name = node.sig.ident.to_string();
+                let name = ident_name(&node.sig.ident);
                 // A harness-invoked test has no caller in the graph, the same
                 // way a cfg(test) module has none.
                 let is_test = is_test_attribute(&node.attrs);
@@ -436,7 +738,7 @@ impl Walk<'_> {
                 let canonical = self.declare(
                     container,
                     container_kind,
-                    &node.ident.to_string(),
+                    &ident_name(&node.ident),
                     "interface",
                     item.span(),
                 );
@@ -458,10 +760,14 @@ impl Walk<'_> {
                 }
                 for member in &node.items {
                     if let TraitItem::Fn(method) = member {
+                        // A member compiled only for tests is test code, as
+                        // a free function is (see `Walk::walk_items`).
+                        let is_test = is_cfg_test(&method.attrs);
+                        self.facts.enter_test_scope_if(is_test);
                         let method_canonical = self.declare(
                             &canonical,
                             "interface",
-                            &method.sig.ident.to_string(),
+                            &ident_name(&method.sig.ident),
                             "method",
                             member.span(),
                         );
@@ -475,6 +781,7 @@ impl Walk<'_> {
                                 block,
                             );
                         }
+                        self.facts.exit_test_scope_if(is_test);
                     }
                 }
             }
@@ -502,7 +809,7 @@ impl Walk<'_> {
                         let trait_name = trait_path
                             .segments
                             .last()
-                            .map(|segment| segment.ident.to_string())
+                            .map(|segment| ident_name(&segment.ident))
                             .unwrap_or_default();
                         let type_name = target.rsplit("::").next().unwrap_or(&target).to_owned();
                         self.declare(
@@ -564,7 +871,9 @@ impl Walk<'_> {
                 let exported_impl = node.attrs.iter().any(is_wasm_bindgen);
                 for member in &node.items {
                     if let ImplItem::Fn(method) = member {
-                        let name = method.sig.ident.to_string();
+                        let is_test = is_cfg_test(&method.attrs);
+                        self.facts.enter_test_scope_if(is_test);
+                        let name = ident_name(&method.sig.ident);
                         let method_canonical =
                             self.declare(&target, "class", &name, "method", member.span());
                         // The declared return type, which is what a call on the
@@ -606,6 +915,7 @@ impl Walk<'_> {
                             &method.sig,
                             &method.block,
                         );
+                        self.facts.exit_test_scope_if(is_test);
                     }
                 }
                 self.current_impl_target = old_target;
@@ -624,7 +934,8 @@ impl Walk<'_> {
     /// `crate::visit::walk` call, so declaring a second node here would duplicate
     /// it under a different evidence path and trip
     /// `reconciler.duplicate_symbol_evidence` on virtually every multi-file crate.
-    /// Only the `contains` edge is emitted for that case, and nothing is walked.
+    /// Only the `contains` edge is emitted for that case, and nothing is walked;
+    /// its target is the module the loaded file is placed in (see [`mod_child`]).
     fn walk_mod(
         &mut self,
         container: &str,
@@ -632,7 +943,7 @@ impl Walk<'_> {
         node: &syn::ItemMod,
         span: proc_macro2::Span,
     ) {
-        let canonical = format!("{container}::{}", node.ident);
+        let (canonical, _) = mod_child(&self.relative, &self.module, container, node, self.layout);
         // The whole subtree compiles only under cfg(test), so the mark covers
         // the module node and every item it holds, helpers included.
         let is_test = is_cfg_test(&node.attrs);
@@ -641,7 +952,7 @@ impl Walk<'_> {
         }
         if let Some((_, items)) = &node.content {
             self.facts
-                .node("module", &canonical, &node.ident.to_string(), span, span);
+                .node("module", &canonical, &ident_name(&node.ident), span, span);
             self.walk_items(&canonical, "module", items);
         }
         if is_test {
@@ -741,7 +1052,7 @@ impl Walk<'_> {
         let rendered = path
             .segments
             .iter()
-            .map(|segment| segment.ident.to_string())
+            .map(|segment| ident_name(&segment.ident))
             .collect::<Vec<_>>()
             .join("::");
         if rendered.is_empty() {
@@ -749,10 +1060,16 @@ impl Walk<'_> {
         }
         let single_segment = path.segments.len() == 1;
         if path.leading_colon.is_some() {
-            return Some((rendered, single_segment));
+            return match self.library_path(&rendered) {
+                Some(library) => self.renamed(library),
+                None => Some(rendered),
+            }
+            .map(|target| (target, single_segment));
         }
         if rendered == "crate" || rendered.starts_with("crate::") {
-            return Some((self.anchor_crate(&rendered), single_segment));
+            return self
+                .renamed(self.anchor_crate(&rendered))
+                .map(|target| (target, single_segment));
         }
         if rendered == "Self" || rendered.starts_with("Self::") {
             if let Some(target) = &self.current_impl_target {
@@ -764,10 +1081,18 @@ impl Walk<'_> {
             || rendered == "super"
             || rendered.starts_with("super::")
         {
-            return rebase(container, &rendered).map(|target| (target, single_segment));
+            return rebase(container, &rendered)
+                .and_then(|target| self.renamed(target))
+                .map(|target| (target, single_segment));
+        }
+        if let Some(answer) = self.through_renamed_child(container, &rendered) {
+            return answer;
         }
         if let Some(expanded) = self.aliases.expand(&rendered) {
             return Some((expanded, false));
+        }
+        if let Some(library) = self.library_path(&rendered) {
+            return self.renamed(library).map(|target| (target, single_segment));
         }
         let head = rendered.split("::").next().unwrap_or(&rendered);
         if self.aliases.is_ambiguous(head) {
@@ -797,6 +1122,34 @@ impl Walk<'_> {
         Some((format!("{container}::{rendered}"), true))
     }
 
+    /// A path whose head is a `mod name;` of `container` that names a module
+    /// other than `container::name` (see [`Walk::renamed_children`]), placed
+    /// in that module and answered by the declaration index as any other
+    /// child-module path is: one declaration is trusted, several resolve to
+    /// nothing, none leaves the target to be confirmed by this file. `None`
+    /// for any other path.
+    #[allow(clippy::option_option)]
+    fn through_renamed_child(
+        &self,
+        container: &str,
+        rendered: &str,
+    ) -> Option<Option<(String, bool)>> {
+        let (head, rest) = rendered.split_once("::")?;
+        let Some(child) = self
+            .renamed_children
+            .get(&(container.to_owned(), head.to_owned()))?
+        else {
+            return Some(None);
+        };
+        let target = format!("{child}::{rest}");
+
+        Some(match self.declarations.get(&target) {
+            Some(1) => Some((target, false)),
+            Some(_) => None,
+            None => Some((target, true)),
+        })
+    }
+
     /// Resolve the glob imports [`Walk::collect_uses`] set aside, now that
     /// every alias in the file is known: `use parts::*;` beside
     /// `use crate::left as parts;` imports from `crate::left`, whichever line
@@ -819,16 +1172,12 @@ impl Walk<'_> {
                     _ => written.clone(),
                 }
             };
-            let Some(full) = rebase(&container, &self.anchor_crate(&expanded)) else {
+            let Some(full) = rebase(&container, &self.anchor_crate(&expanded))
+                .and_then(|full| self.renamed(full))
+            else {
                 continue;
             };
-            self.facts.edge(
-                "imports",
-                &source,
-                &reference("module", &full),
-                "certain",
-                span,
-            );
+            self.import(&source, &full, span);
             let glob = (container, full);
             if !self.globs.contains(&glob) {
                 self.globs.push(glob);
@@ -843,16 +1192,50 @@ impl Walk<'_> {
         self.module.split("::").next().unwrap_or("crate")
     }
 
-    /// A `crate`-rooted path as this file's crate names it in the graph.
+    /// A path as written, with its root as the graph names it: `crate` is
+    /// this file's crate root (a target root's own module, see
+    /// [`Walk::crate_module`]), and a project library's crate
+    /// name its root (see [`Walk::library_path`]).
     fn anchor_crate(&self, path: &str) -> String {
-        let root = self.crate_root();
         if path == "crate" {
-            return root.to_owned();
+            return self.crate_module.clone();
         }
         match path.strip_prefix("crate::") {
-            Some(rest) => format!("{root}::{rest}"),
-            None => path.to_owned(),
+            Some(rest) => format!("{}::{rest}", self.crate_module),
+            None => self.library_path(path).unwrap_or_else(|| path.to_owned()),
         }
+    }
+
+    /// A path inside the project, rewritten through every `mod` declaration
+    /// of the project that loads a module other than its declared path (see
+    /// [`Declarations::renamed`]); `None` when one of those is ambiguous.
+    /// A path outside the project is returned unchanged and asks nothing.
+    fn renamed(&self, path: String) -> Option<String> {
+        let head = path.split("::").next().unwrap_or(&path);
+        if head != self.crate_root()
+            && head != self.crate_module.split("::").next().unwrap_or("")
+            && !self.layout.is_project_root(head)
+        {
+            return Some(path);
+        }
+        match self.declarations.renamed(&path) {
+            Some(placed) => placed,
+            None => Some(path),
+        }
+    }
+
+    /// A path headed by the crate name of one of the project's libraries,
+    /// rewritten onto that library's root in the graph: `my_demo::run` in
+    /// `src/main.rs`, `tests/` or `examples/` is `crate::run`, the node the
+    /// library's own file declares. A head that is this file's own crate root
+    /// is left alone, since it already is a graph root.
+    fn library_path(&self, path: &str) -> Option<String> {
+        let head = path.split("::").next().unwrap_or(path);
+        if head == self.crate_root() {
+            return None;
+        }
+
+        self.layout.library_path(path)
     }
 
     /// The paths an unqualified `rendered` path could name, in scoping order.
@@ -1005,18 +1388,21 @@ impl Walk<'_> {
                     for field in &node.fields {
                         if let Some(ident) = &field.ident {
                             if let Some(target) = self.receiver_type(container, &field.ty) {
-                                fields.insert(ident.to_string(), target);
+                                fields.insert(ident_name(ident), target);
                             }
                         }
                     }
                     if !fields.is_empty() {
                         self.struct_fields
-                            .insert(format!("{container}::{}", node.ident), fields);
+                            .insert(format!("{container}::{}", ident_name(&node.ident)), fields);
                     }
                 }
                 Item::Mod(node) => {
                     if let Some((_, inner)) = &node.content {
-                        self.collect_struct_fields(&format!("{container}::{}", node.ident), inner);
+                        self.collect_struct_fields(
+                            &format!("{container}::{}", ident_name(&node.ident)),
+                            inner,
+                        );
                     }
                 }
                 _ => {}
@@ -1042,7 +1428,7 @@ impl Walk<'_> {
                 syn::FnArg::Typed(typed) => {
                     if let syn::Pat::Ident(ident) = typed.pat.as_ref() {
                         if let Some(target) = self.receiver_type(container, &typed.ty) {
-                            receivers.insert(ident.ident.to_string(), target);
+                            receivers.insert(ident_name(&ident.ident), target);
                         }
                     }
                 }
@@ -1083,7 +1469,7 @@ impl Walk<'_> {
             let Some(ident) = attr.path().get_ident() else {
                 continue;
             };
-            let name = ident.to_string();
+            let name = ident_name(ident);
             let (path, method) = if VERBS.contains(&name.as_str()) {
                 (attr_path(attr), Some(name.to_uppercase()))
             } else if actix && name == "route" {
@@ -1173,35 +1559,91 @@ impl Walk<'_> {
     }
 }
 
-/// Whether an attribute list carries `#[cfg(test)]`.
+/// The outer attributes of an item, or none for an item kind the walk never
+/// declares anything for.
+fn item_attrs(item: &Item) -> &[syn::Attribute] {
+    match item {
+        Item::Const(node) => &node.attrs,
+        Item::Enum(node) => &node.attrs,
+        Item::Fn(node) => &node.attrs,
+        Item::Impl(node) => &node.attrs,
+        Item::Mod(node) => &node.attrs,
+        Item::Static(node) => &node.attrs,
+        Item::Struct(node) => &node.attrs,
+        Item::Trait(node) => &node.attrs,
+        Item::Union(node) => &node.attrs,
+        Item::Use(node) => &node.attrs,
+        _ => &[],
+    }
+}
+
+/// Whether an attribute list compiles its item only under `test`.
 ///
-/// Matched on the `test` ident anywhere inside the `cfg(..)` tokens, so
-/// `cfg(all(test, feature = "x"))` counts too. A false positive here costs a
-/// symbol its place in the dead-code budget; a false negative puts test code
-/// back in it, which is the failure this exists to prevent.
+/// The `cfg(..)` predicate is evaluated structurally (see [`requires_test`]):
+/// `cfg(test)` and `cfg(all(test, feature = "x"))` hold only in a test build,
+/// while `cfg(not(test))` is production code and `cfg(any(test, feature =
+/// "x"))` also compiles outside tests. A false positive here silently removes
+/// production code from the dead-code and hub budgets; a false negative puts
+/// test code back in them.
 fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("cfg")
             && attr
                 .meta
                 .require_list()
-                .is_ok_and(|list| contains_test_ident(list.tokens.clone()))
+                .ok()
+                .and_then(|list| list.parse_args::<syn::Meta>().ok())
+                .is_some_and(|predicate| requires_test(&predicate))
     })
 }
 
-/// Whether a `cfg(..)` token stream names the bare `test` identifier.
+/// Whether a `cfg` predicate can hold only when `test` is set (see
+/// [`test_gate`]).
+fn requires_test(predicate: &syn::Meta) -> bool {
+    test_gate(predicate).0
+}
+
+/// What a `cfg` predicate says about tests, as two answers: whether it can
+/// hold only when `test` is set, and whether it holds in every build without
+/// `test`.
 ///
-/// Recurses into groups so `cfg(all(test, feature = "x"))` counts, and matches
-/// an identifier rather than substring text so `cfg(feature = "latest")` does
-/// not. That distinction is the whole point: a false positive here silently
-/// removes production code from the dead-code and hub budgets, which is the
-/// failure those budgets exist to catch.
-fn contains_test_ident(tokens: proc_macro2::TokenStream) -> bool {
-    tokens.into_iter().any(|token| match token {
-        proc_macro2::TokenTree::Ident(ident) => ident == "test",
-        proc_macro2::TokenTree::Group(group) => contains_test_ident(group.stream()),
-        _ => false,
-    })
+/// `test` holds only under `test`. `all(..)` holds only under `test` when
+/// any of its parts does, and outside tests when every part does; `any(..)`
+/// holds only under `test` when every one of its (at least one) parts does,
+/// and outside tests when any part does. `not(p)` swaps the two answers:
+/// `not(test)` holds in every build without `test`, `not(not(test))` only
+/// under it. Anything else, `unix` or `feature = "test"`, says neither.
+fn test_gate(predicate: &syn::Meta) -> (bool, bool) {
+    let syn::Meta::List(list) = predicate else {
+        return (
+            matches!(predicate, syn::Meta::Path(path) if path.is_ident("test")),
+            false,
+        );
+    };
+    let parts: Vec<(bool, bool)> = cfg_parts(list).iter().map(test_gate).collect();
+    if list.path.is_ident("all") {
+        (
+            parts.iter().any(|part| part.0),
+            parts.iter().all(|part| part.1),
+        )
+    } else if list.path.is_ident("any") {
+        (
+            !parts.is_empty() && parts.iter().all(|part| part.0),
+            parts.iter().any(|part| part.1),
+        )
+    } else if let ([(requires, outside)], true) = (parts.as_slice(), list.path.is_ident("not")) {
+        (*outside, *requires)
+    } else {
+        (false, false)
+    }
+}
+
+/// The comma-separated predicates inside `all(..)`, `any(..)` or `not(..)`,
+/// or none when the list does not parse as predicates.
+fn cfg_parts(list: &syn::MetaList) -> Vec<syn::Meta> {
+    list.parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+        .map(|parts| parts.into_iter().collect())
+        .unwrap_or_default()
 }
 
 /// Whether an attribute list marks a test function.
@@ -1291,11 +1733,11 @@ pub fn declaration_paths(module: &str, items: &[Item]) -> BTreeSet<String> {
 fn collect_declaration_paths(module: &str, items: &[Item], out: &mut BTreeSet<String>) {
     for item in items {
         match item {
-            Item::Struct(node) => record(out, module, &node.ident.to_string()),
-            Item::Enum(node) => record(out, module, &node.ident.to_string()),
-            Item::Union(node) => record(out, module, &node.ident.to_string()),
-            Item::Trait(node) => record(out, module, &node.ident.to_string()),
-            Item::Fn(node) => record(out, module, &node.sig.ident.to_string()),
+            Item::Struct(node) => record(out, module, &ident_name(&node.ident)),
+            Item::Enum(node) => record(out, module, &ident_name(&node.ident)),
+            Item::Union(node) => record(out, module, &ident_name(&node.ident)),
+            Item::Trait(node) => record(out, module, &ident_name(&node.ident)),
+            Item::Fn(node) => record(out, module, &ident_name(&node.sig.ident)),
             Item::Impl(node) => {
                 // A method is declared in an `impl` block rather than beside
                 // its type, so indexing only top-level items left every method
@@ -1312,14 +1754,14 @@ fn collect_declaration_paths(module: &str, items: &[Item], out: &mut BTreeSet<St
                     let owner = format!("{module}::{name}");
                     for member in &node.items {
                         if let syn::ImplItem::Fn(method) = member {
-                            record(out, &owner, &method.sig.ident.to_string());
+                            record(out, &owner, &ident_name(&method.sig.ident));
                         }
                     }
                 }
             }
             Item::Mod(node) => {
                 if let Some((_, inner)) = &node.content {
-                    let nested = format!("{module}::{}", node.ident);
+                    let nested = format!("{module}::{}", ident_name(&node.ident));
                     collect_declaration_paths(&nested, inner, out);
                 }
             }
@@ -1345,7 +1787,7 @@ fn impl_target_name(ty: &Type) -> Option<String> {
     path.path
         .segments
         .last()
-        .map(|segment| segment.ident.to_string())
+        .map(|segment| ident_name(&segment.ident))
 }
 
 /// Note one canonical path one file declares.
@@ -1422,7 +1864,27 @@ impl Calls<'_, '_> {
     /// contribution of the file that defines it, and the per-contribution
     /// `declared` set here cannot match it. That is a known false negative: a
     /// missing edge, never a wrong one.
+    ///
+    /// A callee named in UpperCamelCase builds a value rather than calling
+    /// anything: `Wrapper(1)` and `Self(x)` construct a tuple struct, which
+    /// they reference, and `Error::Io(e)` an enum variant, whose enum the
+    /// owner reference in [`Calls::visit_expr_call`] already names. Neither
+    /// is a function or a method, so neither becomes a `calls` edge.
+    ///
+    /// A trusted target inside this project (rooted at `crate`, this file's
+    /// crate root or a workspace member) carries a kind guessed from its
+    /// spelling ([`call_kind`]) that no declaration here confirmed, so its
+    /// edge is speculative: kept when the graph declares it, dropped rather
+    /// than invented as an external symbol when it does not. A target in
+    /// another crate stays an ordinary edge, its external node the
+    /// dependency's symbol.
     fn visit_call(&mut self, path: &syn::Path, span: proc_macro2::Span) {
+        if builds_value(path) {
+            if !names_variant(path) {
+                self.type_reference(path, span);
+            }
+            return;
+        }
         let Some((target, unconfirmed)) = self.walk.resolve_path(&self.container, path) else {
             return;
         };
@@ -1433,9 +1895,16 @@ impl Calls<'_, '_> {
                 .conditional_edge(&self.enclosing, &endpoint, span);
             return;
         }
-        self.walk
-            .facts
-            .edge("calls", &self.enclosing, &endpoint, "probable", span);
+        let head = target.split("::").next().unwrap_or(&target);
+        if head == self.walk.crate_root() || self.walk.layout.is_project_root(head) {
+            self.walk
+                .facts
+                .speculative_edge("calls", &self.enclosing, &endpoint, span);
+        } else {
+            self.walk
+                .facts
+                .edge("calls", &self.enclosing, &endpoint, "probable", span);
+        }
     }
 }
 
@@ -1544,7 +2013,7 @@ fn routing_shorthand(expr: &syn::Expr) -> Option<(String, &syn::Expr)> {
         return None;
     };
     let path = path_of(&call.func)?;
-    let name = path.segments.last()?.ident.to_string().to_uppercase();
+    let name = ident_name(&path.segments.last()?.ident).to_uppercase();
     if !matches!(
         name.as_str(),
         "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD" | "ANY"
@@ -1680,7 +2149,7 @@ impl Calls<'_, '_> {
             }
             let mut named: Vec<(syn::Path, bool)> = Vec::new();
             let _ = attr.parse_nested_meta(|meta| {
-                let key = meta.path.get_ident().map(|ident| ident.to_string());
+                let key = meta.path.get_ident().map(ident_name);
                 if meta.input.peek(syn::Token![=]) {
                     let value: syn::Expr = meta.value()?.parse()?;
                     if let (
@@ -1782,7 +2251,7 @@ impl Calls<'_, '_> {
             syn::Expr::Reference(reference) => self.returning_call(&reference.expr),
             syn::Expr::MethodCall(call) => {
                 let owner = self.receiver_owner(&call.receiver)?;
-                Some(format!("{owner}::{}", call.method))
+                Some(format!("{owner}::{}", ident_name(&call.method)))
             }
             syn::Expr::Call(call) => match call.func.as_ref() {
                 syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() >= 2 => {
@@ -1900,7 +2369,10 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         // through the call and the core resolves it, or drops the edge.
         let returning = self.returning_call(&node.receiver);
         if let Some(callee) = &returning {
-            let endpoint = reference("method_of_return", &format!("{callee}::{}", node.method));
+            let endpoint = reference(
+                "method_of_return",
+                &format!("{callee}::{}", ident_name(&node.method)),
+            );
             self.walk.facts.edge(
                 "calls",
                 &self.enclosing,
@@ -1910,7 +2382,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
             );
         }
         if let Some(target) = self.receiver_owner(&node.receiver) {
-            let endpoint = reference("method", &format!("{target}::{}", node.method));
+            let endpoint = reference("method", &format!("{target}::{}", ident_name(&node.method)));
             self.walk.facts.speculative_edge(
                 "calls",
                 &self.enclosing,
@@ -1918,7 +2390,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
                 node.method.span(),
             );
         } else if returning.is_none() {
-            self.walk.facts.untyped_call(node.method.to_string());
+            self.walk.facts.untyped_call(ident_name(&node.method));
         }
         syn::visit::visit_expr_method_call(self, node);
     }
@@ -1928,9 +2400,9 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         // so `let p = p.clone()` resolves its receiver through the old `p`.
         syn::visit::visit_local(self, node);
         let (ident, annotation) = match &node.pat {
-            syn::Pat::Ident(ident) => (ident.ident.to_string(), None),
+            syn::Pat::Ident(ident) => (ident_name(&ident.ident), None),
             syn::Pat::Type(typed) => match typed.pat.as_ref() {
-                syn::Pat::Ident(ident) => (ident.ident.to_string(), Some(typed.ty.as_ref())),
+                syn::Pat::Ident(ident) => (ident_name(&ident.ident), Some(typed.ty.as_ref())),
                 _ => return,
             },
             _ => return,
@@ -1961,7 +2433,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         let saved = self.receivers.clone();
         for input in &node.inputs {
             if let syn::Pat::Ident(ident) = input {
-                self.receivers.remove(&ident.ident.to_string());
+                self.receivers.remove(&ident_name(&ident.ident));
             }
         }
         syn::visit::visit_expr_closure(self, node);
@@ -2102,9 +2574,7 @@ fn receiver_name(expression: &syn::Expr) -> Option<String> {
     match expression {
         syn::Expr::Paren(inner) => receiver_name(&inner.expr),
         syn::Expr::Reference(reference) => receiver_name(&reference.expr),
-        syn::Expr::Path(path) if path.qself.is_none() => {
-            path.path.get_ident().map(|ident| ident.to_string())
-        }
+        syn::Expr::Path(path) if path.qself.is_none() => path.path.get_ident().map(ident_name),
         _ => None,
     }
 }
@@ -2138,6 +2608,21 @@ impl Calls<'_, '_> {
     fn call_routes(&mut self, node: &syn::ExprMethodCall) {
         self.framework_route(node);
     }
+}
+
+/// Whether a callee path builds a value: its last segment is UpperCamelCase,
+/// as tuple structs and enum variants are and functions are not.
+fn builds_value(path: &syn::Path) -> bool {
+    path.segments
+        .last()
+        .is_some_and(|segment| ident_name(&segment.ident).starts_with(char::is_uppercase))
+}
+
+/// Whether a constructor path names an enum variant (`Error::Io`,
+/// `Self::Empty`): the segment before the last is a type, too.
+fn names_variant(path: &syn::Path) -> bool {
+    let count = path.segments.len();
+    count >= 2 && ident_name(&path.segments[count - 2].ident).starts_with(char::is_uppercase)
 }
 
 /// Guess whether a resolved call target names a free function or a
@@ -2176,6 +2661,7 @@ mod tests {
         call_kind, collect_declarations, collect_test_modules, walk, Declarations, TestModules,
     };
     use crate::facts::Facts;
+    use crate::layout::Layout;
 
     /// A method lives in an `impl` block, not beside the type, so a collector
     /// that walks only top-level items never indexes one. Nothing in the crate
@@ -2230,6 +2716,7 @@ mod tests {
             &[],
             &declarations,
             &TestModules::new(),
+            &Layout::default(),
         );
 
         assert!(facts
@@ -2241,6 +2728,82 @@ mod tests {
 
     /// The behaviour the index exists for: a call to an impl method becomes a
     /// real `calls` edge instead of being dropped as unconfirmable.
+    /// `Wrapper(1)` and `Kind::Io(e)` build values: no `calls` edge, and the
+    /// type built is referenced. A project call is speculative, so a kind
+    /// guessed wrong is dropped instead of becoming an external symbol.
+    #[test]
+    fn a_constructor_references_its_type_and_calls_nothing() {
+        let file: syn::File = syn::parse_str(
+            "use serde_json::to_value;\nstruct Wrapper(u32);\nenum Kind { Io(u32) }\nfn helper() {}\nfn build() {\n    let _ = Wrapper(1);\n    let _ = Kind::Io(2);\n    crate::helper();\n    to_value();\n}",
+        )
+        .expect("parses");
+        let mut declarations = Declarations::new();
+        collect_declarations("crate", &file.items, &mut declarations);
+        let mut facts = Facts::new("src/lib.rs");
+        walk(
+            &mut facts,
+            "crate",
+            &file,
+            &[],
+            &declarations,
+            &TestModules::new(),
+            &Layout::default(),
+        );
+        let edges = facts.finish().edges;
+        let calls: Vec<(&str, bool)> = edges
+            .iter()
+            .filter(|edge| edge.kind == "calls")
+            .map(|edge| {
+                (
+                    edge.target.as_str(),
+                    edge.attributes.contains_key("speculative"),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            vec![
+                ("rust:function:crate::helper", true),
+                ("rust:function:serde_json::to_value", false),
+            ],
+            calls
+        );
+        for target in ["rust:class:crate::Wrapper", "rust:class:crate::Kind"] {
+            assert!(
+                edges
+                    .iter()
+                    .any(|edge| edge.kind == "references" && edge.target == target),
+                "{target}"
+            );
+        }
+    }
+
+    /// A `#[path]` declaration renames its declared path for every file, and
+    /// two declarations that disagree leave the path unresolvable.
+    #[test]
+    fn a_renamed_mod_rewrites_the_longest_declared_prefix() {
+        let layout = Layout::default();
+        let file: syn::File = syn::parse_str(
+            "#[path = \"impl_a.rs\"]\npub mod a;\npub mod plain;\n#[cfg(unix)]\n#[path = \"u.rs\"]\nmod sys;\n#[cfg(windows)]\n#[path = \"w.rs\"]\nmod sys;",
+        )
+        .expect("parses");
+        let mut declarations = Declarations::new();
+        declarations.add_renames(&super::declared_renames(
+            "src/lib.rs",
+            "crate",
+            &file.items,
+            &layout,
+        ));
+
+        assert_eq!(
+            Some(Some("crate::impl_a::x".to_owned())),
+            declarations.renamed("crate::a::x")
+        );
+        assert_eq!(None, declarations.renamed("crate::plain::x"));
+        assert_eq!(Some(None), declarations.renamed("crate::sys::go"));
+        assert!(declarations.take_lookups().contains("crate::plain::x"));
+    }
+
     #[test]
     fn a_call_to_an_impl_method_becomes_an_edge() {
         let file: syn::File = syn::parse_str(
@@ -2258,6 +2821,7 @@ mod tests {
             &[],
             &declarations,
             &TestModules::new(),
+            &Layout::default(),
         );
 
         let contribution = facts.finish();
@@ -2301,6 +2865,7 @@ mod tests {
             &[],
             &declarations,
             &TestModules::new(),
+            &Layout::default(),
         );
 
         let contribution = facts.finish();
@@ -2341,6 +2906,7 @@ mod tests {
             &[],
             &declarations,
             &TestModules::new(),
+            &Layout::default(),
         );
 
         let contribution = facts.finish();
@@ -2403,7 +2969,13 @@ mod tests {
             syn::parse_str("#[cfg(test)]\nmod tests;\nmod real;\nfn ship() {}").expect("parses");
         let mut test_modules = TestModules::new();
 
-        collect_test_modules("crate", &declaring.items, &mut test_modules);
+        collect_test_modules(
+            "src/lib.rs",
+            "crate",
+            &declaring.items,
+            &Layout::default(),
+            &mut test_modules,
+        );
 
         assert!(test_modules.contains("crate::tests"));
         // A bodiless module without the attribute is ordinary source.
@@ -2419,6 +2991,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &test_modules,
+            &Layout::default(),
         );
         let contribution = facts.finish();
 
@@ -2445,6 +3018,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &test_modules,
+            &Layout::default(),
         );
         assert!(!facts
             .finish()
@@ -2471,6 +3045,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
         let marked = |name: &str| {
@@ -2510,6 +3085,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
         let overrides = |name: &str| {
@@ -2543,6 +3119,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
         let marked = |name: &str| {
@@ -2570,6 +3147,39 @@ mod tests {
         );
     }
 
+    /// `not(test)` and `any(test, ..)` hold in a production build too, so
+    /// only a predicate no production build meets marks test code.
+    #[test]
+    fn a_cfg_predicate_requires_test_only_where_every_build_that_meets_it_is_a_test() {
+        let requires = |predicate: &str| {
+            super::requires_test(&syn::parse_str::<syn::Meta>(predicate).expect("parses"))
+        };
+        for test_only in [
+            "test",
+            "all(test, feature = \"x\")",
+            "any(test, all(test, unix))",
+            "not(not(test))",
+            "not(any(not(test), unix))",
+            "all(any(test, all(test, unix)), not(any(not(test), windows)))",
+            "not(all(not(test), all()))",
+        ] {
+            assert!(requires(test_only), "{test_only}");
+        }
+        for production in [
+            "not(test)",
+            "any(test, feature = \"x\")",
+            "all(not(test), unix)",
+            "not(all(not(test), unix))",
+            "any(not(not(test)), unix)",
+            "not(test, unix)",
+            "any()",
+            "feature = \"test\"",
+            "unix",
+        ] {
+            assert!(!requires(production), "{production}");
+        }
+    }
+
     /// `contains("test")` matched any token whose text held those four
     /// letters, so `#[cfg(feature = "latest")]` marked a whole production
     /// module as test code and removed it from the dead-code budget. Only a
@@ -2587,6 +3197,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
 
@@ -2615,6 +3226,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
 
@@ -2645,6 +3257,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
         let marked = |name: &str| {

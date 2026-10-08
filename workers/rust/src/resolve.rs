@@ -4,12 +4,25 @@
 //! sees one file per call and has no crate-wide view. The convention is Rust's
 //! own, so it agrees with the compiler for every layout that follows it.
 
+/// An identifier as a name in a path: `r#async` is the module `async`, and
+/// its file is `async.rs`. The raw prefix only lets source code spell a
+/// keyword; every canonical name, module path and path segment drops it so
+/// a declaration and a path naming it agree.
+#[must_use]
+pub fn ident_name(ident: &syn::Ident) -> String {
+    use syn::ext::IdentExt;
+    ident.unraw().to_string()
+}
+
 /// The canonical module path for a file relative to its crate's directory,
 /// with the crate root named `root`.
 ///
 /// `src/` is the crate root, so `src/lib.rs` and `src/main.rs` are `root` itself
 /// and `src/net/http.rs` is `root::net::http`. A `mod.rs` collapses into the
-/// directory that holds it. A path outside `src/` keeps its own directory chain,
+/// directory that holds it. Only those two files are the root: a `lib.rs` or
+/// `main.rs` deeper down is a module of its own (`src/net/lib.rs` is
+/// `root::net::lib`, `src/bin/main.rs` is `root::bin::main`), the module a
+/// `mod lib;` beside it loads, so it never collides with `src/net.rs`. A path outside `src/` keeps its own directory chain,
 /// which is what `tests/` and `benches/` want: each of those files is its own
 /// crate root to the compiler, and pretending otherwise would collide their
 /// symbols with the library's. A binary root that shares a Cargo package with
@@ -17,7 +30,9 @@
 /// and `src/lib.rs` as separate crates, and the suffix keeps their graph
 /// identities distinct when both are present in one scan.
 ///
-/// The package at the project root keeps `crate`. A workspace member's
+/// The package at the project root keeps `crate`, and a path that names its
+/// library by crate name from outside it is placed there (see
+/// `Layout::library_path`). A workspace member's
 /// `src/` is a crate root of its own, which sibling crates name by the
 /// package name (`use core_lib::app`), so its modules are rooted there:
 /// `crates/core-lib/src/app.rs` is `core_lib::app`, not a directory chain
@@ -34,7 +49,7 @@ pub fn module_path_in_crate(relative: &str, root: &str, binary_root: bool) -> St
     if matches!(segments.last(), Some(&"mod")) {
         segments.pop();
     }
-    if in_crate && matches!(segments.last(), Some(&"lib") | Some(&"main")) {
+    if matches!(relative, "src/lib.rs" | "src/main.rs") {
         segments.pop();
     }
     if in_crate {
@@ -247,7 +262,7 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
         }
     };
     match tree {
-        syn::UseTree::Path(path) => flatten_use(&path.tree, &join(&path.ident.to_string()), out),
+        syn::UseTree::Path(path) => flatten_use(&path.tree, &join(&ident_name(&path.ident)), out),
         syn::UseTree::Name(name) if name.ident == "self" => {
             if let Some(local) = prefix
                 .rsplit("::")
@@ -262,7 +277,7 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
             }
         }
         syn::UseTree::Name(name) => {
-            let ident = name.ident.to_string();
+            let ident = ident_name(&name.ident);
             out.push(UseLeaf {
                 alias: ident.clone(),
                 full: join(&ident),
@@ -273,15 +288,15 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
             if rename.ident == "self" {
                 if !prefix.is_empty() {
                     out.push(UseLeaf {
-                        alias: rename.rename.to_string(),
+                        alias: ident_name(&rename.rename),
                         full: prefix.to_owned(),
                         names_module: true,
                     });
                 }
             } else {
                 out.push(UseLeaf {
-                    alias: rename.rename.to_string(),
-                    full: join(&rename.ident.to_string()),
+                    alias: ident_name(&rename.rename),
+                    full: join(&ident_name(&rename.ident)),
                     names_module: false,
                 });
             }
@@ -304,7 +319,7 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
 pub fn glob_prefixes(tree: &syn::UseTree, prefix: &str, out: &mut Vec<String>) {
     match tree {
         syn::UseTree::Path(path) => {
-            let ident = path.ident.to_string();
+            let ident = ident_name(&path.ident);
             let joined = if prefix.is_empty() {
                 ident
             } else {
@@ -357,6 +372,18 @@ mod tests {
     }
 
     #[test]
+    fn only_the_crate_roots_lib_and_main_collapse() {
+        assert_eq!("crate::net::lib", module_path("src/net/lib.rs"));
+        assert_eq!("crate::bin::main", module_path("src/bin/main.rs"));
+        assert_eq!(
+            "crate::bin::tool::main",
+            module_path("src/bin/tool/main.rs")
+        );
+        assert_eq!("crate::lib", module_path("src/lib/mod.rs"));
+        assert_eq!("crate", module_path("src/mod.rs"));
+    }
+
+    #[test]
     fn a_plain_file_becomes_a_child_of_the_crate() {
         assert_eq!("crate::greeting", module_path("src/greeting.rs"));
         assert_eq!("crate::net::http", module_path("src/net/http.rs"));
@@ -370,6 +397,21 @@ mod tests {
     #[test]
     fn a_path_outside_src_keeps_its_directory_chain() {
         assert_eq!("tests::integration", module_path("tests/integration.rs"));
+    }
+
+    #[test]
+    fn a_raw_identifier_is_named_without_its_prefix() {
+        let tree: syn::UseTree =
+            syn::parse_str("crate::r#async::{self, r#try as attempt}").unwrap();
+        let mut out = Vec::new();
+        super::flatten_use(&tree, "", &mut out);
+
+        assert_eq!(
+            vec![("async", "crate::async"), ("attempt", "crate::async::try"),],
+            out.iter()
+                .map(|leaf| (leaf.alias.as_str(), leaf.full.as_str()))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

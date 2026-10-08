@@ -43,7 +43,7 @@ for classification. If that path is absent, no node is invented.
 | `imports`    | `use`                                                | certain                |
 | `implements` | `impl Trait for Type`                                | certain                |
 | `extends`    | supertraits                                          | probable               |
-| `calls`      | a resolved call expression                           | probable               |
+| `calls`      | a resolved call expression                           | probable, see below    |
 | `routes_to`  | a route to its handler                               | certain                |
 | `references` | a function or type named without being called        | speculative, see below |
 | `returns`    | a method to the type its signature declares          | speculative, see below |
@@ -51,8 +51,18 @@ for classification. If that path is absent, no node is invented.
 A name that a glob import (`use crate::components::*;`) brings in resolves
 through it, after the names the enclosing module declares.
 
+A call whose callee is named in UpperCamelCase builds a value: `Wrapper(1)`
+constructs a tuple struct and `Error::Io(e)` an enum variant. Neither is a
+`calls` edge; each is a `references` edge to the type it builds. A call into
+your own crates is speculative, since its kind (function or method) is read
+from the name: the edge is kept when the graph declares that target and
+dropped otherwise, rather than becoming an external symbol. A call into
+another crate keeps its external target.
+
 A node's `local_id` and both ends of an edge are written
-`rust:<kind>:<canonical>`. `canonical_name` itself carries no prefix. When a
+`rust:<kind>:<canonical>`. `canonical_name` itself carries no prefix. A raw
+identifier is named without its `r#`: `mod r#async;` is the module
+`crate::async`, the module of `src/async.rs`. When a
 target cannot be resolved, Knossos keeps no edge rather than a guess. Repeated
 edges collapse to the persistence identity of kind, source and target within one
 contribution, and the earliest evidence is kept.
@@ -70,8 +80,11 @@ These get an attribute, so they stay off the
   methods of a `#[wasm_bindgen] impl`, and `drop` in an `impl Drop`.
 - A method of a trait impl carries `overrides`, because the trait declares it
   and the trait may be a dependency's.
-- Code under `#[cfg(test)]` and `#[test]` functions (including `#[tokio::test]`)
-  is marked as test code.
+- Code compiled only in a test build and `#[test]` functions (including
+  `#[tokio::test]`) are marked as test code. The `cfg` predicate is evaluated:
+  `cfg(test)` and `cfg(all(test, feature = "x"))` mark an item (a module, a
+  function, an `impl`, or a single method) and everything in it, while `cfg(not(test))` and `cfg(any(test, feature = "x"))` stay production
+  code, since a production build compiles them too.
 
 ### Speculative edges
 
@@ -117,8 +130,47 @@ reads and hashes every file but parses only the ones that changed. While
 indexing takes long, it sends `scan/heartbeat`.
 
 A file's module path follows from where it sits, not from `mod` declarations,
-so a module file no `mod` declares is indexed like any other, and `#[path]`
-attributes are not followed.
+so a module file no `mod` declares is indexed like any other. `src/lib.rs` and
+`src/main.rs` are the crate root (`src/main.rs` is `crate::main` beside a
+library); any other `lib.rs` or `main.rs` is a module of its own, so
+`src/net/lib.rs` is `crate::net::lib` and `src/bin/tool/main.rs` is
+`crate::bin::tool::main`. Outside `src/`, a file keeps its directory chain
+(`tests/smoke.rs` is `tests::smoke`), and only files under `tests/`,
+`examples/` and `benches/` enter the index, since Rust reaches no other file
+there without `#[path]`. A file elsewhere outside `src/`, such as
+`crate/engine.rs`, keeps its own nodes but is not indexed, and its directory
+chain can give it the same id as a file under `src/` (`crate::engine`, the
+module of `src/engine.rs`).
+
+The package at the project root is rooted at `crate`, and a workspace member
+at its crate name (`crates/core-lib/src/app.rs` is `core_lib::app`). Code
+outside a library names it by its crate name: the `[lib] name` in the
+manifest, else the package name with dashes as underscores. Such a path is
+placed on the library's root, so `my_demo::run()` in `src/main.rs`,
+`src/bin/`, `tests/`, `examples/` or `benches/` calls `crate::run`, the
+function `src/lib.rs` declares.
+
+A `mod name;` declaration names the module of the file Rust loads for it, as
+that file is placed. A crate root and a `mod.rs` keep their children beside
+them, so `mod cli;` in `src/main.rs` is `crate::cli` (`src/cli.rs`), and
+`mod common;` in `tests/it.rs` is `tests::common`. `#[path = "x.rs"]` is
+followed: the declaration names the module of `x.rs`, and a path through the
+declared name reaches it, in that file and in any other (`crate::a::x` under
+`#[path = "impl_a.rs"] mod a;` is `crate::impl_a::x`). Two declarations of one
+name that load different files (under different `cfg`s) make paths through
+that name resolve to nothing.
+
+Each binary in `src/bin/`, integration test, example and benchmark is a crate
+of its own, and its `crate::` names that crate, whose root is the file itself:
+`crate::own` in `src/bin/tool.rs` is the `crate::bin::tool::own` it declares,
+and through its `mod helper;`, `crate::helper` is `crate::bin::helper`
+(`src/bin/helper.rs`); `crate::common` in `tests/it.rs` is `tests::common`. Only the target's root
+file knows this; a module file below `src/bin/<name>/` could belong to that
+binary or to another, so its own `crate::` paths still start at the package's
+`crate`. An out-of-line `#[cfg(test)] mod name;`
+marks the file it loads as test code when the declaring file sits in a module
+above it, or is the crate root; a `#[path]` that sends a test module to a
+sibling (`src/net.rs` loading `src/net_tests.rs`) is not marked.
 
 ### What an incremental scan rescans
 
@@ -132,7 +184,8 @@ scan rescans a file only when one of those changes:
 - every file of every module above the file's own, since a
   `#[cfg(test)] mod name;` there decides whether the file is test code;
 - the `src/lib.rs` and `src/main.rs` of the package whose `src/` holds the
-  file, since whether they exist decides the file's module path.
+  file, or a file one of its `mod` declarations loads, since whether they
+  exist decides those module paths.
 
 Editing `src/engine/sign.rs` therefore rescans the files that looked up a name
 in that module and the files below it, not unrelated modules. Every name is
@@ -158,11 +211,15 @@ adds nothing to the index, so no file's facts depend on what another file read.
   no path the worker can confirm. The same holds for a call through an `Fn`
   receiver, `self()`.
 - A call target's kind follows Rust's naming convention: an uppercase segment
-  before the final one means a method, anything else means a function. A crate
-  that breaks the convention can produce a target that matches no declared node.
+  before the final one means a method, anything else means a function, and an
+  uppercase final segment means a constructor. A crate that breaks the
+  convention can produce a target that matches no declared node; inside your
+  own crates that edge is dropped.
 - An import name bound to two different paths in one file resolves to nothing.
 - A bare `mod foo;` declaration emits only a containment edge. The module's own
   node comes from the file that defines it.
+- A `use` leaf whose parent is a type (`use crate::errors::Error::Io;`, or
+  `use Error::*;`) references that type instead of importing a module.
 - A `use` leaf that already names a module resolves to the module's parent:
   `use core::fmt;` emits `imports` to `core`, and `use crate::token;` emits it
   to `crate`. The declaration index records types, traits and functions rather
