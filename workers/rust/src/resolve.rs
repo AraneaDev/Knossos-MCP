@@ -4,6 +4,16 @@
 //! sees one file per call and has no crate-wide view. The convention is Rust's
 //! own, so it agrees with the compiler for every layout that follows it.
 
+/// An identifier as a name in a path: `r#async` is the module `async`, and
+/// its file is `async.rs`. The raw prefix only lets source code spell a
+/// keyword; every canonical name, module path and path segment drops it so
+/// a declaration and a path naming it agree.
+#[must_use]
+pub fn ident_name(ident: &syn::Ident) -> String {
+    use syn::ext::IdentExt;
+    ident.unraw().to_string()
+}
+
 /// The canonical module path for a file relative to its crate's directory,
 /// with the crate root named `root`.
 ///
@@ -247,7 +257,7 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
         }
     };
     match tree {
-        syn::UseTree::Path(path) => flatten_use(&path.tree, &join(&path.ident.to_string()), out),
+        syn::UseTree::Path(path) => flatten_use(&path.tree, &join(&ident_name(&path.ident)), out),
         syn::UseTree::Name(name) if name.ident == "self" => {
             if let Some(local) = prefix
                 .rsplit("::")
@@ -262,7 +272,7 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
             }
         }
         syn::UseTree::Name(name) => {
-            let ident = name.ident.to_string();
+            let ident = ident_name(&name.ident);
             out.push(UseLeaf {
                 alias: ident.clone(),
                 full: join(&ident),
@@ -273,15 +283,15 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
             if rename.ident == "self" {
                 if !prefix.is_empty() {
                     out.push(UseLeaf {
-                        alias: rename.rename.to_string(),
+                        alias: ident_name(&rename.rename),
                         full: prefix.to_owned(),
                         names_module: true,
                     });
                 }
             } else {
                 out.push(UseLeaf {
-                    alias: rename.rename.to_string(),
-                    full: join(&rename.ident.to_string()),
+                    alias: ident_name(&rename.rename),
+                    full: join(&ident_name(&rename.ident)),
                     names_module: false,
                 });
             }
@@ -304,7 +314,7 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
 pub fn glob_prefixes(tree: &syn::UseTree, prefix: &str, out: &mut Vec<String>) {
     match tree {
         syn::UseTree::Path(path) => {
-            let ident = path.ident.to_string();
+            let ident = ident_name(&path.ident);
             let joined = if prefix.is_empty() {
                 ident
             } else {
@@ -370,6 +380,21 @@ mod tests {
     #[test]
     fn a_path_outside_src_keeps_its_directory_chain() {
         assert_eq!("tests::integration", module_path("tests/integration.rs"));
+    }
+
+    #[test]
+    fn a_raw_identifier_is_named_without_its_prefix() {
+        let tree: syn::UseTree =
+            syn::parse_str("crate::r#async::{self, r#try as attempt}").unwrap();
+        let mut out = Vec::new();
+        super::flatten_use(&tree, "", &mut out);
+
+        assert_eq!(
+            vec![("async", "crate::async"), ("attempt", "crate::async::try"),],
+            out.iter()
+                .map(|leaf| (leaf.alias.as_str(), leaf.full.as_str()))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

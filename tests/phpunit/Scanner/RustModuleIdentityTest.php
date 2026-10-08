@@ -60,12 +60,43 @@ final class RustModuleIdentityTest extends KnossosTestCase
         }
     }
 
+    /** `mod r#async;` is the module of `async.rs`, and a raw name is spelled without its prefix. */
+    public function testARawIdentifierNamesTheModuleWithoutItsPrefix(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod r#async;\n\npub fn go() {\n    r#async::spawn();\n    r#async::r#try::inner();\n}\n");
+        $this->write('src/async.rs', "pub fn spawn() {}\n\npub mod r#try {\n    pub fn inner() {}\n}\n");
+        $pdo = $this->scanned();
+
+        $edges = $this->edges($pdo);
+        self::assertContains('contains crate -> crate::async', $edges);
+        self::assertContains('calls crate::go -> crate::async::spawn', $edges);
+        self::assertContains('calls crate::go -> crate::async::try::inner', $edges);
+        self::assertSame([], array_values(array_filter($this->nodes($pdo), static fn(string $node): bool => str_contains($node, 'r#'))));
+    }
+
     private function scanned(): PDO
     {
         $pdo = $this->freshTestDatabase();
         (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root);
 
         return $pdo;
+    }
+
+    /** @return list<string> every edge as `kind source -> target`, by canonical name */
+    private function edges(PDO $pdo): array
+    {
+        $rows = $pdo->query("SELECT e.kind || ' ' || s.canonical_name || ' -> ' || t.canonical_name FROM edges e JOIN nodes s ON s.id = e.source_id JOIN nodes t ON t.id = e.target_id WHERE s.language = 'rust' ORDER BY 1");
+
+        return array_map('strval', $rows->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    /** @return list<string> every Rust node as `kind canonical` */
+    private function nodes(PDO $pdo): array
+    {
+        $rows = $pdo->query("SELECT kind || ' ' || canonical_name FROM nodes WHERE language = 'rust' ORDER BY 1");
+
+        return array_map('strval', $rows->fetchAll(PDO::FETCH_COLUMN));
     }
 
     /** @return list<string> the canonical names of Rust nodes the worker marked as test code */

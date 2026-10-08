@@ -12,7 +12,7 @@ use syn::visit::Visit;
 use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
-use crate::resolve::{flatten_use, glob_prefixes, parent_module, rebase, Aliases};
+use crate::resolve::{flatten_use, glob_prefixes, ident_name, parent_module, rebase, Aliases};
 
 /// Canonical name of every top-level and inline-module declaration of the
 /// project's Rust files, mapped to how many files declared it. The crate-wide
@@ -191,7 +191,7 @@ fn is_test_module_path(module: &str, test_modules: &TestModules) -> bool {
 pub fn collect_test_modules(module: &str, items: &[Item], out: &mut TestModules) {
     for item in items {
         if let Item::Mod(node) = item {
-            let canonical = format!("{module}::{}", node.ident);
+            let canonical = format!("{module}::{}", ident_name(&node.ident));
             match &node.content {
                 Some((_, inner)) => collect_test_modules(&canonical, inner, out),
                 None => {
@@ -260,7 +260,7 @@ impl Walk<'_> {
         let children: BTreeSet<String> = items
             .iter()
             .filter_map(|item| match item {
-                Item::Mod(node) => Some(node.ident.to_string()),
+                Item::Mod(node) => Some(ident_name(&node.ident)),
                 _ => None,
             })
             .collect();
@@ -323,7 +323,7 @@ impl Walk<'_> {
                 }
                 Item::Mod(node) => {
                     if let Some((_, inner)) = &node.content {
-                        let nested = format!("{container}::{}", node.ident);
+                        let nested = format!("{container}::{}", ident_name(&node.ident));
                         self.collect_uses(&nested, inner);
                     }
                 }
@@ -361,7 +361,7 @@ impl Walk<'_> {
                 let canonical = self.declare(
                     container,
                     container_kind,
-                    &node.ident.to_string(),
+                    &ident_name(&node.ident),
                     "class",
                     item.span(),
                 );
@@ -377,7 +377,7 @@ impl Walk<'_> {
                 let canonical = self.declare(
                     container,
                     container_kind,
-                    &node.ident.to_string(),
+                    &ident_name(&node.ident),
                     "class",
                     item.span(),
                 );
@@ -402,13 +402,13 @@ impl Walk<'_> {
                 self.declare(
                     container,
                     container_kind,
-                    &node.ident.to_string(),
+                    &ident_name(&node.ident),
                     "class",
                     item.span(),
                 );
             }
             Item::Fn(node) => {
-                let name = node.sig.ident.to_string();
+                let name = ident_name(&node.sig.ident);
                 // A harness-invoked test has no caller in the graph, the same
                 // way a cfg(test) module has none.
                 let is_test = is_test_attribute(&node.attrs);
@@ -447,7 +447,7 @@ impl Walk<'_> {
                 let canonical = self.declare(
                     container,
                     container_kind,
-                    &node.ident.to_string(),
+                    &ident_name(&node.ident),
                     "interface",
                     item.span(),
                 );
@@ -472,7 +472,7 @@ impl Walk<'_> {
                         let method_canonical = self.declare(
                             &canonical,
                             "interface",
-                            &method.sig.ident.to_string(),
+                            &ident_name(&method.sig.ident),
                             "method",
                             member.span(),
                         );
@@ -513,7 +513,7 @@ impl Walk<'_> {
                         let trait_name = trait_path
                             .segments
                             .last()
-                            .map(|segment| segment.ident.to_string())
+                            .map(|segment| ident_name(&segment.ident))
                             .unwrap_or_default();
                         let type_name = target.rsplit("::").next().unwrap_or(&target).to_owned();
                         self.declare(
@@ -575,7 +575,7 @@ impl Walk<'_> {
                 let exported_impl = node.attrs.iter().any(is_wasm_bindgen);
                 for member in &node.items {
                     if let ImplItem::Fn(method) = member {
-                        let name = method.sig.ident.to_string();
+                        let name = ident_name(&method.sig.ident);
                         let method_canonical =
                             self.declare(&target, "class", &name, "method", member.span());
                         // The declared return type, which is what a call on the
@@ -643,7 +643,7 @@ impl Walk<'_> {
         node: &syn::ItemMod,
         span: proc_macro2::Span,
     ) {
-        let canonical = format!("{container}::{}", node.ident);
+        let canonical = format!("{container}::{}", ident_name(&node.ident));
         // The whole subtree compiles only under cfg(test), so the mark covers
         // the module node and every item it holds, helpers included.
         let is_test = is_cfg_test(&node.attrs);
@@ -652,7 +652,7 @@ impl Walk<'_> {
         }
         if let Some((_, items)) = &node.content {
             self.facts
-                .node("module", &canonical, &node.ident.to_string(), span, span);
+                .node("module", &canonical, &ident_name(&node.ident), span, span);
             self.walk_items(&canonical, "module", items);
         }
         if is_test {
@@ -752,7 +752,7 @@ impl Walk<'_> {
         let rendered = path
             .segments
             .iter()
-            .map(|segment| segment.ident.to_string())
+            .map(|segment| ident_name(&segment.ident))
             .collect::<Vec<_>>()
             .join("::");
         if rendered.is_empty() {
@@ -1016,18 +1016,21 @@ impl Walk<'_> {
                     for field in &node.fields {
                         if let Some(ident) = &field.ident {
                             if let Some(target) = self.receiver_type(container, &field.ty) {
-                                fields.insert(ident.to_string(), target);
+                                fields.insert(ident_name(ident), target);
                             }
                         }
                     }
                     if !fields.is_empty() {
                         self.struct_fields
-                            .insert(format!("{container}::{}", node.ident), fields);
+                            .insert(format!("{container}::{}", ident_name(&node.ident)), fields);
                     }
                 }
                 Item::Mod(node) => {
                     if let Some((_, inner)) = &node.content {
-                        self.collect_struct_fields(&format!("{container}::{}", node.ident), inner);
+                        self.collect_struct_fields(
+                            &format!("{container}::{}", ident_name(&node.ident)),
+                            inner,
+                        );
                     }
                 }
                 _ => {}
@@ -1053,7 +1056,7 @@ impl Walk<'_> {
                 syn::FnArg::Typed(typed) => {
                     if let syn::Pat::Ident(ident) = typed.pat.as_ref() {
                         if let Some(target) = self.receiver_type(container, &typed.ty) {
-                            receivers.insert(ident.ident.to_string(), target);
+                            receivers.insert(ident_name(&ident.ident), target);
                         }
                     }
                 }
@@ -1094,7 +1097,7 @@ impl Walk<'_> {
             let Some(ident) = attr.path().get_ident() else {
                 continue;
             };
-            let name = ident.to_string();
+            let name = ident_name(ident);
             let (path, method) = if VERBS.contains(&name.as_str()) {
                 (attr_path(attr), Some(name.to_uppercase()))
             } else if actix && name == "route" {
@@ -1361,11 +1364,11 @@ pub fn declaration_paths(module: &str, items: &[Item]) -> BTreeSet<String> {
 fn collect_declaration_paths(module: &str, items: &[Item], out: &mut BTreeSet<String>) {
     for item in items {
         match item {
-            Item::Struct(node) => record(out, module, &node.ident.to_string()),
-            Item::Enum(node) => record(out, module, &node.ident.to_string()),
-            Item::Union(node) => record(out, module, &node.ident.to_string()),
-            Item::Trait(node) => record(out, module, &node.ident.to_string()),
-            Item::Fn(node) => record(out, module, &node.sig.ident.to_string()),
+            Item::Struct(node) => record(out, module, &ident_name(&node.ident)),
+            Item::Enum(node) => record(out, module, &ident_name(&node.ident)),
+            Item::Union(node) => record(out, module, &ident_name(&node.ident)),
+            Item::Trait(node) => record(out, module, &ident_name(&node.ident)),
+            Item::Fn(node) => record(out, module, &ident_name(&node.sig.ident)),
             Item::Impl(node) => {
                 // A method is declared in an `impl` block rather than beside
                 // its type, so indexing only top-level items left every method
@@ -1382,14 +1385,14 @@ fn collect_declaration_paths(module: &str, items: &[Item], out: &mut BTreeSet<St
                     let owner = format!("{module}::{name}");
                     for member in &node.items {
                         if let syn::ImplItem::Fn(method) = member {
-                            record(out, &owner, &method.sig.ident.to_string());
+                            record(out, &owner, &ident_name(&method.sig.ident));
                         }
                     }
                 }
             }
             Item::Mod(node) => {
                 if let Some((_, inner)) = &node.content {
-                    let nested = format!("{module}::{}", node.ident);
+                    let nested = format!("{module}::{}", ident_name(&node.ident));
                     collect_declaration_paths(&nested, inner, out);
                 }
             }
@@ -1415,7 +1418,7 @@ fn impl_target_name(ty: &Type) -> Option<String> {
     path.path
         .segments
         .last()
-        .map(|segment| segment.ident.to_string())
+        .map(|segment| ident_name(&segment.ident))
 }
 
 /// Note one canonical path one file declares.
@@ -1614,7 +1617,7 @@ fn routing_shorthand(expr: &syn::Expr) -> Option<(String, &syn::Expr)> {
         return None;
     };
     let path = path_of(&call.func)?;
-    let name = path.segments.last()?.ident.to_string().to_uppercase();
+    let name = ident_name(&path.segments.last()?.ident).to_uppercase();
     if !matches!(
         name.as_str(),
         "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD" | "ANY"
@@ -1750,7 +1753,7 @@ impl Calls<'_, '_> {
             }
             let mut named: Vec<(syn::Path, bool)> = Vec::new();
             let _ = attr.parse_nested_meta(|meta| {
-                let key = meta.path.get_ident().map(|ident| ident.to_string());
+                let key = meta.path.get_ident().map(ident_name);
                 if meta.input.peek(syn::Token![=]) {
                     let value: syn::Expr = meta.value()?.parse()?;
                     if let (
@@ -1852,7 +1855,7 @@ impl Calls<'_, '_> {
             syn::Expr::Reference(reference) => self.returning_call(&reference.expr),
             syn::Expr::MethodCall(call) => {
                 let owner = self.receiver_owner(&call.receiver)?;
-                Some(format!("{owner}::{}", call.method))
+                Some(format!("{owner}::{}", ident_name(&call.method)))
             }
             syn::Expr::Call(call) => match call.func.as_ref() {
                 syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() >= 2 => {
@@ -1970,7 +1973,10 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         // through the call and the core resolves it, or drops the edge.
         let returning = self.returning_call(&node.receiver);
         if let Some(callee) = &returning {
-            let endpoint = reference("method_of_return", &format!("{callee}::{}", node.method));
+            let endpoint = reference(
+                "method_of_return",
+                &format!("{callee}::{}", ident_name(&node.method)),
+            );
             self.walk.facts.edge(
                 "calls",
                 &self.enclosing,
@@ -1980,7 +1986,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
             );
         }
         if let Some(target) = self.receiver_owner(&node.receiver) {
-            let endpoint = reference("method", &format!("{target}::{}", node.method));
+            let endpoint = reference("method", &format!("{target}::{}", ident_name(&node.method)));
             self.walk.facts.speculative_edge(
                 "calls",
                 &self.enclosing,
@@ -1988,7 +1994,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
                 node.method.span(),
             );
         } else if returning.is_none() {
-            self.walk.facts.untyped_call(node.method.to_string());
+            self.walk.facts.untyped_call(ident_name(&node.method));
         }
         syn::visit::visit_expr_method_call(self, node);
     }
@@ -1998,9 +2004,9 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         // so `let p = p.clone()` resolves its receiver through the old `p`.
         syn::visit::visit_local(self, node);
         let (ident, annotation) = match &node.pat {
-            syn::Pat::Ident(ident) => (ident.ident.to_string(), None),
+            syn::Pat::Ident(ident) => (ident_name(&ident.ident), None),
             syn::Pat::Type(typed) => match typed.pat.as_ref() {
-                syn::Pat::Ident(ident) => (ident.ident.to_string(), Some(typed.ty.as_ref())),
+                syn::Pat::Ident(ident) => (ident_name(&ident.ident), Some(typed.ty.as_ref())),
                 _ => return,
             },
             _ => return,
@@ -2031,7 +2037,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         let saved = self.receivers.clone();
         for input in &node.inputs {
             if let syn::Pat::Ident(ident) = input {
-                self.receivers.remove(&ident.ident.to_string());
+                self.receivers.remove(&ident_name(&ident.ident));
             }
         }
         syn::visit::visit_expr_closure(self, node);
@@ -2172,9 +2178,7 @@ fn receiver_name(expression: &syn::Expr) -> Option<String> {
     match expression {
         syn::Expr::Paren(inner) => receiver_name(&inner.expr),
         syn::Expr::Reference(reference) => receiver_name(&reference.expr),
-        syn::Expr::Path(path) if path.qself.is_none() => {
-            path.path.get_ident().map(|ident| ident.to_string())
-        }
+        syn::Expr::Path(path) if path.qself.is_none() => path.path.get_ident().map(ident_name),
         _ => None,
     }
 }

@@ -52,7 +52,9 @@ A name that a glob import (`use crate::components::*;`) brings in resolves
 through it, after the names the enclosing module declares.
 
 A node's `local_id` and both ends of an edge are written
-`rust:<kind>:<canonical>`. `canonical_name` itself carries no prefix. When a
+`rust:<kind>:<canonical>`. `canonical_name` itself carries no prefix. A raw
+identifier is named without its `r#`: `mod r#async;` is the module
+`crate::async`, the module of `src/async.rs`. When a
 target cannot be resolved, Knossos keeps no edge rather than a guess. Repeated
 edges collapse to the persistence identity of kind, source and target within one
 contribution, and the earliest evidence is kept.
