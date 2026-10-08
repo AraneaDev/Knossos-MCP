@@ -15,7 +15,9 @@ namespace Knossos\Scan;
  * or a file added in one of its languages, rebuilds all of its files, and each
  * of those counts as a change to its readers in other scanners. A scanner whose
  * added files can affect every file it scanned, as a global script can, is
- * rebuilt the same way when a file of its languages is added.
+ * rebuilt the same way when a file of its languages is added or one of its
+ * files is deleted: the program that held a deleted global may not be built
+ * again in this scan to say so.
  */
 final class ReadSetInvalidator
 {
@@ -39,11 +41,12 @@ final class ReadSetInvalidator
      *        (production: {@see UndiscoveredInputVerifier::stillMatches()}, the rule the commit check applies)
      * @param array<string, list<string>> $addedByScanner scanner id to the discovered paths of its languages it has no row for
      *        that the active scan did not record with the same bytes
-     * @param array<string, true> $addedFilesAffectAll scanner ids an added file of whose languages rebuilds all of their rows
-     *        ({@see LanguageDescriptor::$addedFilesAffectAll})
+     * @param array<string, true> $addedFilesAffectAll scanner ids an added file of whose languages, or a deleted
+     *        one of its files, rebuilds all of their rows ({@see LanguageDescriptor::$addedFilesAffectAll})
+     * @param array<string, true> $forced owners the caller already knows are stale, rebuilt with their readers
      * @return array<string, true> keyed by owner key
      */
-    public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = [], array $addedFilesAffectAll = []): array
+    public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = [], array $addedFilesAffectAll = [], array $forced = []): array
     {
         $memo = [];
         $unchanged = static function (string $path, ?string $stored) use ($discovered, $stillMatches, &$memo): bool {
@@ -66,8 +69,12 @@ final class ReadSetInvalidator
         $ownersOfFile = [];
         $rowsOfScanner = [];
         $unattributed = [];
+        $deletedFrom = [];
         foreach ($cached->rows as $owner => $row) {
             $owner = (string) $owner;
+            if (!array_key_exists($row['file_path'], $discovered) && isset($addedFilesAffectAll[$row['scanner_id']])) {
+                $deletedFrom[$row['scanner_id']] = true;
+            }
             if (($discovered[$row['file_path']] ?? null) !== $row['content_hash']) {
                 $changed[$row['file_path']] = true;
             }
@@ -133,6 +140,14 @@ final class ReadSetInvalidator
         foreach ($addedByScanner as $scanner => $paths) {
             if ($paths !== [] && (isset($unattributed[(string) $scanner]) || isset($addedFilesAffectAll[(string) $scanner]))) {
                 $rebuildScanner((string) $scanner);
+            }
+        }
+        foreach ($deletedFrom as $scanner => $true) {
+            $rebuildScanner((string) $scanner);
+        }
+        foreach ($forced as $owner => $true) {
+            if (isset($cached->rows[(string) $owner])) {
+                $invalidate((string) $owner);
             }
         }
         while ($queue !== []) {

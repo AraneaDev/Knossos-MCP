@@ -414,4 +414,29 @@ final class ContributionDecoderTest extends TestCase
             assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode, $label);
         }
     }
+
+    public function testTheProgramAndItsEnvironmentSurviveTheCacheRoundTrip(): void
+    {
+        $environment = hash('sha256', 'globals');
+        $wire = ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'program' => 'tsconfig.json', 'environment' => $environment];
+
+        $contribution = ContributionDecoder::decode($wire);
+        $again = ContributionDecoder::decode(json_decode((string) json_encode($contribution), true));
+
+        assertSame('tsconfig.json', $contribution->program);
+        assertSame($environment, $contribution->environment);
+        assertSame([$contribution->program, $contribution->environment], [$again->program, $again->environment]);
+        $plain = ContributionDecoder::decode(['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => []]);
+        assertSame([null, null], [$plain->program, $plain->environment]);
+        self::assertArrayNotHasKey('program', $plain->jsonSerialize());
+    }
+
+    public function testAMalformedProgramOrEnvironmentIsAnInvalidContribution(): void
+    {
+        $base = ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => []];
+        foreach (['an empty program' => ['program' => ''], 'a program number' => ['program' => 3], 'a non-hex environment' => ['environment' => 'NOTHEX']] as $label => $fields) {
+            $error = captureThrows(fn() => ContributionDecoder::decode($base + $fields), WorkerException::class);
+            assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode, $label);
+        }
+    }
 }

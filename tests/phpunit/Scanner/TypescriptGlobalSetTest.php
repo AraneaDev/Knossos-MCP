@@ -167,6 +167,52 @@ final class TypescriptGlobalSetTest extends KnossosTestCase
             ['src/m.ts' => "export const z = 1;\ndeclare global { function hello(): void }\n", 'src/a.ts' => "export function run(): void { hello(); hello(); }\n"],
             'src/e.ts',
         ];
+        yield 'a local package switches its types to a global file' => [
+            '{"compilerOptions": {"strict": true, "module": "esnext", "moduleResolution": "bundler", "paths": {"zone": ["./vendor/zone"]}}, "include": ["src"]}',
+            [
+                'vendor/zone/package.json' => '{"name": "zone", "types": "mod.d.ts"}',
+                'vendor/zone/mod.d.ts' => "export declare const x: number;\n",
+                'vendor/zone/index.d.ts' => "declare function zfun(): void;\n",
+                'src/a.ts' => "import 'zone';\nexport const a = 1;\n",
+                'src/d.ts' => "export function d(): void { zfun(); }\n",
+            ],
+            ['vendor/zone/package.json' => '{"name": "zone", "types": "index.d.ts"}'],
+            'src/d.ts',
+        ];
+        yield 'the importer of a global library is deleted' => [
+            $bundler,
+            [
+                'node_modules/zone/package.json' => '{"name": "zone", "types": "index.d.ts"}',
+                'node_modules/zone/index.d.ts' => "declare function zfun(): void;\n",
+                'src/a.ts' => "import 'zone';\nexport const a = 1;\n",
+                'src/d.ts' => "export function d(): void { zfun(); }\n",
+            ],
+            ['src/a.ts' => null],
+            'src/d.ts',
+        ];
+        $p = '{"compilerOptions": {"strict": true, "module": "esnext", "moduleResolution": "bundler"}, "include": ["."]}';
+        $two = [
+            'node_modules/zone/package.json' => '{"name": "zone", "types": "index.d.ts"}',
+            'node_modules/zone/index.d.ts' => "declare function zfun(): void;\n",
+            'packages/p1/tsconfig.json' => $p,
+            'packages/p2/tsconfig.json' => $p,
+            'packages/p1/a.ts' => "import 'zone';\nexport const a = 1;\n",
+            'packages/p1/d.ts' => "export function d(): void { zfun(); }\n",
+            'packages/p2/x.ts' => "import 'zone';\nexport const x = 1;\n",
+            'packages/p2/y.ts' => "export const y = 1;\n",
+        ];
+        yield 'two programs: the import leaves one while the other still imports it' => [
+            '{"files": []}',
+            $two,
+            ['packages/p1/a.ts' => "export const a = 1;\n", 'packages/p2/y.ts' => "export const y = 2;\n"],
+            'packages/p1/d.ts',
+        ];
+        yield 'two programs: the import moves from one to the other' => [
+            '{"files": []}',
+            ['packages/p1/a.ts' => "export const a = 1;\n"] + $two,
+            ['packages/p1/a.ts' => "import 'zone';\nexport const a = 1;\n", 'packages/p2/x.ts' => "export const x = 1;\n"],
+            'packages/p1/d.ts',
+        ];
     }
 
     private function scan(PDO $pdo): \Knossos\Query\ResultEnvelope

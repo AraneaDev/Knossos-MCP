@@ -44,6 +44,8 @@ final class ContributionDecoder
                 array_map(self::diagnostic(...), $diagnostics),
                 self::contentHash($data),
                 array_key_exists('reads', $data) ? ReadsMap::decode($data['reads']) : null,
+                array_key_exists('program', $data) ? self::string($data, 'program') : null,
+                array_key_exists('environment', $data) ? self::string($data, 'environment') : null,
             );
         } catch (WorkerException $error) {
             throw $error;

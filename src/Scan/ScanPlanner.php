@@ -221,12 +221,14 @@ final readonly class ScanPlanner
 
     /**
      * Every cached owner a change reached, with the given files counted as
-     * added to their scanners ({@see ReadSetInvalidator::invalidated()}).
+     * added to their scanners and the given owners as stale
+     * ({@see ReadSetInvalidator::invalidated()}).
      *
      * @param array<string, list<string>> $addedByScanner scanner id to the files added to it
+     * @param array<string, true> $forced owners already known to be stale
      * @return array<string, true>
      */
-    public static function reachedOwners(ScanPreparation $preparation, CachedReads $cached, array $addedByScanner): array
+    public static function reachedOwners(ScanPreparation $preparation, CachedReads $cached, array $addedByScanner, array $forced = []): array
     {
         $discovered = array_map(static fn($hashed): string => $hashed->contentHash, $preparation->discovery->hashedPaths());
         $root = rtrim($preparation->discovery->rootRealpath, '/');
@@ -241,6 +243,7 @@ final readonly class ScanPlanner
             static fn(string $path, ?string $stored): bool => UndiscoveredInputVerifier::stillMatches($root, $path, $stored, $maxFileBytes),
             $addedByScanner,
             LanguageDescriptor::scannersWhoseAddedFilesAffectAll(),
+            $forced,
         );
     }
 

@@ -49,7 +49,7 @@ final readonly class LanguageScanRunner
                 $outcomes[$descriptor->key] = $outcome;
             }
         }
-        $outcomes = $this->afterGlobalEdits($plan, $cancellation, $outcomes, $workerDiagnostics, $batchBudgets);
+        $outcomes = $this->afterEnvironmentChanges($plan, $cancellation, $outcomes, $workerDiagnostics, $batchBudgets);
 
         $manifests = $contributions = $cacheEntries = [];
         $parsed = $unchanged = $added = $changed = 0;
@@ -154,27 +154,25 @@ final readonly class LanguageScanRunner
     }
 
     /**
-     * Run again every language a file that declares globally reached
-     * ({@see GlobalDeclarationEdits}): its edit changes what files that never
-     * read it produce, which only its worker's answer could tell.
+     * Run again every language that contributions reused under a changed
+     * program environment reach ({@see ProgramEnvironments}): their facts
+     * were derived from global declarations the program no longer holds as
+     * they were, which only the worker's answer for the rebuilt program shows.
      *
      * @param array<string, array<string, mixed>> $outcomes by descriptor key
      * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
      * @param array<string, array{files: int, source_bytes: int, source_bytes_used: int}> $batchBudgets
      * @return array<string, array<string, mixed>>
      */
-    private function afterGlobalEdits(ScanPlan $plan, CancellationToken $cancellation, array $outcomes, array &$workerDiagnostics, array &$batchBudgets): array
+    private function afterEnvironmentChanges(ScanPlan $plan, CancellationToken $cancellation, array $outcomes, array &$workerDiagnostics, array &$batchBudgets): array
     {
-        $paths = [];
+        $stale = [];
         foreach ($this->descriptors as $descriptor) {
             if ($descriptor->addedFilesAffectAll && isset($outcomes[$descriptor->key])) {
-                $edited = GlobalDeclarationEdits::paths($outcomes[$descriptor->key]['cache_entries'], $outcomes[$descriptor->key]['read_groups'], $plan->cachedReads);
-                if ($edited !== []) {
-                    $paths[$descriptor->scannerId()] = $edited;
-                }
+                $stale += ProgramEnvironments::staleOwners($outcomes[$descriptor->key]['cache_entries']);
             }
         }
-        $wider = GlobalDeclarationEdits::widened($plan, $paths);
+        $wider = ProgramEnvironments::widened($plan, $stale);
         $reached = [];
         foreach (array_diff_key($wider->invalidatedOwners, $plan->invalidatedOwners) as $owner => $true) {
             $reached[$wider->cachedReads?->rows[$owner]['scanner_id'] ?? ''] = true;

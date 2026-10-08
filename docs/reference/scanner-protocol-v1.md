@@ -239,6 +239,23 @@ scan, before any worker has started, so that a rebuilt file still reaches its
 readers in other languages; the manifest capability states the same thing to
 anyone reading the handshake, and the core does not consult it.
 
+A worker for such a language also says what each file could see without an
+import. Each contribution then carries `program`, the key of the program its
+facts were derived in (the packaged TypeScript worker uses the tsconfig path,
+or `fallback:` and the directory for a file no config includes), and
+`environment`, the lowercase SHA-256 hex of the global declarations that
+program held: one line per file of the program that declares globally (a
+script, a module that augments the global scope or another module, a UMD
+global, a type library a config names), the path, a NUL and the hash
+`input_hashes` carries for it (empty for `null`), sorted and joined with
+newlines. Both are kept with the cached contribution. After a scan builds a
+program again, the core rebuilds every contribution it reused from an earlier
+build of that program whose `environment` differs, or is missing, and
+everything that read it, in other languages too. A contribution derived in no
+program, such as a file the worker could not scan, carries neither field. A
+deleted file of such a worker rebuilds every one of its contributions, since
+the program that held a deleted global may not be built again in that scan.
+
 One decoding limitation to know about: an object keyed only by consecutive
 integers starting at `"0"` is indistinguishable on the wire from a JSON array,
 and decodes to one, so it is refused as malformed rather than trusted

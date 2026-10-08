@@ -105,6 +105,46 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
     }
 
     /**
+     * A file deleted from a scanner whose added files affect every file may
+     * have declared globals every other file used, and its program may not be
+     * built again this scan: every row of the scanner is rebuilt, readers in
+     * other scanners included.
+     */
+    #[Group('scan')]
+    public function testADeletedFileRebuildsAScannerWhoseAddedFilesAffectAll(): void
+    {
+        $cached = self::cached([
+            'a.ts' => self::row('a.ts', [], 'knossos.typescript'),
+            'b.ts' => self::row('b.ts', [], 'knossos.typescript'),
+            'gone.ts' => self::row('gone.ts', [], 'knossos.typescript'),
+            'p.php' => self::row('p.php', ['b.ts' => self::hash('b.ts')]),
+            'q.php' => self::row('q.php', []),
+            'old.php' => self::row('old.php', []),
+        ]);
+        $discovered = self::discovered(['a.ts', 'b.ts', 'p.php', 'q.php', 'old.php']);
+
+        assertSame(['a.ts', 'b.ts', 'gone.ts', 'p.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), [], ['knossos.typescript' => true])));
+        // A deleted file of another scanner reaches only what read it.
+        $withoutPhp = self::discovered(['a.ts', 'b.ts', 'gone.ts', 'p.php', 'q.php']);
+        assertSame(['old.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $withoutPhp, self::noProbe(), [], ['knossos.typescript' => true])));
+    }
+
+    /** An owner the caller already knows is stale is rebuilt, and so are its readers. */
+    #[Group('scan')]
+    public function testAForcedOwnerReachesItsReaders(): void
+    {
+        $cached = self::cached([
+            'a.ts' => self::row('a.ts', [], 'knossos.typescript'),
+            'b.ts' => self::row('b.ts', ['a.ts' => self::hash('a.ts')], 'knossos.typescript'),
+            'c.ts' => self::row('c.ts', [], 'knossos.typescript'),
+            'p.php' => self::row('p.php', ['b.ts' => self::hash('b.ts')]),
+        ]);
+        $discovered = self::discovered(['a.ts', 'b.ts', 'c.ts', 'p.php']);
+
+        assertSame(['a.ts', 'b.ts', 'p.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), forced: ['a.ts' => true])));
+    }
+
+    /**
      * A group the owner names but the store no longer holds leaves nothing to
      * compare its reads against, so the owner cannot be shown to be current.
      */
