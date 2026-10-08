@@ -68,8 +68,12 @@ last pattern that matches decides, and a `negated` one takes the path back. A
 path is left out when it, or a directory above it, matches, since discovery never
 descends into a directory that matches. Inside a `node_modules` or `vendor`
 directory the dependency's own layout governs, so only the part of the path
-above it is checked. A worker reads nothing of a file left out, and reports no
-read of it.
+above it is checked. A worker reads nothing of a file these rules leave out,
+and reports no read of it. Discovery leaves out more than these rules say, such
+as a file a `.gitignore` names: a worker may reach such an undiscovered file
+through resolution, read it by its bytes and report that read, as the packaged
+Rust worker does at a probed module path and the Python worker does for an
+imported module.
 
 The request's time limit is an inactivity limit: every notification the worker
 sends restarts it, up to a hard cap per request (the maximum worker timeout,

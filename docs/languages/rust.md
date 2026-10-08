@@ -140,9 +140,9 @@ looked up below the crate root, so editing `src/lib.rs`, or adding a
 `src/main.rs` or `src/lib.rs`, rescans the whole crate: that follows from what
 the files read, not from a rule. A file that does not parse has no facts and
 reads nothing beyond itself, so it stays an ordinary attributed row and is
-rescanned only when it changes. Editing a `Cargo.toml` rescans every Rust file. A rebuilt file reaches
-its readers only when its own bytes changed: a `pub use` adds nothing to the
-index, so no file's facts depend on what another file read.
+rescanned only when it changes. Editing a `Cargo.toml` rescans every Rust file.
+A rebuilt file reaches its readers only when its own bytes changed: a `pub use`
+adds nothing to the index, so no file's facts depend on what another file read.
 
 ## Limits
 
