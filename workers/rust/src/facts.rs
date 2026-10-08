@@ -97,6 +97,12 @@ impl Facts {
         }
     }
 
+    /// The project-relative path of the file this accumulator owns.
+    #[must_use]
+    pub fn relative(&self) -> &str {
+        &self.relative
+    }
+
     /// Evidence spanning from `start` to `end`, clamped to one-based lines.
     ///
     /// The pinned `proc-macro2` gates `Span::start()`/`end()` behind

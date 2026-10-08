@@ -12,6 +12,7 @@ use syn::visit::Visit;
 use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
+use crate::layout::{modules_above, Layout};
 use crate::resolve::{flatten_use, glob_prefixes, ident_name, parent_module, rebase, Aliases};
 
 /// Canonical name of every top-level and inline-module declaration of the
@@ -126,9 +127,23 @@ struct Walk<'a> {
     /// The field types of each struct this file declares, by struct then
     /// field name, so `self.walk.facts.edge()` resolves through the fields.
     struct_fields: BTreeMap<String, BTreeMap<String, String>>,
+    /// Where the project's crates are, which names each `mod` declaration's
+    /// module (see [`mod_child`]).
+    layout: &'a Layout,
+    /// The file's project-relative path, which the `mod` declarations in it
+    /// load their files beside.
+    relative: String,
+    /// Each `mod name;` whose module is not `container::name` (a binary
+    /// root's or a test target's children, `#[path]`), by its container and
+    /// name: a path through `name` there names that module.
+    renamed_children: BTreeMap<(String, String), String>,
+    /// The files this file's `mod` declarations load, whose own placement
+    /// decided the module each declaration names.
+    placed: BTreeSet<String>,
 }
 
-/// Walk every item in a parsed file, attributing each to `module`.
+/// Walk every item in a parsed file, attributing each to `module`, and
+/// return the files its `mod` declarations load (see [`mod_child`]).
 pub fn walk(
     facts: &mut Facts,
     module: &str,
@@ -136,7 +151,8 @@ pub fn walk(
     frameworks: &[String],
     declarations: &Declarations,
     test_modules: &TestModules,
-) {
+    layout: &Layout,
+) -> BTreeSet<String> {
     // A file that IS an out-of-line test module is test code in its entirety,
     // and so is anything nested below it, so the scope opens around the whole
     // walk rather than around a single item.
@@ -144,6 +160,7 @@ pub fn walk(
     if file_is_test {
         facts.enter_test_scope();
     }
+    let relative = facts.relative().to_owned();
     let mut walker = Walk {
         facts,
         module: module.to_owned(),
@@ -157,15 +174,22 @@ pub fn walk(
         routes: Vec::new(),
         role_marks: Vec::new(),
         struct_fields: BTreeMap::new(),
+        layout,
+        relative,
+        renamed_children: BTreeMap::new(),
+        placed: BTreeSet::new(),
     };
     walker.collect_uses(module, &file.items);
     walker.resolve_globs();
     walker.collect_struct_fields(module, &file.items);
     walker.walk_items(module, "module", &file.items);
     walker.finish_walk();
+    let placed = std::mem::take(&mut walker.placed);
     if file_is_test {
         facts.exit_test_scope();
     }
+
+    placed
 }
 
 /// Whether `module`, or any module above it, was declared `#[cfg(test)]`.
@@ -184,22 +208,127 @@ fn is_test_module_path(module: &str, test_modules: &TestModules) -> bool {
     false
 }
 
-/// Record every out-of-line `#[cfg(test)] mod name;` in one file's items.
+/// The module a `mod` item in `relative` (placed in `module`) declares, and
+/// for a `mod name;` the file it loads.
+///
+/// `mod name { .. }` declares `container::name` in place. `mod name;` names
+/// the module of the file Rust loads for it (see [`Layout::child_file`]), so
+/// a binary root's `mod cli;` is `crate::cli` beside `src/cli.rs`, a test
+/// target's `mod common;` is `tests::common`, and `#[path = "x.rs"]` is the
+/// module of `x.rs`: the declaration and that file's contribution agree on
+/// one node.
+fn mod_child(
+    relative: &str,
+    module: &str,
+    container: &str,
+    node: &syn::ItemMod,
+    layout: &Layout,
+) -> (String, Option<String>) {
+    let name = ident_name(&node.ident);
+    let in_place = format!("{container}::{name}");
+    if node.content.is_some() {
+        return (in_place, None);
+    }
+    let inline: Vec<String> = container
+        .strip_prefix(module)
+        .and_then(|rest| rest.strip_prefix("::"))
+        .map(|rest| rest.split("::").map(str::to_owned).collect())
+        .unwrap_or_default();
+    let path = path_attribute(&node.attrs);
+    match layout.child_file(relative, &inline, &name, path.as_deref()) {
+        Some(file) => (layout.module_of(&file), Some(file)),
+        None => (in_place, None),
+    }
+}
+
+/// A `use` path whose head names a `mod` of the module it is written in,
+/// rewritten onto that module's path (see [`mod_child`]); `None` for any
+/// other path. A leading `::` (`unrooted` false) always names a crate.
+fn through_child(
+    children: &BTreeMap<String, String>,
+    unrooted: bool,
+    path: &str,
+) -> Option<String> {
+    if !unrooted {
+        return None;
+    }
+    let (head, rest) = match path.split_once("::") {
+        Some((head, rest)) => (head, Some(rest)),
+        None => (path, None),
+    };
+    let child = children.get(head)?;
+
+    Some(match rest {
+        Some(rest) => format!("{child}::{rest}"),
+        None => child.clone(),
+    })
+}
+
+/// The value of a `#[path = "..."]` attribute.
+fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| match &attr.meta {
+        syn::Meta::NameValue(pair) if pair.path.is_ident("path") => match &pair.value {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(text),
+                ..
+            }) => Some(text.value()),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// Record every out-of-line `#[cfg(test)] mod name;` in one file's items, by
+/// the module its file is placed in (see [`mod_child`]).
 ///
 /// Bodiless modules only: one with a body is walked in place, where
-/// `Walk::walk_mod` opens the scope directly.
-pub fn collect_test_modules(module: &str, items: &[Item], out: &mut TestModules) {
+/// `Walk::walk_mod` opens the scope directly. A declaration counts only when
+/// `relative` is a file every file of that module already reads: one of the
+/// paths a module above it could have (`src/net.rs` for `crate::net::tests`,
+/// a binary root's `src/main.rs` for `crate::checks`). A `#[path]` that sends a test
+/// module elsewhere (`src/net.rs` loading `src/net_tests.rs`) is not marked,
+/// since adding or removing the attribute could not reach that file.
+pub fn collect_test_modules(
+    relative: &str,
+    module: &str,
+    items: &[Item],
+    layout: &Layout,
+    out: &mut TestModules,
+) {
+    collect_test_modules_in(relative, module, module, items, layout, out);
+}
+
+/// [`collect_test_modules`] for the items of `container`, `module` itself or
+/// an inline module in it.
+fn collect_test_modules_in(
+    relative: &str,
+    module: &str,
+    container: &str,
+    items: &[Item],
+    layout: &Layout,
+    out: &mut TestModules,
+) {
     for item in items {
-        if let Item::Mod(node) = item {
-            let canonical = format!("{module}::{}", ident_name(&node.ident));
-            match &node.content {
-                Some((_, inner)) => collect_test_modules(&canonical, inner, out),
-                None => {
-                    if is_cfg_test(&node.attrs) {
-                        out.insert(canonical);
-                    }
+        let Item::Mod(node) = item else {
+            continue;
+        };
+        let (canonical, _) = mod_child(relative, module, container, node, layout);
+        match &node.content {
+            Some((_, inner)) => {
+                collect_test_modules_in(relative, module, &canonical, inner, layout, out);
+            }
+            None if is_cfg_test(&node.attrs) => {
+                let read_by_it = modules_above(&canonical).iter().any(|parent| {
+                    layout
+                        .module_files(parent)
+                        .iter()
+                        .any(|file| file == relative)
+                });
+                if read_by_it {
+                    out.insert(canonical);
                 }
             }
+            None => {}
         }
     }
 }
@@ -257,13 +386,20 @@ impl Walk<'_> {
         // since the 2018 edition a path's first segment may be any name in
         // scope, and a module declared here is one. Left as written, the path
         // read as an external crate's.
-        let children: BTreeSet<String> = items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Mod(node) => Some(ident_name(&node.ident)),
-                _ => None,
-            })
-            .collect();
+        let mut children: BTreeMap<String, String> = BTreeMap::new();
+        for item in items {
+            if let Item::Mod(node) = item {
+                let (child, file) =
+                    mod_child(&self.relative, &self.module, container, node, self.layout);
+                let name = ident_name(&node.ident);
+                if child != format!("{container}::{name}") {
+                    self.renamed_children
+                        .insert((container.to_owned(), name.clone()), child.clone());
+                }
+                self.placed.extend(file);
+                children.insert(name, child);
+            }
+        }
         for item in items {
             match item {
                 Item::Use(node) => {
@@ -271,12 +407,9 @@ impl Walk<'_> {
                     flatten_use(&node.tree, "", &mut leaves);
                     let source = reference("module", &self.module);
                     for leaf in leaves {
-                        let head = leaf.full.split("::").next().unwrap_or_default();
-                        let written = if node.leading_colon.is_none() && children.contains(head) {
-                            format!("{container}::{}", leaf.full)
-                        } else {
-                            leaf.full.clone()
-                        };
+                        let written =
+                            through_child(&children, node.leading_colon.is_none(), &leaf.full)
+                                .unwrap_or_else(|| leaf.full.clone());
                         let Some(full) = rebase(container, &self.anchor_crate(&written)) else {
                             continue;
                         };
@@ -307,12 +440,8 @@ impl Walk<'_> {
                     let mut globs = Vec::new();
                     glob_prefixes(&node.tree, "", &mut globs);
                     for glob in globs {
-                        let head = glob.split("::").next().unwrap_or_default();
-                        let written = if node.leading_colon.is_none() && children.contains(head) {
-                            format!("{container}::{glob}")
-                        } else {
-                            glob
-                        };
+                        let written = through_child(&children, node.leading_colon.is_none(), &glob)
+                            .unwrap_or(glob);
                         self.pending_globs.push((
                             container.to_owned(),
                             written,
@@ -635,7 +764,8 @@ impl Walk<'_> {
     /// `crate::visit::walk` call, so declaring a second node here would duplicate
     /// it under a different evidence path and trip
     /// `reconciler.duplicate_symbol_evidence` on virtually every multi-file crate.
-    /// Only the `contains` edge is emitted for that case, and nothing is walked.
+    /// Only the `contains` edge is emitted for that case, and nothing is walked;
+    /// its target is the module the loaded file is placed in (see [`mod_child`]).
     fn walk_mod(
         &mut self,
         container: &str,
@@ -643,7 +773,7 @@ impl Walk<'_> {
         node: &syn::ItemMod,
         span: proc_macro2::Span,
     ) {
-        let canonical = format!("{container}::{}", ident_name(&node.ident));
+        let (canonical, _) = mod_child(&self.relative, &self.module, container, node, self.layout);
         // The whole subtree compiles only under cfg(test), so the mark covers
         // the module node and every item it holds, helpers included.
         let is_test = is_cfg_test(&node.attrs);
@@ -777,6 +907,9 @@ impl Walk<'_> {
         {
             return rebase(container, &rendered).map(|target| (target, single_segment));
         }
+        if let Some(answer) = self.through_renamed_child(container, &rendered) {
+            return answer;
+        }
         if let Some(expanded) = self.aliases.expand(&rendered) {
             return Some((expanded, false));
         }
@@ -806,6 +939,31 @@ impl Walk<'_> {
         }
 
         Some((format!("{container}::{rendered}"), true))
+    }
+
+    /// A path whose head is a `mod name;` of `container` that names a module
+    /// other than `container::name` (see [`Walk::renamed_children`]), placed
+    /// in that module and answered by the declaration index as any other
+    /// child-module path is: one declaration is trusted, several resolve to
+    /// nothing, none leaves the target to be confirmed by this file. `None`
+    /// for any other path.
+    #[allow(clippy::option_option)]
+    fn through_renamed_child(
+        &self,
+        container: &str,
+        rendered: &str,
+    ) -> Option<Option<(String, bool)>> {
+        let (head, rest) = rendered.split_once("::")?;
+        let child = self
+            .renamed_children
+            .get(&(container.to_owned(), head.to_owned()))?;
+        let target = format!("{child}::{rest}");
+
+        Some(match self.declarations.get(&target) {
+            Some(1) => Some((target, false)),
+            Some(_) => None,
+            None => Some((target, true)),
+        })
     }
 
     /// Resolve the glob imports [`Walk::collect_uses`] set aside, now that
@@ -2250,6 +2408,7 @@ mod tests {
         call_kind, collect_declarations, collect_test_modules, walk, Declarations, TestModules,
     };
     use crate::facts::Facts;
+    use crate::layout::Layout;
 
     /// A method lives in an `impl` block, not beside the type, so a collector
     /// that walks only top-level items never indexes one. Nothing in the crate
@@ -2304,6 +2463,7 @@ mod tests {
             &[],
             &declarations,
             &TestModules::new(),
+            &Layout::default(),
         );
 
         assert!(facts
@@ -2332,6 +2492,7 @@ mod tests {
             &[],
             &declarations,
             &TestModules::new(),
+            &Layout::default(),
         );
 
         let contribution = facts.finish();
@@ -2375,6 +2536,7 @@ mod tests {
             &[],
             &declarations,
             &TestModules::new(),
+            &Layout::default(),
         );
 
         let contribution = facts.finish();
@@ -2415,6 +2577,7 @@ mod tests {
             &[],
             &declarations,
             &TestModules::new(),
+            &Layout::default(),
         );
 
         let contribution = facts.finish();
@@ -2477,7 +2640,13 @@ mod tests {
             syn::parse_str("#[cfg(test)]\nmod tests;\nmod real;\nfn ship() {}").expect("parses");
         let mut test_modules = TestModules::new();
 
-        collect_test_modules("crate", &declaring.items, &mut test_modules);
+        collect_test_modules(
+            "src/lib.rs",
+            "crate",
+            &declaring.items,
+            &Layout::default(),
+            &mut test_modules,
+        );
 
         assert!(test_modules.contains("crate::tests"));
         // A bodiless module without the attribute is ordinary source.
@@ -2493,6 +2662,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &test_modules,
+            &Layout::default(),
         );
         let contribution = facts.finish();
 
@@ -2519,6 +2689,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &test_modules,
+            &Layout::default(),
         );
         assert!(!facts
             .finish()
@@ -2545,6 +2716,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
         let marked = |name: &str| {
@@ -2584,6 +2756,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
         let overrides = |name: &str| {
@@ -2617,6 +2790,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
         let marked = |name: &str| {
@@ -2689,6 +2863,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
 
@@ -2717,6 +2892,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
 
@@ -2747,6 +2923,7 @@ mod tests {
             &[],
             &Declarations::new(),
             &TestModules::new(),
+            &Layout::default(),
         );
         let contribution = facts.finish();
         let marked = |name: &str| {

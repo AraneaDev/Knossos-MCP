@@ -175,6 +175,66 @@ final class RustReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * `src/lib.rs` loads `lib_checks.rs` through `#[path]` as test code, and
+     * `src/main.rs` declares `checks.rs` as test code, though neither file
+     * is a child of its declarer's module path.
+     */
+    public function testATestModuleLoadedBesideItsDeclarerFollowsTheDeclaration(): void
+    {
+        $this->writeCrate();
+        $this->write('src/lib.rs', self::LIB . "\n#[cfg(test)]\n#[path = \"lib_checks.rs\"]\nmod checks;\n");
+        $this->write('src/lib_checks.rs', "pub fn probe() {}\n");
+        $this->write('src/main.rs', "#[cfg(test)]\nmod bin_checks;\n\nfn main() {}\n");
+        $this->write('src/bin_checks.rs', "pub fn probe() {}\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('src/lib.rs', self::LIB . "\n#[path = \"lib_checks.rs\"]\nmod checks;\n");
+        $this->write('src/main.rs', "mod bin_checks;\n\nfn main() {}\n");
+        $this->scan($pdo);
+
+        self::assertContains('src/lib_checks.rs', $this->rescannedFiles($pdo));
+        self::assertContains('src/bin_checks.rs', $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /**
+     * `tests/it.rs` loads a member's file through `#[path]`, so the module it
+     * names follows the member's crate roots, which it never looked inside.
+     */
+    public function testAModLoadedFromAnotherPackageFollowsThatPackagesRoots(): void
+    {
+        $this->writeCrate();
+        $this->write('crates/late/Cargo.toml', "[package]\nname = \"late\"\nversion = \"0.1.0\"\n");
+        $this->write('crates/late/src/util.rs', "pub fn run() {}\n");
+        $this->write('tests/it.rs', "#[path = \"../crates/late/src/util.rs\"]\nmod util;\n\n#[test]\nfn runs() {}\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('crates/late/src/lib.rs', "pub mod util;\n");
+        $this->scan($pdo);
+
+        assertSame(['crates/late/src/lib.rs', 'crates/late/src/util.rs', 'tests/it.rs'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /**
+     * A file outside any `src/` and any Cargo target directory names no
+     * module a path can reach, and a `lib.rs` below the crate root is a
+     * module of its own: adding either reaches no other file.
+     */
+    public function testAFileNoLookupCanReachRescansOnlyItself(): void
+    {
+        $this->writeCrate();
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('crate/engine.rs', "pub fn start() -> u32 {\n    3\n}\n");
+        $this->write('src/engine/lib.rs', "pub fn any() -> u32 {\n    3\n}\n");
+        $this->scan($pdo);
+
+        assertSame(['crate/engine.rs', 'src/engine/lib.rs'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     /** `src/lib.rs` turns `src/main.rs` from the crate root into a binary beside a library. */
     public function testAddingALibraryRootRescansTheFilesOfItsCrate(): void
     {

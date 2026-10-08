@@ -19,7 +19,10 @@ pub fn ident_name(ident: &syn::Ident) -> String {
 ///
 /// `src/` is the crate root, so `src/lib.rs` and `src/main.rs` are `root` itself
 /// and `src/net/http.rs` is `root::net::http`. A `mod.rs` collapses into the
-/// directory that holds it. A path outside `src/` keeps its own directory chain,
+/// directory that holds it. Only those two files are the root: a `lib.rs` or
+/// `main.rs` deeper down is a module of its own (`src/net/lib.rs` is
+/// `root::net::lib`, `src/bin/main.rs` is `root::bin::main`), the module a
+/// `mod lib;` beside it loads, so it never collides with `src/net.rs`. A path outside `src/` keeps its own directory chain,
 /// which is what `tests/` and `benches/` want: each of those files is its own
 /// crate root to the compiler, and pretending otherwise would collide their
 /// symbols with the library's. A binary root that shares a Cargo package with
@@ -44,7 +47,7 @@ pub fn module_path_in_crate(relative: &str, root: &str, binary_root: bool) -> St
     if matches!(segments.last(), Some(&"mod")) {
         segments.pop();
     }
-    if in_crate && matches!(segments.last(), Some(&"lib") | Some(&"main")) {
+    if matches!(relative, "src/lib.rs" | "src/main.rs") {
         segments.pop();
     }
     if in_crate {
@@ -364,6 +367,18 @@ mod tests {
             "crate::main",
             super::module_path_in_crate("src/main.rs", "crate", true)
         );
+    }
+
+    #[test]
+    fn only_the_crate_roots_lib_and_main_collapse() {
+        assert_eq!("crate::net::lib", module_path("src/net/lib.rs"));
+        assert_eq!("crate::bin::main", module_path("src/bin/main.rs"));
+        assert_eq!(
+            "crate::bin::tool::main",
+            module_path("src/bin/tool/main.rs")
+        );
+        assert_eq!("crate::lib", module_path("src/lib/mod.rs"));
+        assert_eq!("crate", module_path("src/mod.rs"));
     }
 
     #[test]

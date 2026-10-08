@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 use crate::facts::Facts;
+use crate::layout::Layout;
 use crate::protocol::{Contribution, Manifest};
-use crate::resolve::module_path_in_crate;
 use crate::visit::Declarations;
 
 /// Default cap on one scanned file, overridden by `params.limits.max_file_bytes`.
@@ -40,27 +40,35 @@ struct FileIndex {
 }
 
 impl FileIndex {
-    /// The index entries of a file placed in `module`.
-    fn of(module: &str, items: &[syn::Item]) -> Self {
+    /// The index entries of `relative`, placed in `module`. A file the index
+    /// does not answer for (see [`Layout::is_indexed`]) declares nothing to
+    /// it, though its test modules still count.
+    fn of(relative: &str, module: &str, items: &[syn::Item], layout: &Layout) -> Self {
         let mut test_modules = crate::visit::TestModules::new();
-        crate::visit::collect_test_modules(module, items, &mut test_modules);
+        crate::visit::collect_test_modules(relative, module, items, layout, &mut test_modules);
         Self {
-            declarations: crate::visit::declaration_paths(module, items),
+            declarations: if layout.is_indexed(relative, module) {
+                crate::visit::declaration_paths(module, items)
+            } else {
+                BTreeSet::new()
+            },
             test_modules,
         }
     }
 }
 
-/// The index entries of every file the last request read, by the module the
-/// file was placed in and the hash of its bytes; `None` for bytes that do not
-/// parse. Both decide the entries, so a hit is what parsing would give.
+/// The index entries of every file the last request read, by the file's path
+/// and the hash of its bytes; `None` for bytes that do not parse. With the
+/// [`Layout`] they were collected under, both decide the entries, so a hit is
+/// what parsing would give.
 type IndexMemo = HashMap<(String, String), Option<FileIndex>>;
 
 thread_local! {
     /// The worker lives across the requests of a scan, and each request
     /// indexes the whole project: parsing only bytes it has not seen keeps
-    /// a large workspace's later batches as cheap as reading it.
-    static INDEX_MEMO: RefCell<IndexMemo> = RefCell::new(HashMap::new());
+    /// a large workspace's later batches as cheap as reading it. The memo is
+    /// kept for the layout it was built under and dropped when it changes.
+    static INDEX_MEMO: RefCell<(Layout, IndexMemo)> = RefCell::new((Layout::default(), HashMap::new()));
 }
 
 /// Sends `scan/heartbeat` when the request has been quiet for
@@ -248,7 +256,7 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
         assert_scannable_str(source)?;
     }
     let mut input_hashes: BTreeMap<String, Option<String>> = BTreeMap::new();
-    let cargo = cargo_crates(&root, &config_files, max_file_bytes, &mut input_hashes);
+    let layout = cargo_crates(&root, &config_files, max_file_bytes, &mut input_hashes);
 
     // Pass 1: read every Rust file of the project and index it. Without
     // `source_files` the project is the batch, as it always was. An
@@ -263,17 +271,25 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     let mut prepared: Vec<Prepared> = Vec::with_capacity(relatives.len());
     let mut declarations = Declarations::new();
     let mut test_modules = crate::visit::TestModules::new();
-    let mut files_by_module: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut memo = INDEX_MEMO.with(|memo| std::mem::take(&mut *memo.borrow_mut()));
+    let mut memo = INDEX_MEMO.with(|memo| {
+        let (built_under, memo) = std::mem::take(&mut *memo.borrow_mut());
+        if built_under == layout {
+            memo
+        } else {
+            HashMap::new()
+        }
+    });
     let mut kept: IndexMemo = HashMap::new();
     let mut heartbeat = Heartbeat::new();
     for relative in project {
         heartbeat.beat(emit);
-        let module = module_path_for_file(relative, &cargo.crates);
+        let module = layout.module_of(relative);
         let (value, index) = if requested.contains(relative) {
             let item = prepare_one(&root, relative, max_file_bytes);
             let index = match &item {
-                Prepared::Parsed { parsed, .. } => Some(FileIndex::of(&module, &parsed.items)),
+                Prepared::Parsed { parsed, .. } => {
+                    Some(FileIndex::of(relative, &module, &parsed.items, &layout))
+                }
                 Prepared::Err { .. } => None,
             };
             let value = read_value(&item);
@@ -286,11 +302,11 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
             match read_safely(&root, relative, max_file_bytes) {
                 Ok(bytes) => {
                     let hash = sha256_hex(&bytes);
-                    let index = match memo.remove(&(module.clone(), hash.clone())) {
+                    let index = match memo.remove(&(relative.to_owned(), hash.clone())) {
                         Some(index) => index,
                         None => parse_source(&bytes)
                             .ok()
-                            .map(|parsed| FileIndex::of(&module, &parsed.items)),
+                            .map(|parsed| FileIndex::of(relative, &module, &parsed.items, &layout)),
                     };
                     (Some(hash), index)
                 }
@@ -302,24 +318,19 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
             test_modules.extend(index.test_modules.iter().cloned());
         }
         if let Some(hash) = &value {
-            kept.insert((module.clone(), hash.clone()), index);
+            kept.insert((relative.to_owned(), hash.clone()), index);
         }
         record_read(&mut input_hashes, relative, value);
-        files_by_module
-            .entry(module)
-            .or_default()
-            .push(relative.to_owned());
     }
     // Only what this request indexed is kept, so the memo follows the
     // project rather than every version of it this process has seen.
-    INDEX_MEMO.with(|memo| *memo.borrow_mut() = kept);
+    INDEX_MEMO.with(|memo| *memo.borrow_mut() = (layout.clone(), kept));
 
     // Pass 2: walk each requested file, noting what its facts were read from.
     let mut reads = FileReads {
         root: &root,
         max_file_bytes,
-        packages: &cargo.packages,
-        files_by_module: &files_by_module,
+        layout: &layout,
         by_module: BTreeMap::new(),
     };
     let mut walked: Vec<(Contribution, BTreeSet<String>)> = Vec::with_capacity(prepared.len());
@@ -333,8 +344,8 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
                 parsed,
                 content_hash,
             } => {
-                let module = module_path_for_file(&relative, &cargo.crates);
-                let contribution = walk_one(
+                let module = layout.module_of(&relative);
+                let (contribution, placed) = walk_one(
                     &relative,
                     &module,
                     &parsed,
@@ -342,10 +353,10 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
                     &frameworks,
                     &declarations,
                     &test_modules,
-                    &cargo.crates,
+                    &layout,
                 );
                 let lookups = declarations.take_lookups();
-                let keys = reads.of_file(&relative, &module, &lookups, &mut input_hashes);
+                let keys = reads.of_file(&relative, &module, &lookups, &placed, &mut input_hashes);
                 (contribution, keys)
             }
         });
@@ -387,7 +398,8 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     }))
 }
 
-/// Walk one parsed file into its contribution.
+/// Walk one parsed file into its contribution, with the files its `mod`
+/// declarations load (see [`crate::visit::walk`]).
 #[allow(clippy::too_many_arguments)]
 fn walk_one(
     relative: &str,
@@ -397,23 +409,26 @@ fn walk_one(
     frameworks: &[String],
     declarations: &Declarations,
     test_modules: &crate::visit::TestModules,
-    crates: &[(String, String)],
-) -> Contribution {
+    layout: &Layout,
+) -> (Contribution, BTreeSet<String>) {
     let display = module.rsplit("::").next().unwrap_or(module).to_owned();
     let mut facts = Facts::new(relative);
     facts.set_content_hash(content_hash);
     let span = proc_macro2::Span::call_site();
     facts.node("module", module, &display, span, span);
-    crate::visit::walk(
+    let placed = crate::visit::walk(
         &mut facts,
         module,
         parsed,
         frameworks,
         declarations,
         test_modules,
+        layout,
     );
-    if let Some((root_file, crate_name)) =
-        crates.iter().find(|(root_file, _)| root_file == relative)
+    if let Some((root_file, crate_name)) = layout
+        .crates
+        .iter()
+        .find(|(root_file, _)| root_file == relative)
     {
         // A library is entered by its dependents, or by a host
         // outside the repository for a cdylib; nothing in the
@@ -434,7 +449,7 @@ fn walk_one(
         facts.edge("contains", &package_id, &module_id, "certain", span);
     }
 
-    facts.finish()
+    (facts.finish(), placed)
 }
 
 /// What one prepared file puts in `input_hashes`: the hash of the bytes read,
@@ -458,40 +473,41 @@ fn read_value(item: &Prepared) -> Option<String> {
 ///
 /// - Its module path follows from which packages are crates: a file under a
 ///   package's `src/` reads that package's `src/lib.rs` and `src/main.rs`,
-///   whose presence decides it.
+///   whose presence decides it. So does the module each of its `mod`
+///   declarations names, from the path of the file it loads.
 /// - Whether it is test code follows from a `#[cfg(test)] mod name;` in a
 ///   module above it, so it reads every file of every module above its own.
 /// - Every name its walk asked the declaration index about, found or not,
 ///   follows from the files of every module above that name.
 ///
-/// "The files of a module" are the ones the project holds there and every
-/// path a file there could have (see [`crate::layout::module_files`]): one
-/// that is missing is recorded as `None`, so adding it reaches the reader. A
-/// path the project does not hold is read from disk as any other file is,
-/// within the byte cap, and recorded in `input_hashes`. Everything recorded
+/// "The files of a module" are every path a file there could have (see
+/// [`crate::layout::module_files`]), which are exactly the files the index
+/// holds there: one that is missing is recorded as `None`, so adding it
+/// reaches the reader. A path the project does not hold is read from disk as
+/// any other file is, within the byte cap, and recorded in `input_hashes`. Everything recorded
 /// here is a direct read: what a declaring file itself read is its own.
 struct FileReads<'a> {
     /// The canonical project root.
     root: &'a Path,
     /// The byte cap a probed file is read within.
     max_file_bytes: u64,
-    /// Every package that names its crate, see [`Cargo::packages`].
-    packages: &'a [crate::layout::Package],
-    /// Every file of the project read for the index, by its module path.
-    files_by_module: &'a BTreeMap<String, Vec<String>>,
+    /// The project's crates, see [`Layout`].
+    layout: &'a Layout,
     /// The files of each module asked about so far, so each is probed once.
     by_module: BTreeMap<String, Vec<String>>,
 }
 
 impl FileReads<'_> {
     /// The files `relative`, placed in `module`, read beyond itself after a
-    /// walk that asked the index about `lookups`. Every path returned is in
+    /// walk that asked the index about `lookups` and placed the files its
+    /// `mod` declarations load (`placed`). Every path returned is in
     /// `input_hashes`.
     fn of_file(
         &mut self,
         relative: &str,
         module: &str,
         lookups: &BTreeSet<String>,
+        placed: &BTreeSet<String>,
         input_hashes: &mut BTreeMap<String, Option<String>>,
     ) -> BTreeSet<String> {
         let mut modules: BTreeSet<&str> =
@@ -500,8 +516,12 @@ impl FileReads<'_> {
             modules.extend(crate::layout::modules_above(name));
         }
         let mut keys = BTreeSet::new();
-        for (directory, _) in self.packages {
-            if relative.starts_with(&format!("{directory}src/")) {
+        for (directory, _) in &self.layout.packages {
+            let source = format!("{directory}src/");
+            if std::iter::once(relative)
+                .chain(placed.iter().map(String::as_str))
+                .any(|file| file.starts_with(&source))
+            {
                 for root_file in ["src/lib.rs", "src/main.rs"] {
                     keys.insert(format!("{directory}{root_file}"));
                 }
@@ -523,21 +543,11 @@ impl FileReads<'_> {
         keys
     }
 
-    /// The files the project holds in `module` and every path a file there
-    /// could have.
+    /// Every path a file placed in `module` could have.
     fn of_module(&mut self, module: &str) -> &[String] {
         self.by_module.entry(module.to_owned()).or_insert_with(|| {
-            let mut files = crate::layout::module_files(module, self.packages);
-            files.extend(
-                self.files_by_module
-                    .get(module)
-                    .into_iter()
-                    .flatten()
-                    .cloned(),
-            );
+            let mut files = self.layout.module_files(module);
             files.retain(|file| assert_scannable_str(file).is_ok());
-            files.sort();
-            files.dedup();
             files
         })
     }
@@ -792,18 +802,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
         })
 }
 
-/// What the request's manifests say about the project's crates.
-struct Cargo {
-    /// Each crate root that exists, with its package's name: `src/lib.rs`, or
-    /// `src/main.rs` beside or instead of it, below a manifest that names its
-    /// package.
-    crates: Vec<(String, String)>,
-    /// Every manifest that names its package, by directory (empty for the
-    /// project root, otherwise ending in `/`) and the crate name as Rust code
-    /// spells it, whether or not its roots exist.
-    packages: Vec<crate::layout::Package>,
-}
-
 /// The crate roots and names declared by the request's manifest `config_files`.
 ///
 /// The crate name comes from a `[package]` table, read without a TOML parser
@@ -824,11 +822,8 @@ fn cargo_crates(
     config_files: &[String],
     max_file_bytes: u64,
     input_hashes: &mut BTreeMap<String, Option<String>>,
-) -> Cargo {
-    let mut cargo = Cargo {
-        crates: Vec::new(),
-        packages: Vec::new(),
-    };
+) -> Layout {
+    let mut cargo = Layout::default();
     for config in config_files {
         // The manifest names the crate, so its bytes feed facts: recorded by
         // the hash of the raw bytes read, or null when the read failed or went
@@ -864,45 +859,6 @@ fn cargo_crates(
     }
 
     cargo
-}
-
-/// Resolve one requested file's module identity.
-///
-/// A file under a workspace member's `src/` is rooted at that crate's name,
-/// the deepest member claiming it winning; anything else is rooted at `crate`
-/// as before. A binary root is disambiguated only when the same package also
-/// has a library root.
-fn module_path_for_file(relative: &str, crates: &[(String, String)]) -> String {
-    let has_library = |directory: &str| {
-        crates
-            .iter()
-            .any(|(root_file, _)| root_file == &format!("{directory}src/lib.rs"))
-    };
-    let member = crates
-        .iter()
-        .filter_map(|(root_file, name)| {
-            let directory = root_file
-                .strip_suffix("src/lib.rs")
-                .or_else(|| root_file.strip_suffix("src/main.rs"))?;
-            (!directory.is_empty() && relative.starts_with(&format!("{directory}src/")))
-                .then_some((directory, name))
-        })
-        .max_by_key(|(directory, _)| directory.len());
-    match member {
-        Some((directory, name)) => {
-            let inner = &relative[directory.len()..];
-            module_path_in_crate(
-                inner,
-                &name.replace('-', "_"),
-                has_library(directory) && inner == "src/main.rs",
-            )
-        }
-        None => module_path_in_crate(
-            relative,
-            "crate",
-            has_library("") && relative == "src/main.rs",
-        ),
-    }
 }
 
 /// The crate name from a Cargo.toml `[package]` table, or `None` for a

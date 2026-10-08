@@ -122,8 +122,24 @@ reads and hashes every file but parses only the ones that changed. While
 indexing takes long, it sends `scan/heartbeat`.
 
 A file's module path follows from where it sits, not from `mod` declarations,
-so a module file no `mod` declares is indexed like any other, and `#[path]`
-attributes are not followed.
+so a module file no `mod` declares is indexed like any other. `src/lib.rs` and
+`src/main.rs` are the crate root (`src/main.rs` is `crate::main` beside a
+library); any other `lib.rs` or `main.rs` is a module of its own, so
+`src/net/lib.rs` is `crate::net::lib` and `src/bin/tool/main.rs` is
+`crate::bin::tool::main`. Outside `src/`, a file keeps its directory chain
+(`tests/smoke.rs` is `tests::smoke`), and only files under `tests/`,
+`examples/` and `benches/` enter the index, since Rust reaches no other file
+there without `#[path]`.
+
+A `mod name;` declaration names the module of the file Rust loads for it, as
+that file is placed. A crate root and a `mod.rs` keep their children beside
+them, so `mod cli;` in `src/main.rs` is `crate::cli` (`src/cli.rs`), and
+`mod common;` in `tests/it.rs` is `tests::common`. `#[path = "x.rs"]` is
+followed: the declaration names the module of `x.rs`, and a path through the
+declared name in that file reaches it. An out-of-line `#[cfg(test)] mod name;`
+marks the file it loads as test code when the declaring file sits in a module
+above it, or is the crate root; a `#[path]` that sends a test module to a
+sibling (`src/net.rs` loading `src/net_tests.rs`) is not marked.
 
 ### What an incremental scan rescans
 
@@ -137,7 +153,8 @@ scan rescans a file only when one of those changes:
 - every file of every module above the file's own, since a
   `#[cfg(test)] mod name;` there decides whether the file is test code;
 - the `src/lib.rs` and `src/main.rs` of the package whose `src/` holds the
-  file, since whether they exist decides the file's module path.
+  file, or a file one of its `mod` declarations loads, since whether they
+  exist decides those module paths.
 
 Editing `src/engine/sign.rs` therefore rescans the files that looked up a name
 in that module and the files below it, not unrelated modules. Every name is

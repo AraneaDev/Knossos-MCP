@@ -43,6 +43,55 @@ final class RustModuleIdentityTest extends KnossosTestCase
         parent::tearDown();
     }
 
+    /**
+     * `mod cli;` in a binary beside a library, `mod common;` in an
+     * integration test, and `#[path]` each name the module of the file they
+     * load, not a child of the declaring file.
+     */
+    public function testAModDeclarationNamesTheModuleOfTheFileItLoads(): void
+    {
+        $this->writeLayoutCrate();
+        $pdo = $this->scanned();
+
+        $edges = $this->edges($pdo);
+        self::assertContains('contains crate::main -> crate::cli', $edges);
+        self::assertContains('calls crate::main::main -> crate::cli::start', $edges);
+        self::assertContains('contains tests::it -> tests::common', $edges);
+        self::assertContains('calls tests::it::it -> tests::common::setup', $edges);
+        self::assertContains('contains crate -> crate::renamed_impl', $edges);
+        self::assertContains('calls crate::run -> crate::renamed_impl::go', $edges);
+        $nodes = $this->nodes($pdo);
+        foreach (['module crate::main::cli', 'module crate::main::checks', 'module tests::it::common', 'module crate::renamed'] as $phantom) {
+            self::assertNotContains($phantom, $nodes);
+        }
+    }
+
+    /** Only `src/lib.rs` and `src/main.rs` are the crate root; a `lib.rs` deeper down is a module of its own. */
+    public function testALibFileBelowTheCrateRootIsItsOwnModule(): void
+    {
+        $this->writeLayoutCrate();
+        $pdo = $this->scanned();
+
+        self::assertContains('function crate::nested::lib::deep', $this->nodes($pdo));
+        self::assertContains('contains crate::nested -> crate::nested::lib', $this->edges($pdo));
+        self::assertSame(['src/nested.rs'], $this->filesDeclaring($pdo, 'crate::nested'));
+        self::assertContains('function crate::bin::tool::main::main', $this->nodes($pdo));
+        self::assertContains('calls crate::bin::tool::main::main -> crate::bin::tool::helper::aid', $this->edges($pdo));
+    }
+
+    /** An out-of-line `#[cfg(test)]` module is test code where its file really is. */
+    public function testAnOutOfLineTestModuleMarksTheFileItLoads(): void
+    {
+        $this->writeLayoutCrate();
+        $pdo = $this->scanned();
+
+        $tests = $this->testNodes($pdo);
+        self::assertContains('crate::checks::check', $tests);
+        self::assertContains('crate::lib_tests::probe', $tests);
+        self::assertNotContains('crate::cli::start', $tests);
+        self::assertNotContains('crate::renamed_impl::go', $tests);
+    }
+
     /** Only a predicate that holds solely under `test` makes code test code. */
     public function testOnlyACfgThatRequiresTestMarksTestCode(): void
     {
@@ -75,6 +124,23 @@ final class RustModuleIdentityTest extends KnossosTestCase
         self::assertSame([], array_values(array_filter($this->nodes($pdo), static fn(string $node): bool => str_contains($node, 'r#'))));
     }
 
+    private function writeLayoutCrate(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod nested;\n#[path = \"renamed_impl.rs\"]\npub mod renamed;\n#[cfg(test)]\n#[path = \"lib_tests.rs\"]\nmod tests;\n\npub fn run() -> u32 {\n    renamed::go()\n}\n");
+        $this->write('src/renamed_impl.rs', "pub fn go() -> u32 {\n    1\n}\n");
+        $this->write('src/lib_tests.rs', "fn probe() {}\n");
+        $this->write('src/main.rs', "mod cli;\n#[cfg(test)]\nmod checks;\n\nfn main() {\n    cli::start();\n}\n");
+        $this->write('src/cli.rs', "pub fn start() {}\n");
+        $this->write('src/checks.rs', "fn check() {}\n");
+        $this->write('src/nested.rs', "pub mod lib;\n");
+        $this->write('src/nested/lib.rs', "pub fn deep() {}\n");
+        $this->write('src/bin/tool/main.rs', "mod helper;\n\nfn main() {\n    helper::aid();\n}\n");
+        $this->write('src/bin/tool/helper.rs', "pub fn aid() {}\n");
+        $this->write('tests/it.rs', "mod common;\n\n#[test]\nfn it() {\n    common::setup();\n}\n");
+        $this->write('tests/common/mod.rs', "pub fn setup() {}\n");
+    }
+
     private function scanned(): PDO
     {
         $pdo = $this->freshTestDatabase();
@@ -97,6 +163,18 @@ final class RustModuleIdentityTest extends KnossosTestCase
         $rows = $pdo->query("SELECT kind || ' ' || canonical_name FROM nodes WHERE language = 'rust' ORDER BY 1");
 
         return array_map('strval', $rows->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    /** @return list<string> the files whose contribution declares the module `$module` */
+    private function filesDeclaring(PDO $pdo, string $module): array
+    {
+        $statement = $pdo->prepare("SELECT DISTINCT n.owner_key FROM nodes n WHERE n.language = 'rust' AND n.kind = 'module' AND n.canonical_name = ? ORDER BY 1");
+        $statement->execute([$module]);
+
+        return array_map(
+            static fn(mixed $owner): string => substr((string) $owner, strlen('knossos.rust:file:')),
+            $statement->fetchAll(PDO::FETCH_COLUMN),
+        );
     }
 
     /** @return list<string> the canonical names of Rust nodes the worker marked as test code */
