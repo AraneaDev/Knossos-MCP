@@ -459,6 +459,20 @@ final class ContributionDecoderTest extends TestCase
         self::assertArrayNotHasKey('listed', $unsaid->jsonSerialize());
     }
 
+    public function testPartialReadsSurviveTheCacheRoundTripAndOnlyTravelWhenSet(): void
+    {
+        $base = ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'reads' => []];
+
+        $partial = ContributionDecoder::decode($base + ['reads_partial' => true]);
+        $again = ContributionDecoder::decode(json_decode((string) json_encode($partial), true));
+        $complete = ContributionDecoder::decode($base + ['reads_partial' => false]);
+
+        assertSame([true, true, false, false], [$partial->readsPartial, $again->readsPartial, $complete->readsPartial, ContributionDecoder::decode($base)->readsPartial]);
+        self::assertArrayNotHasKey('reads_partial', $complete->jsonSerialize());
+        $this->expectException(WorkerException::class);
+        ContributionDecoder::decode($base + ['reads_partial' => 'yes']);
+    }
+
     public function testAListedFlagThatIsNotABooleanIsAnInvalidContribution(): void
     {
         $base = ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => []];

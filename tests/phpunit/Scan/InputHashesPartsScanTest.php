@@ -41,6 +41,9 @@ final class InputHashesPartsScanTest extends KnossosTestCase
 
     private string $root;
 
+    /** @var array<string, mixed> the last request's result, with its parts merged */
+    private array $lastResult = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -101,6 +104,42 @@ final class InputHashesPartsScanTest extends KnossosTestCase
         assertSame([], $result->workerDiagnostics);
         assertSame($apps, array_map(static fn($entry): string => $entry->filePath, $result->cacheEntries));
         $this->assertMapIsLargerThanOneFrameAndMatchesDiscovery($inputHashes, $discovered);
+    }
+
+    /**
+     * What a package re-exports is read for its own contribution, which names
+     * it, so the request reports it as unattributed: a package that star
+     * imports from twelve subpackages of a hundred modules each makes that map
+     * outgrow a frame while every contribution stays small.
+     */
+    public function testAPythonRequestWhoseUnattributedReadsOutgrowOneFrameScansWithoutDegrading(): void
+    {
+        $name = str_repeat('long_module_name_', 10);
+        $discovered = [];
+        $packages = '';
+        for ($package = 0; $package < 12; ++$package) {
+            mkdir(sprintf('%s/pkg/s%02d', $this->root, $package), 0o777, true);
+            $exports = '';
+            for ($module = 0; $module < 100; ++$module) {
+                $file = sprintf('%s_%02d_%02d', $name, $package, $module);
+                // Not Python to discovery, so no contribution of its own: read
+                // only for the subpackage that re-exports it.
+                $discovered[] = $this->write(sprintf('pkg/s%02d/%s.py', $package, $file), sprintf("class Value%d_%d:\n    pass\n", $package, $module), 'javascript');
+                $exports .= sprintf("from .%s import *\n", $file);
+            }
+            $discovered[] = $this->write(sprintf('pkg/s%02d/__init__.py', $package), $exports, 'python');
+            $packages .= sprintf("from .s%02d import *\n", $package);
+        }
+        $discovered[] = $this->write('pkg/__init__.py', $packages, 'python');
+        $discovered[] = $this->write('app.py', "from pkg import Value0_0\n", 'python');
+        $descriptor = new LanguageDescriptor(key: 'python', stage: 'python-analysis', languages: ['python'], command: ['python3', '-I', '-B', '-W', 'ignore::SyntaxWarning', self::repositoryRoot() . '/workers/python/bin/worker.py']);
+
+        [$result] = $this->runScan($descriptor, $discovered, []);
+
+        assertSame([], $result->workerDiagnostics);
+        assertSame(14, count($result->cacheEntries));
+        // Merged from parts by the session: larger than the lowered line cap.
+        assertSame(true, strlen((string) json_encode($this->lastResult['unattributed_reads'] ?? [])) > self::LINE_BYTES);
     }
 
     /**
@@ -199,8 +238,9 @@ final class InputHashesPartsScanTest extends KnossosTestCase
         );
         try {
             $result = $runner->run($plan, new CancellationToken());
+            $this->lastResult = $client->lastScanResult();
 
-            return [$result, $client->lastScanResult()['input_hashes'] ?? []];
+            return [$result, $this->lastResult['input_hashes'] ?? []];
         } finally {
             $client->shutdown();
         }

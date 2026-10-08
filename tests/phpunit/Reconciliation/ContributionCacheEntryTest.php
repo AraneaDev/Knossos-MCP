@@ -47,7 +47,7 @@ final class ContributionCacheEntryTest extends TestCase
         $this->assertTrue((new ReflectionClass(ContributionCacheEntry::class))->isReadOnly());
     }
 
-    public function testClassHasExactlyTenPublicProperties(): void
+    public function testClassHasExactlyElevenPublicProperties(): void
     {
         $ref = new ReflectionClass(ContributionCacheEntry::class);
         $publicProps = array_map(
@@ -55,7 +55,7 @@ final class ContributionCacheEntryTest extends TestCase
             $ref->getProperties(\ReflectionProperty::IS_PUBLIC),
         );
         assertSame(
-            ['filePath', 'contentHash', 'scannerId', 'scannerVersion', 'configurationHash', 'contribution', 'reads', 'readGroup', 'readAttribution', 'fromCache'],
+            ['filePath', 'contentHash', 'scannerId', 'scannerVersion', 'configurationHash', 'contribution', 'reads', 'readGroup', 'readAttribution', 'fromCache', 'readsIncomplete'],
             $publicProps,
         );
     }

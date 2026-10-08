@@ -160,6 +160,8 @@ final readonly class LanguageScanRunner
      * program environment reach ({@see ProgramEnvironments}): their facts
      * were derived from global declarations the program no longer holds as
      * they were, which only the worker's answer for the rebuilt program shows.
+     * Any worker that labels its contributions is compared: the Python worker
+     * labels each with the source roots its imports were resolved against.
      * The same pass retires the reused contributions of files no config
      * lists once a program a config describes was rebuilt, since which
      * program emits such a file follows the imports of the others.
@@ -181,7 +183,7 @@ final readonly class LanguageScanRunner
         $current = $plan;
         while (true) {
             foreach ($this->descriptors as $descriptor) {
-                if ($descriptor->addedFilesAffectAll && isset($outcomes[$descriptor->key])) {
+                if (isset($outcomes[$descriptor->key])) {
                     $outcome = $outcomes[$descriptor->key];
                     $stale += ProgramEnvironments::staleOwners($outcome['cache_entries'], $outcome['program_environments'])
                         + ProgramEnvironments::unlistedOwners($outcome['cache_entries']);
@@ -496,6 +498,9 @@ final readonly class LanguageScanRunner
             $request['source_files'] = self::sourceFiles($files);
         } elseif ($descriptor->key === 'python') {
             $request['frameworks'] = $plan->preparation->pythonFrameworks;
+            // Which modules have contributions of their own, which name what
+            // those modules re-export, so an importer need not.
+            $request['source_files'] = self::sourceFiles($files);
         } elseif ($descriptor->key === 'rust') {
             $request['frameworks'] = $plan->preparation->rustFrameworks;
             $request['config_files'] = array_values(array_map(
@@ -683,7 +688,8 @@ final readonly class LanguageScanRunner
      * the importer's program, a test sees the globals its setup declares, and
      * the program's environment must not follow the request. The list also
      * tells the worker which of the files a program loaded have contributions
-     * of their own, whose reads it then owes nobody.
+     * of their own, whose reads it then owes nobody, which is all the Python
+     * worker takes it for.
      *
      * @param list<object> $files
      * @return list<string>

@@ -418,7 +418,9 @@ final class SqliteGraphWriter
                 'config' => $entry->configurationHash,
                 'payload' => self::cachePayload($entry->contribution),
                 'updated' => SqliteValues::now(),
-                'attributed' => $entry->readAttribution ? 1 : 0,
+                // 2: attributed, with reads that cannot cover the file
+                // (ContributionCacheEntry::$readsIncomplete).
+                'attributed' => $entry->readAttribution ? ($entry->readsIncomplete ? 2 : 1) : 0,
                 'group' => $entry->readGroup,
             ]);
             $deleteReads->execute(['project' => $projectId, 'owner' => $owner]);

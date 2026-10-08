@@ -47,6 +47,7 @@ final class ContributionDecoder
                 array_key_exists('program', $data) ? self::string($data, 'program') : null,
                 array_key_exists('environment', $data) ? self::string($data, 'environment') : null,
                 !array_key_exists('listed', $data) || self::bool($data, 'listed'),
+                array_key_exists('reads_partial', $data) && self::bool($data, 'reads_partial'),
             );
         } catch (WorkerException $error) {
             throw $error;

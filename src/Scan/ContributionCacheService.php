@@ -191,8 +191,9 @@ final readonly class ContributionCacheService
                 $contribution,
                 $cachedReads?->ownerReads[$owner] ?? [],
                 $stored['read_group'] ?? (isset($row['read_group']) ? (string) $row['read_group'] : null),
-                $stored['read_attribution'] ?? ((int) ($row['read_attribution'] ?? 0) === 1),
+                $stored['read_attribution'] ?? ((int) ($row['read_attribution'] ?? 0) >= 1),
                 true,
+                $stored['reads_incomplete'] ?? ((int) ($row['read_attribution'] ?? 0) === 2),
             );
         } catch (InvalidArgumentException) {
             return null;
@@ -210,8 +211,9 @@ final readonly class ContributionCacheService
         }
 
         // Its contribution is a diagnostic about its own bytes and nothing
-        // else, so it read nothing a change elsewhere could reach.
-        return $this->entry($file, $manifest, $leftOutConfigurationHash, $contribution, self::cacheVersion($manifest, $analysisHash), ['reads' => [], 'group' => null, 'attributed' => true]);
+        // else, yet a reader may name the file and rely on this row for
+        // what the file re-exports, which the row cannot say.
+        return $this->entry($file, $manifest, $leftOutConfigurationHash, $contribution, self::cacheVersion($manifest, $analysisHash), ['reads' => [], 'group' => null, 'attributed' => true], true);
     }
 
     /**
@@ -378,9 +380,12 @@ final readonly class ContributionCacheService
      * One cache entry for a scanned file.
      *
      * @param ?array{reads: array<string, ?string>, group: ?string, attributed: bool} $reads
+     * @param bool $leftOut whether the file was left out of the graph, so its reads cover nothing
      */
-    private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution, string $cacheVersion, ?array $reads = null): ContributionCacheEntry
+    private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution, string $cacheVersion, ?array $reads = null, bool $leftOut = false): ContributionCacheEntry
     {
+        $attributed = $reads['attributed'] ?? false;
+
         return new ContributionCacheEntry(
             $file->relativePath,
             $file->contentHash,
@@ -390,7 +395,8 @@ final readonly class ContributionCacheService
             $contribution,
             $reads['reads'] ?? [],
             $reads['group'] ?? null,
-            $reads['attributed'] ?? false,
+            $attributed,
+            readsIncomplete: $attributed && ($leftOut || $contribution->readsPartial),
         );
     }
 

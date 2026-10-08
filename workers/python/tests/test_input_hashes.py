@@ -845,7 +845,11 @@ def test_a_module_swapped_for_a_directory_while_module_file_probes_it_fails_veri
     assert _disagreements(result["input_hashes"], discovery) == ["pkg/b.py"]
 
 
-def test_the_collision_probe_records_an_absent_competitor_and_not_a_present_one(worker: ModuleType, project) -> None:
+def test_the_collision_probe_records_an_absent_competitor_as_null_and_a_present_one_by_its_hash(
+    worker: ModuleType, project
+) -> None:
+    # A present competitor is a fact the file's diagnostic rests on, and only a
+    # read's key lets deleting it reach that file.
     root = project({"pkg/mod.py": "", "pkg/lone.py": "", "pkg/both/__init__.py": "", "pkg/both.py": ""})
     index = worker.ProjectModuleIndex(root, 2_000_000)
     index.read_hashes.clear()
@@ -854,7 +858,11 @@ def test_the_collision_probe_records_an_absent_competitor_and_not_a_present_one(
     assert index.collides(root / "pkg" / "both.py", False) is True
     assert index.collides(root / "pkg" / "both" / "__init__.py", True) is True
 
-    assert index.read_hashes == {"pkg/lone/__init__.py": None}
+    assert index.read_hashes == {
+        "pkg/lone/__init__.py": None,
+        "pkg/both/__init__.py": _sha(b""),
+        "pkg/both.py": _sha(b""),
+    }
 
 
 def test_a_competitor_absent_while_the_collision_probe_runs_fails_verification(worker: ModuleType, project) -> None:

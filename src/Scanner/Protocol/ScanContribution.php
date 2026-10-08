@@ -34,6 +34,9 @@ final readonly class ScanContribution implements JsonSerializable
      *        file in the program its facts came from; false for a file that
      *        whichever program reached it first emitted, whose facts follow
      *        other files' imports. True when the worker does not say.
+     * @param bool $readsPartial whether the worker failed on the file after
+     *        naming some of what it read, so `reads` may miss what the file
+     *        re-exports; false when the worker does not say
      */
     public function __construct(
         public string $ownerKey,
@@ -45,6 +48,7 @@ final readonly class ScanContribution implements JsonSerializable
         public ?string $program = null,
         public ?string $environment = null,
         public bool $listed = true,
+        public bool $readsPartial = false,
     ) {
         if ($ownerKey === '') {
             throw new InvalidArgumentException('Contribution owner key must not be empty.');
@@ -98,6 +102,9 @@ final readonly class ScanContribution implements JsonSerializable
         // its bytes, and a reused unlisted one says so.
         if (!$this->listed) {
             $wire['listed'] = false;
+        }
+        if ($this->readsPartial) {
+            $wire['reads_partial'] = true;
         }
 
         return $wire;

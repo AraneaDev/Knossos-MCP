@@ -12,7 +12,7 @@ use Knossos\Scan\ContributionPartition;
 use Knossos\Scan\PartitionContext;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Scan\ScanSnapshotChangedException;
-use Knossos\Scanner\Protocol\{Confidence, Evidence, NodeFact, Origin};
+use Knossos\Scanner\Protocol\{Confidence, Diagnostic, Evidence, NodeFact, Origin};
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Scanner\Worker\WorkerException;
@@ -74,6 +74,36 @@ final class ContributionCacheServiceTest extends TestCase
 
         assertSame(1, count($result['contributions']));
         assertSame(1, count($result['cache_entries']));
+    }
+
+    /**
+     * Only an attributed contribution whose worker says its reads are partial
+     * is marked as having incomplete reads: a file that merely failed to
+     * parse read what its importers read, and an unattributing worker's rows
+     * are rebuilt whole anyway.
+     */
+    public function testOnlyAnAttributedContributionWithPartialReadsIsMarkedIncomplete(): void
+    {
+        $service = new ContributionCacheService();
+        $files = [];
+        foreach (['Partial.php', 'Broken.php', 'Plain.php'] as $name) {
+            $files[] = $this->writeFile($name, "<?php // {$name}\n");
+        }
+        $failed = static fn(string $path): Diagnostic => new Diagnostic('error', 'X_FAILED', 'failed', new Evidence($path, 1, 1));
+        $contributions = [
+            new ScanContribution('knossos.php:file:Partial.php', [], [], [$failed('Partial.php')], reads: [], readsPartial: true),
+            new ScanContribution('knossos.php:file:Broken.php', [], [], [$failed('Broken.php')], reads: []),
+            new ScanContribution('knossos.php:file:Plain.php', [], [], [$failed('Plain.php')], readsPartial: true),
+        ];
+        $attributed = ['reads' => [], 'group' => null, 'attributed' => true];
+        $reads = ['knossos.php:file:Partial.php' => $attributed, 'knossos.php:file:Broken.php' => $attributed];
+
+        $entries = $service->entriesForScanned($contributions, $files, $this->manifest(), 'cfg', 'analysis', $reads)['cache_entries'];
+
+        assertSame(
+            ['Partial.php' => true, 'Broken.php' => false, 'Plain.php' => false],
+            array_combine(array_map(static fn($entry): string => $entry->filePath, $entries), array_map(static fn($entry): bool => $entry->readsIncomplete, $entries)),
+        );
     }
 
     public function testEntriesForScannedDropsCacheEntryWhenContentChangedDuringScan(): void

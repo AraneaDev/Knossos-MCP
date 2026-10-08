@@ -381,11 +381,30 @@ class ProjectModuleIndex:
     unverified.
     """
 
-    def __init__(self, root: Path, max_bytes: int, exclusions: Exclusions | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        max_bytes: int,
+        exclusions: Exclusions | None = None,
+        source_files: frozenset[str] | None = None,
+    ) -> None:
         self.root = root
         self.max_bytes = max_bytes
         self.exclusions = exclusions or Exclusions()
         self.read_hashes: dict[str, str | None] = {}
+        # Every discovered Python file, when the request lists them: a module
+        # among them has a contribution of its own that names what it read.
+        self.source_files = source_files
+        # Reads the request shares: the probes that decide the source roots.
+        self.shared_reads: set[str] = set()
+        # Reads made for a discovered module, which its own contribution names.
+        self.unattributed_reads: set[str] = set()
+        # The keys each open file or module computation has read, innermost last.
+        self._scopes: list[set[str]] = []
+        # What a module's declarations cost an importer that uses them.
+        self._exposed: dict[str, set[str]] = {}
+        # Whether a probe that finds a module file hashes it (:meth:`_record_probe`).
+        self._hash_found = True
         self._prefixes: list[tuple[str, ...]] | None = None
         self._cache: dict[str, dict[str, str]] = {}
         self._protocols: set[str] = set()
@@ -396,17 +415,52 @@ class ProjectModuleIndex:
 
         Detecting them probes the tree, and those probes are recorded, so a
         request that resolves nothing, such as one whose every file was
-        refused, reports no reads it did not need.
+        refused, reports no reads it did not need. They decide every file's
+        module id and every import, so they are the request's shared reads,
+        whichever file happened to ask first.
         """
         if self._prefixes is None:
-            self._prefixes = self._source_root_prefixes()
+            scopes, self._scopes = self._scopes, []
+            try:
+                self._prefixes = self._source_root_prefixes()
+            finally:
+                self._scopes = scopes
         return self._prefixes
 
-    def record_read(self, relative: str, content_hash: str | None) -> None:
-        """Record one read for ``input_hashes``; a disagreeing repeat read records ``None``."""
+    def environment(self) -> str:
+        """The digest of the source roots, one per line in search order, the bare root as an empty line.
+
+        A new top-level directory is a source root no import could have
+        probed, so the core compares this with the digest a reused
+        contribution was derived under instead.
+        """
+        listed = "\n".join("/".join(prefix) for prefix in self.prefixes)
+        return hashlib.sha256(listed.encode("utf-8")).hexdigest()
+
+    def record_read(self, relative: str, content_hash: str | None, attributed: bool = True) -> None:
+        """Record one read for ``input_hashes``; a disagreeing repeat read records ``None``.
+
+        An attributed read is also named by whatever is being resolved: a
+        requested file's read of its own bytes is not, since its
+        contribution's ``content_hash`` covers it.
+        """
         if relative in self.read_hashes and self.read_hashes[relative] != content_hash:
             content_hash = None
         self.read_hashes[relative] = content_hash
+        if attributed:
+            self._note({relative})
+
+    def _note(self, keys: set[str]) -> None:
+        """Name ``keys`` as read by the innermost open scope, or by the whole request outside any."""
+        (self._scopes[-1] if self._scopes else self.shared_reads).update(keys)
+
+    def open_scope(self) -> None:
+        """Start collecting the keys one file or module computation reads."""
+        self._scopes.append(set())
+
+    def close_scope(self) -> set[str]:
+        """Stop collecting for the innermost scope and return what it read."""
+        return self._scopes.pop()
 
     def _in_root_file(self, walked: PathWalk) -> Path | None:
         """The file a walked path opens, when that file lies inside the root.
@@ -427,23 +481,37 @@ class ProjectModuleIndex:
         for relative in ([final] if final is not None else []) + linked:
             self.record_read(relative, content_hash)
 
-    def _record_probe(self, walked: PathWalk, present: bool) -> None:
+    def _record_probe(self, walked: PathWalk, present: bool, hashed: bool = True) -> None:
         """Record an existence probe whose answer feeds facts.
 
         A probe answering absent, or not a file, records ``None`` under every key
         its walk gives: resolution goes on as if the file were not there, so a
         discovered file missing for that moment must fail verification. A probe
-        answering present read no bytes, so it vouches for nothing at the
-        location it reached, which a read records; it records ``None`` only
-        under the linked keys, so a discovered path that had become a link is
-        still caught. Discovery never reports an absent path or a link, so a
-        stable tree is unaffected.
+        answering present records ``None`` under the linked keys, so a
+        discovered path that had become a link is still caught, and the hash
+        of the in-root file it found under the location it reached: the file
+        being there is a fact, and only a read's key lets its deletion reach
+        the reader. ``hashed`` false leaves that location out, for a probe
+        that only its absence makes matter. Discovery never reports an absent
+        path or a link, so a stable tree is unaffected.
         """
         final, linked = walk_keys(self.root, walked)
         if not present and final is not None:
             self.record_read(final, None)
         for relative in linked:
             self.record_read(relative, None)
+        location = self._in_root_file(walked) if present and hashed else None
+        if location is None or final is None:
+            return
+        if final in self.read_hashes:
+            self._note({final})
+            return
+        try:
+            source = read_bounded(location, self.max_bytes)
+            content_hash = hashlib.sha256(source).hexdigest() if len(source) <= self.max_bytes else None
+        except OSError:
+            content_hash = None
+        self.record_read(final, content_hash)
 
     def _source_root_prefixes(self) -> list[tuple[str, ...]]:
         """The source roots: the bare root, and each top-level directory that is not a package.
@@ -467,7 +535,10 @@ class ProjectModuleIndex:
                     continue
                 marker = child / "__init__.py"
                 present = marker.is_file()
-                self._record_probe(walk_path(marker), present)
+                # Only a marker's absence is a read: deleting one is a layout
+                # change the core rebuilds the whole language for, and an
+                # edit of its bytes moves no source root.
+                self._record_probe(walk_path(marker), present, hashed=False)
                 if not present:
                     prefixes.append((child.name,))
         except OSError:
@@ -483,6 +554,7 @@ class ProjectModuleIndex:
         return module_name(relative, len(best))
 
     def module_file(self, module: str) -> Path | None:
+        """The file ``module`` resolves to, or ``None``; every candidate tried is recorded."""
         parts = module.split(".")
         if not parts or "" in parts:
             return None
@@ -529,13 +601,20 @@ class ProjectModuleIndex:
         return None
 
     def _is_python_script(self, path: Path) -> bool:
-        """Whether a suffixless path is a project file whose shebang names Python."""
+        """Whether a suffixless path is a project file whose shebang names Python.
+
+        A file its shebang rules out was still decided by its bytes, so it
+        is recorded by its hash, which an edit that makes it Python changes.
+        """
         if path.suffix or not self._is_project_file(path):
             return False
         try:
-            return names_python_in_shebang(path)
+            named = names_python_in_shebang(path)
         except UnreadableInput:
-            return False
+            named = False
+        if not named:
+            self._record_probe(walk_path(path), True)
+        return named
 
     def _is_project_file(self, path: Path) -> bool:
         """Whether ``path`` is a module file this index may read.
@@ -569,7 +648,7 @@ class ProjectModuleIndex:
         try:
             status = None if location is None else location.stat()
             if status is not None and status.st_mode & S_IFMT == S_IFREG and status.st_size <= self.max_bytes:
-                self._record_probe(walked, True)
+                self._record_probe(walked, True, self._hash_found)
                 return True
         except OSError:
             pass
@@ -577,44 +656,109 @@ class ProjectModuleIndex:
         return False
 
     def module_declarations(self, module: str) -> dict[str, str]:
+        """The top-level declarations of ``module``, memoised, named as read by whatever asked.
+
+        Whoever asks, first or from the memo, names what finding and reading
+        the module cost (:meth:`_expose`). What the module re-exports was read
+        for the module's own sake: a discovered module's own contribution
+        names it, so it is reported unattributed rather than charged to every
+        importer; a module with no contribution of its own, or one read under
+        a name its own scan does not give it, passes it on to the importer.
+        """
         cached = self._cache.get(module)
-        if cached is not None:
-            return cached
-        declarations: dict[str, str] = {}
-        path = self.module_file(module)
+        if cached is None:
+            self.open_scope()
+            try:
+                path, tree = self._read_module(module)
+            except BaseException:
+                # What was read before the failure is in input_hashes, so the
+                # caller names it, and the failure reaches the file it fails.
+                self._note(self.close_scope())
+                raise
+            located = self.close_scope()
+            self._exposed[module] = located
+            cached = {}
+            self._cache[module] = cached
+            if path is not None and tree is not None:
+                self.open_scope()
+                try:
+                    cached = self._declare(tree, module, path.name == "__init__.py")
+                except BaseException:
+                    located |= self.close_scope()
+                    self._note(located)
+                    raise
+                declared = self.close_scope()
+                if self._owns(module, path):
+                    self.unattributed_reads |= declared
+                else:
+                    located |= declared
+        self._expose(module)
+        return cached
+
+    def _expose(self, module: str) -> None:
+        """Name what ``module``'s declarations cost as read by the open scope."""
+        self._note(self._exposed.get(module, set()))
+
+    def _owns(self, module: str, path: Path) -> bool:
+        """Whether ``path``, read as ``module``, has a contribution that names what it re-exports.
+
+        Only a discovered file whose own scan gives it this very module id
+        derives the same declarations; without the request's list of
+        discovered files, none is assumed to.
+        """
+        if self.source_files is None:
+            return False
+        relative = path.relative_to(self.root).as_posix()
+        return relative in self.source_files and self.module_for(relative) == module
+
+    def _read_module(self, module: str) -> tuple[Path | None, ast.Module | None]:
+        """Find and parse ``module``'s file, recording every probe and read; ``None`` parts when it cannot."""
+        # The read below hashes the file module_file finds, so the probe
+        # that found it does not read it first.
+        self._hash_found = False
+        try:
+            path = self.module_file(module)
+        finally:
+            self._hash_found = True
         # One walk decides whether the module may be read, the file its bytes
         # are read from, and the key the read goes under, so none can disagree.
         walked = None if path is None else walk_path(path)
         location = None if walked is None else self._in_root_file(walked)
-        if path is not None and walked is not None and location is None:
+        if walked is None:
+            return None, None
+        if location is None:
             # Accepted by module_file, then retargeted out of the root or gone
             # before this read resolved it: not read, and recorded as refused.
             self._record_walk(walked, None)
-        if path is not None and walked is not None and location is not None:
-            try:
-                source = read_bounded(location, self.max_bytes)
-            except OSError:
-                self._record_walk(walked, None)
-            else:
-                if len(source) > self.max_bytes:
-                    # Grew past the cap after _is_project_file checked it.
-                    self._record_walk(walked, None)
-                    self._cache[module] = declarations
-                    return declarations
-                # Hashed before parsing, so a module that fails to parse still
-                # reports the bytes this request saw.
-                self._record_walk(walked, hashlib.sha256(source).hexdigest())
-                try:
-                    tree = ast.parse(source)
-                except (SyntaxError, ValueError, RecursionError):
-                    tree = None
-                if tree is not None:
-                    declarations = top_level_declarations(tree, module)
-                    self._protocols |= declared_protocols(tree, module)
-                    self._cache[module] = declarations
-                    self._add_reexports(tree, module, path.name == "__init__.py", declarations)
-                    self._add_instances(tree, module, path.name == "__init__.py", declarations)
+            return path, None
+        try:
+            source = read_bounded(location, self.max_bytes)
+        except OSError:
+            self._record_walk(walked, None)
+            return path, None
+        if len(source) > self.max_bytes:
+            # Grew past the cap after _is_project_file checked it.
+            self._record_walk(walked, None)
+            return path, None
+        # Hashed before parsing, so a module that fails to parse still
+        # reports the bytes this request saw.
+        self._record_walk(walked, hashlib.sha256(source).hexdigest())
+        try:
+            return path, ast.parse(source)
+        except (SyntaxError, ValueError, RecursionError):
+            return path, None
+
+    def _declare(self, tree: ast.Module, module: str, is_package: bool) -> dict[str, str]:
+        """Derive and memoise ``module``'s declarations from its parsed tree.
+
+        Memoised before the re-exports are followed, so modules importing
+        each other resolve without recursing.
+        """
+        declarations = top_level_declarations(tree, module)
+        self._protocols |= declared_protocols(tree, module)
         self._cache[module] = declarations
+        self._add_reexports(tree, module, is_package, declarations)
+        self._add_instances(tree, module, is_package, declarations)
         return declarations
 
     def is_protocol(self, owner: str) -> bool:
@@ -699,15 +843,19 @@ class ProjectModuleIndex:
         would make every later importer's targets depend on batch order.
         """
         module = self.module_for(relative)
-        owner = self.module_file(module)
+        self.open_scope()
+        try:
+            owner = self.module_file(module)
+        finally:
+            located = self.close_scope()
+        # Which file the id resolves to is this file's fact too: a package
+        # added beside it takes the id over.
+        self._note(located)
         if owner is None or owner.resolve() != absolute:
             return
-        declarations = top_level_declarations(tree, module)
-        self._protocols |= declared_protocols(tree, module)
-        self._cache[module] = declarations
-        is_package = PurePosixPath(relative).stem == "__init__"
-        self._add_reexports(tree, module, is_package, declarations)
-        self._add_instances(tree, module, is_package, declarations)
+        # An importer later in the batch names this file, as a read would.
+        self._exposed[module] = located
+        self._declare(tree, module, PurePosixPath(relative).stem == "__init__")
 
     def collides(self, absolute: Path, is_package: bool) -> bool:
         """A ``mod.py``/``mod/__init__.py`` pair maps to the same module id.
@@ -2157,8 +2305,21 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+Emit = Callable[[dict[str, Any]], None]
+
+
+def scan(params: dict[str, Any], emit: Emit, heartbeat: Callable[[], None] | None = None) -> dict[str, Any]:
     """Parse a bounded file set and emit one owned contribution per input."""
+
+    # Each contribution carries ``reads``, the files its facts came from, and
+    # the result carries what the request shares (``reads``), what it read for
+    # discovered modules whose own contributions name it
+    # (``unattributed_reads``), and the digest of the source roots every
+    # contribution with facts was derived under (``environments``).
+    # Contributions are held until the request ends, because a later read of
+    # the same file can still turn its ``input_hashes`` value into ``None``,
+    # and every ``reads`` value must be the one the request ends with;
+    # ``heartbeat`` is called after each file meanwhile.
 
     root = safe_root(params.get("root"))
     files = params.get("files")
@@ -2168,6 +2329,11 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
     max_bytes = int(limits.get("max_file_bytes", 2_000_000))
     if not isinstance(files, list) or len(files) > max_files:
         raise ValueError("Python scan files must be a bounded list.")
+    source_files = params.get("source_files")
+    if source_files is not None and not (
+        isinstance(source_files, list) and all(isinstance(item, str) for item in source_files)
+    ):
+        raise ValueError("Python source_files must be a list of project-relative paths.")
 
     # A path this worker refuses, a file deleted between discovery and scan, or
     # one over the byte cap is reported per file rather than raised: aborting the
@@ -2175,7 +2341,12 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
     # so a single unscannable file produced no graph at all. A request that
     # cannot be interpreted — checked above — is still fatal, because that means
     # the caller is broken rather than the tree.
-    index = ProjectModuleIndex(root, max_bytes, Exclusions(params.get("exclusions")))
+    index = ProjectModuleIndex(
+        root,
+        max_bytes,
+        Exclusions(params.get("exclusions")),
+        None if source_files is None else frozenset(source_files),
+    )
     resolved: list[tuple[Path, str]] = []
     rejected: list[tuple[str, str]] = []
     for value in files:
@@ -2188,31 +2359,46 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
         except UnreadableInput as error:
             # Its contribution carries no facts, so a discovered file must not
             # pass verification as if it had been read.
-            index.record_read(requested.as_posix(), None)
+            index.record_read(requested.as_posix(), None, attributed=False)
             rejected.append((requested.as_posix(), str(error)))
         except RefusedAfterRead as error:
             # Refused on what the file says rather than on its name, so what
             # was read is evidence: a stable tree matches the hash, a script
             # swapped and restored around the probe does not.
-            index.record_read(requested.as_posix(), error.content_hash)
+            index.record_read(requested.as_posix(), error.content_hash, attributed=False)
             rejected.append((requested.as_posix(), str(error)))
         except ValueError as error:
             rejected.append((requested.as_posix(), str(error)))
     resolved.sort(key=lambda item: item[1])
-    for skipped, message in sorted(rejected):
-        emit(_unscannable_contribution(skipped, message))
-
+    held: list[tuple[dict[str, Any], set[str]]] = [
+        (_unscannable_contribution(skipped, message), set()) for skipped, message in sorted(rejected)
+    ]
     for absolute, relative in resolved:
-        _scan_one(absolute, relative, index, emit)
+        held.append(_scan_one(absolute, relative, index))
+        if heartbeat is not None:
+            heartbeat()
+    # Asked of every request that scanned a file, so a request whose files
+    # all failed to parse still reports the source roots it ran under.
+    environment = index.environment() if resolved else None
+    for contribution, keys in held:
+        own = contribution["owner_key"].removeprefix("knossos.python:file:")
+        contribution["reads"] = {key: index.read_hashes[key] for key in sorted(keys - {own})}
+        if environment is not None and contribution["nodes"]:
+            contribution["program"] = "python"
+            contribution["environment"] = environment
+        emit(contribution)
     return {
         "files_scanned": len(resolved) + len(rejected),
         "parser": "python.ast",
         "input_hashes": index.read_hashes,
+        "reads": {key: index.read_hashes[key] for key in sorted(index.shared_reads)},
+        "unattributed_reads": {key: index.read_hashes[key] for key in sorted(index.unattributed_reads)},
+        **({"environments": {"python": environment}} if environment is not None else {}),
     }
 
 
-def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Callable[[dict[str, Any]], None]) -> None:
-    """Parse and collect a single file, emitting exactly one owned contribution.
+def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex) -> tuple[dict[str, Any], set[str]]:
+    """Parse and collect a single file into exactly one owned contribution and the keys it read.
 
     Isolated per file so peak memory stays bounded by the largest single file
     rather than the whole batch, and so a syntax error, an oversized recursion,
@@ -2227,47 +2413,47 @@ def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Ca
         # batch, so it costs only its own file — the same treatment discovery
         # gives a file it could not resolve. Recorded as a failed read, since the
         # contribution standing in for the file carries none of its facts.
-        index.record_read(relative, None)
-        emit(_unscannable_contribution(relative, str(error)))
-        return
+        index.record_read(relative, None, attributed=False)
+        return _unscannable_contribution(relative, str(error)), set()
     if len(source) > index.max_bytes:
-        index.record_read(relative, None)
-        emit(_unscannable_contribution(relative, "Python input exceeds the configured byte limit."))
-        return
+        index.record_read(relative, None, attributed=False)
+        return _unscannable_contribution(relative, "Python input exceeds the configured byte limit."), set()
     # Of the exact bytes handed to ast.parse, which does its own decoding and
     # BOM handling, so the core can refuse facts parsed from a file that
     # changed after discovery hashed it.
     content_hash = hashlib.sha256(source).hexdigest()
     # The index may read this file too, before or after this read, for an
     # importer's sake; if the two reads disagree, the entry becomes None.
-    index.record_read(relative, content_hash)
+    index.record_read(relative, content_hash, attributed=False)
     try:
         tree = ast.parse(source, filename=relative, type_comments=True)
     except (SyntaxError, UnicodeDecodeError, ValueError) as error:
-        emit(_diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error), content_hash))
-        return
+        diagnostic = _diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error), content_hash)
+        return diagnostic, set()
     except RecursionError as error:
-        emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash))
-        return
+        return _diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash), set()
     # The shebang lives in a comment the parser drops, so it has to be read off
     # the source. Reduce it to a flag and release the bytes here, so the loop's
     # memory bound stays the largest single tree.
     shebang = starts_with_shebang(source)
     del source
+    # Everything the index reads from here on is this file's: a fault keeps
+    # the keys read so far, since they are in input_hashes and must be named.
+    index.open_scope()
     try:
         index.adopt_parsed(absolute, relative, tree)
         collision = index.collides(absolute, PurePosixPath(relative).stem == "__init__")
         contribution = PythonAstFactCollector(relative, tree, index, collision, shebang).collect()
-    except RecursionError as error:
-        emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash))
-        return
     except Exception as error:
-        emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash))
-        return
+        contribution = _diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash)
+        # Only what was read before the failure is named: what the file
+        # re-exports may be missing, which its importers rely on.
+        contribution["reads_partial"] = True
     finally:
         del tree  # drop the parsed tree before the next file to bound memory
+        keys = index.close_scope()
     contribution["content_hash"] = content_hash
-    emit(contribution)
+    return contribution, keys
 
 
 def line_of(error: BaseException) -> int:
@@ -2368,16 +2554,24 @@ def handle(request: dict[str, Any]) -> None:
             "output_schema_version": "1.0",
             "languages": ["python"],
             "file_extensions": ["py", "pyi"],
-            "capabilities": ["partial_ast", "content_hash", "input_hashes"],
+            "capabilities": ["partial_ast", "content_hash", "input_hashes", "read_attribution"],
         }
     elif method == "scan":
         scanned = scan(
             params,
             lambda contribution: write({"jsonrpc": "2.0", "method": "scan/contribution", "params": contribution}),
+            lambda: write({"jsonrpc": "2.0", "method": "scan/heartbeat"}),
         )
         parts = input_hash_parts(scanned["input_hashes"])
         for part in parts[:-1]:
             write({"jsonrpc": "2.0", "method": "scan/input_hashes", "params": {"input_hashes": part}})
+        # The shared and unattributed reads grow with the tree as input_hashes
+        # does, and travel in parts of their own beside an empty one.
+        for field in ("reads", "unattributed_reads"):
+            field_parts = input_hash_parts(scanned[field])
+            for part in field_parts[:-1]:
+                write({"jsonrpc": "2.0", "method": "scan/input_hashes", "params": {"input_hashes": {}, field: part}})
+            scanned[field] = field_parts[-1]
         result = {**scanned, "input_hashes": parts[-1]}
     elif method == "shutdown":
         result = {"status": "bye"}
