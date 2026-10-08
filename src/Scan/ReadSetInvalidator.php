@@ -17,7 +17,9 @@ namespace Knossos\Scan;
  * added files can affect every file it scanned, as a global script can, is
  * rebuilt the same way when a file of its languages is added or one of its
  * files is deleted: the program that held a deleted global may not be built
- * again in this scan to say so.
+ * again in this scan to say so. A scanner whose files resolve in a layout
+ * that marker files decide is rebuilt the same way when a cached marker is
+ * deleted, since none of the files it renames need have read it.
  */
 final class ReadSetInvalidator
 {
@@ -44,9 +46,11 @@ final class ReadSetInvalidator
      * @param array<string, true> $addedFilesAffectAll scanner ids an added file of whose languages, or a deleted
      *        one of its files, rebuilds all of their rows ({@see LanguageDescriptor::$addedFilesAffectAll})
      * @param array<string, true> $forced owners the caller already knows are stale, rebuilt with their readers
+     * @param array<string, string> $layoutMarkers scanner id to the pattern of the paths whose deletion rebuilds all of
+     *        its rows ({@see LanguageDescriptor::$layoutMarkers})
      * @return array<string, true> keyed by owner key
      */
-    public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = [], array $addedFilesAffectAll = [], array $forced = []): array
+    public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = [], array $addedFilesAffectAll = [], array $forced = [], array $layoutMarkers = []): array
     {
         $memo = [];
         $unchanged = static function (string $path, ?string $stored) use ($discovered, $stillMatches, &$memo): bool {
@@ -72,7 +76,8 @@ final class ReadSetInvalidator
         $deletedFrom = [];
         foreach ($cached->rows as $owner => $row) {
             $owner = (string) $owner;
-            if (!array_key_exists($row['file_path'], $discovered) && isset($addedFilesAffectAll[$row['scanner_id']])) {
+            $marker = $layoutMarkers[$row['scanner_id']] ?? null;
+            if (!array_key_exists($row['file_path'], $discovered) && (isset($addedFilesAffectAll[$row['scanner_id']]) || ($marker !== null && preg_match($marker, $row['file_path']) === 1))) {
                 $deletedFrom[$row['scanner_id']] = true;
             }
             if (($discovered[$row['file_path']] ?? null) !== $row['content_hash']) {

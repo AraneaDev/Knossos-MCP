@@ -129,6 +129,34 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
         assertSame(['old.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $withoutPhp, self::noProbe(), [], ['knossos.typescript' => true])));
     }
 
+    /**
+     * A deleted layout marker can rename files that never read it: every row
+     * of its scanner is rebuilt, readers in other scanners included. A deleted
+     * file the pattern does not match, or an edited marker, reaches only what
+     * read it.
+     */
+    #[Group('scan')]
+    public function testADeletedLayoutMarkerRebuildsItsScanner(): void
+    {
+        $cached = self::cached([
+            'core/__init__.py' => self::row('core/__init__.py', [], 'knossos.python'),
+            'core/base.py' => self::row('core/base.py', [], 'knossos.python'),
+            'core/sub/__init__.py' => self::row('core/sub/__init__.py', [], 'knossos.python'),
+            'other.py' => self::row('other.py', [], 'knossos.python'),
+            'p.php' => self::row('p.php', ['other.py' => self::hash('other.py')]),
+        ]);
+        $markers = ['knossos.python' => '#\A[^/]+/__init__\.py\z#'];
+
+        $markerGone = self::discovered(['core/base.py', 'core/sub/__init__.py', 'other.py', 'p.php']);
+        $nestedGone = self::discovered(['core/__init__.py', 'core/base.py', 'other.py', 'p.php']);
+        $markerEdited = self::discovered(['core/base.py', 'core/sub/__init__.py', 'other.py', 'p.php']) + ['core/__init__.py' => self::hash('edited')];
+
+        assertSame(['core/__init__.py', 'core/base.py', 'core/sub/__init__.py', 'other.py', 'p.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $markerGone, self::noProbe(), layoutMarkers: $markers)));
+        assertSame(['core/sub/__init__.py'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $nestedGone, self::noProbe(), layoutMarkers: $markers)));
+        assertSame(['core/__init__.py'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $markerEdited, self::noProbe(), layoutMarkers: $markers)));
+        assertSame(['core/__init__.py'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $markerGone, self::noProbe())));
+    }
+
     /** An owner the caller already knows is stale is rebuilt, and so are its readers. */
     #[Group('scan')]
     public function testAForcedOwnerReachesItsReaders(): void

@@ -32,6 +32,12 @@ final readonly class LanguageDescriptor
      *                                  planner then rebuilds every cached file of this scanner on an added
      *                                  file. Authoritative for the packaged workers: their manifests also
      *                                  declare `added_files_affect_all`, which the core does not consult.
+     * @param ?string $layoutMarkers a pattern for the project-relative paths whose deletion changes
+     *                               where every file of these languages resolves, as a top-level
+     *                               `__init__.py` decides whether its directory is a Python source
+     *                               root; the planner then rebuilds every cached file of this scanner
+     *                               when a cached file it matches is gone. Adding one needs no rule:
+     *                               the worker reads its absence, and every file shares that read.
      */
     public function __construct(
         public string $key,
@@ -44,6 +50,7 @@ final readonly class LanguageDescriptor
         public ?int $workerMemoryMb = null,
         public array $analysisInputs = [],
         public bool $addedFilesAffectAll = false,
+        public ?string $layoutMarkers = null,
     ) {}
 
     /**
@@ -119,7 +126,18 @@ final readonly class LanguageDescriptor
             // Python 3.12+ prints a SyntaxWarning to stderr for every invalid
             // escape the parser meets; ignoring that category at start keeps a
             // file full of them from turning stderr into noise.
-            new self('python', ['python'], ['python3', '-I', '-B', '-W', 'ignore::SyntaxWarning', $installationRoot . '/workers/python/bin/worker.py'], 'scanner_python', analysisInputs: ['workers/python/bin/worker.py']),
+            new self(
+                'python',
+                ['python'],
+                ['python3', '-I', '-B', '-W', 'ignore::SyntaxWarning', $installationRoot . '/workers/python/bin/worker.py'],
+                'scanner_python',
+                analysisInputs: ['workers/python/bin/worker.py'],
+                // A top-level package marker decides whether its directory is
+                // a source root, so deleting one renames every module below
+                // it and moves imports elsewhere, and none of those files
+                // need have read it.
+                layoutMarkers: '#\A[^/]+/__init__\.py\z#',
+            ),
             new self(
                 'rust',
                 ['rust'],
@@ -179,6 +197,24 @@ final readonly class LanguageDescriptor
     }
 
     /**
+     * The pattern of layout markers ({@see self::$layoutMarkers}) of each
+     * scanner that has one, from the default descriptors.
+     *
+     * @return array<string, string> scanner id to pattern
+     */
+    public static function layoutMarkersByScanner(): array
+    {
+        $patterns = [];
+        foreach (self::defaults('') as $descriptor) {
+            if ($descriptor->layoutMarkers !== null) {
+                $patterns[$descriptor->scannerId()] = $descriptor->layoutMarkers;
+            }
+        }
+
+        return $patterns;
+    }
+
+    /**
      * Return a copy with the runtime's memory cap adjusted to the given
      * mebibytes, leaving scan-batch and other settings unchanged. A null
      * argument or null $workerMemoryMb returns the descriptor unchanged.
@@ -227,6 +263,7 @@ final readonly class LanguageDescriptor
             workerMemoryMb: $mb,
             analysisInputs: $this->analysisInputs,
             addedFilesAffectAll: $this->addedFilesAffectAll,
+            layoutMarkers: $this->layoutMarkers,
         );
     }
 
