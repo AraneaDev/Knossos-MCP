@@ -337,9 +337,20 @@ impl Walk<'_> {
     /// `container_kind` is the node kind of `container` itself (`module`, `class`,
     /// or `interface`), needed to build the `contains` edge's source reference —
     /// an edge endpoint carries a node kind that isn't always the edge's own kind.
+    ///
+    /// An item compiled only under `test` (`#[cfg(test)] fn helper()`) is
+    /// test code with everything it declares; a module opens that scope in
+    /// [`Walk::walk_mod`], so it is not opened twice here.
     fn walk_items(&mut self, container: &str, container_kind: &str, items: &[Item]) {
         for item in items {
+            let is_test = !matches!(item, Item::Mod(_)) && is_cfg_test(item_attrs(item));
+            if is_test {
+                self.facts.enter_test_scope();
+            }
             self.walk_item(container, container_kind, item);
+            if is_test {
+                self.facts.exit_test_scope();
+            }
         }
     }
 
@@ -1173,35 +1184,94 @@ impl Walk<'_> {
     }
 }
 
-/// Whether an attribute list carries `#[cfg(test)]`.
+/// The outer attributes of an item, or none for an item kind the walk never
+/// declares anything for.
+fn item_attrs(item: &Item) -> &[syn::Attribute] {
+    match item {
+        Item::Const(node) => &node.attrs,
+        Item::Enum(node) => &node.attrs,
+        Item::Fn(node) => &node.attrs,
+        Item::Impl(node) => &node.attrs,
+        Item::Mod(node) => &node.attrs,
+        Item::Static(node) => &node.attrs,
+        Item::Struct(node) => &node.attrs,
+        Item::Trait(node) => &node.attrs,
+        Item::Union(node) => &node.attrs,
+        Item::Use(node) => &node.attrs,
+        _ => &[],
+    }
+}
+
+/// Whether an attribute list compiles its item only under `test`.
 ///
-/// Matched on the `test` ident anywhere inside the `cfg(..)` tokens, so
-/// `cfg(all(test, feature = "x"))` counts too. A false positive here costs a
-/// symbol its place in the dead-code budget; a false negative puts test code
-/// back in it, which is the failure this exists to prevent.
+/// The `cfg(..)` predicate is evaluated structurally (see [`requires_test`]):
+/// `cfg(test)` and `cfg(all(test, feature = "x"))` hold only in a test build,
+/// while `cfg(not(test))` is production code and `cfg(any(test, feature =
+/// "x"))` also compiles outside tests. A false positive here silently removes
+/// production code from the dead-code and hub budgets; a false negative puts
+/// test code back in them.
 fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("cfg")
             && attr
                 .meta
                 .require_list()
-                .is_ok_and(|list| contains_test_ident(list.tokens.clone()))
+                .ok()
+                .and_then(|list| list.parse_args::<syn::Meta>().ok())
+                .is_some_and(|predicate| requires_test(&predicate))
     })
 }
 
-/// Whether a `cfg(..)` token stream names the bare `test` identifier.
+/// Whether a `cfg` predicate can hold only when `test` is set.
 ///
-/// Recurses into groups so `cfg(all(test, feature = "x"))` counts, and matches
-/// an identifier rather than substring text so `cfg(feature = "latest")` does
-/// not. That distinction is the whole point: a false positive here silently
-/// removes production code from the dead-code and hub budgets, which is the
-/// failure those budgets exist to catch.
-fn contains_test_ident(tokens: proc_macro2::TokenStream) -> bool {
-    tokens.into_iter().any(|token| match token {
-        proc_macro2::TokenTree::Ident(ident) => ident == "test",
-        proc_macro2::TokenTree::Group(group) => contains_test_ident(group.stream()),
-        _ => false,
-    })
+/// `test` does; `all(..)` does when any of its parts does; `any(..)` does
+/// when every one of its (at least one) parts does; `not(p)` does when `p`
+/// holds in every build without `test` ([`holds_outside_test`]). Anything else, `unix` or
+/// `feature = "x"`, says nothing about tests.
+fn requires_test(predicate: &syn::Meta) -> bool {
+    match predicate {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) => {
+            let parts = cfg_parts(list);
+            if list.path.is_ident("all") {
+                parts.iter().any(requires_test)
+            } else if list.path.is_ident("any") {
+                !parts.is_empty() && parts.iter().all(requires_test)
+            } else if list.path.is_ident("not") {
+                parts.len() == 1 && holds_outside_test(&parts[0])
+            } else {
+                false
+            }
+        }
+        syn::Meta::NameValue(_) => false,
+    }
+}
+
+/// Whether a `cfg` predicate holds in every build without `test`, so its
+/// negation can hold only under `test`: `not(test)` does, as does
+/// `any(not(test), unix)`, while `all(not(test), unix)` does not.
+fn holds_outside_test(predicate: &syn::Meta) -> bool {
+    let syn::Meta::List(list) = predicate else {
+        return false;
+    };
+    let parts = cfg_parts(list);
+    if list.path.is_ident("all") {
+        parts.iter().all(holds_outside_test)
+    } else if list.path.is_ident("any") {
+        parts.iter().any(holds_outside_test)
+    } else if list.path.is_ident("not") {
+        parts.len() == 1 && requires_test(&parts[0])
+    } else {
+        false
+    }
+}
+
+/// The comma-separated predicates inside `all(..)`, `any(..)` or `not(..)`,
+/// or none when the list does not parse as predicates.
+fn cfg_parts(list: &syn::MetaList) -> Vec<syn::Meta> {
+    list.parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+        .map(|parts| parts.into_iter().collect())
+        .unwrap_or_default()
 }
 
 /// Whether an attribute list marks a test function.
@@ -2568,6 +2638,34 @@ mod tests {
             !marked("crate::Lease::drop_manually"),
             "an unrelated method"
         );
+    }
+
+    /// `not(test)` and `any(test, ..)` hold in a production build too, so
+    /// only a predicate no production build meets marks test code.
+    #[test]
+    fn a_cfg_predicate_requires_test_only_where_every_build_that_meets_it_is_a_test() {
+        let requires = |predicate: &str| {
+            super::requires_test(&syn::parse_str::<syn::Meta>(predicate).expect("parses"))
+        };
+        for test_only in [
+            "test",
+            "all(test, feature = \"x\")",
+            "any(test, all(test, unix))",
+            "not(not(test))",
+            "not(any(not(test), unix))",
+        ] {
+            assert!(requires(test_only), "{test_only}");
+        }
+        for production in [
+            "not(test)",
+            "any(test, feature = \"x\")",
+            "all(not(test), unix)",
+            "any()",
+            "feature = \"test\"",
+            "unix",
+        ] {
+            assert!(!requires(production), "{production}");
+        }
     }
 
     /// `contains("test")` matched any token whose text held those four

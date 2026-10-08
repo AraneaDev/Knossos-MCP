@@ -70,8 +70,11 @@ These get an attribute, so they stay off the
   methods of a `#[wasm_bindgen] impl`, and `drop` in an `impl Drop`.
 - A method of a trait impl carries `overrides`, because the trait declares it
   and the trait may be a dependency's.
-- Code under `#[cfg(test)]` and `#[test]` functions (including `#[tokio::test]`)
-  is marked as test code.
+- Code compiled only in a test build and `#[test]` functions (including
+  `#[tokio::test]`) are marked as test code. The `cfg` predicate is evaluated:
+  `cfg(test)` and `cfg(all(test, feature = "x"))` mark an item and everything in
+  it, while `cfg(not(test))` and `cfg(any(test, feature = "x"))` stay production
+  code, since a production build compiles them too.
 
 ### Speculative edges
 
