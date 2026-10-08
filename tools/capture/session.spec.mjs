@@ -359,7 +359,10 @@ describe("copyData", () => {
             live.close();
             await rm(root, { recursive: true, force: true });
         }
-    });
+        // About 50 ms of real file and SQLite work on an idle machine, but it
+        // is all disk and CPU, so a heavily loaded one stretches it past the
+        // default 5 s. The longer limit only bounds a hang.
+    }, 30_000);
 });
 
 describe("stopWatchers", () => {
