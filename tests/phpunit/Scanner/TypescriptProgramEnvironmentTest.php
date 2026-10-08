@@ -390,6 +390,81 @@ final class TypescriptProgramEnvironmentTest extends KnossosTestCase
         ];
     }
 
+    /**
+     * @param array<string, string> $files
+     * @param list<array<string, string>> $steps edits made in turn, each followed by a scan
+     * @param list<string> $rescanned what each step rescans
+     */
+    #[DataProvider('importsBetweenFilesOfTwoFallbackGroups')]
+    public function testAFallbackProgramEmitsOnlyTheFilesOfItsOwnGroup(array $files, array $steps, string $unlisted, string $group, array $rescanned): void
+    {
+        // Two fallback groups: packages/p1, under p1's tsconfig whose paths
+        // send `c` to lib/c.ts, and the root, whose paths send `c` to
+        // vendor/c. x.ts is in the root group; t.ts in p1's. An import from
+        // t.ts reaches x.ts in p1's fallback program, which must still leave
+        // x.ts to the root group's program, whichever group is built first.
+        foreach ($files as $relative => $contents) {
+            $this->write($relative, $contents);
+        }
+        $pdo = $this->freshTestDatabase();
+        $this->scan($pdo);
+        $facts = $this->facts($pdo, $unlisted);
+        assertSame('fallback:' . $group, $this->program($pdo, $unlisted));
+        // Resolved under the root config, where `c` is vendor/c, not under
+        // p1's, where it would be packages/p1/lib/c.ts.
+        assertSame(json_encode([[['re_exports', 'vendor/c/one.ts']], []], JSON_THROW_ON_ERROR), $facts);
+
+        foreach ($steps as $n => $edits) {
+            $this->stamp($pdo);
+            foreach ($edits as $relative => $contents) {
+                $this->write($relative, $contents);
+            }
+            $result = $this->scan($pdo);
+
+            assertSame($rescanned, $this->rescanned($pdo), "step $n");
+            assertSame(count($rescanned), $result->data['parsed_files'], "step $n");
+            assertSame($facts, $this->facts($pdo, $unlisted), "step $n");
+            assertSame('fallback:' . $group, $this->program($pdo, $unlisted), "step $n");
+            $this->assertMatchesAFullScan($pdo);
+        }
+    }
+
+    /** @return iterable<string, array{array<string, string>, list<array<string, string>>, string, string, list<string>}> */
+    public static function importsBetweenFilesOfTwoFallbackGroups(): iterable
+    {
+        $layout = static fn(string $shared): array => [
+            'tsconfig.json' => '{"compilerOptions": {"strict": true, "baseUrl": ".", "paths": {"c": ["vendor/c"]}}, "files": []}',
+            'packages/p1/tsconfig.json' => '{"compilerOptions": {"strict": true, "module": "esnext", "moduleResolution": "bundler", "baseUrl": ".", "paths": {"c": ["lib/c.ts"]}}, "include": ["src"]}',
+            'packages/p1/src/main.ts' => "export class M {}\n",
+            'packages/p1/lib/c.ts' => "export class C { p1(): void {} }\n",
+            'packages/p1/test/t.ts' => "export const t = 1;\n",
+            'vendor/c/package.json' => '{"name": "c", "types": "one.ts"}',
+            'vendor/c/one.ts' => "export class C { one(): void {} }\n",
+            "packages/$shared/x.ts" => "export { C } from 'c';\n",
+            "packages/$shared/y.ts" => "import { C } from './x';\nexport class Y extends C {}\n",
+        ];
+        $importing = static fn(string $shared): string => "import { C } from '../../$shared/x';\nexport class T extends C {}\n";
+        $plain = "export const t = 1;\n";
+        $t = 'packages/p1/test/t.ts';
+        yield 'the importer in the other group adds the import' => [
+            $layout('shared'), [[$t => $importing('shared')]], 'packages/shared/x.ts', '.', [$t],
+        ];
+        yield 'the importer in the other group drops the import' => [
+            [$t => $importing('shared')] + $layout('shared'), [[$t => $plain]], 'packages/shared/x.ts', '.', [$t],
+        ];
+        yield 'added, then dropped' => [
+            $layout('shared'), [[$t => $importing('shared')], [$t => $plain]], 'packages/shared/x.ts', '.', [$t],
+        ];
+        // The same, with the unlisted file's group sorting before the
+        // importer's, so the groups are built in the other order.
+        yield 'the unlisted file sorts before its importer' => [
+            $layout('a-shared'), [[$t => $importing('a-shared')]], 'packages/a-shared/x.ts', '.', [$t],
+        ];
+        yield 'the unlisted file sorts after its importer' => [
+            $layout('z-shared'), [[$t => $importing('z-shared')]], 'packages/z-shared/x.ts', '.', [$t],
+        ];
+    }
+
     public function testAnEditToAListedLeafRescansTheLeafItsReadersAndTheFilesNoConfigLists(): void
     {
         $this->write('tsconfig.json', '{"files": []}');
@@ -448,6 +523,16 @@ final class TypescriptProgramEnvironmentTest extends KnossosTestCase
         $statement->execute([self::UNTOUCHED]);
 
         return array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    /** The program one file's cached contribution says its facts came from. */
+    private function program(PDO $pdo, string $relative): string
+    {
+        $statement = $pdo->prepare('SELECT payload_json FROM contribution_cache WHERE owner_key = ?');
+        $statement->execute(['knossos.typescript:file:' . $relative]);
+        $payload = json_decode((string) $statement->fetchColumn(), true, 512, JSON_THROW_ON_ERROR);
+
+        return (string) ($payload['program'] ?? '');
     }
 
     /** The edges and diagnostics one file's contribution owns, as one comparable string. */

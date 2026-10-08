@@ -652,8 +652,9 @@ const REFERENCE_EXTENSIONS = [".ts", ".tsx", ".d.ts", ".js", ".jsx"];
  * what every file of both programs sees, and the core learns that only from
  * the environment of each program built. It also is when a requested file
  * not yet emitted is a root file of no config at all: such a file is emitted
- * by the first program that reaches it through imports, so each config's
- * program is built in turn until one holds it or the fallback takes it.
+ * by the first config's program that reaches it through imports, so each
+ * config's program is built in turn until one holds it, or the fallback
+ * program of the file's own group takes it (see #scanFallback).
  */
 function needsProgram(request, requested, configPath, parsed) {
     const rootNames = new Set(
@@ -696,11 +697,11 @@ function fallbackProgramKey(root, directory) {
 /**
  * Whether a program's reads for a file are the file's own contribution's:
  * only when a config lists the file and the program being built is that
- * config's program. A file no config lists is emitted by whichever program
- * reaches it first, an importing config's program or the fallback program of
- * its group, so no program can claim its reads, the fallback program of its
- * own group included; nor can any program claim the reads of a file the core
- * never discovered.
+ * config's program. A file no config lists is emitted by whichever config's
+ * program reaches it first, or else by the fallback program of its own group,
+ * so no program can claim its reads, the fallback program of its own group
+ * included; nor can any program claim the reads of a file the core never
+ * discovered.
  *
  * @param {{owners: Map<string, string>}} request the request, whose owners
  *   are taken as they are now: the answer does not follow a later change
@@ -1026,16 +1027,32 @@ export class TypeScriptScanner {
      * config lists is rooted with its group the same way, so an importer
      * requested on its own still has an ambient `declare module` satisfied
      * from inside its program.
+     *
+     * A fallback program emits only the files of its own group. It can
+     * reach a file of another group through an import, but that file is
+     * emitted by its own group's program, which holds its whole group under
+     * the options of the config beside it; otherwise which program emitted
+     * it would follow the order the groups are built in and the imports of
+     * files no read of its own records.
      */
     #scanFallback(root, remaining, parsedConfigs, request, tally) {
         request.owner = undefined;
         const members = request.fallbackMembers;
-        for (const [directory, group] of fallbackGroups(
+        const groups = fallbackGroups(
             root,
             remaining,
             parsedConfigs,
             request.packageDirectories,
-        )) {
+        );
+        request.fallbackGroupOf = new Map();
+        for (const source of [groups, members]) {
+            for (const [directory, group] of source) {
+                for (const relative of group.files) {
+                    request.fallbackGroupOf.set(normalize(relative), directory);
+                }
+            }
+        }
+        for (const [directory, group] of groups) {
             // Sorted, so every batch of a request hands the compiler the same
             // root list and the program built for the first is reused by the
             // rest instead of being rebuilt for each.
@@ -1046,6 +1063,7 @@ export class TypeScriptScanner {
                 ]),
             ].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
             request.program = fallbackProgramKey(root, directory);
+            request.fallbackDirectory = directory;
             tally(
                 this.#scanProgram(
                     `${directory}${FALLBACK_KEY}`,
@@ -1222,7 +1240,12 @@ export class TypeScriptScanner {
             emitted.has(relative) ||
             // Another config includes this file itself; its program
             // describes it under the options the project really uses.
-            (owners.has(relative) && owners.get(relative) !== owner);
+            (owners.has(relative) && owners.get(relative) !== owner) ||
+            // A fallback program reached a file of another group through an
+            // import; that group's own program emits it (see #scanFallback).
+            (fallback &&
+                request.fallbackGroupOf.get(relative) !==
+                    request.fallbackDirectory);
         // A diagnostic that names no file describes the whole program, so it
         // is reported once, on one fixed file of the program. The carrier is
         // chosen from the program itself, never from the request: a project is

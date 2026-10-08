@@ -240,9 +240,9 @@ result, the same shape as `reads`. The core confirms each entry against
 That is the only case. The same file loaded into another program resolves
 under that program's paths, aliases and manifests, and the read that decides
 where an import lands there is one its own contribution never names: keep it
-on `reads`. A file no config lists is emitted by whichever program reaches it
-first, an importing config's program or the fallback program of its group,
-so no program can claim its reads as that contribution's own: keep them on
+on `reads`. A file no config lists is emitted by whichever config's program
+reaches it first, or else by the fallback program of its own group, so no
+program can claim its reads as that contribution's own: keep them on
 `reads` in every program, the fallback program included. Keep on `reads` also
 what every file of the request genuinely shares: a config and what it
 extends, a manifest read to resolve, a global declaration, and the reads of a
@@ -286,11 +286,16 @@ program, such as a file the worker could not scan, carries neither field. A
 deleted file of such a worker rebuilds every one of its contributions, since
 the program that held a deleted global may not be built again in that scan.
 
-A file no config lists has no program of its own: whichever program reaches
-it first through imports emits it, and a program built for the files no
-config describes, whose key starts with `fallback:`, takes what none did. Its
-facts therefore follow the imports of other files, which no read of its own
-records. Mark such a contribution `listed: false`; leave the field out of
+A file no config lists has no program of its own: whichever config's program
+reaches it first through imports emits it, and a program built for the files
+no config describes, whose key starts with `fallback:`, takes what none did.
+Such a program emits only the files of its own group, the files that sit
+under the same config or package directory: it may reach a file of another
+group through an import, but that file is emitted by its own group's program,
+which holds the whole group whatever the imports say, so neither the order
+the groups are built in nor an import between two unlisted files decides
+which program describes one. The facts of a file a config's program reached
+still follow the imports of other files, which no read of its own records. Mark such a contribution `listed: false`; leave the field out of
 every other contribution, so a payload already cached keeps its bytes. Once a
 scan rebuilds any contribution derived in a program a config describes, or
 one derived in no program, the core rebuilds every reused contribution so

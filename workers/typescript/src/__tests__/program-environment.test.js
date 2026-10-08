@@ -262,4 +262,24 @@ describe("a contribution for a file no config lists", () => {
         expect(byOwner["test/t.ts"].program).toMatch(/^fallback:/);
         expect(byOwner["test/t.ts"].listed).toBe(false);
     });
+
+    it("is emitted by the fallback program of its own group, not by one that imports it", () => {
+        const root = fixture({
+            ...LAYOUT,
+            "pkg/package.json": JSON.stringify({ name: "pkg" }),
+            "pkg/t.ts":
+                "import { x } from '../other/x';\nexport const t = x;\n",
+            "other/x.ts": "export const x = 1;\n",
+        });
+        const files = ["pkg/t.ts", "other/x.ts"];
+
+        // pkg's group is built first, and its program reaches other/x.ts.
+        const byOwner = scan(root, files, ["tsconfig.json"], {
+            source_files: files,
+            package_directories: ["pkg"],
+        });
+
+        expect(byOwner["pkg/t.ts"].program).toBe("fallback:pkg");
+        expect(byOwner["other/x.ts"].program).toBe("fallback:.");
+    });
 });
