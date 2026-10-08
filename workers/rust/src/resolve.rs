@@ -30,7 +30,9 @@ pub fn ident_name(ident: &syn::Ident) -> String {
 /// and `src/lib.rs` as separate crates, and the suffix keeps their graph
 /// identities distinct when both are present in one scan.
 ///
-/// The package at the project root keeps `crate`. A workspace member's
+/// The package at the project root keeps `crate`, and a path that names its
+/// library by crate name from outside it is placed there (see
+/// `Layout::library_path`). A workspace member's
 /// `src/` is a crate root of its own, which sibling crates name by the
 /// package name (`use core_lib::app`), so its modules are rooted there:
 /// `crates/core-lib/src/app.rs` is `core_lib::app`, not a directory chain

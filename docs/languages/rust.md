@@ -131,6 +131,14 @@ library); any other `lib.rs` or `main.rs` is a module of its own, so
 `examples/` and `benches/` enter the index, since Rust reaches no other file
 there without `#[path]`.
 
+The package at the project root is rooted at `crate`, and a workspace member
+at its crate name (`crates/core-lib/src/app.rs` is `core_lib::app`). Code
+outside a library names it by its crate name: the `[lib] name` in the
+manifest, else the package name with dashes as underscores. Such a path is
+placed on the library's root, so `my_demo::run()` in `src/main.rs`,
+`src/bin/`, `tests/`, `examples/` or `benches/` calls `crate::run`, the
+function `src/lib.rs` declares.
+
 A `mod name;` declaration names the module of the file Rust loads for it, as
 that file is placed. A crate root and a `mod.rs` keep their children beside
 them, so `mod cli;` in `src/main.rs` is `crate::cli` (`src/cli.rs`), and

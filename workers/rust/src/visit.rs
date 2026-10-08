@@ -890,6 +890,7 @@ impl Walk<'_> {
         }
         let single_segment = path.segments.len() == 1;
         if path.leading_colon.is_some() {
+            let rendered = self.library_path(&rendered).unwrap_or(rendered);
             return Some((rendered, single_segment));
         }
         if rendered == "crate" || rendered.starts_with("crate::") {
@@ -912,6 +913,9 @@ impl Walk<'_> {
         }
         if let Some(expanded) = self.aliases.expand(&rendered) {
             return Some((expanded, false));
+        }
+        if let Some(library) = self.library_path(&rendered) {
+            return Some((library, single_segment));
         }
         let head = rendered.split("::").next().unwrap_or(&rendered);
         if self.aliases.is_ambiguous(head) {
@@ -1012,7 +1016,9 @@ impl Walk<'_> {
         self.module.split("::").next().unwrap_or("crate")
     }
 
-    /// A `crate`-rooted path as this file's crate names it in the graph.
+    /// A path as written, with its root as the graph names it: `crate` is
+    /// this file's crate root, and a project library's crate name its root
+    /// (see [`Walk::library_path`]).
     fn anchor_crate(&self, path: &str) -> String {
         let root = self.crate_root();
         if path == "crate" {
@@ -1020,8 +1026,22 @@ impl Walk<'_> {
         }
         match path.strip_prefix("crate::") {
             Some(rest) => format!("{root}::{rest}"),
-            None => path.to_owned(),
+            None => self.library_path(path).unwrap_or_else(|| path.to_owned()),
         }
+    }
+
+    /// A path headed by the crate name of one of the project's libraries,
+    /// rewritten onto that library's root in the graph: `my_demo::run` in
+    /// `src/main.rs`, `tests/` or `examples/` is `crate::run`, the node the
+    /// library's own file declares. A head that is this file's own crate root
+    /// is left alone, since it already is a graph root.
+    fn library_path(&self, path: &str) -> Option<String> {
+        let head = path.split("::").next().unwrap_or(path);
+        if head == self.crate_root() {
+            return None;
+        }
+
+        self.layout.library_path(path)
     }
 
     /// The paths an unqualified `rendered` path could name, in scoping order.

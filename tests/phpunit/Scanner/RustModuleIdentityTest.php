@@ -44,6 +44,42 @@ final class RustModuleIdentityTest extends KnossosTestCase
     }
 
     /**
+     * The binary, a second binary, an integration test and an example name
+     * the library by its crate name, which is the root package's `crate`.
+     */
+    public function testCodeOutsideTheLibraryReachesItThroughItsCrateName(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"my-demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod util;\n\npub fn run() -> u32 {\n    util::helper()\n}\n");
+        $this->write('src/util.rs', "pub fn helper() -> u32 {\n    1\n}\n");
+        $this->write('src/main.rs', "fn main() {\n    my_demo::run();\n}\n");
+        $this->write('src/bin/tool.rs', "use my_demo::util::helper;\n\nfn main() {\n    helper();\n}\n");
+        $this->write('tests/it.rs', "use my_demo::run;\n\n#[test]\nfn it_runs() {\n    run();\n}\n");
+        $this->write('examples/ex.rs', "fn main() {\n    ::my_demo::util::helper();\n}\n");
+        $pdo = $this->scanned();
+
+        $edges = $this->edges($pdo);
+        self::assertContains('calls crate::main::main -> crate::run', $edges);
+        self::assertContains('calls crate::bin::tool::main -> crate::util::helper', $edges);
+        self::assertContains('calls tests::it::it_runs -> crate::run', $edges);
+        self::assertContains('calls examples::ex::main -> crate::util::helper', $edges);
+        self::assertContains('imports tests::it -> crate', $edges);
+        self::assertSame([], $this->nodesStartingWith($pdo, 'my_demo'));
+    }
+
+    /** `[lib] name` renames the crate other targets write, whatever the package is called. */
+    public function testALibraryNameInTheManifestIsTheNameOtherTargetsUse(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"engine_core\"\n");
+        $this->write('src/lib.rs', "pub fn start() {}\n");
+        $this->write('tests/it.rs', "#[test]\nfn starts() {\n    engine_core::start();\n}\n");
+        $pdo = $this->scanned();
+
+        self::assertContains('calls tests::it::starts -> crate::start', $this->edges($pdo));
+        self::assertSame([], $this->nodesStartingWith($pdo, 'engine_core'));
+    }
+
+    /**
      * `mod cli;` in a binary beside a library, `mod common;` in an
      * integration test, and `#[path]` each name the module of the file they
      * load, not a child of the declaring file.
@@ -163,6 +199,15 @@ final class RustModuleIdentityTest extends KnossosTestCase
         $rows = $pdo->query("SELECT kind || ' ' || canonical_name FROM nodes WHERE language = 'rust' ORDER BY 1");
 
         return array_map('strval', $rows->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    /** @return list<string> the canonical names of Rust nodes under `$head`, by any kind */
+    private function nodesStartingWith(PDO $pdo, string $head): array
+    {
+        $statement = $pdo->prepare("SELECT canonical_name FROM nodes WHERE language = 'rust' AND (canonical_name = ? OR canonical_name LIKE ?) ORDER BY 1");
+        $statement->execute([$head, $head . '::%']);
+
+        return array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN));
     }
 
     /** @return list<string> the files whose contribution declares the module `$module` */

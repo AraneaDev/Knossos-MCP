@@ -805,7 +805,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// The crate roots and names declared by the request's manifest `config_files`.
 ///
 /// The crate name comes from a `[package]` table, read without a TOML parser
-/// (the same leaf parse the PHP core gives Cargo.toml). The crate's package
+/// (the same leaf parse the PHP core gives Cargo.toml), and the name other
+/// crates write for its library from `[lib]`, else the crate name. The crate's package
 /// node is attached to its library root `src/lib.rs`, or its binary root
 /// `src/main.rs` when there is no library — the two files whose module path
 /// is `crate` — via ordinary filesystem existence, matching where the file
@@ -855,7 +856,16 @@ fn cargo_crates(
                 cargo.crates.push((candidate, name.clone()));
             }
         }
-        cargo.packages.push((directory, name.replace('-', "_")));
+        let crate_name = name.replace('-', "_");
+        let library = manifest_table_name(&contents, "[lib]")
+            .map_or_else(|| crate_name.clone(), |name| name.replace('-', "_"));
+        let root = if directory.is_empty() {
+            "crate".to_owned()
+        } else {
+            crate_name.clone()
+        };
+        cargo.libraries.insert(library, root);
+        cargo.packages.push((directory, crate_name));
     }
 
     cargo
@@ -865,11 +875,17 @@ fn cargo_crates(
 /// virtual workspace manifest. Scoped to that one table so a `name` under
 /// `[[bin]]` or `[dependencies.foo]` is never mistaken for the crate's own.
 fn manifest_crate_name(contents: &str) -> Option<String> {
+    manifest_table_name(contents, "[package]")
+}
+
+/// The `name` key of one Cargo.toml table (`[package]`, `[lib]`), read
+/// without a TOML parser, or `None` when the table or its name is absent.
+fn manifest_table_name(contents: &str, table: &str) -> Option<String> {
     let mut in_package = false;
     for line in contents.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
-            in_package = trimmed.starts_with("[package]");
+            in_package = trimmed.starts_with(table);
             continue;
         }
         if !in_package {

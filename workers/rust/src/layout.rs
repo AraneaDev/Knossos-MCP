@@ -10,6 +10,8 @@
 //! whether it exists or not: an edit to one, its deletion, or a file added at
 //! one of those paths can change the answer.
 
+use std::collections::BTreeMap;
+
 use crate::resolve::module_path_in_crate;
 
 /// A Cargo package that names its crate: the directory its manifest sits in
@@ -42,6 +44,11 @@ pub struct Layout {
     /// project root, otherwise ending in `/`) and the crate name as Rust code
     /// spells it, whether or not its roots exist.
     pub packages: Vec<Package>,
+    /// The name code writes for each package's library (`[lib] name`, else
+    /// the package name with dashes as underscores), mapped to the root its
+    /// modules have in the graph: `crate` for the package at the project
+    /// root, the package's crate name for a workspace member.
+    pub libraries: BTreeMap<String, String>,
 }
 
 impl Layout {
@@ -160,6 +167,24 @@ impl Layout {
         }
     }
 
+    /// A path whose leading segment names one of the project's libraries,
+    /// rewritten onto the root its modules have in the graph (see
+    /// [`Layout::libraries`]): `my_demo::run` written in `src/main.rs` or
+    /// `tests/` is `crate::run`. `None` for any other path.
+    #[must_use]
+    pub fn library_path(&self, path: &str) -> Option<String> {
+        let (head, rest) = match path.split_once("::") {
+            Some((head, rest)) => (head, Some(rest)),
+            None => (path, None),
+        };
+        let root = self.libraries.get(head)?;
+
+        Some(match rest {
+            Some(rest) => format!("{root}::{rest}"),
+            None => root.clone(),
+        })
+    }
+
     /// Every path a file placed in `module` could have, see [`module_files`].
     #[must_use]
     pub fn module_files(&self, module: &str) -> Vec<String> {
@@ -264,6 +289,12 @@ mod tests {
                 (String::new(), "demo".to_owned()),
                 ("crates/core-lib/".to_owned(), "core_lib".to_owned()),
             ],
+            libraries: [
+                ("demo".to_owned(), "crate".to_owned()),
+                ("core_lib".to_owned(), "core_lib".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
         }
     }
 
@@ -410,5 +441,20 @@ mod tests {
             Some("core_lib::x".to_owned()),
             module("crates/core-lib/src/lib.rs", "x")
         );
+    }
+
+    #[test]
+    fn a_library_is_named_by_its_graph_root_from_outside() {
+        let layout = layout();
+        assert_eq!(
+            Some("crate::run".to_owned()),
+            layout.library_path("demo::run")
+        );
+        assert_eq!(Some("crate".to_owned()), layout.library_path("demo"));
+        assert_eq!(
+            Some("core_lib::x".to_owned()),
+            layout.library_path("core_lib::x")
+        );
+        assert_eq!(None, layout.library_path("serde::Serialize"));
     }
 }
