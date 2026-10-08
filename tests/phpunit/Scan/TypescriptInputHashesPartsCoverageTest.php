@@ -9,7 +9,8 @@ use PHPUnit\Framework\Attributes\Group;
 
 /**
  * The real, coverage-instrumented TypeScript worker client splits a large
- * `input_hashes` map into `scan/input_hashes` parts.
+ * `input_hashes` map, and each reads map of the result, into
+ * `scan/input_hashes` parts.
  *
  * `InputHashesPartsScanTest` already proves the merge is correct end to end,
  * but it builds its `ProcessScannerClient` directly from a `LanguageDescriptor`
@@ -114,5 +115,47 @@ final class TypescriptInputHashesPartsCoverageTest extends KnossosTestCase
         ksort($confirmed);
         ksort($reads);
         assertSame($reads, $confirmed);
+    }
+
+    /**
+     * A program's other discovered files are read for nobody in particular,
+     * and that set outgrows one frame as the shared reads do, so it travels in
+     * parts of its own and never lands in the shared reads.
+     */
+    public function testUnattributedReadsThatOutgrowOneFrameStillReachTheResult(): void
+    {
+        $directory = 'src/' . str_repeat('long-directory-name-', 9);
+        mkdir($this->root . '/' . $directory, 0o777, true);
+        file_put_contents($this->root . '/tsconfig.json', json_encode([
+            'compilerOptions' => ['strict' => true],
+            'include' => ['src'],
+        ]));
+        $expected = [];
+        for ($i = 0; $i < self::FILES; ++$i) {
+            $relative = sprintf('%s/module-%04d.ts', $directory, $i);
+            $contents = sprintf("export const value%d = %d;\n", $i, $i);
+            file_put_contents($this->root . '/' . $relative, $contents);
+            $expected[$relative] = hash('sha256', $contents);
+        }
+        file_put_contents($this->root . '/src/entry.ts', "export const entry = 1;\n");
+
+        $client = $this->typescriptWorkerClient();
+        iterator_to_array($client->scan([
+            'root' => $this->root,
+            'files' => ['src/entry.ts'],
+            'config_files' => ['tsconfig.json'],
+            'source_files' => [...array_keys($expected), 'src/entry.ts'],
+        ]));
+        $result = $client->lastScanResult();
+        $client->shutdown();
+
+        $unattributed = $result['unattributed_reads'] ?? [];
+        assertSame(true, strlen((string) json_encode($unattributed)) > 256_000);
+        assertSame($expected, array_intersect_key($unattributed, $expected));
+        assertSame([], array_intersect_key($result['reads'] ?? [], $expected));
+        $confirmed = array_intersect_key($result['input_hashes'] ?? [], $unattributed);
+        ksort($confirmed);
+        ksort($unattributed);
+        assertSame($unattributed, $confirmed);
     }
 }
