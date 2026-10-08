@@ -104,12 +104,45 @@ A handler function gets the `rust_framework_roles` attribute with
 
 ## Cross-file resolution
 
-Each scan batch builds a declaration index before it walks the files. The index
-lets a cross-file `impl` block attach its methods to a uniquely declared type,
-and lets a call into a child module point at a declaration in another file. An
-ambiguous declaration is dropped rather than guessed. The index is scoped to the
-request, so a file left out of the request, or served only from cache, never
-counts as evidence.
+Each scan request builds a declaration index before it walks the files. The
+index lets a cross-file `impl` block attach its methods to a uniquely declared
+type, and lets a call into a child module point at a declaration in another
+file. An ambiguous declaration is dropped rather than guessed. The index holds
+every discovered `.rs` file of the project, read from disk within the byte cap,
+whichever files the request names, so a file rescanned on its own resolves the
+same names a full scan resolves. A file that does not parse adds nothing to it.
+The worker keeps what each file gave the index for as long as its process
+lives, keyed by the file's module and the hash of its bytes, so a later batch
+reads and hashes every file but parses only the ones that changed. While
+indexing takes long, it sends `scan/heartbeat`.
+
+A file's module path follows from where it sits, not from `mod` declarations,
+so a module file no `mod` declares is indexed like any other, and `#[path]`
+attributes are not followed.
+
+### What an incremental scan rescans
+
+Each contribution names the files its facts were read from, so an incremental
+scan rescans a file only when one of those changes:
+
+- every file of every module above a name the walk asked the index about,
+  found or not, including the paths such a file could have and that do not
+  exist yet (`src/engine/sign.rs` and `src/engine/sign/mod.rs`, a member's
+  `src/lib.rs`);
+- every file of every module above the file's own, since a
+  `#[cfg(test)] mod name;` there decides whether the file is test code;
+- the `src/lib.rs` and `src/main.rs` of the package whose `src/` holds the
+  file, since whether they exist decides the file's module path.
+
+Editing `src/engine/sign.rs` therefore rescans the files that looked up a name
+in that module and the files below it, not unrelated modules. Every name is
+looked up below the crate root, so editing `src/lib.rs`, or adding a
+`src/main.rs` or `src/lib.rs`, rescans the whole crate: that follows from what
+the files read, not from a rule. A file that does not parse has no facts and
+reads nothing beyond itself, so it stays an ordinary attributed row and is
+rescanned only when it changes. Editing a `Cargo.toml` rescans every Rust file.
+A rebuilt file reaches its readers only when its own bytes changed: a `pub use`
+adds nothing to the index, so no file's facts depend on what another file read.
 
 ## Limits
 
@@ -135,7 +168,7 @@ counts as evidence.
   to `crate`. The declaration index records types, traits and functions rather
   than `mod` declarations, and import collection does not consult it, so every
   multi-segment leaf other than an explicit `self` is cut the same way.
-- An `impl` whose target type is not declared in the scan batch keeps its method
+- An `impl` whose target type is not declared in the project keeps its method
   nodes but drops the `contains` and `implements` edges whose source cannot be
   vouched for. That is a deliberate false negative rather than a wrong fact.
 - The route recognizers cover the forms listed above. Macro expansion, runtime

@@ -203,6 +203,57 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
     }
 
     /**
+     * A scanner whose reads name every file its facts came from reaches a
+     * reader only through bytes that changed: `lib.rs` read `engine.rs`,
+     * which was rebuilt for reading `sign.rs`, but its bytes are the same.
+     * A forced owner of it reaches nobody, and a scanner without the rule
+     * still reaches transitively.
+     */
+    #[Group('scan')]
+    public function testARebuiltOwnerOfADirectReadsScannerReachesOnlyItsOwnReaders(): void
+    {
+        $cached = self::cached([
+            'src/sign.rs' => self::row('src/sign.rs', [], 'knossos.rust'),
+            'src/engine.rs' => self::row('src/engine.rs', ['src/sign.rs' => self::hash('src/sign.rs')], 'knossos.rust'),
+            'src/lib.rs' => self::row('src/lib.rs', ['src/engine.rs' => self::hash('src/engine.rs')], 'knossos.rust'),
+            'src/other.rs' => self::row('src/other.rs', ['src/lib.rs' => self::hash('src/lib.rs')], 'knossos.rust'),
+            'p.php' => self::row('p.php', ['src/engine.rs' => self::hash('src/engine.rs')]),
+        ]);
+        $all = ['src/sign.rs', 'src/engine.rs', 'src/lib.rs', 'src/other.rs', 'p.php'];
+        $signEdited = ['src/sign.rs' => self::hash('edited')] + self::discovered($all);
+        $direct = ['knossos.rust' => true];
+
+        assertSame(['src/engine.rs', 'src/sign.rs'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $signEdited, self::noProbe(), directReads: $direct)));
+        assertSame(['src/engine.rs'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered($all), self::noProbe(), forced: ['src/engine.rs' => true], directReads: $direct)));
+        $engineGone = self::discovered(['src/sign.rs', 'src/lib.rs', 'src/other.rs', 'p.php']);
+        assertSame(['p.php', 'src/engine.rs', 'src/lib.rs'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $engineGone, self::noProbe(), directReads: $direct)));
+        assertSame(['p.php', 'src/engine.rs', 'src/lib.rs', 'src/other.rs', 'src/sign.rs'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $signEdited, self::noProbe())));
+    }
+
+    /**
+     * `lib.rs` read `helper.rs` by its bytes while discovery left it out.
+     * Discovered now with the same bytes, it reaches `lib.rs` and the owners
+     * of a group that holds it; a file that was not new reaches nobody.
+     */
+    #[Group('scan')]
+    public function testAFileDiscoveredForTheFirstTimeReachesItsReadersWhateverBytesTheyRead(): void
+    {
+        $cached = new CachedReads(
+            [
+                'src/lib.rs' => ['scanner_id' => 'knossos.rust', 'file_path' => 'src/lib.rs', 'content_hash' => self::hash('src/lib.rs'), 'read_attribution' => true, 'read_group' => null],
+                'a.ts' => ['scanner_id' => 'knossos.typescript', 'file_path' => 'a.ts', 'content_hash' => self::hash('a.ts'), 'read_attribution' => true, 'read_group' => 'g'],
+                'b.ts' => ['scanner_id' => 'knossos.typescript', 'file_path' => 'b.ts', 'content_hash' => self::hash('b.ts'), 'read_attribution' => true, 'read_group' => null],
+            ],
+            ['src/lib.rs' => ['src/helper.rs' => self::hash('src/helper.rs')], 'a.ts' => [], 'b.ts' => []],
+            ['g' => ['vendor/x.d.ts' => self::hash('vendor/x.d.ts')]],
+        );
+        $discovered = self::discovered(['src/lib.rs', 'src/helper.rs', 'a.ts', 'b.ts', 'vendor/x.d.ts']);
+
+        assertSame(['a.ts', 'src/lib.rs'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), ['knossos.rust' => ['src/helper.rs'], 'knossos.typescript' => ['vendor/x.d.ts']], directReads: ['knossos.rust' => true])));
+        assertSame([], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $discovered, self::noProbe(), directReads: ['knossos.rust' => true])));
+    }
+
+    /**
      * A group the owner names but the store no longer holds leaves nothing to
      * compare its reads against, so the owner cannot be shown to be current.
      */

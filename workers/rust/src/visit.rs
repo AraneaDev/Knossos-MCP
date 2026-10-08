@@ -4,6 +4,7 @@
 //! `syn::visit::Visit`, because every node needs the canonical path of its
 //! parent and a visitor's callbacks do not carry one.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use syn::spanned::Spanned;
@@ -13,12 +14,49 @@ use syn::{ImplItem, Item, TraitItem, Type};
 use crate::facts::{reference, Facts};
 use crate::resolve::{flatten_use, glob_prefixes, parent_module, rebase, Aliases};
 
-/// Canonical name of every top-level and inline-module declaration in the
-/// request, mapped to how many files declared it. The scan-wide view that lets
-/// an `impl` block attach to a type declared in another file and a
-/// child-module call resolve to its real target. A count above one means the
-/// name is ambiguous across the batch and must not be trusted.
-pub type Declarations = BTreeMap<String, usize>;
+/// Canonical name of every top-level and inline-module declaration of the
+/// project's Rust files, mapped to how many files declared it. The crate-wide
+/// view that lets an `impl` block attach to a type declared in another file
+/// and a child-module call resolve to its real target. A count above one means
+/// the name is ambiguous across the project and must not be trusted.
+///
+/// Every name looked up is remembered, found or not, until
+/// [`Declarations::take_lookups`] hands the set over: a walk's answer depends
+/// on each name it asked about, so the files that could declare those names
+/// are the ones its facts were read from.
+#[derive(Debug, Default)]
+pub struct Declarations {
+    /// Canonical name to the number of files declaring it.
+    counts: BTreeMap<String, usize>,
+    /// Every name asked about since the last [`Declarations::take_lookups`].
+    lookups: RefCell<BTreeSet<String>>,
+}
+
+impl Declarations {
+    /// An empty index.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many files declare `name`, remembering that it was asked about.
+    pub fn get(&self, name: &str) -> Option<&usize> {
+        self.lookups.borrow_mut().insert(name.to_owned());
+        self.counts.get(name)
+    }
+
+    /// Count one file's declarations, as [`declaration_paths`] returned them.
+    pub fn add_file(&mut self, paths: &BTreeSet<String>) {
+        for path in paths {
+            *self.counts.entry(path.clone()).or_insert(0) += 1;
+        }
+    }
+
+    /// Every name asked about since the last call, leaving the set empty.
+    pub fn take_lookups(&self) -> BTreeSet<String> {
+        std::mem::take(&mut *self.lookups.borrow_mut())
+    }
+}
 
 /// Canonical paths of modules the crate declared `#[cfg(test)] mod name;`
 /// without a body, so the module lives in its own file.
@@ -480,15 +518,15 @@ impl Walk<'_> {
                 // The impl target may live in another file. Its `implements`
                 // and `contains` edges use it as their SOURCE, and a source
                 // the contribution never declared is normally filtered in
-                // `Facts::finish`; the scan-wide index vouching for it keeps
+                // `Facts::finish`; the crate-wide index vouching for it keeps
                 // those edges instead of orphaning the methods. The index is
-                // the only acceptable vouching: it is built from THIS
-                // request's files, so a vouch also guarantees the declaring
-                // file's contribution is in the batch and its node will
-                // resolve. A target the index cannot place — declared in a
-                // cached file, or nowhere — stays unvouched and the edges
-                // ride out the old drop, because a `contains` edge whose
-                // source names nothing would make reconciliation throw.
+                // the only acceptable vouching: it holds only files the core
+                // discovered and this worker parsed, so a vouch also
+                // guarantees the declaring file has a contribution, in this
+                // request or cached, whose node will resolve. A target the
+                // index cannot place stays unvouched and the edges ride out
+                // the old drop, because a `contains` edge whose source names
+                // nothing would make reconciliation throw.
                 if self.declarations.get(&target).copied() == Some(1) {
                     self.facts
                         .external_unless_declared(&reference("class", &target));
@@ -736,15 +774,15 @@ impl Walk<'_> {
             return None;
         }
 
-        // The scan-wide declaration index: an unimported name can still be
-        // placed when exactly one file in this request declares it at an
+        // The crate-wide declaration index: an unimported name can still be
+        // placed when exactly one file of the project declares it at an
         // address the path could mean. Candidates are tried in Rust scoping
         // order — the enclosing module first, then the crate root, then the
         // path as written — so `sign::any_supported_type` from the crate root
         // resolves to the child-module function, and a same-file name to its
         // own container. Unlike the container-relative fallback below, an
-        // index hit is trusted outright: the node it names exists in this
-        // batch, even when the declaring file is not this one.
+        // index hit is trusted outright: the node it names exists in the
+        // graph, even when the declaring file is not this one.
         for candidate in self.index_candidates(container, &rendered) {
             match self.declarations.get(&candidate) {
                 Some(1) => return Some((candidate, false)),
@@ -1236,15 +1274,21 @@ fn attr_args(
 /// declaration, compiled in whichever form the target takes. Two files
 /// declaring one path still make it ambiguous.
 pub fn collect_declarations(module: &str, items: &[Item], out: &mut Declarations) {
-    let mut paths = BTreeMap::new();
+    out.add_file(&declaration_paths(module, items));
+}
+
+/// The paths one file declares, as [`collect_declarations`] counts them, for
+/// a caller that keeps them apart from the index (see [`Declarations::add_file`]).
+#[must_use]
+pub fn declaration_paths(module: &str, items: &[Item]) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
     collect_declaration_paths(module, items, &mut paths);
-    for path in paths.into_keys() {
-        *out.entry(path).or_insert(0) += 1;
-    }
+
+    paths
 }
 
 /// The paths [`collect_declarations`] indexes for one file, each once.
-fn collect_declaration_paths(module: &str, items: &[Item], out: &mut Declarations) {
+fn collect_declaration_paths(module: &str, items: &[Item], out: &mut BTreeSet<String>) {
     for item in items {
         match item {
             Item::Struct(node) => record(out, module, &node.ident.to_string()),
@@ -1304,9 +1348,9 @@ fn impl_target_name(ty: &Type) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
-/// Bump one canonical path's count in the declaration index.
-fn record(out: &mut Declarations, module: &str, name: &str) {
-    out.insert(format!("{module}::{name}"), 1);
+/// Note one canonical path one file declares.
+fn record(out: &mut BTreeSet<String>, module: &str, name: &str) {
+    out.insert(format!("{module}::{name}"));
 }
 
 /// A `syn` visitor that emits a `calls` edge for every resolvable call

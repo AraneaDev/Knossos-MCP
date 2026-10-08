@@ -38,6 +38,12 @@ final readonly class LanguageDescriptor
      *                               root; the planner then rebuilds every cached file of this scanner
      *                               when a cached file it matches is gone. Adding one needs no rule:
      *                               the worker reads its absence, and every file shares that read.
+     * @param bool $directReads whether every contribution's reads name each file its facts came
+     *                          from, so that rebuilding one of its files with the same bytes changes
+     *                          nothing a reader of that file read. The planner then reaches a reader
+     *                          only through a file whose bytes changed, not through every owner a
+     *                          change rebuilt. A worker whose importer names only a module file and
+     *                          relies on the module's own reads for what it re-exports must not set it.
      */
     public function __construct(
         public string $key,
@@ -51,13 +57,14 @@ final readonly class LanguageDescriptor
         public array $analysisInputs = [],
         public bool $addedFilesAffectAll = false,
         public ?string $layoutMarkers = null,
+        public bool $directReads = false,
     ) {}
 
     /**
      * The packaged worker descriptors for every supported language.
      *
-     * Only TypeScript overrides the defaults, and both of its overrides exist
-     * for the same reason: it pays for a whole `ts.createProgram` plus
+     * TypeScript overrides the batch defaults the most, and both of its
+     * overrides exist for the same reason: it pays for a whole `ts.createProgram` plus
      * `ts.getPreEmitDiagnostics` on EVERY request, a cost set by the program
      * rather than by how many files the request asked for. Splitting its work
      * into more requests therefore repeats the expensive part. Measured on a
@@ -76,8 +83,10 @@ final readonly class LanguageDescriptor
      * (2.24x and 1.88x respectively), and both pay per file rather than per
      * program, so nothing is gained by widening their batches.
      *
-     * Rust pays per file rather than per program too, like PHP and Python, so
-     * nothing is gained by widening its file cap. Its source-byte budget is
+     * Rust walks per file, like PHP and Python, and reads and indexes every
+     * Rust file of the project once per request, parsing only bytes its
+     * process has not indexed before, so nothing is gained by widening its
+     * file cap. Its source-byte budget is
      * narrower than the 4 MB default, though: measured on real hand-written
      * Rust (`serde-rs/serde`, 208 files / 1.2 MB) it expands 2.59x, and
      * `WorkerLimits::maxOutputBytes` is 20 MB, so the 4 MB default would
@@ -146,6 +155,11 @@ final readonly class LanguageDescriptor
                 scanBatchSourceBytes: 3_000_000,
                 optional: true,
                 analysisInputs: ['workers/rust/bin/knossos-rust-worker'],
+                // A Rust file's facts follow the declaration index, whose
+                // answers come from the bytes of the files it read, never
+                // from what those files read in turn: `pub use` adds nothing
+                // to the index.
+                directReads: true,
             ),
         ];
     }
@@ -189,6 +203,24 @@ final readonly class LanguageDescriptor
         $scanners = [];
         foreach (self::defaults('') as $descriptor) {
             if ($descriptor->addedFilesAffectAll) {
+                $scanners[$descriptor->scannerId()] = true;
+            }
+        }
+
+        return $scanners;
+    }
+
+    /**
+     * The scanner ids whose reads name every file their facts came from
+     * ({@see self::$directReads}), from the default descriptors.
+     *
+     * @return array<string, true>
+     */
+    public static function scannersWithDirectReads(): array
+    {
+        $scanners = [];
+        foreach (self::defaults('') as $descriptor) {
+            if ($descriptor->directReads) {
                 $scanners[$descriptor->scannerId()] = true;
             }
         }
@@ -264,6 +296,7 @@ final readonly class LanguageDescriptor
             analysisInputs: $this->analysisInputs,
             addedFilesAffectAll: $this->addedFilesAffectAll,
             layoutMarkers: $this->layoutMarkers,
+            directReads: $this->directReads,
         );
     }
 

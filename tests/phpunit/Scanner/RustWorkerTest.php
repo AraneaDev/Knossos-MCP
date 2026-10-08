@@ -99,7 +99,8 @@ final class RustWorkerTest extends KnossosTestCase
      * This worker resolves nothing across files, so `input_hashes` is exactly
      * the requested files whose bytes it read: a BOM file and a file that
      * fails to parse both got read (and hashed), even though the broken one
-     * contributes no nodes or edges.
+     * contributes no nodes or edges. The paths it probed and found absent are
+     * there as null.
      */
     public function testRustWorkerReportsInputHashesForEveryFileItRead(): void
     {
@@ -120,7 +121,9 @@ final class RustWorkerTest extends KnossosTestCase
             $client->shutdown();
 
             self::assertIsArray($inputHashes);
-            self::assertSame(count($files), count($inputHashes));
+            // Beyond the two files, only the paths a module above them could
+            // have been declared in, none of which exists.
+            self::assertSame(array_keys($files), array_keys(array_filter($inputHashes, static fn(?string $hash): bool => $hash !== null)));
             foreach ($files as $relative => $bytes) {
                 self::assertSame(hash('sha256', $bytes), $inputHashes[$relative] ?? null, $relative);
             }

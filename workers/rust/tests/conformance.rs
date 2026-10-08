@@ -29,7 +29,12 @@ fn initialize_returns_the_knossos_rust_manifest() {
     assert_eq!(serde_json::json!(["rust"]), manifest["languages"]);
     assert_eq!(serde_json::json!(["rs"]), manifest["file_extensions"]);
     assert_eq!(
-        serde_json::json!(["partial_ast", "content_hash", "input_hashes"]),
+        serde_json::json!([
+            "partial_ast",
+            "content_hash",
+            "input_hashes",
+            "read_attribution"
+        ]),
         manifest["capabilities"]
     );
 }

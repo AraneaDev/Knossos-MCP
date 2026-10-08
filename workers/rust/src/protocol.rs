@@ -46,7 +46,12 @@ impl Manifest {
             output_schema_version: OUTPUT_SCHEMA_VERSION,
             languages: vec!["rust"],
             file_extensions: vec!["rs"],
-            capabilities: vec!["partial_ast", "content_hash", "input_hashes"],
+            capabilities: vec![
+                "partial_ast",
+                "content_hash",
+                "input_hashes",
+                "read_attribution",
+            ],
         }
     }
 }
@@ -137,4 +142,9 @@ pub struct Contribution {
     /// the file was never read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
+    /// Every file other than its own that these facts were derived from,
+    /// with the hash `input_hashes` carries for it, or `None` for a path
+    /// probed and not found. Serialises as `{}` when the file read nothing
+    /// beyond itself.
+    pub reads: BTreeMap<String, Option<String>>,
 }

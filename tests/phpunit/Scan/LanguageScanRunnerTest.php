@@ -1737,7 +1737,7 @@ final class LanguageScanRunnerTest extends TestCase
                 // config includes holds the same files whichever are requested.
                 [...$limits, ...$exclusions, 'config_files' => ['web/tsconfig.json'], 'typescript_versions' => ['' => 5, 'web' => 6], 'vue_projects' => ['web'], 'package_directories' => ['', 'docs', 'tools', 'web'], 'source_files' => ['web/a.ts']],
                 [...$limits, ...$exclusions, 'frameworks' => ['django'], 'source_files' => ['py/a.py']],
-                [...$limits, 'frameworks' => ['axum'], 'config_files' => ['rs/Cargo.toml']],
+                [...$limits, 'frameworks' => ['axum'], 'config_files' => ['rs/Cargo.toml'], 'source_files' => ['rs/a.rs']],
             ],
             array_map(
                 static fn(string $line): mixed => json_decode($line, true, 512, JSON_THROW_ON_ERROR),
