@@ -77,31 +77,31 @@ final class ContributionCacheServiceTest extends TestCase
     }
 
     /**
-     * An attributed contribution with no facts and an error says the worker
-     * could not describe the file, so its reads are marked incomplete; one
-     * with facts, one with only a warning, or an unattributed one is not.
+     * Only an attributed contribution whose worker says its reads are partial
+     * is marked as having incomplete reads: a file that merely failed to
+     * parse read what its importers read, and an unattributing worker's rows
+     * are rebuilt whole anyway.
      */
-    public function testOnlyAnAttributedFactFreeFailureIsMarkedAsHavingIncompleteReads(): void
+    public function testOnlyAnAttributedContributionWithPartialReadsIsMarkedIncomplete(): void
     {
         $service = new ContributionCacheService();
         $files = [];
-        foreach (['Failed.php', 'Facts.php', 'Warned.php', 'Plain.php'] as $name) {
+        foreach (['Partial.php', 'Broken.php', 'Plain.php'] as $name) {
             $files[] = $this->writeFile($name, "<?php // {$name}\n");
         }
-        $error = new Diagnostic('error', 'X_FAILED', 'failed', new Evidence('Failed.php', 1, 1));
+        $failed = static fn(string $path): Diagnostic => new Diagnostic('error', 'X_FAILED', 'failed', new Evidence($path, 1, 1));
         $contributions = [
-            new ScanContribution('knossos.php:file:Failed.php', [], [], [$error]),
-            new ScanContribution('knossos.php:file:Facts.php', [$this->node('Facts.php')], [], [new Diagnostic('error', 'X_FAILED', 'failed', new Evidence('Facts.php', 1, 1))]),
-            new ScanContribution('knossos.php:file:Warned.php', [], [], [new Diagnostic('warning', 'X_NOTE', 'note', new Evidence('Warned.php', 1, 1))]),
-            new ScanContribution('knossos.php:file:Plain.php', [], [], [new Diagnostic('error', 'X_FAILED', 'failed', new Evidence('Plain.php', 1, 1))]),
+            new ScanContribution('knossos.php:file:Partial.php', [], [], [$failed('Partial.php')], reads: [], readsPartial: true),
+            new ScanContribution('knossos.php:file:Broken.php', [], [], [$failed('Broken.php')], reads: []),
+            new ScanContribution('knossos.php:file:Plain.php', [], [], [$failed('Plain.php')], readsPartial: true),
         ];
         $attributed = ['reads' => [], 'group' => null, 'attributed' => true];
-        $reads = ['knossos.php:file:Failed.php' => $attributed, 'knossos.php:file:Facts.php' => $attributed, 'knossos.php:file:Warned.php' => $attributed];
+        $reads = ['knossos.php:file:Partial.php' => $attributed, 'knossos.php:file:Broken.php' => $attributed];
 
         $entries = $service->entriesForScanned($contributions, $files, $this->manifest(), 'cfg', 'analysis', $reads)['cache_entries'];
 
         assertSame(
-            ['Failed.php' => true, 'Facts.php' => false, 'Warned.php' => false, 'Plain.php' => false],
+            ['Partial.php' => true, 'Broken.php' => false, 'Plain.php' => false],
             array_combine(array_map(static fn($entry): string => $entry->filePath, $entries), array_map(static fn($entry): bool => $entry->readsIncomplete, $entries)),
         );
     }

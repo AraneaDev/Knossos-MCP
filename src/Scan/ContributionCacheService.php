@@ -211,8 +211,9 @@ final readonly class ContributionCacheService
         }
 
         // Its contribution is a diagnostic about its own bytes and nothing
-        // else, so it read nothing a change elsewhere could reach.
-        return $this->entry($file, $manifest, $leftOutConfigurationHash, $contribution, self::cacheVersion($manifest, $analysisHash), ['reads' => [], 'group' => null, 'attributed' => true]);
+        // else, yet a reader may name the file and rely on this row for
+        // what the file re-exports, which the row cannot say.
+        return $this->entry($file, $manifest, $leftOutConfigurationHash, $contribution, self::cacheVersion($manifest, $analysisHash), ['reads' => [], 'group' => null, 'attributed' => true], true);
     }
 
     /**
@@ -379,8 +380,9 @@ final readonly class ContributionCacheService
      * One cache entry for a scanned file.
      *
      * @param ?array{reads: array<string, ?string>, group: ?string, attributed: bool} $reads
+     * @param bool $leftOut whether the file was left out of the graph, so its reads cover nothing
      */
-    private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution, string $cacheVersion, ?array $reads = null): ContributionCacheEntry
+    private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution, string $cacheVersion, ?array $reads = null, bool $leftOut = false): ContributionCacheEntry
     {
         $attributed = $reads['attributed'] ?? false;
 
@@ -394,27 +396,8 @@ final readonly class ContributionCacheService
             $reads['reads'] ?? [],
             $reads['group'] ?? null,
             $attributed,
-            readsIncomplete: $attributed && self::failedWithoutFacts($contribution),
+            readsIncomplete: $attributed && ($leftOut || $contribution->readsPartial),
         );
-    }
-
-    /**
-     * Whether a contribution carries no facts and an error says why: the
-     * worker could not describe the file, so what the file re-exports was
-     * read for nobody, and its reads cannot stand in for it.
-     */
-    private static function failedWithoutFacts(ScanContribution $contribution): bool
-    {
-        if ($contribution->nodes !== [] || $contribution->edges !== []) {
-            return false;
-        }
-        foreach ($contribution->diagnostics as $diagnostic) {
-            if ($diagnostic->severity === 'error') {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

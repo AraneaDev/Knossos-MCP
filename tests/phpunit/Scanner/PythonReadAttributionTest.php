@@ -311,6 +311,25 @@ final class PythonReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * A module that fails to parse is read the same broken way by its
+     * importers, so its row's reads are complete and an unrelated edit
+     * rescans only the edited file.
+     */
+    public function testAnUnrelatedEditBesideASyntaxErrorRescansOnlyTheEditedFile(): void
+    {
+        $this->writeSourceRoots();
+        $this->write('broken.py', "def (\n");
+        $this->write('uses_broken.py', "from broken import thing\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('other.py', "def unrelated():\n    return 3\n");
+        $this->scan($pdo);
+
+        assertSame(['other.py'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     public function testEditingTheRequirementsRebuildsEveryPythonFile(): void
     {
         $this->writeSourceRoots();

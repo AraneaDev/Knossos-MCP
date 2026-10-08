@@ -205,3 +205,26 @@ def test_a_script_ruled_out_by_its_shebang_is_named_by_its_hash(worker: ModuleTy
 
     assert contributions["use.py"]["reads"]["config"] == result["input_hashes"]["config"] is not None
     _assert_protocol(result, contributions, ["use.py"])
+
+
+def test_a_failure_while_following_a_reexport_names_what_was_read(
+    worker: ModuleType, project: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module that fails mid-way still has its reads named, and the file it fails says its reads are partial."""
+    real = worker.top_level_declarations
+
+    def failing(tree: Any, module: str) -> dict[str, str]:
+        if module == "pkg.star":
+            raise RuntimeError("injected")
+        return real(tree, module)
+
+    monkeypatch.setattr(worker, "top_level_declarations", failing)
+    root = project(PACKAGE)
+    files = ["app.py", "cli.py", "other.py"]
+    result, contributions = _scan(worker, root, files, sorted(PACKAGE))
+
+    assert contributions["app.py"]["reads_partial"] is True
+    assert contributions["app.py"]["diagnostics"][0]["code"] == "PY_INTERNAL_ERROR"
+    assert "pkg/star.py" in contributions["app.py"]["reads"]
+    assert "reads_partial" not in contributions["other.py"]
+    _assert_protocol(result, contributions, files)

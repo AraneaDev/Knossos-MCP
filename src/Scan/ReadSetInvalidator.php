@@ -124,8 +124,10 @@ final class ReadSetInvalidator
         $rebuiltScanners = [];
         $queue = array_map('strval', array_keys($changed));
         // The first owner a scanner rebuilds also rebuilds its rows whose
-        // reads are incomplete, so their readers are reached in turn.
-        $invalidate = static function (string $owner) use ($cached, $incompleteOf, &$invalidated, &$changed, &$queue, &$invalidate): bool {
+        // reads are incomplete, once per scanner, so their readers are
+        // reached in turn.
+        $incompleteDue = [];
+        $invalidate = static function (string $owner) use ($cached, $incompleteOf, &$invalidated, &$changed, &$queue, &$incompleteDue): bool {
             if (isset($invalidated[$owner])) {
                 return false;
             }
@@ -135,11 +137,22 @@ final class ReadSetInvalidator
                 $changed[$ownPath] = true;
                 $queue[] = $ownPath;
             }
-            foreach ($incompleteOf[$cached->rows[$owner]['scanner_id']] ?? [] as $incomplete) {
-                $invalidate($incomplete);
+            $scanner = $cached->rows[$owner]['scanner_id'];
+            if (isset($incompleteOf[$scanner]) && !array_key_exists($scanner, $incompleteDue)) {
+                $incompleteDue[$scanner] = false;
             }
 
             return true;
+        };
+        // Rebuilds the incomplete rows of every scanner that has rebuilt an
+        // owner since the last call, each scanner once.
+        $fanOut = static function () use ($incompleteOf, $invalidate, &$incompleteDue): void {
+            while (($scanner = array_search(false, $incompleteDue, true)) !== false) {
+                $incompleteDue[$scanner] = true;
+                foreach ($incompleteOf[$scanner] as $incomplete) {
+                    $invalidate($incomplete);
+                }
+            }
         };
         // A scanner that does not attribute reads is rebuilt whole as soon as
         // any of its files is, and every file it rebuilds is a change its
@@ -157,8 +170,8 @@ final class ReadSetInvalidator
             if ($paths !== [] && (isset($unattributed[(string) $scanner]) || isset($addedFilesAffectAll[(string) $scanner]))) {
                 $rebuildScanner((string) $scanner);
             }
-            foreach ($paths === [] ? [] : $incompleteOf[(string) $scanner] ?? [] as $incomplete) {
-                $invalidate($incomplete);
+            if ($paths !== [] && isset($incompleteOf[(string) $scanner])) {
+                $incompleteDue[(string) $scanner] ??= false;
             }
         }
         foreach ($deletedFrom as $scanner => $true) {
@@ -169,8 +182,12 @@ final class ReadSetInvalidator
                 $invalidate((string) $owner);
             }
         }
-        while ($queue !== []) {
+        do {
+            $fanOut();
             $path = array_pop($queue);
+            if ($path === null) {
+                break;
+            }
             $owners = ($ownersOfFile[$path] ?? []) + ($readersOf[$path] ?? []);
             foreach ($groupsOf[$path] ?? [] as $group => $true) {
                 if (!isset($expandedGroups[$group])) {
@@ -184,7 +201,7 @@ final class ReadSetInvalidator
                     $rebuildScanner($cached->rows[$owner]['scanner_id']);
                 }
             }
-        }
+        } while (true);
 
         return $invalidated;
     }

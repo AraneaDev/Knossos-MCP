@@ -16,8 +16,8 @@ use Knossos\Scanner\Protocol\{RelativePath, ScanContribution};
  * worker itself reported the per-file reads, and `$fromCache` marks an entry
  * carried over unchanged so the writer leaves its stored row alone.
  * `$readsIncomplete` marks an attributed entry whose reads cannot cover what
- * the file stands for, because it carries no facts: a file left out of the
- * graph, or one its worker failed on. A reader of such a file names the file
+ * the file stands for: a file left out of the graph, or one whose worker
+ * failed on it after naming only part of what it read (`reads_partial`). A reader of such a file names the file
  * instead of what it re-exports, so the entry is rebuilt on any change its
  * scanner sees ({@see \Knossos\Scan\ReadSetInvalidator}).
  */

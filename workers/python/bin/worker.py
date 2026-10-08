@@ -670,8 +670,12 @@ class ProjectModuleIndex:
             self.open_scope()
             try:
                 path, tree = self._read_module(module)
-            finally:
-                located = self.close_scope()
+            except BaseException:
+                # What was read before the failure is in input_hashes, so the
+                # caller names it, and the failure reaches the file it fails.
+                self._note(self.close_scope())
+                raise
+            located = self.close_scope()
             self._exposed[module] = located
             cached = {}
             self._cache[module] = cached
@@ -679,8 +683,11 @@ class ProjectModuleIndex:
                 self.open_scope()
                 try:
                     cached = self._declare(tree, module, path.name == "__init__.py")
-                finally:
-                    declared = self.close_scope()
+                except BaseException:
+                    located |= self.close_scope()
+                    self._note(located)
+                    raise
+                declared = self.close_scope()
                 if self._owns(module, path):
                     self.unattributed_reads |= declared
                 else:
@@ -2437,10 +2444,11 @@ def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex) -> tuple
         index.adopt_parsed(absolute, relative, tree)
         collision = index.collides(absolute, PurePosixPath(relative).stem == "__init__")
         contribution = PythonAstFactCollector(relative, tree, index, collision, shebang).collect()
-    except RecursionError as error:
-        contribution = _diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash)
     except Exception as error:
         contribution = _diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash)
+        # Only what was read before the failure is named: what the file
+        # re-exports may be missing, which its importers rely on.
+        contribution["reads_partial"] = True
     finally:
         del tree  # drop the parsed tree before the next file to bound memory
         keys = index.close_scope()

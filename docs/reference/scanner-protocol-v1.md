@@ -250,12 +250,16 @@ file the core never discovered, since no contribution names them. The
 `unattributed_reads` map can outgrow one line as `reads` can, and travels in
 `scan/input_hashes` parts the same way, under its own field name.
 
-A contribution that carries no facts and an error, because the worker could
-not describe its file, and a file the core left out of the graph because its
-answer was too large, cannot name what the file re-exports, though an importer
-may name only the file and rely on it. The core therefore rebuilds such a
-contribution, and everything that read it, on any change its worker's
-languages see.
+A worker that fails on a file after naming only part of what that file read
+marks the contribution `reads_partial: true`. Such a contribution, and a file
+the core left out of the graph because its answer was too large, cannot name
+what the file re-exports, though an importer may name only the file and rely
+on it. The core therefore rebuilds such a contribution, and everything that
+read it, on any change its worker's languages see. The packaged Python worker
+marks a file whose collection failed. The packaged TypeScript worker does not
+set it: what a failed program read that no contribution names goes on the
+request's shared `reads`, and an importer names the declaration files the
+checker resolved for it, not only the file it imports.
 
 The packaged Python worker uses `unattributed_reads` for the reads a module
 makes for itself. A module's declarations include what it re-exports, so an importer
@@ -267,8 +271,9 @@ re-exported module rebuilds the module, which rebuilds the importer. The
 module's reads for the re-exports go on `unattributed_reads`. A module that
 discovery left out, such as one under `vendor/`, has no contribution of its
 own, so its importer names what it re-exports as well. The request's `reads`
-hold the probes for the `__init__.py` of each top-level directory, which
-decide every file's module id.
+hold the probes that found no `__init__.py` in a top-level directory, which
+decide every file's module id; a marker that is present is not recorded, and
+deleting one is a layout change the core rebuilds every Python file for.
 
 No read can name a file that did not exist anywhere a worker looked, and for
 some languages a new file still changes what other files mean: a script that

@@ -170,18 +170,20 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
         $cached = self::cached([
             'app.py' => self::row('app.py', ['m.py' => self::hash('m.py')], 'knossos.python'),
             'm.py' => $incomplete,
+            'k.py' => ['reads_incomplete' => true] + self::row('k.py', [], 'knossos.python'),
             'n.py' => self::row('n.py', [], 'knossos.python'),
             'other.py' => self::row('other.py', [], 'knossos.python'),
             'p.php' => self::row('p.php', ['app.py' => self::hash('app.py')]),
             'q.php' => self::row('q.php', []),
         ]);
-        $all = ['app.py', 'm.py', 'n.py', 'other.py', 'p.php', 'q.php'];
+        $all = ['app.py', 'k.py', 'm.py', 'n.py', 'other.py', 'p.php', 'q.php'];
         $nEdited = ['n.py' => self::hash('edited')] + self::discovered($all);
         $phpEdited = ['q.php' => self::hash('edited')] + self::discovered($all);
 
-        assertSame(['app.py', 'm.py', 'n.py', 'p.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $nEdited, self::noProbe())));
+        // Both incomplete rows, each once, with the readers of either.
+        assertSame(['app.py', 'k.py', 'm.py', 'n.py', 'p.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $nEdited, self::noProbe())));
         assertSame(['q.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $phpEdited, self::noProbe())));
-        assertSame(['app.py', 'm.py', 'p.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered($all), self::noProbe(), ['knossos.python' => ['new.py']])));
+        assertSame(['app.py', 'k.py', 'm.py', 'p.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered($all), self::noProbe(), ['knossos.python' => ['new.py']])));
         assertSame([], self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered($all), self::noProbe())));
     }
 
