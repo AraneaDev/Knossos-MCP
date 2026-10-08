@@ -78,6 +78,29 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
     }
 
     /**
+     * A scanner whose added files affect every file it scanned rebuilds all of
+     * its rows once one is added, whatever its reads say; other scanners, and
+     * a scan that adds nothing, keep what the reads reached.
+     */
+    #[Group('scan')]
+    public function testAnAddedFileRebuildsEveryRowOfAScannerWhoseAddedFilesAffectAll(): void
+    {
+        $cached = self::cached([
+            'a.ts' => self::row('a.ts', [], 'knossos.typescript'),
+            'b.ts' => self::row('b.ts', [], 'knossos.typescript'),
+            'p.php' => self::row('p.php', []),
+        ]);
+        $reached = ['a.ts' => true];
+
+        $rebuilt = ReadSetInvalidator::withAddedFilesAffectingAll($cached, $reached, ['knossos.typescript' => ['g.ts']], 'knossos.typescript');
+
+        assertSame(['a.ts', 'b.ts'], self::sortedKeys($rebuilt));
+        assertSame($reached, ReadSetInvalidator::withAddedFilesAffectingAll($cached, $reached, [], 'knossos.typescript'));
+        assertSame($reached, ReadSetInvalidator::withAddedFilesAffectingAll($cached, $reached, ['knossos.php' => ['q.php']], 'knossos.typescript'));
+        assertSame($reached, ReadSetInvalidator::withAddedFilesAffectingAll(null, $reached, ['knossos.typescript' => ['g.ts']], 'knossos.typescript'));
+    }
+
+    /**
      * A group the owner names but the store no longer holds leaves nothing to
      * compare its reads against, so the owner cannot be shown to be current.
      */

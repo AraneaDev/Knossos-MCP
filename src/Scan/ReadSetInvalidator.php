@@ -152,6 +152,32 @@ final class ReadSetInvalidator
     }
 
     /**
+     * The owners to rebuild for a scanner whose added files affect every file
+     * it scanned ({@see \Knossos\Scanner\Protocol\Protocol::CAPABILITY_ADDED_FILES_AFFECT_ALL}):
+     * all of its cached owners once a file of its languages is added, and
+     * otherwise those the reads reached.
+     *
+     * Decided once the worker's manifest is known, which is after planning.
+     *
+     * @param array<string, true> $invalidated what the reads reached
+     * @param array<string, list<string>> $addedByScanner scanner id to its added files
+     * @return array<string, true>
+     */
+    public static function withAddedFilesAffectingAll(?CachedReads $cached, array $invalidated, array $addedByScanner, string $scanner): array
+    {
+        if ($cached === null || ($addedByScanner[$scanner] ?? []) === []) {
+            return $invalidated;
+        }
+        foreach ($cached->rows as $owner => $row) {
+            if ($row['scanner_id'] === $scanner) {
+                $invalidated[(string) $owner] = true;
+            }
+        }
+
+        return $invalidated;
+    }
+
+    /**
      * Add every read that no longer matches the stored one.
      *
      * @param array<string, ?string> $reads

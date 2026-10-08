@@ -43,7 +43,8 @@ scanner manifest:
         "partial_ast",
         "content_hash",
         "input_hashes",
-        "read_attribution"
+        "read_attribution",
+        "added_files_affect_all"
     ]
 }
 ```
@@ -218,6 +219,21 @@ omitting `reads` from a contribution after declaring the capability, is refused
 as `WORKER_CONTRIBUTION_INVALID`. A worker that does not declare the capability
 is treated as if every file depended on every entry of `input_hashes`, so its
 contributions are invalidated by a change to any of them.
+
+Every entry of `input_hashes` must also be named by some `reads`, on a
+contribution or on the result, unless it is a file the request named, whose own
+bytes its contribution's `content_hash` covers. A read named nowhere would
+invalidate nothing when it changes, so an attributing worker that leaves one
+out is refused as `WORKER_CONTRIBUTION_INVALID`. Put a read no single file
+caused, such as a dependency's declaration another one imports, on the result.
+
+No read can name a file that did not exist anywhere a worker looked, and for
+some languages a new file still changes what other files mean: a script that
+declares global names any file may use. A worker for such a language also
+declares `added_files_affect_all`. Then a discovered file of its languages that
+has no cached contribution and is new since the last scan rebuilds every
+cached contribution of that worker; an edited or deleted file stays as precise
+as the reads. The packaged TypeScript worker declares it.
 
 One decoding limitation to know about: an object keyed only by consecutive
 integers starting at `"0"` is indistinguishable on the wire from a JSON array,

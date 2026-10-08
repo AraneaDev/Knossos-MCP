@@ -6,6 +6,7 @@ namespace Knossos\Scan;
 
 use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\ProjectUnit;
+use Knossos\Scanner\Protocol\Protocol;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Scanner\Worker\WorkerException;
@@ -180,7 +181,9 @@ final readonly class LanguageScanRunner
             $plan->effectiveMode === 'full',
             $analysisHash,
             $leftOutHash,
-            $plan->invalidatedOwners,
+            in_array(Protocol::CAPABILITY_ADDED_FILES_AFFECT_ALL, $manifest->capabilities, true)
+                ? ReadSetInvalidator::withAddedFilesAffectingAll($plan->cachedReads, $plan->invalidatedOwners, $plan->addedByScanner, $manifest->id)
+                : $plan->invalidatedOwners,
             $this->pdo,
             $plan->projectId,
             $plan->cachedReads,
@@ -229,7 +232,7 @@ final readonly class LanguageScanRunner
             // another file's bytes must match what discovery hashed for it too.
             $verified = ScanInputHashes::verifyAll($batchResult, $manifest, $discoveredByPath);
             $undiscovered->add($verified['undiscovered']);
-            $requestReads = RequestReads::forRequest($batchResult, $manifest, $verified['all'], $received);
+            $requestReads = RequestReads::forRequest($batchResult, $manifest, $verified['all'], $received, $requested);
             $readsByOwner = $requestReads['owners'] + $readsByOwner;
             $groups += $requestReads['groups'];
             // Evidence for these checks only, not statistics: kept out of the

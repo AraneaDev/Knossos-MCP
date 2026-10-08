@@ -59,6 +59,11 @@ final class TypescriptReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * The importer read the missing path as absent; the new file is also an
+     * added TypeScript file, which may declare globals, so every file is
+     * rebuilt, the importer among them.
+     */
     public function testCreatingAFileAnImportProbedRescansTheImporter(): void
     {
         $pdo = $this->freshTestDatabase();
@@ -69,8 +74,8 @@ final class TypescriptReadAttributionTest extends KnossosTestCase
         $incremental = $this->scan($pdo);
 
         assertSame('incremental', $incremental->data['mode']);
-        assertSame(2, $incremental->data['parsed_files']);
-        assertSame(['src/a.ts', 'src/x.ts'], $this->rescannedFiles($pdo));
+        assertSame(5, $incremental->data['parsed_files']);
+        assertSame(['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/x.ts'], $this->rescannedFiles($pdo));
         $this->assertMatchesAFullScan($pdo);
     }
 
@@ -86,6 +91,26 @@ final class TypescriptReadAttributionTest extends KnossosTestCase
         assertSame('incremental', $incremental->data['mode']);
         assertSame(4, $incremental->data['parsed_files']);
         assertSame(['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /**
+     * A script added beside the project declares a global that a file already
+     * used, and no read of that file could have named a script that did not
+     * exist anywhere it looked: every TypeScript file is rescanned.
+     */
+    public function testAddingAGlobalScriptRescansEveryFileAndMatchesAFullScan(): void
+    {
+        $this->write('src/d.ts', "export class D extends APP_BASE {}\n");
+        $pdo = $this->freshTestDatabase();
+        $this->scan($pdo);
+        $this->stampCacheRows($pdo);
+
+        $this->write('src/globals.ts', "declare class APP_BASE {}\n");
+        $incremental = $this->scan($pdo);
+
+        assertSame('incremental', $incremental->data['mode']);
+        assertSame(['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/globals.ts'], $this->rescannedFiles($pdo));
         $this->assertMatchesAFullScan($pdo);
     }
 

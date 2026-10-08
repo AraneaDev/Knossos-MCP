@@ -88,6 +88,7 @@ describe("worker startup", () => {
             "content_hash",
             "input_hashes",
             "read_attribution",
+            "added_files_affect_all",
         ]);
         expect(responses[1].result.status).toBe("bye");
         expect(loadedCompiler).toBe(false);

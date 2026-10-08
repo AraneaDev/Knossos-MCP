@@ -202,7 +202,9 @@ final readonly class ScanPlanner
 
         $cachedReads = null;
         $invalidated = [];
+        $added = [];
         if ($effectiveMode === 'incremental') {
+            $added = self::addedByScanner($preparation->discovery->files, $cache, $this->previousFiles($projectId));
             $cachedReads = $loaded;
             $discovered = array_map(static fn($hashed): string => $hashed->contentHash, $preparation->discovery->hashedPaths());
             $root = rtrim($preparation->discovery->rootRealpath, '/');
@@ -214,7 +216,7 @@ final readonly class ScanPlanner
                 $cachedReads,
                 $discovered,
                 static fn(string $path, ?string $stored): bool => UndiscoveredInputVerifier::stillMatches($root, $path, $stored, $maxFileBytes),
-                self::addedByScanner($preparation->discovery->files, $cache, $this->previousFiles($projectId)),
+                $added,
             );
         }
 
@@ -227,6 +229,7 @@ final readonly class ScanPlanner
             $invalidated,
             $existing !== false && $existing['active_scan_id'] !== null,
             $cachedReads,
+            $added,
         );
     }
 

@@ -350,6 +350,10 @@ TOML);
         $invalidated = $added->invalidatedOwners;
         ksort($invalidated, SORT_STRING);
         assertSame(['knossos.typescript:file:a.ts' => true, 'knossos.typescript:file:b.ts' => true], $invalidated);
+        // Kept on the plan for a scanner that attributes its reads but whose
+        // added files affect every file: only its manifest, read later, says so.
+        assertSame([], $unchanged->addedByScanner);
+        assertSame(['knossos.typescript' => ['new.ts']], $added->addedByScanner);
     }
 
     /**
