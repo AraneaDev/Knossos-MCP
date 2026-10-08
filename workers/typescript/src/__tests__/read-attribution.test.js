@@ -55,6 +55,7 @@ function assertEveryReadAttributed(result, contributions, requested) {
     const named = new Set([
         ...requested,
         ...Object.keys(result.reads),
+        ...Object.keys(result.unattributed_reads),
         ...contributions.flatMap((contribution) =>
             Object.keys(contribution.reads),
         ),
@@ -70,8 +71,10 @@ function assertEveryReadAttributed(result, contributions, requested) {
  */
 function assertConfirmedByInputHashes(result, contributions) {
     expect(result.reads).toBeTypeOf("object");
+    expect(result.unattributed_reads).toBeTypeOf("object");
     const sources = [
         ["the result", result.reads],
+        ["the unattributed reads", result.unattributed_reads],
         ...contributions.map((contribution) => [
             contribution.owner_key,
             contribution.reads,
@@ -307,6 +310,76 @@ describe("read attribution: globals every file of a request sees", () => {
             sha256(index),
         );
         expect(result.reads["node_modules/geo/shape.d.ts"]).toBe(sha256(shape));
+    });
+});
+
+describe("read attribution: what the program's other files read", () => {
+    const CHAIN_CONFIG = JSON.stringify({
+        compilerOptions: { moduleResolution: "bundler", module: "esnext" },
+        include: ["src"],
+    });
+    const LINKS = {
+        "tsconfig.json": CHAIN_CONFIG,
+        "src/a.ts": 'import { b } from "./b";\nexport const a = b;\n',
+        "src/b.ts": 'import { c } from "./c";\nexport const b = c;\n',
+        "src/c.ts": "export const c = 1;\n",
+        "src/d.ts": "export const d = 1;\n",
+    };
+    const SOURCE_FILES = ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"];
+
+    it("reports what a discovered file the request did not name read as unattributed", () => {
+        // b.ts's own contribution names c.ts, so the request owes nobody
+        // that read: it is confirmed and stored for no file and no group.
+        const root = fixture(LINKS);
+
+        const { result, byOwner } = scan(root, ["src/a.ts"], {
+            config_files: ["tsconfig.json"],
+            source_files: SOURCE_FILES,
+        });
+
+        expect(byOwner["src/a.ts"].reads["src/b.ts"]).toBe(
+            sha256(LINKS["src/b.ts"]),
+        );
+        expect(result.unattributed_reads["src/c.ts"]).toBe(
+            sha256(LINKS["src/c.ts"]),
+        );
+        expect(result.unattributed_reads["src/d.ts"]).toBe(
+            sha256(LINKS["src/d.ts"]),
+        );
+        expect(result.reads).not.toHaveProperty("src/b.ts");
+        expect(result.reads).not.toHaveProperty("src/c.ts");
+        expect(result.reads).not.toHaveProperty("src/d.ts");
+        expect(result.unattributed_reads).not.toHaveProperty("src/b.ts");
+    });
+
+    it("keeps a global declaration shared even when only an unnamed file read it", () => {
+        const root = fixture({
+            ...LINKS,
+            "src/c.ts": 'import "./globals";\nexport const c = 1;\n',
+            "src/globals.ts":
+                "declare global { function gfun(): void }\nexport {};\n",
+        });
+
+        const { result } = scan(root, ["src/a.ts"], {
+            config_files: ["tsconfig.json"],
+            source_files: [...SOURCE_FILES, "src/globals.ts"],
+        });
+
+        expect(result.reads).toHaveProperty("src/globals.ts");
+        expect(result.unattributed_reads).not.toHaveProperty("src/globals.ts");
+    });
+
+    it("shares what a file the core never discovered read, since no contribution names it", () => {
+        const root = fixture(LINKS);
+
+        const { result } = scan(root, ["src/a.ts"], {
+            config_files: ["tsconfig.json"],
+            source_files: ["src/a.ts", "src/b.ts"],
+        });
+
+        expect(result.unattributed_reads).toHaveProperty("src/c.ts");
+        expect(result.reads).toHaveProperty("src/d.ts");
+        expect(result.unattributed_reads).not.toHaveProperty("src/d.ts");
     });
 });
 

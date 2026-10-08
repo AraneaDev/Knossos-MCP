@@ -321,30 +321,45 @@ class InputReadRecorder {
  * its facts were collected. The core closes over those itself: a file it
  * rescans counts as a change to every file that read it.
  *
- * That closure runs only through files the core scans. Every other read is
- * shared by the whole request, since the core refuses a read no `reads` names:
- * a config, a bundler alias config, a probe for a type library, what a
- * dependency's declarations read, and a project file a program loaded that
- * no requested file read directly. So is a global script and a module that
- * augments the global scope or another module, whoever read it: every file of
- * its program sees those declarations without an import saying so.
+ * That closure runs only through files the core scans, and the core refuses a
+ * read no `reads` names. So a read a project file of the program made, one
+ * the core holds a contribution for but this request did not name, is
+ * reported as unattributed: confirmed against `input_hashes`, owned by
+ * nobody, since that file's own contribution names it and the closure runs
+ * from there. Every other read is shared by the whole request: a config, a
+ * bundler alias config, a probe for a type library, and what a dependency's
+ * declarations read. So is a global script and a module that augments the
+ * global scope or another module, whoever read it: every file of its program
+ * sees those declarations without an import saying so.
  *
  * Values are taken from the recorder once the request has finished, so a path
  * two programs read differently carries the same null here as in
  * `input_hashes`.
  */
 class ReadAttribution {
-    /** @param {InputReadRecorder} reads the request's recorder */
-    constructor(root, reads, maxFileBytes) {
+    /**
+     * @param {InputReadRecorder} reads the request's recorder
+     * @param {Set<string>} sourceFiles every project file of the language the
+     *   core discovered, whose own contribution reports its reads
+     */
+    constructor(root, reads, maxFileBytes, sourceFiles = new Set()) {
         this.root = root;
         this.reads = reads;
         this.maxFileBytes = maxFileBytes;
+        this.sourceFiles = sourceFiles;
         // Requested path to the keys its contribution read.
         this.byFile = new Map();
+        // Requested path to the key of the program its contribution came from.
+        this.programOf = new Map();
         // Keys every file of the request shares, whoever else read them.
         this.shared = new Set();
+        // Keys read only for project files whose contributions this request
+        // did not produce.
+        this.unattributed = new Set();
         // Program key to the keys of its files that declare globally.
         this.globalsByProgram = new Map();
+        // Program key to its digest, computed once the request has finished.
+        this.environmentCache = new Map();
     }
 
     /**
@@ -354,21 +369,32 @@ class ReadAttribution {
      *   holding a declaration the checker answered with for this file
      * @param {string[]} probes paths the file's facts asked about directly
      */
-    requested(program, sourceFile, relative, declarationFiles, probes) {
+    requested(
+        program,
+        sourceFile,
+        relative,
+        declarationFiles,
+        probes,
+        programKey,
+    ) {
         const keys = this.#directReads(program, sourceFile, true);
         for (const file of declarationFiles)
             this.#addRecorded(keys, file.fileName);
         for (const probe of probes) this.#addProbed(keys, probe);
         keys.delete(relative);
         this.byFile.set(relative, keys);
+        this.programOf.set(relative, programKey);
     }
 
     /**
-     * Share what the files of a program need shared whoever else read them:
-     * the declarations of every file that declares globally, a dependency's
-     * global script as much as a project's own, and whatever a dependency's
-     * file read, since no contribution of the core's reports it. The global
-     * files are also the program's environment (see environmentOf).
+     * Sort the reads of a program's other files: the declarations of every
+     * file that declares globally are shared, a dependency's global script as
+     * much as a project's own, and so is whatever a dependency's file read,
+     * since no contribution of the core's reports it. What a project file the
+     * core discovered read, when this request produced no contribution for it
+     * in this program, is unattributed: its own contribution names those
+     * reads. The global files are also the program's environment (see
+     * environmentOf).
      *
      * @param {string} programKey the program's key (see programKeyOf)
      */
@@ -382,8 +408,14 @@ class ReadAttribution {
                 this.shared.add(key);
                 globals.add(key);
             }
-            if (this.byFile.has(relative) || isProjectSource(relative))
+            if (this.programOf.get(relative) === programKey) continue;
+            if (isProjectSource(relative)) {
+                if (!this.sourceFiles.has(relative)) continue;
+                this.#addRecorded(this.unattributed, sourceFile.fileName);
+                for (const key of this.#directReads(program, sourceFile, false))
+                    this.unattributed.add(key);
                 continue;
+            }
             for (const key of this.#directReads(program, sourceFile, false))
                 this.shared.add(key);
         }
@@ -394,13 +426,40 @@ class ReadAttribution {
      * `path`, NUL and the hash `input_hashes` carries (empty for null), per
      * file of the program that declares globally, sorted. Two scans that agree
      * on it agree on every name a file of the program can use without an
-     * import.
+     * import. Computed once per program, after the request's last read.
      */
     environmentOf(programKey) {
-        const lines = [...(this.globalsByProgram.get(programKey) ?? [])]
-            .map((key) => `${key}\0${this.reads.value(key) ?? ""}`)
-            .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
-        return createHash("sha256").update(lines.join("\n")).digest("hex");
+        let digest = this.environmentCache.get(programKey);
+        if (digest === undefined) {
+            const lines = [...(this.globalsByProgram.get(programKey) ?? [])]
+                .map((key) => `${key}\0${this.reads.value(key) ?? ""}`)
+                .sort((left, right) =>
+                    left < right ? -1 : left > right ? 1 : 0,
+                );
+            digest = createHash("sha256")
+                .update(lines.join("\n"))
+                .digest("hex");
+            this.environmentCache.set(programKey, digest);
+        }
+        return digest;
+    }
+
+    /**
+     * The result's `environments`: the digest of every program this request
+     * built, keyed by program, whether or not it emitted a contribution. A
+     * program built for a requested file another program emitted still tells
+     * the core what its own cached contributions now see.
+     *
+     * @returns {Record<string, string>}
+     */
+    environments() {
+        return Object.fromEntries(
+            [...this.globalsByProgram.keys()]
+                .sort((left, right) =>
+                    left < right ? -1 : left > right ? 1 : 0,
+                )
+                .map((key) => [key, this.environmentOf(key)]),
+        );
     }
 
     /** The `reads` of a requested file's contribution; `{}` when it read nothing. */
@@ -409,20 +468,44 @@ class ReadAttribution {
     }
 
     /**
-     * The result's `reads`: every read no contribution's `reads` names, other
-     * than a requested file's own, and every read shared whoever named it.
+     * The result's `reads`: every read shared whoever named it, and every
+     * read neither a contribution's `reads` nor the unattributed reads name,
+     * other than a requested file's own.
      *
      * @param {Iterable<string>} requested the paths the request named
      */
     sharedReads(requested) {
+        const named = this.#named(requested);
+        const keys = new Set(this.shared);
+        for (const key of this.reads.keys()) {
+            if (!named.has(key) && !this.unattributed.has(key)) keys.add(key);
+        }
+        return this.reads.select(keys);
+    }
+
+    /**
+     * The result's `unattributed_reads`: what the program's other discovered
+     * project files read, less anything a contribution or the shared reads
+     * name. The core confirms them against `input_hashes` and stores them for
+     * nobody.
+     *
+     * @param {Iterable<string>} requested the paths the request named
+     */
+    unattributedReads(requested) {
+        const named = this.#named(requested);
+        return this.reads.select(
+            [...this.unattributed].filter(
+                (key) => !named.has(key) && !this.shared.has(key),
+            ),
+        );
+    }
+
+    /** The requested paths and every key a contribution's `reads` names. */
+    #named(requested) {
         const named = new Set(requested);
         for (const keys of this.byFile.values())
             for (const key of keys) named.add(key);
-        const keys = new Set(this.shared);
-        for (const key of this.reads.keys()) {
-            if (!named.has(key)) keys.add(key);
-        }
-        return this.reads.select(keys);
+        return named;
     }
 
     /** The recorded keys of a file that declares globally; none otherwise. */
@@ -549,13 +632,25 @@ class ReadAttribution {
 const REFERENCE_EXTENSIONS = [".ts", ".tsx", ".d.ts", ".js", ".jsx"];
 
 /**
- * Whether a config's program could emit one of the requested files not yet
- * emitted: one it includes itself, or one no config includes, which the first
- * program holding it emits.
+ * Whether a config's program must be built for this request: it lists a
+ * requested file among its own root files, whichever config describes that
+ * file, or it could emit a requested file not yet emitted that no config
+ * includes, which the first program holding it emits.
+ *
+ * A program that merely includes a requested file is built because its own
+ * environment follows that file: an edit that imports a global script into a
+ * file two configs include changes what every file of both programs sees,
+ * and the core learns that only from the environment of each program built.
  */
-function needsProgram(request, requested, configPath) {
+function needsProgram(request, requested, configPath, parsed) {
+    const rootNames = new Set(
+        (parsed.ownFileNames ?? parsed.fileNames).map((fileName) =>
+            relativeInside(request.root, fileName),
+        ),
+    );
     return requested.some((relative) => {
         const key = normalize(relative);
+        if (rootNames.has(key)) return true;
         if (request.emitted.has(key)) return false;
         const owner = request.owners.get(key);
         return owner === undefined || owner === configPath;
@@ -688,11 +783,12 @@ export class TypeScriptScanner {
                 ),
             });
         }
+        const requested = Array.isArray(params.files) ? params.files : [];
         return {
             ...result,
-            reads: attribution.sharedReads(
-                Array.isArray(params.files) ? params.files : [],
-            ),
+            reads: attribution.sharedReads(requested),
+            unattributed_reads: attribution.unattributedReads(requested),
+            environments: attribution.environments(),
         };
     }
 
@@ -711,7 +807,13 @@ export class TypeScriptScanner {
         );
         const reads = new InputReadRecorder(this.observeHostPath);
         const maxFileBytes = maxFileBytesFrom(params.limits);
-        const attribution = new ReadAttribution(root, reads, maxFileBytes);
+        const sourceFiles = sourceFilesFrom(params.source_files);
+        const attribution = new ReadAttribution(
+            root,
+            reads,
+            maxFileBytes,
+            new Set(sourceFiles),
+        );
         // Emitted before anything else so a file this worker cannot read still
         // gets its own contribution: raising it to the request would discard the
         // facts every other file in the batch contributes.
@@ -746,6 +848,7 @@ export class TypeScriptScanner {
                 ? params.vue_projects
                 : [],
             declarationFiles: declarationFilesFrom(params.declaration_files),
+            sourceFiles,
             packageDirectories: Array.isArray(params.package_directories)
                 ? params.package_directories.filter(
                       (directory) => typeof directory === "string",
@@ -764,28 +867,7 @@ export class TypeScriptScanner {
         ]);
         request.owners = configOwners(root, parsedConfigs);
         request.outputSources = outputSources(root, parsedConfigs);
-
-        for (const [configPath, parsed] of parsedConfigs) {
-            // A program emits a requested file another config includes only
-            // from that config's own program, so a program that includes none
-            // of the files still to emit, while each of them has a config of
-            // its own, would emit nothing and only read files for nobody.
-            if (!needsProgram(request, requested, configPath)) continue;
-            request.owner = configPath;
-            request.program = configPath;
-            tally(
-                this.#scanProgram(
-                    `${root}\0${configPath}`,
-                    programConfig(
-                        request,
-                        path.dirname(path.join(root, configPath)),
-                        parsed,
-                    ),
-                    request,
-                ),
-            );
-            if (emitted.size === requestedSet.size) break;
-        }
+        this.#scanConfigPrograms(parsedConfigs, requested, request, tally);
 
         const remaining = requested.filter(
             (relative) => !emitted.has(normalize(relative)),
@@ -831,21 +913,66 @@ export class TypeScriptScanner {
     }
 
     /**
+     * Build each config's program the request needs (see needsProgram) and
+     * emit the requested files it covers, in config order.
+     *
+     * A program emits a requested file another config includes only from
+     * that config's own program, so a program that includes none of the
+     * requested files, while each of the files still to emit has a config of
+     * its own, would emit nothing and only read files for nobody.
+     *
+     * @param {Array<[string, object]>} parsedConfigs config path and its parsed config
+     * @param {string[]} requested the accepted requested files
+     */
+    #scanConfigPrograms(parsedConfigs, requested, request, tally) {
+        const { root } = request;
+        for (const [configPath, parsed] of parsedConfigs) {
+            if (!needsProgram(request, requested, configPath, parsed)) continue;
+            request.owner = configPath;
+            request.program = configPath;
+            tally(
+                this.#scanProgram(
+                    `${root}\0${configPath}`,
+                    programConfig(
+                        request,
+                        path.dirname(path.join(root, configPath)),
+                        parsed,
+                    ),
+                    request,
+                ),
+            );
+        }
+    }
+
+    /**
      * Whatever no config's program emitted, owned or not, read under the
      * options of the config beside it: a package's tests are often outside
      * its tsconfig's `include`, and its test runner still resolves them
      * through that package's aliases and paths.
+     *
+     * The program's root files are every discovered file of the group that
+     * no config lists, not only the files this request named: a test sees
+     * the globals its setup file declares and the augmentations it imports
+     * whether or not the setup was requested with it, and the program's
+     * environment then does not follow the request. The project's
+     * declaration files are rooted the same way, so a caller that sends only
+     * those still gets an ambient `declare module` satisfied from inside the
+     * importer's program.
      */
     #scanFallback(root, remaining, parsedConfigs, request, tally) {
+        const owned = request.owners;
         request.owner = undefined;
         request.owners = new Map();
-        // The project's declaration files, grouped as the files are: an
-        // ambient `declare module` satisfies an import only from inside the
-        // importer's program, and the files requested with it are whatever
-        // this batch or this incremental scan happened to hold.
-        const declarations = fallbackGroups(
+        const members = fallbackGroups(
             root,
-            request.declarationFiles,
+            [
+                ...new Set([
+                    ...request.declarationFiles,
+                    ...request.sourceFiles.filter(
+                        (relative) => !owned.has(normalize(relative)),
+                    ),
+                ]),
+            ],
             parsedConfigs,
             request.packageDirectories,
         );
@@ -858,7 +985,7 @@ export class TypeScriptScanner {
             const files = [
                 ...new Set([
                     ...group.files,
-                    ...(declarations.get(directory)?.files ?? []),
+                    ...(members.get(directory)?.files ?? []),
                 ]),
             ];
             request.program = `fallback:${relativeInside(root, directory) || "."}`;
@@ -1091,6 +1218,7 @@ export class TypeScriptScanner {
                 relative,
                 tracker.files,
                 probes,
+                request.program,
             );
             emit(contribution);
             emitted.add(relative);
@@ -5878,6 +6006,18 @@ function assertScannablePath(relative) {
  * to a program; the compiler host still decides whether each may be read.
  */
 function declarationFilesFrom(input) {
+    return sourceFilesFrom(input).filter((relative) =>
+        /\.d\.[cm]?ts$/.test(relative),
+    );
+}
+
+/**
+ * The well-formed project-relative paths of a request's `source_files`: every
+ * file of the language the core discovered, so the fallback program and the
+ * unattributed reads can tell a file the core holds a contribution for from
+ * one it never saw.
+ */
+function sourceFilesFrom(input) {
     if (!Array.isArray(input)) return [];
     return input.filter((relative) => {
         try {
@@ -5885,7 +6025,7 @@ function declarationFilesFrom(input) {
         } catch {
             return false;
         }
-        return /\.d\.[cm]?ts$/.test(relative);
+        return true;
     });
 }
 
