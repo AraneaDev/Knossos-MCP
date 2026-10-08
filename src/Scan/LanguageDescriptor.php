@@ -38,6 +38,12 @@ final readonly class LanguageDescriptor
      *                               root; the planner then rebuilds every cached file of this scanner
      *                               when a cached file it matches is gone. Adding one needs no rule:
      *                               the worker reads its absence, and every file shares that read.
+     * @param bool $directReads whether every contribution's reads name each file its facts came
+     *                          from, so that rebuilding one of its files with the same bytes changes
+     *                          nothing a reader of that file read. The planner then reaches a reader
+     *                          only through a file whose bytes changed, not through every owner a
+     *                          change rebuilt. A worker whose importer names only a module file and
+     *                          relies on the module's own reads for what it re-exports must not set it.
      */
     public function __construct(
         public string $key,
@@ -51,6 +57,7 @@ final readonly class LanguageDescriptor
         public array $analysisInputs = [],
         public bool $addedFilesAffectAll = false,
         public ?string $layoutMarkers = null,
+        public bool $directReads = false,
     ) {}
 
     /**
@@ -146,6 +153,11 @@ final readonly class LanguageDescriptor
                 scanBatchSourceBytes: 3_000_000,
                 optional: true,
                 analysisInputs: ['workers/rust/bin/knossos-rust-worker'],
+                // A Rust file's facts follow the declaration index, whose
+                // answers come from the bytes of the files it read, never
+                // from what those files read in turn: `pub use` adds nothing
+                // to the index.
+                directReads: true,
             ),
         ];
     }
@@ -189,6 +201,24 @@ final readonly class LanguageDescriptor
         $scanners = [];
         foreach (self::defaults('') as $descriptor) {
             if ($descriptor->addedFilesAffectAll) {
+                $scanners[$descriptor->scannerId()] = true;
+            }
+        }
+
+        return $scanners;
+    }
+
+    /**
+     * The scanner ids whose reads name every file their facts came from
+     * ({@see self::$directReads}), from the default descriptors.
+     *
+     * @return array<string, true>
+     */
+    public static function scannersWithDirectReads(): array
+    {
+        $scanners = [];
+        foreach (self::defaults('') as $descriptor) {
+            if ($descriptor->directReads) {
                 $scanners[$descriptor->scannerId()] = true;
             }
         }
@@ -264,6 +294,7 @@ final readonly class LanguageDescriptor
             analysisInputs: $this->analysisInputs,
             addedFilesAffectAll: $this->addedFilesAffectAll,
             layoutMarkers: $this->layoutMarkers,
+            directReads: $this->directReads,
         );
     }
 

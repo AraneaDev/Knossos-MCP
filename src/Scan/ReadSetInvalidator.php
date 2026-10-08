@@ -22,7 +22,9 @@ namespace Knossos\Scan;
  * deleted, since none of the files it renames need have read it. A row
  * whose reads cannot cover what its file stands for (a file left out, or one
  * the worker failed on) is rebuilt on any change its scanner sees, since its
- * readers named it instead of what it re-exports.
+ * readers named it instead of what it re-exports. A scanner whose reads name
+ * every file its facts came from is the exception to the transitive rule: a
+ * rebuilt owner of it reaches its readers only when its own bytes changed.
  */
 final class ReadSetInvalidator
 {
@@ -51,9 +53,11 @@ final class ReadSetInvalidator
      * @param array<string, true> $forced owners the caller already knows are stale, rebuilt with their readers
      * @param array<string, string> $layoutMarkers scanner id to the pattern of the paths whose deletion rebuilds all of
      *        its rows ({@see LanguageDescriptor::$layoutMarkers})
+     * @param array<string, true> $directReads scanner ids whose rebuilt owners count as a change to their
+     *        readers only when their own bytes changed ({@see LanguageDescriptor::$directReads})
      * @return array<string, true> keyed by owner key
      */
-    public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = [], array $addedFilesAffectAll = [], array $forced = [], array $layoutMarkers = []): array
+    public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = [], array $addedFilesAffectAll = [], array $forced = [], array $layoutMarkers = [], array $directReads = []): array
     {
         $memo = [];
         $unchanged = static function (string $path, ?string $stored) use ($discovered, $stillMatches, &$memo): bool {
@@ -127,17 +131,17 @@ final class ReadSetInvalidator
         // reads are incomplete, once per scanner, so their readers are
         // reached in turn.
         $incompleteDue = [];
-        $invalidate = static function (string $owner) use ($cached, $incompleteOf, &$invalidated, &$changed, &$queue, &$incompleteDue): bool {
+        $invalidate = static function (string $owner) use ($cached, $incompleteOf, $directReads, &$invalidated, &$changed, &$queue, &$incompleteDue): bool {
             if (isset($invalidated[$owner])) {
                 return false;
             }
             $invalidated[$owner] = true;
             $ownPath = $cached->rows[$owner]['file_path'];
-            if (!isset($changed[$ownPath])) {
+            $scanner = $cached->rows[$owner]['scanner_id'];
+            if (!isset($changed[$ownPath]) && !isset($directReads[$scanner])) {
                 $changed[$ownPath] = true;
                 $queue[] = $ownPath;
             }
-            $scanner = $cached->rows[$owner]['scanner_id'];
             if (isset($incompleteOf[$scanner]) && !array_key_exists($scanner, $incompleteDue)) {
                 $incompleteDue[$scanner] = false;
             }

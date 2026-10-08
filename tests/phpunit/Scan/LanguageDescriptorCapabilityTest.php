@@ -69,4 +69,17 @@ final class LanguageDescriptorCapabilityTest extends KnossosTestCase
 
         assertSame('#\Ax\z#', $descriptor->withMemoryMb(128)->layoutMarkers);
     }
+
+    /**
+     * Only Rust reads directly: the Python and TypeScript workers name a
+     * module and rely on its own reads for what it re-exports, so a rebuilt
+     * module must still reach its importers.
+     */
+    public function testOnlyRustReadsDirectlyAndAdjustingTheMemoryCapKeepsIt(): void
+    {
+        assertSame(['knossos.rust' => true], LanguageDescriptor::scannersWithDirectReads());
+        $descriptor = new LanguageDescriptor('x', ['x'], ['x'], 'scanner_x', workerMemoryMb: 64, directReads: true);
+
+        assertSame(true, $descriptor->withMemoryMb(128)->directReads);
+    }
 }

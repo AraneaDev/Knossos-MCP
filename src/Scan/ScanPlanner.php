@@ -245,6 +245,7 @@ final readonly class ScanPlanner
             LanguageDescriptor::scannersWhoseAddedFilesAffectAll(),
             $forced,
             LanguageDescriptor::layoutMarkersByScanner(),
+            LanguageDescriptor::scannersWithDirectReads(),
         );
     }
 

@@ -203,6 +203,34 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
     }
 
     /**
+     * A scanner whose reads name every file its facts came from reaches a
+     * reader only through bytes that changed: `lib.rs` read `engine.rs`,
+     * which was rebuilt for reading `sign.rs`, but its bytes are the same.
+     * A forced owner of it reaches nobody, and a scanner without the rule
+     * still reaches transitively.
+     */
+    #[Group('scan')]
+    public function testARebuiltOwnerOfADirectReadsScannerReachesOnlyItsOwnReaders(): void
+    {
+        $cached = self::cached([
+            'src/sign.rs' => self::row('src/sign.rs', [], 'knossos.rust'),
+            'src/engine.rs' => self::row('src/engine.rs', ['src/sign.rs' => self::hash('src/sign.rs')], 'knossos.rust'),
+            'src/lib.rs' => self::row('src/lib.rs', ['src/engine.rs' => self::hash('src/engine.rs')], 'knossos.rust'),
+            'src/other.rs' => self::row('src/other.rs', ['src/lib.rs' => self::hash('src/lib.rs')], 'knossos.rust'),
+            'p.php' => self::row('p.php', ['src/engine.rs' => self::hash('src/engine.rs')]),
+        ]);
+        $all = ['src/sign.rs', 'src/engine.rs', 'src/lib.rs', 'src/other.rs', 'p.php'];
+        $signEdited = ['src/sign.rs' => self::hash('edited')] + self::discovered($all);
+        $direct = ['knossos.rust' => true];
+
+        assertSame(['src/engine.rs', 'src/sign.rs'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $signEdited, self::noProbe(), directReads: $direct)));
+        assertSame(['src/engine.rs'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered($all), self::noProbe(), forced: ['src/engine.rs' => true], directReads: $direct)));
+        $engineGone = self::discovered(['src/sign.rs', 'src/lib.rs', 'src/other.rs', 'p.php']);
+        assertSame(['p.php', 'src/engine.rs', 'src/lib.rs'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $engineGone, self::noProbe(), directReads: $direct)));
+        assertSame(['p.php', 'src/engine.rs', 'src/lib.rs', 'src/other.rs', 'src/sign.rs'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $signEdited, self::noProbe())));
+    }
+
+    /**
      * A group the owner names but the store no longer holds leaves nothing to
      * compare its reads against, so the owner cannot be shown to be current.
      */
