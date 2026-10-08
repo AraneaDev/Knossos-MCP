@@ -26,12 +26,31 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
     private ?int $processGroupId = null;
 
     /**
+     * What the first status read after the worker exited reported.
+     *
+     * The operating system hands the exit status over once. On PHP 8.3 a
+     * second proc_get_status() after the worker was reaped keeps the exit code
+     * but reports the process as not signaled (signaled and termsig are lost).
+     * Whichever read happens to reap it, a later one must still describe how
+     * the worker ended.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $exitedStatus = null;
+
+    /**
      * @param non-empty-list<string> $command
      * @param array<string, string>|null $environment
      */
     public function __construct(
         private readonly array $command,
         private readonly ?array $environment = null,
+        /**
+         * Test-only: replaces the /proc walk that lists a pid's descendants.
+         *
+         * @var (\Closure(int): array<int, int|null>)|null
+         */
+        private readonly ?\Closure $descendantSource = null,
     ) {}
     /** Terminate the process tree, so an abandoned supervisor leaves nothing running. */
 
@@ -79,6 +98,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         }
 
         $this->process = $process;
+        $this->exitedStatus = null;
         $this->pipes = $pipes;
         // Non-blocking stdin lets NdjsonRpcChannel::send() stream a large request
         // through a select loop (draining stdout meanwhile) instead of blocking
@@ -156,7 +176,25 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
             ];
         }
 
-        return proc_get_status($this->process);
+        return $this->readStatus();
+    }
+
+    /**
+     * Read the process status, remembering how the worker ended.
+     *
+     * @return array{command: string, pid: int, running: bool, signaled: bool, stopped: bool, exitcode: int, termsig: int, stopsig: int}
+     */
+    private function readStatus(): array
+    {
+        if ($this->exitedStatus !== null) {
+            return $this->exitedStatus;
+        }
+        $status = proc_get_status($this->process);
+        if (!$status['running']) {
+            $this->exitedStatus = $status;
+        }
+
+        return $status;
     }
 
     /** {@inheritDoc} */
@@ -185,14 +223,14 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
 
     private function terminateTree(): void
     {
-        $status = proc_get_status($this->process);
+        $status = $this->readStatus();
         $pid = (int) $status['pid'];
 
         // Grace window: let the worker exit cooperatively on stdin EOF.
         $graceDeadline = hrtime(true) + 100_000_000;
         do {
             usleep(10_000);
-            $status = proc_get_status($this->process);
+            $status = $this->readStatus();
         } while ($status['running'] && hrtime(true) < $graceDeadline);
 
         if (PHP_OS_FAMILY === 'Windows') {
@@ -213,7 +251,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         $terminationDeadline = hrtime(true) + 250_000_000;
         while ($status['running'] && hrtime(true) < $terminationDeadline) {
             usleep(10_000);
-            $status = proc_get_status($this->process);
+            $status = $this->readStatus();
         }
 
         // SIGKILL pass. Re-enumerate once more so freshly reparented or newly
@@ -238,9 +276,17 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
             @posix_kill(-$this->processGroupId, $signal);
         }
 
+        // Once the worker is known to have ended it has been reaped, its own
+        // children were reparented, and its pid may already belong to an
+        // unrelated process, so a walk from that pid could only hit strangers.
+        // The group kill above is what reaches whatever it left behind.
+        if ($this->exitedStatus !== null) {
+            return;
+        }
+
         // Belt-and-suspenders per-PID pass for platforms/cases where the group
         // could not be established. Re-enumerated on every call.
-        foreach ($this->descendantsWithStartTime($pid) as $descendant => $startTime) {
+        foreach (($this->descendantSource ?? $this->descendantsWithStartTime(...))($pid) as $descendant => $startTime) {
             if ($signal === 9 && $startTime !== null) {
                 // Guard against a reused PID: if the process at this PID no
                 // longer has the start-time we enumerated, it is a different
@@ -302,7 +348,11 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
      * remains, so the escalation to SIGKILL still reaches everything.
      *
      * `setsid` execs in place when its caller is not already a group leader,
-     * which a `proc_open()` child never is, so the pid, the pipes and
+     * which a `proc_open()` child never is. The parent must therefore not call
+     * `setpgid()` on the child when launching through `setsid`: if it wins the
+     * race against the exec, `setsid` forks and the tracked pid becomes a
+     * wrapper that exits 0 (see {@see self::placeInOwnProcessGroup()}). With
+     * that left alone, the pid, the pipes and
      * `proc_get_status()` all still describe the worker itself. Absent the
      * binary the command is spawned unchanged and termination falls back to
      * the descendant walk, exactly as before. An absolute path rather than a
@@ -342,18 +392,25 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
      */
     private function placeInOwnProcessGroup(bool $viaSetsid): void
     {
-        if (PHP_OS_FAMILY === 'Windows' || !function_exists('posix_setpgid') || !function_exists('posix_getpgid')) {
+        if (PHP_OS_FAMILY === 'Windows' || !function_exists('posix_getpgid') || !function_exists('posix_kill')) {
             return;
         }
-        $status = proc_get_status($this->process);
+        $status = $this->readStatus();
         $pid = (int) $status['pid'];
         if ($pid <= 1) {
             return;
         }
-        // Best effort, and on Linux always refused: kept because it costs one
-        // failed syscall and wins outright on any platform where the child has
-        // not exec'd yet.
-        @posix_setpgid($pid, $pid);
+        // When launching through `setsid` the parent must not call setpgid()
+        // on the child. Once the child has exec'd it is always refused, and
+        // when the child has not reached `setsid` yet it succeeds and makes
+        // the child a group leader, which `setsid` answers by forking: the
+        // tracked pid is then a wrapper that exits 0 at once, and a later kill
+        // of the real worker reads as a clean exit. The guarantee rests on not
+        // making that call. Without `setsid` there is no fork to cause, and
+        // winning the race gives a real group kill, so it is tried there.
+        if (!$viaSetsid && function_exists('posix_setpgid')) {
+            @posix_setpgid($pid, $pid);
+        }
         $pgid = @posix_getpgid($pid);
         $deadline = hrtime(true) + 250_000_000;
         while ($viaSetsid && $pgid !== $pid && hrtime(true) < $deadline) {

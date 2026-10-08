@@ -38,6 +38,56 @@ final class WorkerProcessSupervisorTest extends TestCase
         return $buffer;
     }
 
+    public function testHowAKilledWorkerEndedSurvivesEveryStatusRead(): void
+    {
+        // The operating system reports a signalled exit to the first read
+        // only; on PHP 8.3 a second read keeps the exit code but loses
+        // signaled and termsig. A second read used to say "not signaled", so a worker killed
+        // from outside looked like an ordinary exit whenever anything had
+        // read the status between the kill and the read that mattered.
+        $supervisor = new WorkerProcessSupervisor([PHP_BINARY, '-r', 'posix_kill(getmypid(), SIGTERM); sleep(5);']);
+        $supervisor->start();
+
+        $deadline = microtime(true) + 5.0;
+        do {
+            $first = $supervisor->status();
+            usleep(1_000);
+        } while ($first['running'] && microtime(true) < $deadline);
+        $second = $supervisor->status();
+        $supervisor->close(true);
+
+        assertSame(false, $first['running']);
+        assertSame(true, $first['signaled']);
+        assertSame(15, $first['termsig']);
+        assertSame(true, $second['signaled']);
+        assertSame(15, $second['termsig']);
+    }
+
+    public function testNoDescendantIsSignalledOnceTheWorkerIsKnownToHaveEnded(): void
+    {
+        // An ended worker has been reaped and its pid may belong to a stranger
+        // by now, so closing must not walk or signal anything from that pid.
+        $asked = [];
+        $supervisor = new WorkerProcessSupervisor(
+            [PHP_BINARY, '-r', 'exit(0);'],
+            null,
+            static function (int $pid) use (&$asked): array {
+                $asked[] = $pid;
+                return [];
+            },
+        );
+        $supervisor->start();
+        $deadline = microtime(true) + 5.0;
+        do {
+            $status = $supervisor->status();
+            usleep(1_000);
+        } while ($status['running'] && microtime(true) < $deadline);
+        $supervisor->close(true);
+
+        assertSame(false, $status['running']);
+        assertSame([], $asked);
+    }
+
     public function testStartFailsWithDiagnosticForUnrunnableCommand(): void
     {
         $supervisor = new WorkerProcessSupervisor(['/nonexistent/knossos-worker-binary-xyz']);
