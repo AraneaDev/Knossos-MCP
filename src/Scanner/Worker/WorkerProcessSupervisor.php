@@ -26,6 +26,18 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
     private ?int $processGroupId = null;
 
     /**
+     * What the first status read after the worker exited reported.
+     *
+     * The operating system hands the exit status over once: a second
+     * proc_get_status() after the worker was reaped says "not running, not
+     * signaled, no exit code". Whichever read happens to reap it, a later one
+     * must still describe how the worker ended.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $exitedStatus = null;
+
+    /**
      * @param non-empty-list<string> $command
      * @param array<string, string>|null $environment
      */
@@ -79,6 +91,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         }
 
         $this->process = $process;
+        $this->exitedStatus = null;
         $this->pipes = $pipes;
         // Non-blocking stdin lets NdjsonRpcChannel::send() stream a large request
         // through a select loop (draining stdout meanwhile) instead of blocking
@@ -156,7 +169,25 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
             ];
         }
 
-        return proc_get_status($this->process);
+        return $this->readStatus();
+    }
+
+    /**
+     * Read the process status, remembering how the worker ended.
+     *
+     * @return array{command: string, pid: int, running: bool, signaled: bool, stopped: bool, exitcode: int, termsig: int, stopsig: int}
+     */
+    private function readStatus(): array
+    {
+        if ($this->exitedStatus !== null) {
+            return $this->exitedStatus;
+        }
+        $status = proc_get_status($this->process);
+        if (!$status['running']) {
+            $this->exitedStatus = $status;
+        }
+
+        return $status;
     }
 
     /** {@inheritDoc} */
@@ -185,14 +216,14 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
 
     private function terminateTree(): void
     {
-        $status = proc_get_status($this->process);
+        $status = $this->readStatus();
         $pid = (int) $status['pid'];
 
         // Grace window: let the worker exit cooperatively on stdin EOF.
         $graceDeadline = hrtime(true) + 100_000_000;
         do {
             usleep(10_000);
-            $status = proc_get_status($this->process);
+            $status = $this->readStatus();
         } while ($status['running'] && hrtime(true) < $graceDeadline);
 
         if (PHP_OS_FAMILY === 'Windows') {
@@ -213,7 +244,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         $terminationDeadline = hrtime(true) + 250_000_000;
         while ($status['running'] && hrtime(true) < $terminationDeadline) {
             usleep(10_000);
-            $status = proc_get_status($this->process);
+            $status = $this->readStatus();
         }
 
         // SIGKILL pass. Re-enumerate once more so freshly reparented or newly
@@ -345,15 +376,17 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         if (PHP_OS_FAMILY === 'Windows' || !function_exists('posix_setpgid') || !function_exists('posix_getpgid')) {
             return;
         }
-        $status = proc_get_status($this->process);
+        $status = $this->readStatus();
         $pid = (int) $status['pid'];
         if ($pid <= 1) {
             return;
         }
-        // Best effort, and on Linux always refused: kept because it costs one
-        // failed syscall and wins outright on any platform where the child has
-        // not exec'd yet.
-        @posix_setpgid($pid, $pid);
+        // The parent must not call setpgid() on the child. Once the child has
+        // exec'd it is always refused, and when the child has not reached
+        // `setsid` yet it succeeds and makes the child a group leader, which
+        // `setsid` answers by forking: the tracked pid is then a wrapper that
+        // exits 0 at once, and a later kill of the real worker reads as a
+        // clean exit.
         $pgid = @posix_getpgid($pid);
         $deadline = hrtime(true) + 250_000_000;
         while ($viaSetsid && $pgid !== $pid && hrtime(true) < $deadline) {

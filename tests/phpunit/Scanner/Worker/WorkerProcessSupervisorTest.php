@@ -38,6 +38,50 @@ final class WorkerProcessSupervisorTest extends TestCase
         return $buffer;
     }
 
+    public function testHowAKilledWorkerEndedSurvivesEveryStatusRead(): void
+    {
+        // The operating system reports a signalled exit to the first read
+        // only. A second read used to say "not signalled", so a worker killed
+        // from outside looked like an ordinary exit whenever anything had
+        // read the status between the kill and the read that mattered.
+        $supervisor = new WorkerProcessSupervisor([PHP_BINARY, '-r', 'posix_kill(getmypid(), SIGTERM); sleep(5);']);
+        $supervisor->start();
+
+        $deadline = microtime(true) + 5.0;
+        do {
+            $first = $supervisor->status();
+            usleep(1_000);
+        } while ($first['running'] && microtime(true) < $deadline);
+        $second = $supervisor->status();
+        $supervisor->close(true);
+
+        assertSame(false, $first['running']);
+        assertSame(true, $first['signaled']);
+        assertSame(15, $first['termsig']);
+        assertSame(true, $second['signaled']);
+        assertSame(15, $second['termsig']);
+    }
+
+    public function testAKilledWorkerIsTheTrackedProcessNotAWrapperThatExitedClean(): void
+    {
+        // Placing the child in its own process group from the parent could
+        // win the race against the child's exec, and the session wrapper then
+        // forked, leaving a tracked pid that exited 0 at once. Every spawn has
+        // to report the signal that killed the worker itself.
+        for ($spawn = 0; $spawn < 60; ++$spawn) {
+            $supervisor = new WorkerProcessSupervisor([PHP_BINARY, '-r', 'posix_kill(getmypid(), SIGTERM); sleep(5);']);
+            $supervisor->start();
+            $deadline = microtime(true) + 5.0;
+            do {
+                $status = $supervisor->status();
+                usleep(500);
+            } while ($status['running'] && microtime(true) < $deadline);
+            $supervisor->close(true);
+
+            assertSame(true, $status['signaled'], "spawn $spawn");
+        }
+    }
+
     public function testStartFailsWithDiagnosticForUnrunnableCommand(): void
     {
         $supervisor = new WorkerProcessSupervisor(['/nonexistent/knossos-worker-binary-xyz']);
