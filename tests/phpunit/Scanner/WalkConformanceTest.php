@@ -66,8 +66,17 @@ final class WalkConformanceTest extends KnossosTestCase
         unset($typescript['app/main'], $python['app/main']);
         $shared = array_intersect_key($typescript, $python);
         self::assertArrayHasKey('real/mod', $shared);
-        self::assertArrayHasKey('locked/mod', $shared);
         self::assertArrayHasKey('outside/mod', $shared);
+        // Root reads through a 000 directory, an unprivileged user cannot.
+        // Whichever this process is, both workers must answer alike: the same
+        // read when the directory opens, and nothing below it when it does not.
+        if (is_readable($this->root . '/locked/mod.ts')) {
+            self::assertArrayHasKey('locked/mod', $shared);
+        } else {
+            $below = static fn(array $reads): array => array_filter($reads, static fn(string $place): bool => str_starts_with($place, 'locked/'), ARRAY_FILTER_USE_KEY);
+            assertSame([], $below($typescript));
+            assertSame([], $below($python));
+        }
         foreach ($shared as $place => $value) {
             if (str_starts_with($place, 'linked/')) {
                 continue;
