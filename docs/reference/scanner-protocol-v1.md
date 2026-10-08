@@ -232,20 +232,23 @@ dependency's declaration another one imports, on the result.
 A worker whose programs load project files beyond the ones a request names
 reads for those files too: an importer's import chain, a config's whole
 `include`. Such a file has a contribution of its own in the core's cache, and
-that contribution names what the file read in the program that describes it
-(the config that lists it, or the fallback program of its group), so when that
-program is the one being built the request owes nobody those reads. Report
-them as `unattributed_reads` on the result, the same shape as `reads`. The core
-confirms each entry against `input_hashes`, counts it as named, and stores it
-for no file and no group. The same file loaded into another program resolves
+when a config lists the file, that contribution was derived in the config's
+program and names what the file read there, so a request building that same
+program owes nobody those reads. Report them as `unattributed_reads` on the
+result, the same shape as `reads`. The core confirms each entry against
+`input_hashes`, counts it as named, and stores it for no file and no group.
+That is the only case. The same file loaded into another program resolves
 under that program's paths, aliases and manifests, and the read that decides
 where an import lands there is one its own contribution never names: keep it
-on `reads`. Keep on `reads` also what every file of the request genuinely
-shares: a config and what it extends, a manifest read to resolve, a global
-declaration, and the reads of a file the core never discovered, since no
-contribution names them. The `unattributed_reads` map can outgrow one line as
-`reads` can, and travels in `scan/input_hashes` parts the same way, under its
-own field name.
+on `reads`. A file no config lists is emitted by whichever program reaches it
+first, an importing config's program or the fallback program of its group,
+so no program can claim its reads as that contribution's own: keep them on
+`reads` in every program, the fallback program included. Keep on `reads` also
+what every file of the request genuinely shares: a config and what it
+extends, a manifest read to resolve, a global declaration, and the reads of a
+file the core never discovered, since no contribution names them. The
+`unattributed_reads` map can outgrow one line as `reads` can, and travels in
+`scan/input_hashes` parts the same way, under its own field name.
 
 No read can name a file that did not exist anywhere a worker looked, and for
 some languages a new file still changes what other files mean: a script that

@@ -392,13 +392,13 @@ class ReadAttribution {
      * much as a project's own, and so is whatever a dependency's file read,
      * since no contribution of the core's reports it. What a project file the
      * core discovered read, when this request produced no contribution for it
-     * and this program is the one that describes it, is unattributed: its own
+     * and a config lists it in this program, is unattributed: its own
      * contribution names those reads. The global files are also the program's
      * environment (see environmentOf).
      *
      * @param {string} programKey the program's key (see programKeyOf)
-     * @param {(relative: string) => boolean} ownedByProgram whether this
-     *   program is the one a file's own contribution is derived in
+     * @param {(relative: string) => boolean} ownedByProgram whether a config
+     *   lists the file in this program (see programOwnership)
      */
     program(program, programKey, ownedByProgram = () => true) {
         const globals = new Set();
@@ -670,8 +670,7 @@ function needsProgram(request, requested, configPath, parsed) {
 /**
  * Every discovered file no config lists, with the project's declaration
  * files, grouped as the fallback reads them: the whole group is a fallback
- * program's root list, and the group's program is the one such a file's
- * contribution is derived in.
+ * program's root list.
  *
  * @returns {Map<string, {files: string[], parsed: object | undefined}>} directory => group
  */
@@ -697,25 +696,20 @@ function fallbackProgramKey(root, directory) {
 }
 
 /**
- * Which program a file's own contribution is derived in: the config that
- * lists it, else the fallback program of its group. A file in neither (one
- * the core never discovered, or that only an import reached) is owned by no
- * program, so no program's reads of it are its own.
+ * Whether a program's reads for a file are the file's own contribution's:
+ * only when a config lists the file and the program being built is that
+ * config's program. A file no config lists is emitted by whichever program
+ * reaches it first, an importing config's program or the fallback program of
+ * its group, so no program can claim its reads, the fallback program of its
+ * own group included; nor can any program claim the reads of a file the core
+ * never discovered.
  *
  * @returns {(relative: string, programKey: string) => boolean}
  */
-function programOwnership(root, request) {
-    const fallbackOwners = new Map();
-    for (const [directory, group] of request.fallbackMembers) {
-        for (const relative of group.files)
-            fallbackOwners.set(
-                normalize(relative),
-                fallbackProgramKey(root, directory),
-            );
-    }
+function programOwnership(request) {
     return (relative, programKey) =>
-        (request.owners.get(relative) ?? fallbackOwners.get(relative)) ===
-        programKey;
+        request.owners.has(relative) &&
+        request.owners.get(relative) === programKey;
 }
 
 /**
@@ -939,7 +933,7 @@ export class TypeScriptScanner {
         request.owners = configOwners(root, parsedConfigs);
         request.outputSources = outputSources(root, parsedConfigs);
         request.fallbackMembers = fallbackMembers(root, request, parsedConfigs);
-        request.ownedByProgram = programOwnership(root, request);
+        request.ownedByProgram = programOwnership(request);
         this.#scanConfigPrograms(parsedConfigs, requested, request, tally);
 
         const remaining = requested.filter(
