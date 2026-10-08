@@ -204,19 +204,7 @@ final readonly class ScanPlanner
         $invalidated = [];
         if ($effectiveMode === 'incremental') {
             $cachedReads = $loaded;
-            $discovered = array_map(static fn($hashed): string => $hashed->contentHash, $preparation->discovery->hashedPaths());
-            $root = rtrim($preparation->discovery->rootRealpath, '/');
-            $maxFileBytes = $preparation->maxFileBytes;
-            // See UndiscoveredInputVerifier::verify(): realpath() answers from
-            // a per-process cache a long-running server keeps across scans.
-            clearstatcache(true);
-            $invalidated = ReadSetInvalidator::invalidated(
-                $cachedReads,
-                $discovered,
-                static fn(string $path, ?string $stored): bool => UndiscoveredInputVerifier::stillMatches($root, $path, $stored, $maxFileBytes),
-                self::addedByScanner($preparation->discovery->files, $cache, $this->previousFiles($projectId)),
-                LanguageDescriptor::scannersWhoseAddedFilesAffectAll(),
-            );
+            $invalidated = self::reachedOwners($preparation, $cachedReads, self::addedByScanner($preparation->discovery->files, $cache, $this->previousFiles($projectId)));
         }
 
         return new ScanPlan(
@@ -228,6 +216,31 @@ final readonly class ScanPlanner
             $invalidated,
             $existing !== false && $existing['active_scan_id'] !== null,
             $cachedReads,
+        );
+    }
+
+    /**
+     * Every cached owner a change reached, with the given files counted as
+     * added to their scanners ({@see ReadSetInvalidator::invalidated()}).
+     *
+     * @param array<string, list<string>> $addedByScanner scanner id to the files added to it
+     * @return array<string, true>
+     */
+    public static function reachedOwners(ScanPreparation $preparation, CachedReads $cached, array $addedByScanner): array
+    {
+        $discovered = array_map(static fn($hashed): string => $hashed->contentHash, $preparation->discovery->hashedPaths());
+        $root = rtrim($preparation->discovery->rootRealpath, '/');
+        $maxFileBytes = $preparation->maxFileBytes;
+        // See UndiscoveredInputVerifier::verify(): realpath() answers from
+        // a per-process cache a long-running server keeps across scans.
+        clearstatcache(true);
+
+        return ReadSetInvalidator::invalidated(
+            $cached,
+            $discovered,
+            static fn(string $path, ?string $stored): bool => UndiscoveredInputVerifier::stillMatches($root, $path, $stored, $maxFileBytes),
+            $addedByScanner,
+            LanguageDescriptor::scannersWhoseAddedFilesAffectAll(),
         );
     }
 

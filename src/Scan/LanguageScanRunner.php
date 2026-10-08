@@ -42,73 +42,30 @@ final readonly class LanguageScanRunner
     /** Run each language's worker over the files it claims, degrading a failure to a diagnostic. */
     public function run(ScanPlan $plan, CancellationToken $cancellation): LanguageScanResult
     {
+        $workerDiagnostics = $batchBudgets = $outcomes = [];
+        foreach ($this->descriptors as $descriptor) {
+            $outcome = $this->attempt($descriptor, $plan, $cancellation, $workerDiagnostics, $batchBudgets);
+            if ($outcome !== null) {
+                $outcomes[$descriptor->key] = $outcome;
+            }
+        }
+        $outcomes = $this->afterGlobalEdits($plan, $cancellation, $outcomes, $workerDiagnostics, $batchBudgets);
+
         $manifests = $contributions = $cacheEntries = [];
         $parsed = $unchanged = $added = $changed = 0;
         $leftOutPaths = [];
-        $scannerMetadata = $stages = $workerDiagnostics = $batchBudgets = $readGroups = [];
+        $scannerMetadata = $stages = $readGroups = [];
         // One for the whole scan: the same file read with different results
         // by two languages fails the scan just as two requests of one do.
         $undiscoveredInputs = new UndiscoveredInputs();
         foreach ($this->descriptors as $descriptor) {
-            $files = array_values(array_filter(
-                $plan->preparation->discovery->files,
-                static fn($file): bool => in_array($file->language, $descriptor->languages, true),
-            ));
-            // Keyed on the owner, like workerDiagnostics and scannerMetadata, so
-            // a consumer can join the three. Recorded for every descriptor,
-            // including one with nothing to scan, so the shape is stable.
-            $owner = $descriptor->scannerId();
-            $batchBudgets[$owner] = [
-                'files' => $descriptor->scanBatchFiles,
-                'source_bytes' => $descriptor->scanBatchSourceBytes,
-                'source_bytes_used' => $descriptor->scanBatchSourceBytes,
-            ];
-            if ($files === []) {
+            $outcome = $outcomes[$descriptor->key] ?? null;
+            if ($outcome === null) {
                 continue;
-            }
-            // Read back by reference below: the narrowest budget an ordinary
-            // retry in this language settled on. Lower than the configured
-            // value means a batch outgrew the worker's output cap or memory
-            // and was re-split; a search for one oversized frame does not
-            // count, since no batch of the language settled on it.
-            $sourceBytes = $descriptor->scanBatchSourceBytes;
-            try {
-                $outcome = $this->runLanguage($descriptor, $files, $plan, $cancellation, $sourceBytes);
-            } catch (Throwable $error) {
-                // A cancellation is the caller's decision, not a worker fault: it
-                // must reach the transport so the response is suppressed rather
-                // than reported as a degraded scan. The token may also have
-                // flipped between the RPC returning and this catch.
-                $this->pool->shutdown();
-                if ($cancellation->isCancelled() || ($error instanceof WorkerException && $error->diagnosticCode === 'WORKER_CANCELLED')) {
-                    throw new ScanCancelledException('Scan was cancelled.', previous: $error);
-                }
-                // A changed tree is a fault of the whole scan, not of this
-                // language. Degrading it would commit a graph missing this
-                // language's facts while every recorded hash still matched disk.
-                if ($error instanceof ScanSnapshotChangedException) {
-                    throw $error;
-                }
-                // Everything else costs this language only. The other languages'
-                // facts are already collected and are still worth a graph.
-                $workerDiagnostics[] = [
-                    'owner' => $descriptor->scannerId(),
-                    'code' => $error instanceof WorkerException ? $error->diagnosticCode : 'WORKER_FAILED',
-                    'message' => self::withRemedy(
-                        sprintf('%s scanner failed: %s', $descriptor->key, $error->getMessage()),
-                        $descriptor,
-                        $plan->preparation->executionPolicy->workerMemoryMb,
-                    ),
-                ];
-                continue;
-            } finally {
-                // Updated on both paths: a degraded language is exactly the one
-                // whose batch bounds the reader wants to see.
-                $batchBudgets[$owner]['source_bytes_used'] = $sourceBytes;
             }
             // Only once the language is kept: a degraded language's facts are
             // dropped, so what it read has nothing left to vouch for. Outside
-            // the try above, so a conflict fails the scan rather than
+            // the worker's try, so a conflict fails the scan rather than
             // degrading the language that happened to arrive second.
             $undiscoveredInputs->add($outcome['undiscovered_inputs']);
             $manifests[] = $outcome['manifest'];
@@ -125,6 +82,113 @@ final readonly class LanguageScanRunner
         }
 
         return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all(), count($leftOutPaths), $leftOutPaths, $readGroups);
+    }
+
+    /**
+     * Run one language, or record why it is degraded and return null.
+     *
+     * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
+     * @param array<string, array{files: int, source_bytes: int, source_bytes_used: int}> $batchBudgets
+     * @return array<string, mixed>|null the language's outcome ({@see runLanguage()})
+     */
+    private function attempt(LanguageDescriptor $descriptor, ScanPlan $plan, CancellationToken $cancellation, array &$workerDiagnostics, array &$batchBudgets): ?array
+    {
+        $files = array_values(array_filter(
+            $plan->preparation->discovery->files,
+            static fn($file): bool => in_array($file->language, $descriptor->languages, true),
+        ));
+        // Keyed on the owner, like workerDiagnostics and scannerMetadata, so
+        // a consumer can join the three. Recorded for every descriptor,
+        // including one with nothing to scan, so the shape is stable.
+        $owner = $descriptor->scannerId();
+        $batchBudgets[$owner] = [
+            'files' => $descriptor->scanBatchFiles,
+            'source_bytes' => $descriptor->scanBatchSourceBytes,
+            'source_bytes_used' => $descriptor->scanBatchSourceBytes,
+        ];
+        if ($files === []) {
+            return null;
+        }
+        // Read back by reference below: the narrowest budget an ordinary
+        // retry in this language settled on. Lower than the configured
+        // value means a batch outgrew the worker's output cap or memory
+        // and was re-split; a search for one oversized frame does not
+        // count, since no batch of the language settled on it.
+        $sourceBytes = $descriptor->scanBatchSourceBytes;
+        try {
+            return $this->runLanguage($descriptor, $files, $plan, $cancellation, $sourceBytes);
+        } catch (Throwable $error) {
+            // A cancellation is the caller's decision, not a worker fault: it
+            // must reach the transport so the response is suppressed rather
+            // than reported as a degraded scan. The token may also have
+            // flipped between the RPC returning and this catch.
+            $this->pool->shutdown();
+            if ($cancellation->isCancelled() || ($error instanceof WorkerException && $error->diagnosticCode === 'WORKER_CANCELLED')) {
+                throw new ScanCancelledException('Scan was cancelled.', previous: $error);
+            }
+            // A changed tree is a fault of the whole scan, not of this
+            // language. Degrading it would commit a graph missing this
+            // language's facts while every recorded hash still matched disk.
+            if ($error instanceof ScanSnapshotChangedException) {
+                throw $error;
+            }
+            // Everything else costs this language only. The other languages'
+            // facts are already collected and are still worth a graph.
+            $workerDiagnostics[] = [
+                'owner' => $descriptor->scannerId(),
+                'code' => $error instanceof WorkerException ? $error->diagnosticCode : 'WORKER_FAILED',
+                'message' => self::withRemedy(
+                    sprintf('%s scanner failed: %s', $descriptor->key, $error->getMessage()),
+                    $descriptor,
+                    $plan->preparation->executionPolicy->workerMemoryMb,
+                ),
+            ];
+
+            return null;
+        } finally {
+            // Updated on both paths: a degraded language is exactly the one
+            // whose batch bounds the reader wants to see.
+            $batchBudgets[$owner]['source_bytes_used'] = $sourceBytes;
+        }
+    }
+
+    /**
+     * Run again every language a file that declares globally reached
+     * ({@see GlobalDeclarationEdits}): its edit changes what files that never
+     * read it produce, which only its worker's answer could tell.
+     *
+     * @param array<string, array<string, mixed>> $outcomes by descriptor key
+     * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
+     * @param array<string, array{files: int, source_bytes: int, source_bytes_used: int}> $batchBudgets
+     * @return array<string, array<string, mixed>>
+     */
+    private function afterGlobalEdits(ScanPlan $plan, CancellationToken $cancellation, array $outcomes, array &$workerDiagnostics, array &$batchBudgets): array
+    {
+        $paths = [];
+        foreach ($this->descriptors as $descriptor) {
+            if ($descriptor->addedFilesAffectAll && isset($outcomes[$descriptor->key])) {
+                $edited = GlobalDeclarationEdits::paths($outcomes[$descriptor->key]['cache_entries'], $outcomes[$descriptor->key]['read_groups'], $plan->cachedReads);
+                if ($edited !== []) {
+                    $paths[$descriptor->scannerId()] = $edited;
+                }
+            }
+        }
+        $wider = GlobalDeclarationEdits::widened($plan, $paths);
+        $reached = [];
+        foreach (array_diff_key($wider->invalidatedOwners, $plan->invalidatedOwners) as $owner => $true) {
+            $reached[$wider->cachedReads?->rows[$owner]['scanner_id'] ?? ''] = true;
+        }
+        foreach ($this->descriptors as $descriptor) {
+            if (isset($outcomes[$descriptor->key], $reached[$descriptor->scannerId()])) {
+                unset($outcomes[$descriptor->key]);
+                $outcome = $this->attempt($descriptor, $wider, $cancellation, $workerDiagnostics, $batchBudgets);
+                if ($outcome !== null) {
+                    $outcomes[$descriptor->key] = $outcome;
+                }
+            }
+        }
+
+        return $outcomes;
     }
 
     /**
