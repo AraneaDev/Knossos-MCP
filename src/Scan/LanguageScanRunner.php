@@ -158,6 +158,9 @@ final readonly class LanguageScanRunner
      * program environment reach ({@see ProgramEnvironments}): their facts
      * were derived from global declarations the program no longer holds as
      * they were, which only the worker's answer for the rebuilt program shows.
+     * The same pass retires the reused contributions of files no config
+     * lists once a program a config describes was rebuilt, since which
+     * program emits such a file follows the imports of the others.
      *
      * Repeated until a pass finds nothing new: a pass can build a program the
      * one before it did not, whose reused contributions were never compared.
@@ -176,7 +179,8 @@ final readonly class LanguageScanRunner
             foreach ($this->descriptors as $descriptor) {
                 if ($descriptor->addedFilesAffectAll && isset($outcomes[$descriptor->key])) {
                     $outcome = $outcomes[$descriptor->key];
-                    $stale += ProgramEnvironments::staleOwners($outcome['cache_entries'], $outcome['program_environments']);
+                    $stale += ProgramEnvironments::staleOwners($outcome['cache_entries'], $outcome['program_environments'])
+                        + ProgramEnvironments::unlistedOwners($outcome['cache_entries']);
                 }
             }
             $wider = ProgramEnvironments::widened($plan, $stale);

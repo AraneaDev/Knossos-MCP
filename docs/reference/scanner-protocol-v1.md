@@ -286,6 +286,22 @@ program, such as a file the worker could not scan, carries neither field. A
 deleted file of such a worker rebuilds every one of its contributions, since
 the program that held a deleted global may not be built again in that scan.
 
+A file no config lists has no program of its own: whichever program reaches
+it first through imports emits it, and a program built for the files no
+config describes, whose key starts with `fallback:`, takes what none did. Its
+facts therefore follow the imports of other files, which no read of its own
+records. Mark such a contribution `listed: false`; leave the field out of
+every other contribution, so a payload already cached keeps its bytes. Once a
+scan rebuilds any contribution derived in a program a config describes, or
+one derived in no program, the core rebuilds every reused contribution so
+marked, and everything that read it, in other languages too. A change that
+reaches only files a `fallback:` program emitted rebuilds nothing more: a
+config's program is driven from its root files and their imports, which hold
+no such file, and a fallback program holds its whole group whatever the
+imports say. The packaged TypeScript worker marks a file no tsconfig lists
+among its root files, whether a config's program reached it or the fallback
+program of its group emitted it.
+
 A program's environment must not follow the request: the packaged TypeScript
 worker receives `source_files`, every discovered file of its language, and
 roots a program for files no config includes on every such file of the same

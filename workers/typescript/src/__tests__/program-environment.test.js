@@ -236,3 +236,30 @@ describe("a contribution no program described", () => {
         expect(byOwner["src/gone.ts"]).not.toHaveProperty("environment");
     });
 });
+
+describe("a contribution for a file no config lists", () => {
+    it("is marked unlisted whichever program emitted it", () => {
+        const root = fixture({
+            ...LAYOUT,
+            "src/r.ts": "import { u } from '../lib/u';\nexport const r = u;\n",
+            "lib/u.ts": "export const u = 1;\n",
+            "test/t.ts": "export const t = 1;\n",
+        });
+        const files = ["src/a.ts", "src/r.ts", "lib/u.ts", "test/t.ts"];
+
+        const byOwner = scan(root, files, ["tsconfig.json"], {
+            source_files: [...files, "src/d.ts", "src/globals.d.ts"],
+        });
+
+        // Listed by the config: nothing to say.
+        expect(byOwner["src/a.ts"]).not.toHaveProperty("listed");
+        expect(byOwner["src/r.ts"]).not.toHaveProperty("listed");
+        // Reached through src/r.ts's import: the config's program emits it,
+        // and it is still no file the config lists.
+        expect(byOwner["lib/u.ts"].program).toBe("tsconfig.json");
+        expect(byOwner["lib/u.ts"].listed).toBe(false);
+        // Nothing reaches it: the fallback program emits it.
+        expect(byOwner["test/t.ts"].program).toMatch(/^fallback:/);
+        expect(byOwner["test/t.ts"].listed).toBe(false);
+    });
+});

@@ -30,6 +30,10 @@ final readonly class ScanContribution implements JsonSerializable
      *        worker names it; null when the worker does not report one
      * @param ?string $environment lowercase SHA-256 hex digest of the global
      *        declarations that program held; null when the worker does not report it
+     * @param bool $listed whether a config of the worker's language lists the
+     *        file in the program its facts came from; false for a file that
+     *        whichever program reached it first emitted, whose facts follow
+     *        other files' imports. True when the worker does not say.
      */
     public function __construct(
         public string $ownerKey,
@@ -40,6 +44,7 @@ final readonly class ScanContribution implements JsonSerializable
         public ?array $reads = null,
         public ?string $program = null,
         public ?string $environment = null,
+        public bool $listed = true,
     ) {
         if ($ownerKey === '') {
             throw new InvalidArgumentException('Contribution owner key must not be empty.');
@@ -88,6 +93,11 @@ final readonly class ScanContribution implements JsonSerializable
         }
         if ($this->environment !== null) {
             $wire['environment'] = $this->environment;
+        }
+        // Only the exception travels: a cached payload of a listed file keeps
+        // its bytes, and a reused unlisted one says so.
+        if (!$this->listed) {
+            $wire['listed'] = false;
         }
 
         return $wire;

@@ -326,6 +326,93 @@ final class TypescriptProgramEnvironmentTest extends KnossosTestCase
         ]];
     }
 
+    /**
+     * @param array<string, string> $files
+     * @param list<array<string, string>> $steps edits made in turn, each followed by a scan
+     */
+    #[DataProvider('importerEditsThatMoveAFileNoConfigLists')]
+    public function testAnImportersEditThatMovesAFileNoConfigListsBetweenProgramsRescansIt(array $files, array $steps): void
+    {
+        // No config lists shared/x.ts. With main.ts importing it, p1's program
+        // emits it and resolves `c` to p1/lib/c.ts; without the import the
+        // fallback program of shared/ emits it under the root config, whose
+        // paths send `c` to vendor/c. No read of x.ts records main.ts's
+        // import, so only rebuilding every unlisted file follows the move.
+        foreach ($files as $relative => $contents) {
+            $this->write($relative, $contents);
+        }
+        $pdo = $this->freshTestDatabase();
+        $this->scan($pdo);
+
+        foreach ($steps as $n => $edits) {
+            $facts = $this->facts($pdo, 'packages/shared/x.ts');
+            $this->stamp($pdo);
+            foreach ($edits as $relative => $contents) {
+                $this->write($relative, $contents);
+            }
+            $result = $this->scan($pdo);
+
+            assertSame(['packages/p1/main.ts', 'packages/shared/x.ts', 'packages/shared/y.ts'], $this->rescanned($pdo), "step $n");
+            assertSame(3, $result->data['parsed_files'], "step $n");
+            assertNotSame($facts, $this->facts($pdo, 'packages/shared/x.ts'), "step $n");
+            $this->assertMatchesAFullScan($pdo);
+        }
+    }
+
+    /** @return iterable<string, array{array<string, string>, list<array<string, string>>}> */
+    public static function importerEditsThatMoveAFileNoConfigLists(): iterable
+    {
+        $withImport = [
+            'tsconfig.json' => '{"compilerOptions": {"strict": true, "baseUrl": ".", "paths": {"c": ["vendor/c"]}}, "files": []}',
+            'packages/p1/tsconfig.json' => '{"compilerOptions": {"strict": true, "module": "esnext", "moduleResolution": "bundler", "baseUrl": ".", "paths": {"c": ["lib/c.ts"]}}, "include": ["."]}',
+            'packages/p1/lib/c.ts' => "export class C { p1(): void {} }\n",
+            'packages/p1/main.ts' => "import { C } from '../shared/x';\nexport class M extends C {}\n",
+            'vendor/c/package.json' => '{"name": "c", "types": "one.ts"}',
+            'vendor/c/one.ts' => "export class C { one(): void {} }\n",
+            'packages/shared/x.ts' => "export { C } from 'c';\n",
+            'packages/shared/y.ts' => "import { C } from './x';\nexport class Y extends C {}\n",
+        ];
+        $withoutImport = ['packages/p1/main.ts' => "export class M {}\n"] + $withImport;
+        yield 'the importer drops the import: the file moves to the fallback program' => [
+            $withImport,
+            [['packages/p1/main.ts' => "export class M {}\n"]],
+        ];
+        yield 'the importer adds the import: the file moves to the config program' => [
+            $withoutImport,
+            [['packages/p1/main.ts' => "import { C } from '../shared/x';\nexport class M extends C {}\n"]],
+        ];
+        yield 'dropped, then added again' => [
+            $withImport,
+            [
+                ['packages/p1/main.ts' => "export class M {}\n"],
+                ['packages/p1/main.ts' => "import { C } from '../shared/x';\nexport class M extends C {}\n"],
+            ],
+        ];
+    }
+
+    public function testAnEditToAListedLeafRescansTheLeafItsReadersAndTheFilesNoConfigLists(): void
+    {
+        $this->write('tsconfig.json', '{"files": []}');
+        $this->write('packages/p1/tsconfig.json', '{"compilerOptions": {"strict": true, "module": "esnext", "moduleResolution": "bundler"}, "include": ["."]}');
+        $this->write('packages/p1/leaf.ts', "export class Leaf {}\n");
+        $this->write('packages/p1/mid.ts', "import { Leaf } from './leaf';\nexport class Mid extends Leaf {}\n");
+        for ($i = 0; $i < 4; ++$i) {
+            $this->write("packages/p1/f$i.ts", "export function f$i(): void {}\n");
+        }
+        $this->write('packages/shared/x.ts', "export const x = 1;\n");
+        $this->write('packages/shared/y.ts', "import { x } from './x';\nexport const y = x;\n");
+        $pdo = $this->freshTestDatabase();
+        $this->scan($pdo);
+
+        $this->stamp($pdo);
+        $this->write('packages/p1/leaf.ts', "export class Leaf {}\nexport const v = 1;\n");
+        $result = $this->scan($pdo);
+
+        assertSame(['packages/p1/leaf.ts', 'packages/p1/mid.ts', 'packages/shared/x.ts', 'packages/shared/y.ts'], $this->rescanned($pdo));
+        assertSame(4, $result->data['parsed_files']);
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     public function testAnUnchangedTreeRescansNothingAfterAnEdit(): void
     {
         $this->write('tsconfig.json', '{"compilerOptions": {"strict": true}, "include": ["src"]}');

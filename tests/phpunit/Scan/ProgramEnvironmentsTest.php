@@ -60,6 +60,49 @@ final class ProgramEnvironmentsTest extends TestCase
         );
     }
 
+    public function testAReusedContributionOfAFileNoConfigListsIsStaleOnceAConfigsProgramRebuiltAnything(): void
+    {
+        $same = self::hash('same');
+        $entries = [
+            self::entry('p1/edited.ts', 'p1', $same, false),
+            self::entry('p1/reached.ts', 'p1', $same, true, listed: false),
+            self::entry('test/t.ts', 'fallback:test', $same, true, listed: false),
+            self::entry('p1/listed.ts', 'p1', $same, true),
+            self::entry('p1/moved.ts', 'fallback:p1', $same, false, listed: false),
+        ];
+
+        assertSame(
+            ['o:p1/reached.ts' => true, 'o:test/t.ts' => true],
+            ProgramEnvironments::unlistedOwners($entries),
+        );
+    }
+
+    public function testAScanThatRebuiltOnlyFilesOfFallbackProgramsLeavesTheUnlistedFilesAlone(): void
+    {
+        // A fallback program holds its whole group whatever the imports say,
+        // and a config's program is driven from its own root files, so an
+        // edit reaching only fallback files moves nothing.
+        $same = self::hash('same');
+        $entries = [
+            self::entry('test/edited.ts', 'fallback:test', $same, false, listed: false),
+            self::entry('test/t.ts', 'fallback:test', $same, true, listed: false),
+            self::entry('p1/reached.ts', 'p1', $same, true, listed: false),
+        ];
+
+        assertSame([], ProgramEnvironments::unlistedOwners($entries));
+        assertSame([], ProgramEnvironments::unlistedOwners([self::entry('test/t.ts', 'fallback:test', $same, true, listed: false)]));
+    }
+
+    public function testARebuiltContributionNoProgramDescribedRetiresTheUnlistedFilesToo(): void
+    {
+        $entries = [
+            self::entry('broken.ts', null, null, false),
+            self::entry('test/t.ts', 'fallback:test', self::hash('same'), true, listed: false),
+        ];
+
+        assertSame(['o:test/t.ts' => true], ProgramEnvironments::unlistedOwners($entries));
+    }
+
     public function testTheResultsEnvironmentsAreProgramKeysToDigests(): void
     {
         assertSame([], ProgramEnvironments::fromResult(['input_hashes' => []], 'knossos.fake'));
@@ -91,9 +134,9 @@ final class ProgramEnvironmentsTest extends TestCase
         yield 'a null digest' => [['tsconfig.json' => null], 'knossos.fake sent environments whose entry for program "tsconfig.json" is not a lowercase SHA-256 hex digest.'];
     }
 
-    private static function entry(string $path, ?string $program, ?string $environment, bool $fromCache): ContributionCacheEntry
+    private static function entry(string $path, ?string $program, ?string $environment, bool $fromCache, bool $listed = true): ContributionCacheEntry
     {
-        $contribution = new ScanContribution('o:' . $path, contentHash: self::hash($path), reads: [], program: $program, environment: $environment);
+        $contribution = new ScanContribution('o:' . $path, contentHash: self::hash($path), reads: [], program: $program, environment: $environment, listed: $listed);
 
         return new ContributionCacheEntry($path, self::hash($path), 'knossos.typescript', '1', 'cfg', $contribution, [], null, true, $fromCache);
     }

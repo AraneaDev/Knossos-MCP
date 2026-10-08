@@ -810,6 +810,8 @@ export class TypeScriptScanner {
      * `source_files` lists every file of the language the core discovered: a
      * program for files no config includes is rooted on the whole group such
      * a file sits in, and only a listed file's reads can be unattributed.
+     * A contribution for a file no config lists carries `listed: false`,
+     * since whichever program reaches it first emits it.
      *
      * The result's `reads` are what every file of the request shares;
      * `unattributed_reads` are what the programs' other discovered files read
@@ -1271,6 +1273,11 @@ export class TypeScriptScanner {
                 contribution.content_hash = contentHash;
             }
             contribution.program = request.program;
+            // A file no config lists is emitted by whichever program reaches
+            // it first, so its facts follow other files' imports, which no
+            // read of its own records; the core rebuilds it whenever a
+            // program a config describes was rebuilt.
+            if (!owners.has(relative)) contribution.listed = false;
             request.attribution.requested(
                 program,
                 sourceFile,

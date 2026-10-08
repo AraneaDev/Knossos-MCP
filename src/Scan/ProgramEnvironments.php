@@ -27,11 +27,25 @@ use Knossos\Scanner\Worker\WorkerException;
  * could not scan, or one the core left out) has no environment to compare.
  * Contributions cached by a worker from before these fields are never reused:
  * the cache key follows the worker's own files ({@see AnalysisHash}).
+ *
+ * A file no config lists has no program of its own: whichever program reaches
+ * it first through imports emits it, and the fallback program of its group
+ * takes what none did. Its facts therefore follow other files' imports, which
+ * no read of its own records, so the worker marks its contribution `listed:
+ * false`, and once a scan rebuilds anything derived in a program a config
+ * describes, every reused contribution so marked is rebuilt too
+ * ({@see unlistedOwners()}). A change that reaches only files the fallback
+ * emitted cannot move a file between programs: a config's program is driven
+ * from its root files and their imports, which hold no fallback file, and a
+ * fallback program holds its whole group whatever the imports say.
  */
 final class ProgramEnvironments
 {
     /** The result field holding the environment of every program a request built. */
     public const FIELD = 'environments';
+
+    /** What the key of a program built for files no config describes starts with. */
+    public const FALLBACK_PROGRAM_PREFIX = 'fallback:';
 
     private function __construct() {}
 
@@ -91,6 +105,39 @@ final class ProgramEnvironments
             $program = $contribution->program;
             if ($program !== null && array_key_exists($program, $current) && $contribution->environment !== $current[$program]) {
                 $stale[$contribution->ownerKey] = true;
+            }
+        }
+
+        return $stale;
+    }
+
+    /**
+     * The reused owners of files no config lists, once this scan rebuilt a
+     * contribution in a program a config describes.
+     *
+     * A rebuilt contribution with no program at all counts as well: a file
+     * the worker could not scan says nothing about where the others belong.
+     *
+     * @param list<ContributionCacheEntry> $entries one scanner's cache entries from this scan
+     * @return array<string, true>
+     */
+    public static function unlistedOwners(array $entries): array
+    {
+        $rebuilt = false;
+        foreach ($entries as $entry) {
+            $program = $entry->contribution->program;
+            if (!$entry->fromCache && ($program === null || !str_starts_with($program, self::FALLBACK_PROGRAM_PREFIX))) {
+                $rebuilt = true;
+                break;
+            }
+        }
+        if (!$rebuilt) {
+            return [];
+        }
+        $stale = [];
+        foreach ($entries as $entry) {
+            if ($entry->fromCache && !$entry->contribution->listed) {
+                $stale[$entry->contribution->ownerKey] = true;
             }
         }
 
