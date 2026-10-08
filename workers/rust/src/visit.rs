@@ -1597,47 +1597,44 @@ fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
-/// Whether a `cfg` predicate can hold only when `test` is set.
-///
-/// `test` does; `all(..)` does when any of its parts does; `any(..)` does
-/// when every one of its (at least one) parts does; `not(p)` does when `p`
-/// holds in every build without `test` ([`holds_outside_test`]). Anything else, `unix` or
-/// `feature = "x"`, says nothing about tests.
+/// Whether a `cfg` predicate can hold only when `test` is set (see
+/// [`test_gate`]).
 fn requires_test(predicate: &syn::Meta) -> bool {
-    match predicate {
-        syn::Meta::Path(path) => path.is_ident("test"),
-        syn::Meta::List(list) => {
-            let parts = cfg_parts(list);
-            if list.path.is_ident("all") {
-                parts.iter().any(requires_test)
-            } else if list.path.is_ident("any") {
-                !parts.is_empty() && parts.iter().all(requires_test)
-            } else if list.path.is_ident("not") {
-                parts.len() == 1 && holds_outside_test(&parts[0])
-            } else {
-                false
-            }
-        }
-        syn::Meta::NameValue(_) => false,
-    }
+    test_gate(predicate).0
 }
 
-/// Whether a `cfg` predicate holds in every build without `test`, so its
-/// negation can hold only under `test`: `not(test)` does, as does
-/// `any(not(test), unix)`, while `all(not(test), unix)` does not.
-fn holds_outside_test(predicate: &syn::Meta) -> bool {
+/// What a `cfg` predicate says about tests, as two answers: whether it can
+/// hold only when `test` is set, and whether it holds in every build without
+/// `test`.
+///
+/// `test` holds only under `test`. `all(..)` holds only under `test` when
+/// any of its parts does, and outside tests when every part does; `any(..)`
+/// holds only under `test` when every one of its (at least one) parts does,
+/// and outside tests when any part does. `not(p)` swaps the two answers:
+/// `not(test)` holds in every build without `test`, `not(not(test))` only
+/// under it. Anything else, `unix` or `feature = "test"`, says neither.
+fn test_gate(predicate: &syn::Meta) -> (bool, bool) {
     let syn::Meta::List(list) = predicate else {
-        return false;
+        return (
+            matches!(predicate, syn::Meta::Path(path) if path.is_ident("test")),
+            false,
+        );
     };
-    let parts = cfg_parts(list);
+    let parts: Vec<(bool, bool)> = cfg_parts(list).iter().map(test_gate).collect();
     if list.path.is_ident("all") {
-        parts.iter().all(holds_outside_test)
+        (
+            parts.iter().any(|part| part.0),
+            parts.iter().all(|part| part.1),
+        )
     } else if list.path.is_ident("any") {
-        parts.iter().any(holds_outside_test)
-    } else if list.path.is_ident("not") {
-        parts.len() == 1 && requires_test(&parts[0])
+        (
+            !parts.is_empty() && parts.iter().all(|part| part.0),
+            parts.iter().any(|part| part.1),
+        )
+    } else if let ([(requires, outside)], true) = (parts.as_slice(), list.path.is_ident("not")) {
+        (*outside, *requires)
     } else {
-        false
+        (false, false)
     }
 }
 
@@ -3163,6 +3160,8 @@ mod tests {
             "any(test, all(test, unix))",
             "not(not(test))",
             "not(any(not(test), unix))",
+            "all(any(test, all(test, unix)), not(any(not(test), windows)))",
+            "not(all(not(test), all()))",
         ] {
             assert!(requires(test_only), "{test_only}");
         }
@@ -3170,6 +3169,9 @@ mod tests {
             "not(test)",
             "any(test, feature = \"x\")",
             "all(not(test), unix)",
+            "not(all(not(test), unix))",
+            "any(not(not(test)), unix)",
+            "not(test, unix)",
             "any()",
             "feature = \"test\"",
             "unix",
