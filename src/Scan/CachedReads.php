@@ -16,7 +16,7 @@ use PDO;
 final readonly class CachedReads
 {
     /**
-     * @param array<string, array{scanner_id: string, file_path: string, content_hash: string, scanner_version: string, configuration_hash: string, read_attribution: bool, read_group: ?string}> $rows keyed by owner key
+     * @param array<string, array{scanner_id: string, file_path: string, content_hash: string, scanner_version: string, configuration_hash: string, read_attribution: bool, read_group: ?string, reads_incomplete?: bool}> $rows keyed by owner key
      * @param array<string, array<string, ?string>> $ownerReads owner key to its own reads
      * @param array<string, array<string, ?string>> $groupReads group id to its reads
      */
@@ -45,8 +45,10 @@ final readonly class CachedReads
                 'content_hash' => (string) $row['content_hash'],
                 'scanner_version' => (string) $row['scanner_version'],
                 'configuration_hash' => (string) $row['configuration_hash'],
-                'read_attribution' => (int) $row['read_attribution'] === 1,
+                'read_attribution' => (int) $row['read_attribution'] >= 1,
                 'read_group' => $row['read_group'] === null ? null : (string) $row['read_group'],
+                // Stored as 2 ({@see \Knossos\Reconciliation\ContributionCacheEntry::$readsIncomplete}).
+                'reads_incomplete' => (int) $row['read_attribution'] === 2,
             ];
         }
         if (!$withReads) {

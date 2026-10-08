@@ -19,7 +19,10 @@ namespace Knossos\Scan;
  * files is deleted: the program that held a deleted global may not be built
  * again in this scan to say so. A scanner whose files resolve in a layout
  * that marker files decide is rebuilt the same way when a cached marker is
- * deleted, since none of the files it renames need have read it.
+ * deleted, since none of the files it renames need have read it. A row
+ * whose reads cannot cover what its file stands for (a file left out, or one
+ * the worker failed on) is rebuilt on any change its scanner sees, since its
+ * readers named it instead of what it re-exports.
  */
 final class ReadSetInvalidator
 {
@@ -73,6 +76,7 @@ final class ReadSetInvalidator
         $ownersOfFile = [];
         $rowsOfScanner = [];
         $unattributed = [];
+        $incompleteOf = [];
         $deletedFrom = [];
         foreach ($cached->rows as $owner => $row) {
             $owner = (string) $owner;
@@ -87,6 +91,8 @@ final class ReadSetInvalidator
             $rowsOfScanner[$row['scanner_id']][] = $owner;
             if (!$row['read_attribution']) {
                 $unattributed[$row['scanner_id']] = true;
+            } elseif ($row['reads_incomplete'] ?? false) {
+                $incompleteOf[$row['scanner_id']][] = $owner;
             }
             $reads = $cached->ownerReads[$owner] ?? [];
             self::collectChanged($reads, $unchanged, $changed);
@@ -117,7 +123,9 @@ final class ReadSetInvalidator
         $expandedGroups = [];
         $rebuiltScanners = [];
         $queue = array_map('strval', array_keys($changed));
-        $invalidate = static function (string $owner) use ($cached, &$invalidated, &$changed, &$queue): bool {
+        // The first owner a scanner rebuilds also rebuilds its rows whose
+        // reads are incomplete, so their readers are reached in turn.
+        $invalidate = static function (string $owner) use ($cached, $incompleteOf, &$invalidated, &$changed, &$queue, &$invalidate): bool {
             if (isset($invalidated[$owner])) {
                 return false;
             }
@@ -126,6 +134,9 @@ final class ReadSetInvalidator
             if (!isset($changed[$ownPath])) {
                 $changed[$ownPath] = true;
                 $queue[] = $ownPath;
+            }
+            foreach ($incompleteOf[$cached->rows[$owner]['scanner_id']] ?? [] as $incomplete) {
+                $invalidate($incomplete);
             }
 
             return true;
@@ -145,6 +156,9 @@ final class ReadSetInvalidator
         foreach ($addedByScanner as $scanner => $paths) {
             if ($paths !== [] && (isset($unattributed[(string) $scanner]) || isset($addedFilesAffectAll[(string) $scanner]))) {
                 $rebuildScanner((string) $scanner);
+            }
+            foreach ($paths === [] ? [] : $incompleteOf[(string) $scanner] ?? [] as $incomplete) {
+                $invalidate($incomplete);
             }
         }
         foreach ($deletedFrom as $scanner => $true) {

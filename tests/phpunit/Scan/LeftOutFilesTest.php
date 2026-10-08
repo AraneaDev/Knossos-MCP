@@ -32,6 +32,8 @@ final class LeftOutFilesTest extends TestCase
         assertSame('WORKER_FRAME_TOO_LARGE', $contribution->diagnostics[0]->code);
         assertContains("the scanner's answer for dist/a.js alone was too large. Frame too large.", $contribution->diagnostics[0]->message);
         assertSame(['left-out:abc', 'left-out:abc'], array_map(static fn($entry): string => $entry->configurationHash, $leftOut->cacheEntries()));
+        // Its reads cannot stand in for what the file re-exports.
+        assertSame([true, true], array_map(static fn($entry): bool => $entry->readsIncomplete, $leftOut->cacheEntries()));
     }
 
     public function testAFileWhoseBytesChangedIsLeftOutButNotCached(): void

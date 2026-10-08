@@ -283,6 +283,34 @@ final class PythonReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * `m.py` re-exports `Thing` from `n.py` and declares so much that its own
+     * answer outgrows a frame, so it is left out and its row names nothing it
+     * read. `app.py` names only `m.py`, relying on that row: a change to `n.py`
+     * must still reach it.
+     */
+    public function testALeftOutModuleIsRebuiltWithItsReadersOnAnyPythonChange(): void
+    {
+        $functions = '';
+        for ($index = 0; $index < 12_000; ++$index) {
+            $functions .= sprintf("\n\ndef f%05d():\n    pass\n", $index);
+        }
+        $this->write('n.py', "class Thing:\n    pass\n");
+        $this->write('m.py', "from n import Thing\n" . $functions);
+        $this->write('app.py', "from m import Thing\n\n\ndef a():\n    return Thing\n");
+        $this->write('other.py', "def unrelated():\n    return 2\n");
+        $pdo = $this->freshTestDatabase();
+        $this->scan($pdo);
+        assertSame('1', (string) $pdo->query("SELECT COUNT(*) FROM diagnostics WHERE message LIKE 'Left out of the graph%m.py%'")->fetchColumn());
+        $this->stampCacheRows($pdo);
+
+        $this->write('n.py', "def Thing():\n    return 1\n");
+        $this->scan($pdo);
+
+        assertSame(['app.py', 'm.py', 'n.py'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     public function testEditingTheRequirementsRebuildsEveryPythonFile(): void
     {
         $this->writeSourceRoots();

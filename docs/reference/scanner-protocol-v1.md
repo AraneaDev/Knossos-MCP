@@ -250,6 +250,13 @@ file the core never discovered, since no contribution names them. The
 `unattributed_reads` map can outgrow one line as `reads` can, and travels in
 `scan/input_hashes` parts the same way, under its own field name.
 
+A contribution that carries no facts and an error, because the worker could
+not describe its file, and a file the core left out of the graph because its
+answer was too large, cannot name what the file re-exports, though an importer
+may name only the file and rely on it. The core therefore rebuilds such a
+contribution, and everything that read it, on any change its worker's
+languages see.
+
 The packaged Python worker uses `unattributed_reads` for the reads a module
 makes for itself. A module's declarations include what it re-exports, so an importer
 that uses them depends on the re-exported modules too. When the module is one

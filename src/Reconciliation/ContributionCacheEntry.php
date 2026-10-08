@@ -15,6 +15,11 @@ use Knossos\Scanner\Protocol\{RelativePath, ScanContribution};
  * shared by every file of the same worker request, `$readAttribution` says the
  * worker itself reported the per-file reads, and `$fromCache` marks an entry
  * carried over unchanged so the writer leaves its stored row alone.
+ * `$readsIncomplete` marks an attributed entry whose reads cannot cover what
+ * the file stands for, because it carries no facts: a file left out of the
+ * graph, or one its worker failed on. A reader of such a file names the file
+ * instead of what it re-exports, so the entry is rebuilt on any change its
+ * scanner sees ({@see \Knossos\Scan\ReadSetInvalidator}).
  */
 final readonly class ContributionCacheEntry
 {
@@ -30,6 +35,7 @@ final readonly class ContributionCacheEntry
         public ?string $readGroup = null,
         public bool $readAttribution = false,
         public bool $fromCache = false,
+        public bool $readsIncomplete = false,
     ) {
         foreach ([$filePath, $contentHash, $scannerId, $scannerVersion, $configurationHash] as $value) {
             if ($value === '') {

@@ -157,6 +157,34 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
         assertSame(['core/__init__.py'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $markerGone, self::noProbe())));
     }
 
+    /**
+     * A row stored with reads that cannot cover what it stands for (a file
+     * left out, or one the worker failed on) is rebuilt on any change its
+     * scanner sees, and its readers with it: they named the row instead of
+     * what it re-exports. A change only another scanner sees leaves it.
+     */
+    #[Group('scan')]
+    public function testARowWithIncompleteReadsIsRebuiltOnAnyChangeItsScannerSees(): void
+    {
+        $incomplete = ['reads_incomplete' => true] + self::row('m.py', [], 'knossos.python');
+        $cached = self::cached([
+            'app.py' => self::row('app.py', ['m.py' => self::hash('m.py')], 'knossos.python'),
+            'm.py' => $incomplete,
+            'n.py' => self::row('n.py', [], 'knossos.python'),
+            'other.py' => self::row('other.py', [], 'knossos.python'),
+            'p.php' => self::row('p.php', ['app.py' => self::hash('app.py')]),
+            'q.php' => self::row('q.php', []),
+        ]);
+        $all = ['app.py', 'm.py', 'n.py', 'other.py', 'p.php', 'q.php'];
+        $nEdited = ['n.py' => self::hash('edited')] + self::discovered($all);
+        $phpEdited = ['q.php' => self::hash('edited')] + self::discovered($all);
+
+        assertSame(['app.py', 'm.py', 'n.py', 'p.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $nEdited, self::noProbe())));
+        assertSame(['q.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, $phpEdited, self::noProbe())));
+        assertSame(['app.py', 'm.py', 'p.php'], self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered($all), self::noProbe(), ['knossos.python' => ['new.py']])));
+        assertSame([], self::sortedKeys(ReadSetInvalidator::invalidated($cached, self::discovered($all), self::noProbe())));
+    }
+
     /** An owner the caller already knows is stale is rebuilt, and so are its readers. */
     #[Group('scan')]
     public function testAForcedOwnerReachesItsReaders(): void
@@ -345,13 +373,22 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
     {
         [$pdo, , $ids] = $this->storeFixture();
         $pdo->exec("INSERT INTO contribution_cache (project_id, owner_key, file_path, content_hash, scanner_id, scanner_version, configuration_hash, payload_json, updated_at, read_attribution, read_group)
-            VALUES ('{$ids['project']}', 'a.ts', 'a.ts', '" . self::hash('a') . "', 'knossos.typescript', '1', 'c', '{}', 'now', 1, 'G')");
+            VALUES ('{$ids['project']}', 'a.ts', 'a.ts', '" . self::hash('a') . "', 'knossos.typescript', '1', 'c', '{}', 'now', 1, 'G'),
+            ('{$ids['project']}', 'm.py', 'm.py', '" . self::hash('m') . "', 'knossos.python', '1', 'c', '{}', 'now', 2, NULL)");
         $pdo->exec("INSERT INTO contribution_reads (project_id, owner_key, read_path, read_hash) VALUES ('{$ids['project']}', 'a.ts', 'b.ts', NULL)");
         $pdo->exec("INSERT INTO contribution_read_groups (project_id, group_id, read_path, read_hash) VALUES ('{$ids['project']}', 'G', 'tsconfig.json', '" . self::hash('t') . "')");
 
         $loaded = CachedReads::load($pdo, $ids['project']);
+        $rows = $loaded->rows;
+        ksort($rows);
+        $byScannerPath = $loaded->byScannerPath();
+        ksort($byScannerPath);
 
-        assertSame(['a.ts' => ['scanner_id' => 'knossos.typescript', 'file_path' => 'a.ts', 'content_hash' => self::hash('a'), 'scanner_version' => '1', 'configuration_hash' => 'c', 'read_attribution' => true, 'read_group' => 'G']], $loaded->rows);
+        assertSame([
+            'a.ts' => ['scanner_id' => 'knossos.typescript', 'file_path' => 'a.ts', 'content_hash' => self::hash('a'), 'scanner_version' => '1', 'configuration_hash' => 'c', 'read_attribution' => true, 'read_group' => 'G', 'reads_incomplete' => false],
+            // 2: attributed, with reads that cannot cover the file.
+            'm.py' => ['scanner_id' => 'knossos.python', 'file_path' => 'm.py', 'content_hash' => self::hash('m'), 'scanner_version' => '1', 'configuration_hash' => 'c', 'read_attribution' => true, 'read_group' => null, 'reads_incomplete' => true],
+        ], $rows);
         assertSame(['a.ts' => ['b.ts' => null]], $loaded->ownerReads);
         assertSame(['G' => ['tsconfig.json' => self::hash('t')]], $loaded->groupReads);
         assertSame([], CachedReads::load($pdo, 'another-project')->rows);
@@ -359,7 +396,7 @@ final class ReadSetInvalidatorTest extends KnossosTestCase
         assertSame($loaded->rows, $withoutReads->rows);
         assertSame([], $withoutReads->ownerReads);
         assertSame([], $withoutReads->groupReads);
-        assertSame(["knossos.typescript\0a.ts" => ['owner_key' => 'a.ts'] + $loaded->rows['a.ts']], $loaded->byScannerPath());
+        assertSame(["knossos.python\0m.py" => ['owner_key' => 'm.py'] + $loaded->rows['m.py'], "knossos.typescript\0a.ts" => ['owner_key' => 'a.ts'] + $loaded->rows['a.ts']], $byScannerPath);
     }
 
     /** @param array<string, array{scanner_id: string, file_path: string, content_hash: string, read_attribution: bool, read_group: ?string, reads: array<string, ?string>}> $rows */

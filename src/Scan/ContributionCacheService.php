@@ -191,8 +191,9 @@ final readonly class ContributionCacheService
                 $contribution,
                 $cachedReads?->ownerReads[$owner] ?? [],
                 $stored['read_group'] ?? (isset($row['read_group']) ? (string) $row['read_group'] : null),
-                $stored['read_attribution'] ?? ((int) ($row['read_attribution'] ?? 0) === 1),
+                $stored['read_attribution'] ?? ((int) ($row['read_attribution'] ?? 0) >= 1),
                 true,
+                $stored['reads_incomplete'] ?? ((int) ($row['read_attribution'] ?? 0) === 2),
             );
         } catch (InvalidArgumentException) {
             return null;
@@ -381,6 +382,8 @@ final readonly class ContributionCacheService
      */
     private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution, string $cacheVersion, ?array $reads = null): ContributionCacheEntry
     {
+        $attributed = $reads['attributed'] ?? false;
+
         return new ContributionCacheEntry(
             $file->relativePath,
             $file->contentHash,
@@ -390,8 +393,28 @@ final readonly class ContributionCacheService
             $contribution,
             $reads['reads'] ?? [],
             $reads['group'] ?? null,
-            $reads['attributed'] ?? false,
+            $attributed,
+            readsIncomplete: $attributed && self::failedWithoutFacts($contribution),
         );
+    }
+
+    /**
+     * Whether a contribution carries no facts and an error says why: the
+     * worker could not describe the file, so what the file re-exports was
+     * read for nobody, and its reads cannot stand in for it.
+     */
+    private static function failedWithoutFacts(ScanContribution $contribution): bool
+    {
+        if ($contribution->nodes !== [] || $contribution->edges !== []) {
+            return false;
+        }
+        foreach ($contribution->diagnostics as $diagnostic) {
+            if ($diagnostic->severity === 'error') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

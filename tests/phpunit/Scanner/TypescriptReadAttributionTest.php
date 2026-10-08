@@ -114,6 +114,32 @@ final class TypescriptReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * `src/m.ts` re-exports `Thing` from `src/n.ts` and declares so much that
+     * its own answer outgrows a frame, so it is left out and its row names
+     * nothing it read. A change to `src/n.ts` still reaches its importer.
+     */
+    public function testALeftOutModuleIsRebuiltWithItsReadersOnAnyTypescriptChange(): void
+    {
+        $functions = '';
+        for ($index = 0; $index < 12_000; ++$index) {
+            $functions .= sprintf("export function f%05d(): void {}\n", $index);
+        }
+        $this->write('src/n.ts', "export class Thing {}\n");
+        $this->write('src/m.ts', "export { Thing } from './n';\n" . $functions);
+        $this->write('src/use.ts', "import { Thing } from './m';\nexport const used = Thing;\n");
+        $pdo = $this->freshTestDatabase();
+        $this->scan($pdo);
+        assertSame('1', (string) $pdo->query("SELECT COUNT(*) FROM diagnostics WHERE message LIKE 'Left out of the graph%src/m.ts%'")->fetchColumn());
+        $this->stampCacheRows($pdo);
+
+        $this->write('src/n.ts', "export function Thing(): number {\n    return 1;\n}\n");
+        $this->scan($pdo);
+
+        self::assertContains('src/use.ts', $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     public function testEveryContributionIsStoredAsAttributed(): void
     {
         $pdo = $this->freshTestDatabase();
