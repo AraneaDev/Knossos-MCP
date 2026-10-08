@@ -7,6 +7,8 @@ import { dirname, join } from "node:path";
 import { URL } from "node:url";
 
 import { TypeScriptScanner } from "../scanner.js";
+import { withoutAbsentAliasConfigs } from "./support/absent-alias-configs.mjs";
+import { absentRequireCandidates } from "./support/require-candidates.mjs";
 
 const created = [];
 
@@ -75,7 +77,7 @@ describe("input_hashes: a requested file whose read fails", () => {
         // src/notes.txt was refused by its name and read nothing; bin/plain was
         // refused on what its first line says, so it is reported by the hash of
         // what that verdict rested on.
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "bin/plain": sha256("echo not a script\n"),
             "src/big.ts": null,
             "src/dir.ts": null,
@@ -106,7 +108,9 @@ describe("input_hashes: a requested file whose read fails", () => {
 
         const { result, byOwner } = scan(root, ["bin/tool"]);
 
-        expect(result.input_hashes).toEqual({ "bin/tool": null });
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            "bin/tool": null,
+        });
         expect(byOwner["bin/tool"].nodes).toEqual([]);
     });
 
@@ -151,7 +155,9 @@ describe("input_hashes: a requested file whose read fails", () => {
             messages: [`Not a regular file: ${join(root, "bin/tool")}`],
         });
     }, 30_000);
+});
 
+describe("input_hashes: a requested file swapped for a link", () => {
     it("emits a requested file swapped for a link to another file under its own key, as a failed read", () => {
         // Reproduction: src/b.ts became a link to src/c.ts. The file was read
         // under c's realpath and emitted as c, so the core stood an empty
@@ -170,7 +176,9 @@ describe("input_hashes: a requested file whose read fails", () => {
         expect(byOwner["src/b.ts"].diagnostics[0].message).toBe(
             "TypeScript input no longer resolves to itself: src/b.ts",
         );
-        expect(result.input_hashes).toEqual({ "src/b.ts": null });
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            "src/b.ts": null,
+        });
     });
 });
 
@@ -199,7 +207,9 @@ describe("input_hashes: an extensionless script refused on its shebang", () => {
 
         const { result, byOwner } = scan(root, ["bin/tool"]);
 
-        expect(result.input_hashes).toEqual({ "bin/tool": sha256(python) });
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            "bin/tool": sha256(python),
+        });
         expect(byOwner["bin/tool"].diagnostics[0].message).toBe(
             "Unsupported TypeScript input: bin/tool",
         );
@@ -227,7 +237,9 @@ describe("input_hashes: an extensionless script refused on its shebang", () => {
             }
 
             expect(scanned.byOwner["bin/tool"].nodes).toEqual([]);
-            expect(scanned.result.input_hashes).toEqual({
+            expect(
+                withoutAbsentAliasConfigs(scanned.result.input_hashes),
+            ).toEqual({
                 "bin/tool": restored === undefined ? sha256(python) : null,
             });
             expect(scanned.result.input_hashes["bin/tool"]).not.toBe(
@@ -260,7 +272,7 @@ describe("input_hashes: an extensionless script refused on its shebang", () => {
             spy.mockRestore();
         }
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "bin/large": null,
             "bin/tool": null,
         });
@@ -278,7 +290,7 @@ describe("a requested file whose extension is not in lower case", () => {
 
         const { result, byOwner } = scan(root, ["src/Bar.Tsx", "src/FOO.TS"]);
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "src/Bar.Tsx": sha256("export const Bar = () => null;\n"),
             "src/FOO.TS": sha256("export class Foo {}\n"),
         });
@@ -303,7 +315,7 @@ describe("a requested file whose extension is not in lower case", () => {
 
         const { result, byOwner } = scan(root, ["src/x.knossos-alias.ts"]);
 
-        expect(result.input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
             "src/x.knossos-alias.ts": sha256("export class X {}\n"),
         });
         expect(Object.keys(byOwner)).toEqual(["src/x.knossos-alias.ts"]);
@@ -365,7 +377,10 @@ describe("input_hashes: a file that grows past the cap before the host reads it"
         }
 
         expect(bytesOfB).toBe(101);
-        expect(result.input_hashes).toEqual({
+        // With b.ts out of the program, the import is looked for where a
+        // `require` would load it, up to b.ts, which is there.
+        expect(withoutAbsentAliasConfigs(result.input_hashes)).toEqual({
+            ...absentRequireCandidates("src/b", ".ts"),
             "src/a.ts": sha256(importer),
             "src/b.ts": null,
         });

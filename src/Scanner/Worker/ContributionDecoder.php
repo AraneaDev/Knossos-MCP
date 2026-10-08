@@ -44,6 +44,9 @@ final class ContributionDecoder
                 array_map(self::diagnostic(...), $diagnostics),
                 self::contentHash($data),
                 array_key_exists('reads', $data) ? ReadsMap::decode($data['reads']) : null,
+                array_key_exists('program', $data) ? self::string($data, 'program') : null,
+                array_key_exists('environment', $data) ? self::string($data, 'environment') : null,
+                !array_key_exists('listed', $data) || self::bool($data, 'listed'),
             );
         } catch (WorkerException $error) {
             throw $error;
@@ -161,6 +164,20 @@ final class ContributionDecoder
     {
         if (!isset($data[$field]) || !is_string($data[$field]) || $data[$field] === '') {
             throw new WorkerException('WORKER_CONTRIBUTION_INVALID', sprintf('%s must be a non-empty string.', $field));
+        }
+
+        return $data[$field];
+    }
+
+    /**
+     * A field that is present must hold a boolean.
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function bool(array $data, string $field): bool
+    {
+        if (!is_bool($data[$field] ?? null)) {
+            throw new WorkerException('WORKER_CONTRIBUTION_INVALID', sprintf('%s must be a boolean.', $field));
         }
 
         return $data[$field];

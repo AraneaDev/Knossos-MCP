@@ -44,6 +44,17 @@ final class Protocol
      */
     public const CAPABILITY_READ_ATTRIBUTION = 'read_attribution';
 
+    /**
+     * A worker declaring this says that a file added in one of its languages
+     * can change what every file it already scanned produced, as a global
+     * script declares names any file may use, so no read could have named it.
+     * An added or deleted file then rebuilds every cached contribution of
+     * that worker, and each contribution carries its `program` and that
+     * program's `environment` so a reused one whose program now declares other
+     * globals is rebuilt too; an ordinary edit stays as precise as its reads.
+     */
+    public const CAPABILITY_ADDED_FILES_AFFECT_ALL = 'added_files_affect_all';
+
     public const METHOD_INITIALIZE = 'initialize';
     public const METHOD_SCAN = 'scan';
     public const METHOD_CANCEL = 'cancel';

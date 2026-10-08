@@ -118,8 +118,9 @@ final class IncrementalReadsScanTest extends KnossosTestCase
 
     /**
      * A file added where an import already pointed changes what the importer
-     * resolves to, and a worker that does not attribute its reads gives no
-     * other way to tell, so every file of its scanner is rebuilt.
+     * resolves to. The importer recorded the path as probed and absent, and a
+     * TypeScript file added anywhere may declare globals any file uses, so the
+     * worker says added files affect every file and all of them are rebuilt.
      */
     public function testAnAddedTypescriptFileThatAnExistingFileImportsMatchesAFullScan(): void
     {
@@ -142,8 +143,8 @@ final class IncrementalReadsScanTest extends KnossosTestCase
     /**
      * A file the previous scan saw but could not cache is not an added file:
      * only it is rescanned, and once it is cached the next scan changes
-     * nothing. Edited while it has no cache row, it rebuilds its scanner like
-     * an added file would.
+     * nothing. Edited while it has no cache row, it counts as added, and an
+     * added TypeScript file rebuilds every file of its scanner.
      */
     public function testAFileTheLastScanCouldNotCacheIsRescannedAloneUntilItChanges(): void
     {

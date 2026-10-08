@@ -905,4 +905,87 @@ final class IgnoreMatcherTest extends TestCase
         assertSame('PROJECT_CONFIG_INVALID: ignore pattern "!\/[z-a]\/ " is not a valid glob.', $message('!/[z-a]/ '));
         assertSame("PROJECT_CONFIG_INVALID: ignore pattern '[\xff-a]' is not a valid glob.", $message("[\xff-a]"));
     }
+    /**
+     * A worker applies the exported rules to one path at a time, so the rules
+     * applied to a path alone must answer as matches() does.
+     *
+     * @param list<string> $patterns
+     */
+    #[DataProvider('workerRuleCases')]
+    public function testWorkerRulesAnswerAsMatchesDoes(array $patterns, string $path): void
+    {
+        $matcher = new IgnoreMatcher($patterns);
+
+        assertSame($matcher->matches($path), self::matchedByWorkerRules($matcher->workerRules(), $path));
+    }
+
+    /** @return iterable<string, array{0: list<string>, 1: string}> */
+    public static function workerRuleCases(): iterable
+    {
+        $patterns = ['legacy/**', '*.gen.ts', '!keep.gen.ts', 'docs/[[:alpha:]]*.md', 'tmp?', 'a/**/b', '/rooted'];
+        $paths = [
+            'src/a.ts', 'venv/lib.js', 'pkg/venv', 'coverage/x.py', '.knossos-ci/x.ts', 'public/build/app.js',
+            'public/buildings/app.js', 'lib/x.min.js', 'site/.vitepress/cache/x.js', '.vitepress/cache', 'legacy',
+            'legacy/old.ts', 'src/legacy/old.ts', 'src/x.gen.ts', 'src/keep.gen.ts', 'docs/readme.md', 'docs/1.md',
+            'tmp1', 'src/tmp2/x.ts', 'tmp12', 'a/b', 'a/x/y/b', 'rooted', 'src/rooted', '_ide_helper.php',
+        ];
+        foreach ($paths as $path) {
+            yield $path => [$patterns, $path];
+        }
+    }
+
+    /**
+     * The rules as a worker reads them: a segment or segment prefix anywhere, a
+     * path prefix, a file-name suffix, a pair of segments, then the patterns,
+     * the last match deciding.
+     *
+     * @param array{segments: list<string>, prefixes: list<string>, sequences: list<array{0: string, 1: string}>, suffixes: list<string>, path_prefixes: list<string>, patterns: list<array{regex: string, anchored: bool, negated: bool}>} $rules
+     */
+    private static function matchedByWorkerRules(array $rules, string $path): bool
+    {
+        $segments = explode('/', $path);
+        foreach ($segments as $index => $segment) {
+            if (in_array($segment, $rules['segments'], true)) {
+                return true;
+            }
+            foreach ($rules['prefixes'] as $prefix) {
+                if (str_starts_with($segment, $prefix)) {
+                    return true;
+                }
+            }
+            foreach ($rules['sequences'] as [$first, $second]) {
+                if ($segment === $first && ($segments[$index + 1] ?? null) === $second) {
+                    return true;
+                }
+            }
+        }
+        foreach ($rules['path_prefixes'] as $prefix) {
+            if ($path === $prefix || str_starts_with($path, $prefix . '/')) {
+                return true;
+            }
+        }
+        foreach ($rules['suffixes'] as $suffix) {
+            if (str_ends_with((string) end($segments), $suffix)) {
+                return true;
+            }
+        }
+        $ignored = false;
+        foreach ($rules['patterns'] as $pattern) {
+            $matched = $pattern['anchored']
+                ? preg_match('#^' . $pattern['regex'] . '(?:/.*)?$#', $path) === 1
+                : array_filter($segments, static fn(string $segment): bool => preg_match('#^' . $pattern['regex'] . '$#', $segment) === 1) !== [];
+            if ($matched) {
+                $ignored = !$pattern['negated'];
+            }
+        }
+
+        return $ignored;
+    }
+
+    public function testWorkerRulesSpellOutPosixClasses(): void
+    {
+        $rules = (new IgnoreMatcher(['[[:digit:]]*.log']))->workerRules();
+
+        assertSame([['regex' => '[0-9][^/]*\\.log', 'anchored' => false, 'negated' => false]], $rules['patterns']);
+    }
 }

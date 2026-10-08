@@ -26,6 +26,14 @@ final readonly class ScanContribution implements JsonSerializable
      * @param ?array<string, ?string> $reads the files these facts were derived
      *        from, each a SHA-256 or null for a path probed and not found; null
      *        when the worker does not report it
+     * @param ?string $program the program these facts were derived in, as the
+     *        worker names it; null when the worker does not report one
+     * @param ?string $environment lowercase SHA-256 hex digest of the global
+     *        declarations that program held; null when the worker does not report it
+     * @param bool $listed whether a config of the worker's language lists the
+     *        file in the program its facts came from; false for a file that
+     *        whichever program reached it first emitted, whose facts follow
+     *        other files' imports. True when the worker does not say.
      */
     public function __construct(
         public string $ownerKey,
@@ -34,12 +42,21 @@ final readonly class ScanContribution implements JsonSerializable
         public array $diagnostics = [],
         public ?string $contentHash = null,
         public ?array $reads = null,
+        public ?string $program = null,
+        public ?string $environment = null,
+        public bool $listed = true,
     ) {
         if ($ownerKey === '') {
             throw new InvalidArgumentException('Contribution owner key must not be empty.');
         }
         if ($contentHash !== null && preg_match('/\A[0-9a-f]{64}\z/', $contentHash) !== 1) {
             throw new InvalidArgumentException('Contribution content hash must be lowercase SHA-256 hex.');
+        }
+        if ($program === '') {
+            throw new InvalidArgumentException('Contribution program must not be empty.');
+        }
+        if ($environment !== null && preg_match('/\A[0-9a-f]{64}\z/', $environment) !== 1) {
+            throw new InvalidArgumentException('Contribution environment must be lowercase SHA-256 hex.');
         }
 
         self::assertInstances($nodes, NodeFact::class, 'nodes');
@@ -68,6 +85,19 @@ final readonly class ScanContribution implements JsonSerializable
         // An object even when empty, so a file that read nothing else survives the cache.
         if ($this->reads !== null) {
             $wire['reads'] = (object) $this->reads;
+        }
+        // Kept in the cached payload, so a reused contribution says which
+        // program it came from and what that program declared globally.
+        if ($this->program !== null) {
+            $wire['program'] = $this->program;
+        }
+        if ($this->environment !== null) {
+            $wire['environment'] = $this->environment;
+        }
+        // Only the exception travels: a cached payload of a listed file keeps
+        // its bytes, and a reused unlisted one says so.
+        if (!$this->listed) {
+            $wire['listed'] = false;
         }
 
         return $wire;

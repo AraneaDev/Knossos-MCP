@@ -353,6 +353,37 @@ TOML);
     }
 
     /**
+     * The TypeScript worker attributes its reads, but a file added to it may
+     * declare globals any file uses, so an added file still rebuilds every
+     * cached TypeScript file, while an edit rebuilds only what read it.
+     */
+    public function testAnAddedFileRebuildsEveryRowOfAScannerWhoseAddedFilesAffectAll(): void
+    {
+        $pdo = $this->createSchema();
+        $planner = new ScanPlanner($pdo, ['/tmp']);
+        $root = '/tmp/attributed-project';
+        $projectId = StableId::project('root:' . $root);
+        $pdo->prepare("INSERT INTO projects(id, name, root_realpath, active_scan_id, created_at, updated_at) VALUES (?, 'attributed', ?, 'scan-existing', 'now', 'now')")
+            ->execute([$projectId, $root]);
+        $insert = $pdo->prepare("INSERT INTO contribution_cache(project_id, owner_key, file_path, content_hash, scanner_id, scanner_version, configuration_hash, payload_json, updated_at, read_attribution) VALUES (?, ?, ?, ?, 'knossos.typescript', '1.0', '', '{}', 'now', 1)");
+        $files = [];
+        foreach (['a.ts', 'b.ts', 'globals.ts'] as $path) {
+            $files[] = new DiscoveredFile($path, $root . '/' . $path, 'typescript', 10, 0, hash('sha256', $path));
+            if ($path !== 'globals.ts') {
+                $insert->execute([$projectId, 'knossos.typescript:file:' . $path, $path, hash('sha256', $path)]);
+            }
+        }
+        $edited = $files;
+        $edited[0] = new DiscoveredFile('a.ts', $root . '/a.ts', 'typescript', 10, 0, hash('sha256', 'edited'));
+
+        $invalidated = $planner->finalize($this->makePreparation($root, $files))->invalidatedOwners;
+        ksort($invalidated, SORT_STRING);
+
+        assertSame(['knossos.typescript:file:a.ts' => true, 'knossos.typescript:file:b.ts' => true], $invalidated);
+        assertSame(['knossos.typescript:file:a.ts' => true], $planner->finalize($this->makePreparation($root, array_slice($edited, 0, 2)))->invalidatedOwners);
+    }
+
+    /**
      * A file the active scan recorded with the same bytes but could not cache
      * is not an added file, so it rebuilds nothing beyond itself. Recorded
      * with other bytes, it is a change the scanner cannot attribute.

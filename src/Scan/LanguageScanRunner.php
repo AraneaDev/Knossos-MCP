@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\ProjectUnit;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Worker\ProcessScannerClient;
@@ -41,73 +42,30 @@ final readonly class LanguageScanRunner
     /** Run each language's worker over the files it claims, degrading a failure to a diagnostic. */
     public function run(ScanPlan $plan, CancellationToken $cancellation): LanguageScanResult
     {
+        $workerDiagnostics = $batchBudgets = $outcomes = [];
+        foreach ($this->descriptors as $descriptor) {
+            $outcome = $this->attempt($descriptor, $plan, $cancellation, $workerDiagnostics, $batchBudgets);
+            if ($outcome !== null) {
+                $outcomes[$descriptor->key] = $outcome;
+            }
+        }
+        $outcomes = $this->afterEnvironmentChanges($plan, $cancellation, $outcomes, $workerDiagnostics, $batchBudgets);
+
         $manifests = $contributions = $cacheEntries = [];
         $parsed = $unchanged = $added = $changed = 0;
         $leftOutPaths = [];
-        $scannerMetadata = $stages = $workerDiagnostics = $batchBudgets = $readGroups = [];
+        $scannerMetadata = $stages = $readGroups = [];
         // One for the whole scan: the same file read with different results
         // by two languages fails the scan just as two requests of one do.
         $undiscoveredInputs = new UndiscoveredInputs();
         foreach ($this->descriptors as $descriptor) {
-            $files = array_values(array_filter(
-                $plan->preparation->discovery->files,
-                static fn($file): bool => in_array($file->language, $descriptor->languages, true),
-            ));
-            // Keyed on the owner, like workerDiagnostics and scannerMetadata, so
-            // a consumer can join the three. Recorded for every descriptor,
-            // including one with nothing to scan, so the shape is stable.
-            $owner = $descriptor->scannerId();
-            $batchBudgets[$owner] = [
-                'files' => $descriptor->scanBatchFiles,
-                'source_bytes' => $descriptor->scanBatchSourceBytes,
-                'source_bytes_used' => $descriptor->scanBatchSourceBytes,
-            ];
-            if ($files === []) {
+            $outcome = $outcomes[$descriptor->key] ?? null;
+            if ($outcome === null) {
                 continue;
-            }
-            // Read back by reference below: the narrowest budget an ordinary
-            // retry in this language settled on. Lower than the configured
-            // value means a batch outgrew the worker's output cap or memory
-            // and was re-split; a search for one oversized frame does not
-            // count, since no batch of the language settled on it.
-            $sourceBytes = $descriptor->scanBatchSourceBytes;
-            try {
-                $outcome = $this->runLanguage($descriptor, $files, $plan, $cancellation, $sourceBytes);
-            } catch (Throwable $error) {
-                // A cancellation is the caller's decision, not a worker fault: it
-                // must reach the transport so the response is suppressed rather
-                // than reported as a degraded scan. The token may also have
-                // flipped between the RPC returning and this catch.
-                $this->pool->shutdown();
-                if ($cancellation->isCancelled() || ($error instanceof WorkerException && $error->diagnosticCode === 'WORKER_CANCELLED')) {
-                    throw new ScanCancelledException('Scan was cancelled.', previous: $error);
-                }
-                // A changed tree is a fault of the whole scan, not of this
-                // language. Degrading it would commit a graph missing this
-                // language's facts while every recorded hash still matched disk.
-                if ($error instanceof ScanSnapshotChangedException) {
-                    throw $error;
-                }
-                // Everything else costs this language only. The other languages'
-                // facts are already collected and are still worth a graph.
-                $workerDiagnostics[] = [
-                    'owner' => $descriptor->scannerId(),
-                    'code' => $error instanceof WorkerException ? $error->diagnosticCode : 'WORKER_FAILED',
-                    'message' => self::withRemedy(
-                        sprintf('%s scanner failed: %s', $descriptor->key, $error->getMessage()),
-                        $descriptor,
-                        $plan->preparation->executionPolicy->workerMemoryMb,
-                    ),
-                ];
-                continue;
-            } finally {
-                // Updated on both paths: a degraded language is exactly the one
-                // whose batch bounds the reader wants to see.
-                $batchBudgets[$owner]['source_bytes_used'] = $sourceBytes;
             }
             // Only once the language is kept: a degraded language's facts are
             // dropped, so what it read has nothing left to vouch for. Outside
-            // the try above, so a conflict fails the scan rather than
+            // the worker's try, so a conflict fails the scan rather than
             // degrading the language that happened to arrive second.
             $undiscoveredInputs->add($outcome['undiscovered_inputs']);
             $manifests[] = $outcome['manifest'];
@@ -124,6 +82,221 @@ final readonly class LanguageScanRunner
         }
 
         return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all(), count($leftOutPaths), $leftOutPaths, $readGroups);
+    }
+
+    /**
+     * Run one language, or record why it is degraded and return null.
+     *
+     * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
+     * @param array<string, array{files: int, source_bytes: int, source_bytes_used: int}> $batchBudgets
+     * @param ?array<string, true> $only the paths to confine the language to, for a later pass; null for all of its files
+     * @return array<string, mixed>|null the language's outcome ({@see runLanguage()})
+     */
+    private function attempt(LanguageDescriptor $descriptor, ScanPlan $plan, CancellationToken $cancellation, array &$workerDiagnostics, array &$batchBudgets, ?array $only = null): ?array
+    {
+        $files = array_values(array_filter(
+            $plan->preparation->discovery->files,
+            static fn($file): bool => in_array($file->language, $descriptor->languages, true)
+                && ($only === null || isset($only[$file->relativePath])),
+        ));
+        // Keyed on the owner, like workerDiagnostics and scannerMetadata, so
+        // a consumer can join the three. Recorded for every descriptor,
+        // including one with nothing to scan, so the shape is stable. A
+        // language run twice keeps the narrowest budget either pass used.
+        $owner = $descriptor->scannerId();
+        $batchBudgets[$owner] ??= [
+            'files' => $descriptor->scanBatchFiles,
+            'source_bytes' => $descriptor->scanBatchSourceBytes,
+            'source_bytes_used' => $descriptor->scanBatchSourceBytes,
+        ];
+        if ($files === []) {
+            return null;
+        }
+        // Read back by reference below: the narrowest budget an ordinary
+        // retry in this language settled on. Lower than the configured
+        // value means a batch outgrew the worker's output cap or memory
+        // and was re-split; a search for one oversized frame does not
+        // count, since no batch of the language settled on it.
+        $sourceBytes = $batchBudgets[$owner]['source_bytes_used'];
+        try {
+            return $this->runLanguage($descriptor, $files, $plan, $cancellation, $sourceBytes);
+        } catch (Throwable $error) {
+            // A cancellation is the caller's decision, not a worker fault: it
+            // must reach the transport so the response is suppressed rather
+            // than reported as a degraded scan. The token may also have
+            // flipped between the RPC returning and this catch.
+            $this->pool->shutdown();
+            if ($cancellation->isCancelled() || ($error instanceof WorkerException && $error->diagnosticCode === 'WORKER_CANCELLED')) {
+                throw new ScanCancelledException('Scan was cancelled.', previous: $error);
+            }
+            // A changed tree is a fault of the whole scan, not of this
+            // language. Degrading it would commit a graph missing this
+            // language's facts while every recorded hash still matched disk.
+            if ($error instanceof ScanSnapshotChangedException) {
+                throw $error;
+            }
+            // Everything else costs this language only. The other languages'
+            // facts are already collected and are still worth a graph.
+            $workerDiagnostics[] = [
+                'owner' => $descriptor->scannerId(),
+                'code' => $error instanceof WorkerException ? $error->diagnosticCode : 'WORKER_FAILED',
+                'message' => self::withRemedy(
+                    sprintf('%s scanner failed: %s', $descriptor->key, $error->getMessage()),
+                    $descriptor,
+                    $plan->preparation->executionPolicy->workerMemoryMb,
+                ),
+            ];
+
+            return null;
+        } finally {
+            // Updated on both paths: a degraded language is exactly the one
+            // whose batch bounds the reader wants to see.
+            $batchBudgets[$owner]['source_bytes_used'] = $sourceBytes;
+        }
+    }
+
+    /**
+     * Run again every language that contributions reused under a changed
+     * program environment reach ({@see ProgramEnvironments}): their facts
+     * were derived from global declarations the program no longer holds as
+     * they were, which only the worker's answer for the rebuilt program shows.
+     * The same pass retires the reused contributions of files no config
+     * lists once a program a config describes was rebuilt, since which
+     * program emits such a file follows the imports of the others.
+     *
+     * Repeated until a pass finds nothing new: a pass can build a program the
+     * one before it did not, whose reused contributions were never compared.
+     * Each pass adds at least one owner to a finite set, so it ends. A later
+     * pass is sent only the owners it newly reached, the ones the passes
+     * before it reused, and its answers are laid over theirs.
+     *
+     * @param array<string, array<string, mixed>> $outcomes by descriptor key
+     * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
+     * @param array<string, array{files: int, source_bytes: int, source_bytes_used: int}> $batchBudgets
+     * @return array<string, array<string, mixed>>
+     */
+    private function afterEnvironmentChanges(ScanPlan $plan, CancellationToken $cancellation, array $outcomes, array &$workerDiagnostics, array &$batchBudgets): array
+    {
+        $stale = [];
+        $current = $plan;
+        while (true) {
+            foreach ($this->descriptors as $descriptor) {
+                if ($descriptor->addedFilesAffectAll && isset($outcomes[$descriptor->key])) {
+                    $outcome = $outcomes[$descriptor->key];
+                    $stale += ProgramEnvironments::staleOwners($outcome['cache_entries'], $outcome['program_environments'])
+                        + ProgramEnvironments::unlistedOwners($outcome['cache_entries']);
+                }
+            }
+            $wider = ProgramEnvironments::widened($plan, $stale);
+            $reached = [];
+            foreach (array_diff_key($wider->invalidatedOwners, $current->invalidatedOwners) as $owner => $true) {
+                $row = $wider->cachedReads?->rows[$owner] ?? ['scanner_id' => '', 'file_path' => ''];
+                $reached[$row['scanner_id']][$row['file_path']] = true;
+            }
+            if ($reached === []) {
+                return $outcomes;
+            }
+            $current = $wider;
+            foreach ($this->descriptors as $descriptor) {
+                if (!isset($outcomes[$descriptor->key], $reached[$descriptor->scannerId()])) {
+                    continue;
+                }
+                $first = $outcomes[$descriptor->key];
+                $paths = self::reusedAmong($first, $reached[$descriptor->scannerId()]);
+                if ($paths === []) {
+                    // Every owner reached was answered by a pass before: no
+                    // request to make, and the first answer stands.
+                    continue;
+                }
+                unset($outcomes[$descriptor->key]);
+                $outcome = $this->attempt($descriptor, $wider, $cancellation, $workerDiagnostics, $batchBudgets, $paths);
+                if ($outcome !== null) {
+                    $outcomes[$descriptor->key] = self::mergedOutcome($first, $outcome);
+                }
+            }
+        }
+    }
+
+    /**
+     * Of the given paths, those an outcome reused from the cache and did not
+     * leave out: what a later pass still has to scan. One the pass before
+     * already scanned carries that pass's answer; one left out would be left
+     * out again.
+     *
+     * @param array<string, mixed> $outcome
+     * @param array<string, true> $paths
+     * @return array<string, true>
+     */
+    private static function reusedAmong(array $outcome, array $paths): array
+    {
+        foreach ($outcome['cache_entries'] as $entry) {
+            if (!$entry->fromCache) {
+                unset($paths[$entry->filePath]);
+            }
+        }
+        foreach ($outcome['left_out_paths'] as $path) {
+            unset($paths[$path]);
+        }
+
+        return $paths;
+    }
+
+    /**
+     * The first pass's outcome with a later pass's answers laid over it.
+     *
+     * The later pass scanned only the owners it was sent, so its contributions
+     * and cache entries replace the first's for those owners and nothing else.
+     * Its reads and the environments it saw are merged with the later pass
+     * winning; what it read beyond discovery is checked against the first
+     * pass's reads as one request's are against another's. The counts are
+     * summed, less the reused entries the later pass rescanned; the language's
+     * time is every pass.
+     *
+     * @param array<string, mixed> $first
+     * @param array<string, mixed> $second
+     * @return array<string, mixed>
+     */
+    private static function mergedOutcome(array $first, array $second): array
+    {
+        $replaced = [];
+        foreach ($second['contributions'] as $contribution) {
+            $replaced[$contribution->ownerKey] = true;
+        }
+        $kept = static fn(ScanContribution $contribution): bool => !isset($replaced[$contribution->ownerKey]);
+        $contributions = [...array_filter($first['contributions'], $kept), ...$second['contributions']];
+        usort($contributions, static fn(ScanContribution $a, ScanContribution $b): int => strcmp($a->ownerKey, $b->ownerKey));
+        $reusedBefore = 0;
+        $entries = [];
+        foreach ($first['cache_entries'] as $entry) {
+            if ($kept($entry->contribution)) {
+                $entries[] = $entry;
+            } elseif ($entry->fromCache) {
+                ++$reusedBefore;
+            }
+        }
+        $undiscovered = new UndiscoveredInputs();
+        $undiscovered->add($first['undiscovered_inputs']);
+        $undiscovered->add($second['undiscovered_inputs']);
+        $metadata = [];
+        foreach (array_keys($first['scanner_metadata'] + $second['scanner_metadata']) as $scanner) {
+            $metadata[$scanner] = self::mergeScanResult($first['scanner_metadata'][$scanner] ?? [], $second['scanner_metadata'][$scanner] ?? []);
+        }
+
+        return [
+            'manifest' => $second['manifest'],
+            'contributions' => $contributions,
+            'cache_entries' => [...$entries, ...$second['cache_entries']],
+            'left_out_paths' => array_values(array_unique([...$first['left_out_paths'], ...$second['left_out_paths']])),
+            'parsed' => $first['parsed'] + $second['parsed'],
+            'unchanged' => $first['unchanged'] - $reusedBefore + $second['unchanged'],
+            'added' => $first['added'] + $second['added'],
+            'changed' => $first['changed'] + $second['changed'],
+            'scanner_metadata' => $metadata,
+            'milliseconds' => $first['milliseconds'] + $second['milliseconds'],
+            'undiscovered_inputs' => $undiscovered->all(),
+            'read_groups' => $second['read_groups'] + $first['read_groups'],
+            'program_environments' => $second['program_environments'] + $first['program_environments'],
+        ];
     }
 
     /**
@@ -148,7 +321,8 @@ final readonly class LanguageScanRunner
      *     scanner_metadata: array<string, mixed>,
      *     milliseconds: float,
      *     undiscovered_inputs: array<string, string|null>,
-     *     read_groups: array<string, array<string, ?string>>
+     *     read_groups: array<string, array<string, ?string>>,
+     *     program_environments: array<string, string>
      * }
      */
     private function runLanguage(
@@ -203,8 +377,9 @@ final readonly class LanguageScanRunner
         $undiscovered = new UndiscoveredInputs();
         // What each received contribution read, and the shared sets those
         // name. A file retried in a later batch is overwritten there, like
-        // its contribution.
-        $readsByOwner = $groups = [];
+        // its contribution. The environment of every program the requests
+        // built, for the reused contributions to be compared against.
+        $readsByOwner = $groups = $environments = [];
         $queue = new ScanBatchQueue($partition->filesToScan, $descriptor, $sourceBytes, $this->maxRequestsPerLanguage);
         while (($item = $queue->next()) !== null) {
             // Held aside rather than appended directly: an overflowing
@@ -228,12 +403,13 @@ final readonly class LanguageScanRunner
             // another file's bytes must match what discovery hashed for it too.
             $verified = ScanInputHashes::verifyAll($batchResult, $manifest, $discoveredByPath);
             $undiscovered->add($verified['undiscovered']);
-            $requestReads = RequestReads::forRequest($batchResult, $manifest, $verified['all'], $received);
+            $requestReads = RequestReads::forRequest($batchResult, $manifest, $verified['all'], $received, $requested);
             $readsByOwner = $requestReads['owners'] + $readsByOwner;
             $groups += $requestReads['groups'];
+            $environments = ProgramEnvironments::fromResult($batchResult, $manifest->id) + $environments;
             // Evidence for these checks only, not statistics: kept out of the
             // scanner metadata a scan report carries.
-            unset($batchResult['input_hashes'], $batchResult['reads']);
+            unset($batchResult['input_hashes'], $batchResult['reads'], $batchResult[RequestReads::UNATTRIBUTED], $batchResult[ProgramEnvironments::FIELD]);
             foreach ($received as $contribution) {
                 $scanned[] = $contribution;
             }
@@ -276,6 +452,7 @@ final readonly class LanguageScanRunner
             'milliseconds' => self::elapsedMilliseconds($started),
             'undiscovered_inputs' => $undiscovered->all(),
             'read_groups' => $groups,
+            'program_environments' => $environments,
         ];
     }
 
@@ -292,6 +469,11 @@ final readonly class LanguageScanRunner
             'root' => $plan->preparation->discovery->rootRealpath,
             'limits' => ['max_files' => $plan->preparation->maxFiles, 'max_file_bytes' => $plan->preparation->maxFileBytes],
         ];
+        if (in_array($descriptor->key, ['typescript', 'python'], true)) {
+            // What discovery leaves out, so a worker resolving imports leaves
+            // it out too instead of keeping a copy of the rules that drifts.
+            $request['exclusions'] = (new IgnoreMatcher($plan->preparation->configuration->ignores))->workerRules();
+        }
         if ($descriptor->key === 'php') {
             $request['frameworks'] = array_keys(array_filter(['laravel' => $plan->preparation->laravel, 'symfony' => $plan->preparation->symfony]));
         } elseif ($descriptor->key === 'typescript') {
@@ -311,10 +493,7 @@ final readonly class LanguageScanRunner
             if ($packages !== []) {
                 $request['package_directories'] = $packages;
             }
-            $declarations = self::declarationFiles($files);
-            if ($declarations !== []) {
-                $request['declaration_files'] = $declarations;
-            }
+            $request['source_files'] = self::sourceFiles($files);
         } elseif ($descriptor->key === 'python') {
             $request['frameworks'] = $plan->preparation->pythonFrameworks;
         } elseif ($descriptor->key === 'rust') {
@@ -494,30 +673,30 @@ final readonly class LanguageScanRunner
     }
 
     /**
-     * Every declaration file (`.d.ts`, `.d.mts`, `.d.cts`) among the
-     * language's files, sorted, whether or not this scan reads it again.
+     * Every file of the language, sorted, whether or not this scan reads it
+     * again.
      *
-     * An ambient `declare module 'x'` satisfies `import … from 'x'` only when
-     * its file is in the importer's program. A tsconfig's program lists its
-     * own declarations, but a file no tsconfig includes is read in a program of
-     * the files requested with it, and an incremental scan of the importer
-     * alone, or a batch that split the two, left the declaration out.
+     * A tsconfig's program lists its own files, but a file no tsconfig
+     * includes is read in a program of its neighbours, and that program must
+     * hold the same files whichever of them a request names: an ambient
+     * `declare module 'x'` satisfies `import ... from 'x'` only from inside
+     * the importer's program, a test sees the globals its setup declares, and
+     * the program's environment must not follow the request. The list also
+     * tells the worker which of the files a program loaded have contributions
+     * of their own, whose reads it then owes nobody.
      *
      * @param list<object> $files
      * @return list<string>
      */
-    private static function declarationFiles(array $files): array
+    private static function sourceFiles(array $files): array
     {
-        $declarations = [];
+        $paths = [];
         foreach ($files as $file) {
-            $path = (string) $file->relativePath;
-            if (preg_match('/\.d\.[cm]?ts$/', $path) === 1) {
-                $declarations[] = $path;
-            }
+            $paths[] = (string) $file->relativePath;
         }
-        sort($declarations, SORT_STRING);
+        sort($paths, SORT_STRING);
 
-        return array_values(array_unique($declarations));
+        return array_values(array_unique($paths));
     }
 
     /**

@@ -103,7 +103,7 @@ final class TypescriptFallbackProgramTest extends KnossosTestCase
                 'root' => self::repositoryRoot() . '/tests/Fixtures/fallback-ambient',
                 'files' => ['hooks/register.tsx'],
                 'config_files' => ['hooks/tsconfig.json'],
-                'declaration_files' => ['hooks/host.d.ts'],
+                'source_files' => ['hooks/host.d.ts', 'hooks/lib/answer.ts', 'hooks/register.tsx'],
             ]), false);
         } finally {
             $client->shutdown();

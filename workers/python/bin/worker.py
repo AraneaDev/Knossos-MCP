@@ -14,6 +14,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, NamedTuple
 
 VERSION = "0.5.1"
+# What discovery leaves out, for a request that does not carry the core's own
+# rules (``exclusions``, see :class:`Exclusions`), which replace these.
 EXCLUDED = {
     ".git",
     ".knossos",
@@ -26,8 +28,7 @@ EXCLUDED = {
     ".worktrees",
     "node_modules",
     "vendor",
-    # Kept in sync with the authoritative PHP IgnoreMatcher: generated build
-    # output and mutation-testing sandboxes are not source.
+    # Generated build output and mutation-testing sandboxes are not source.
     ".stryker-tmp",
     ".pnpm-store",
     ".yarn",
@@ -35,10 +36,10 @@ EXCLUDED = {
     "dist",
     "site",
 }
-# Name prefixes for the namespace this tool owns, kept in sync with the PHP
-# IgnoreMatcher. ".knossos" alone is in the set above; a CI job parks a checkout
-# of the analyzer or its snapshot database beside the project under the same
-# convention, and neither is a source root of the project being scanned.
+# Name prefixes for the namespace this tool owns. ".knossos" alone is in the
+# set above; a CI job parks a checkout of the analyzer or its snapshot database
+# beside the project under the same convention, and neither is a source root of
+# the project being scanned.
 EXCLUDED_PREFIXES = (".knossos-",)
 # Dependency trees may be read for import resolution even though discovery
 # does not scan them as project-owned source. Generated and tool-owned trees
@@ -46,9 +47,87 @@ EXCLUDED_PREFIXES = (".knossos-",)
 RESOLUTION_ALLOWED_EXCLUDED = {"node_modules", "vendor"}
 
 
-def is_excluded(name: str) -> bool:
-    """Whether a directory name is excluded from discovery."""
-    return name in EXCLUDED or name.startswith(EXCLUDED_PREFIXES)
+class Exclusions:
+    """What discovery leaves out, as the rules the core sends with a request.
+
+    The core's IgnoreMatcher exports them (``exclusions``): segments, segment
+    prefixes and pairs of segments excluded anywhere, file-name suffixes, path
+    prefixes, and the project's own patterns, the last match deciding. A path
+    is excluded when it or a directory above it matches, since discovery never
+    descends into a directory that matches. Without them, the built-in list
+    above stands in.
+    """
+
+    def __init__(self, rules: Any = None) -> None:
+        if rules is None:
+            rules = {"segments": sorted(EXCLUDED), "prefixes": list(EXCLUDED_PREFIXES)}
+            rules |= {"sequences": [], "suffixes": [], "path_prefixes": [], "patterns": []}
+        if not self._valid(rules):
+            raise ValueError(
+                "Python exclusions must be an object of segments, prefixes, sequences, suffixes, "
+                "path_prefixes and patterns."
+            )
+        self.segments = frozenset(rules["segments"])
+        self.prefixes = tuple(rules["prefixes"])
+        self.sequences = [tuple(pair) for pair in rules["sequences"]]
+        self.suffixes = tuple(rules["suffixes"])
+        self.path_prefixes = list(rules["path_prefixes"])
+        self.patterns = [
+            (
+                re.compile(f"^(?:{item['regex']})(?:/.*)?$" if item["anchored"] else f"^(?:{item['regex']})$"),
+                item["anchored"],
+                item["negated"],
+            )
+            for item in rules["patterns"]
+        ]
+
+    @staticmethod
+    def _valid(rules: Any) -> bool:
+        """Whether ``rules`` has the shape IgnoreMatcher exports."""
+
+        def strings(value: Any) -> bool:
+            return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+        return (
+            isinstance(rules, dict)
+            and all(strings(rules.get(field)) for field in ("segments", "prefixes", "suffixes", "path_prefixes"))
+            and isinstance(rules.get("sequences"), list)
+            and all(strings(pair) and len(pair) == 2 for pair in rules["sequences"])
+            and isinstance(rules.get("patterns"), list)
+            and all(
+                isinstance(item, dict)
+                and isinstance(item.get("regex"), str)
+                and isinstance(item.get("anchored"), bool)
+                and isinstance(item.get("negated"), bool)
+                for item in rules["patterns"]
+            )
+        )
+
+    def excludes(self, parts: tuple[str, ...]) -> bool:
+        """Whether discovery leaves out the project-relative path made of ``parts``."""
+        pairs = self.sequences
+        for index, segment in enumerate(parts):
+            if (
+                segment in self.segments
+                or segment.startswith(self.prefixes)
+                or segment.endswith(self.suffixes)
+                or any(segment == first and parts[index + 1 : index + 2] == (second,) for first, second in pairs)
+            ):
+                return True
+        joined = "/".join(parts)
+        if any(joined == prefix or joined.startswith(prefix + "/") for prefix in self.path_prefixes):
+            return True
+        return any(self._ignored(parts[:end]) for end in range(1, len(parts) + 1)) if self.patterns else False
+
+    def _ignored(self, parts: tuple[str, ...]) -> bool:
+        """Whether the last pattern that matches ``parts`` ignores it."""
+        joined = "/".join(parts)
+        ignored = False
+        for expression, anchored, negated in self.patterns:
+            matched = expression.match(joined) if anchored else any(expression.match(part) for part in parts)
+            if matched:
+                ignored = not negated
+        return ignored
 
 
 # Bytes read when probing an extensionless file's shebang; one short line is enough.
@@ -302,9 +381,10 @@ class ProjectModuleIndex:
     unverified.
     """
 
-    def __init__(self, root: Path, max_bytes: int) -> None:
+    def __init__(self, root: Path, max_bytes: int, exclusions: Exclusions | None = None) -> None:
         self.root = root
         self.max_bytes = max_bytes
+        self.exclusions = exclusions or Exclusions()
         self.read_hashes: dict[str, str | None] = {}
         self._prefixes: list[tuple[str, ...]] | None = None
         self._cache: dict[str, dict[str, str]] = {}
@@ -374,7 +454,7 @@ class ProjectModuleIndex:
         prefixes: list[tuple[str, ...]] = [()]
         try:
             for child in sorted(self.root.iterdir()):
-                if is_excluded(child.name) or not child.is_dir():
+                if self.exclusions.excludes((child.name,)) or not child.is_dir():
                     continue
                 try:
                     child.name.encode("utf-8")
@@ -476,10 +556,11 @@ class ProjectModuleIndex:
         # paths before statting them, so an import such as ``site.foo`` cannot
         # pull generated output back into the scan through the bare root prefix.
         try:
-            if any(
-                is_excluded(segment) and segment not in RESOLUTION_ALLOWED_EXCLUDED
-                for segment in path.relative_to(self.root).parts
-            ):
+            parts = path.relative_to(self.root).parts
+            allowed = [index for index, segment in enumerate(parts) if segment in RESOLUTION_ALLOWED_EXCLUDED]
+            # Below a dependency tree its own layout governs, not the project's.
+            governed = parts[: allowed[0]] if allowed else parts
+            if governed and self.exclusions.excludes(governed):
                 return False
         except ValueError:
             pass
@@ -2094,7 +2175,7 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
     # so a single unscannable file produced no graph at all. A request that
     # cannot be interpreted — checked above — is still fatal, because that means
     # the caller is broken rather than the tree.
-    index = ProjectModuleIndex(root, max_bytes)
+    index = ProjectModuleIndex(root, max_bytes, Exclusions(params.get("exclusions")))
     resolved: list[tuple[Path, str]] = []
     rejected: list[tuple[str, str]] = []
     for value in files:

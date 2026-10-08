@@ -24,6 +24,8 @@ import {
     toVirtualSource,
 } from "./component-source.js";
 
+// Every contribution's owner key is this prefix and the file's project path.
+const OWNER_KEY_PREFIX = "knossos.typescript:file:";
 const SOURCE_EXTENSIONS = new Set([
     ".ts",
     ".tsx",
@@ -62,48 +64,138 @@ const COMPONENT_FILE_EXTENSIONS = [".vue", ".svelte", ".astro"].map(
         scriptKind: ts.ScriptKind.Deferred,
     }),
 );
-const EXCLUDED_DIRECTORIES = new Set([
-    ".git",
-    ".knossos",
-    "node_modules",
-    "vendor",
-    "coverage",
-    ".next",
-    ".nuxt",
-    // Kept in sync with the authoritative PHP IgnoreMatcher. Generated build
-    // output and mutation-testing sandboxes (.stryker-tmp holds a full project
-    // copy per sandbox) are not source and would multiply program discovery.
-    ".stryker-tmp",
-    ".pnpm-store",
-    ".yarn",
-    ".worktrees",
-    "build",
-    "dist",
-    "site",
-]);
-
-// Directory-name prefixes, for the namespace this tool owns. ".knossos" alone
-// is in the set above; a CI job parks a checkout of the analyzer or its snapshot
-// database beside the project under the same convention, and those must not be
-// discovered as the project's own source.
-const EXCLUDED_DIRECTORY_PREFIXES = [".knossos-"];
-// Consecutive segments excluded wherever they appear, as the PHP IgnoreMatcher
-// excludes them: VitePress's dependency cache and build below the site.
-const EXCLUDED_SEGMENT_SEQUENCES = [
-    [".vitepress", "cache"],
-    [".vitepress", "dist"],
-];
+// What discovery leaves out, for a request that does not carry the core's own
+// rules: the directories a project builds into, vendors under or keeps tool
+// state in, and the namespace this tool owns (`.knossos-ci` beside a project).
+// A request that carries `exclusions`, the rules the core's IgnoreMatcher
+// applies, uses those instead for its duration.
+const BUILT_IN_EXCLUSIONS = Object.freeze({
+    segments: [
+        ".git",
+        ".knossos",
+        "node_modules",
+        "vendor",
+        "coverage",
+        ".next",
+        ".nuxt",
+        ".stryker-tmp",
+        ".pnpm-store",
+        ".yarn",
+        ".worktrees",
+        "build",
+        "dist",
+        "site",
+    ],
+    prefixes: [".knossos-"],
+    sequences: [
+        [".vitepress", "cache"],
+        [".vitepress", "dist"],
+    ],
+    suffixes: [],
+    path_prefixes: [],
+    patterns: [],
+});
 // Dependency trees may be read for module resolution even though discovery
 // does not scan them as project-owned source. Generated and tool-owned trees
 // remain blocked at this boundary.
 const RESOLUTION_ALLOWED_EXCLUDED = new Set(["node_modules", "vendor"]);
 
-/** Whether a directory entry is excluded from discovery by name alone. */
-function isExcludedDirectoryName(name) {
-    return (
-        EXCLUDED_DIRECTORIES.has(name) ||
-        EXCLUDED_DIRECTORY_PREFIXES.some((prefix) => name.startsWith(prefix))
+/** The exclusion rules of the request in progress (see exclusionRules). */
+let activeExclusions = exclusionRules(BUILT_IN_EXCLUSIONS);
+
+/**
+ * Exclusion rules ready to apply, from the core's `exclusions` object (see
+ * IgnoreMatcher::workerRules in the core), each pattern compiled once.
+ *
+ * @throws {Error} for anything but that object
+ */
+function exclusionRules(input) {
+    const strings = (value) =>
+        Array.isArray(value) && value.every((item) => typeof item === "string");
+    const valid =
+        input !== null &&
+        typeof input === "object" &&
+        ["segments", "prefixes", "suffixes", "path_prefixes"].every((field) =>
+            strings(input[field]),
+        ) &&
+        Array.isArray(input.sequences) &&
+        input.sequences.every((pair) => strings(pair) && pair.length === 2) &&
+        Array.isArray(input.patterns) &&
+        input.patterns.every(
+            (pattern) =>
+                typeof pattern?.regex === "string" &&
+                typeof pattern.anchored === "boolean" &&
+                typeof pattern.negated === "boolean",
+        );
+    if (!valid)
+        throw new Error(
+            "TypeScript exclusions must be an object of segments, prefixes, sequences, suffixes, path_prefixes and patterns.",
+        );
+    return {
+        segments: new Set(input.segments),
+        prefixes: input.prefixes,
+        sequences: input.sequences,
+        suffixes: input.suffixes,
+        pathPrefixes: input.path_prefixes,
+        patterns: input.patterns.map(({ regex, anchored, negated }) => ({
+            expression: new RegExp(
+                anchored ? `^(?:${regex})(?:/.*)?$` : `^(?:${regex})$`,
+            ),
+            anchored,
+            negated,
+        })),
+    };
+}
+
+/**
+ * Whether discovery leaves a project-relative path out: the path, or a
+ * directory above it, matches the request's rules, since discovery never
+ * descends into a directory that matches. A segment rule, a file-name suffix
+ * and a path prefix that match a directory match everything below it; the
+ * patterns are asked of each directory in turn, the last match deciding.
+ */
+function excludedFromDiscovery(relative) {
+    const rules = activeExclusions;
+    const segments = relative.split("/");
+    const bySegment = segments.some(
+        (segment, index) =>
+            rules.segments.has(segment) ||
+            rules.prefixes.some((prefix) => segment.startsWith(prefix)) ||
+            rules.suffixes.some((suffix) => segment.endsWith(suffix)) ||
+            rules.sequences.some(
+                ([first, second]) =>
+                    segment === first && segments[index + 1] === second,
+            ),
     );
+    if (
+        bySegment ||
+        rules.pathPrefixes.some(
+            (prefix) =>
+                relative === prefix || relative.startsWith(`${prefix}/`),
+        )
+    )
+        return true;
+    for (
+        let end = 1;
+        end <= segments.length && rules.patterns.length > 0;
+        ++end
+    ) {
+        if (patternsIgnore(rules.patterns, segments.slice(0, end))) return true;
+    }
+    return false;
+}
+
+/** Whether the last pattern that matches a path ignores it. */
+function patternsIgnore(patterns, segments) {
+    const joined = segments.join("/");
+    let ignored = false;
+    for (const pattern of patterns) {
+        const matched = pattern.anchored
+            ? pattern.expression.test(joined)
+            : segments.some((segment) => pattern.expression.test(segment));
+        if (matched) ignored = !pattern.negated;
+    }
+    return ignored;
 }
 
 // Each retained ts.Program holds its own parsed default library and type
@@ -169,6 +261,21 @@ class InputReadRecorder {
         this.hashes.set(relative, contentHash);
     }
 
+    /** Whether this request recorded a read or probe under a key. */
+    has(relative) {
+        return this.hashes.has(relative);
+    }
+
+    /** The value a key carries in `input_hashes`, as recorded so far. */
+    value(relative) {
+        return this.hashes.get(relative);
+    }
+
+    /** Every key recorded so far. */
+    keys() {
+        return this.hashes.keys();
+    }
+
     /** Remember a SourceFile this request created from its own read. */
     created(sourceFile) {
         this.sourceFiles.add(sourceFile);
@@ -187,11 +294,519 @@ class InputReadRecorder {
 
     /** The map as the result field, keys sorted for deterministic output. */
     toResult() {
+        return this.select(this.hashes.keys());
+    }
+
+    /** The given keys with their recorded values, sorted, as a `reads` map. */
+    select(keys) {
         return Object.fromEntries(
-            [...this.hashes].sort(([left], [right]) =>
-                left < right ? -1 : left > right ? 1 : 0,
+            [...keys]
+                .sort((left, right) =>
+                    left < right ? -1 : left > right ? 1 : 0,
+                )
+                .map((key) => [key, this.hashes.get(key)]),
+        );
+    }
+}
+
+/**
+ * Which files each requested file's facts came from, for its contribution's
+ * `reads`, and which reads every file of the request shares, for the result's.
+ *
+ * A requested file is attributed its direct reads: every module its imports,
+ * exports, `import()`, `require` calls and import types resolved to, with
+ * every candidate the resolution probed on the way there; the targets of its
+ * `/// <reference>` directives; the package.json files that decided its module
+ * format; and the file of every declaration the checker answered with while
+ * its facts were collected. The core closes over those itself: a file it
+ * rescans counts as a change to every file that read it.
+ *
+ * That closure runs only through files the core scans, and the core refuses a
+ * read no `reads` names. So a read a project file of the program made, one
+ * the core holds a contribution for but this request did not name, is
+ * reported as unattributed: confirmed against `input_hashes`, owned by
+ * nobody, since that file's own contribution names it and the closure runs
+ * from there. Every other read is shared by the whole request: a config, a
+ * bundler alias config, a probe for a type library, and what a dependency's
+ * declarations read. So is a global script and a module that augments the
+ * global scope or another module, whoever read it: every file of its program
+ * sees those declarations without an import saying so.
+ *
+ * Values are taken from the recorder once the request has finished, so a path
+ * two programs read differently carries the same null here as in
+ * `input_hashes`.
+ */
+class ReadAttribution {
+    /**
+     * @param {InputReadRecorder} reads the request's recorder
+     * @param {Set<string>} sourceFiles every project file of the language the
+     *   core discovered, whose own contribution reports its reads
+     */
+    constructor(root, reads, maxFileBytes, sourceFiles = new Set()) {
+        this.root = root;
+        this.reads = reads;
+        this.maxFileBytes = maxFileBytes;
+        this.sourceFiles = sourceFiles;
+        // Requested path to the keys its contribution read.
+        this.byFile = new Map();
+        // Requested path to the key of the program its contribution came from.
+        this.programOf = new Map();
+        // Keys every file of the request shares, whoever else read them.
+        this.shared = new Set();
+        // Keys read only for project files whose contributions this request
+        // did not produce.
+        this.unattributed = new Set();
+        // Program key to the keys of its files that declare globally.
+        this.globalsByProgram = new Map();
+        // Program key to its digest, computed once the request has finished.
+        this.environmentCache = new Map();
+    }
+
+    /**
+     * Attribute a requested file's reads.
+     *
+     * @param {ts.SourceFile[]|Set<ts.SourceFile>} declarationFiles the files
+     *   holding a declaration the checker answered with for this file
+     * @param {string[]} probes paths the file's facts asked about directly
+     */
+    requested(
+        program,
+        sourceFile,
+        relative,
+        declarationFiles,
+        probes,
+        programKey,
+    ) {
+        const keys = this.#directReads(program, sourceFile, true);
+        for (const file of declarationFiles)
+            this.#addRecorded(keys, file.fileName);
+        for (const probe of probes) this.#addProbed(keys, probe);
+        keys.delete(relative);
+        this.byFile.set(relative, keys);
+        this.programOf.set(relative, programKey);
+    }
+
+    /**
+     * Sort the reads of a program's other files: the declarations of every
+     * file that declares globally are shared, a dependency's global script as
+     * much as a project's own, and so is whatever a dependency's file read,
+     * since no contribution of the core's reports it. What a project file the
+     * core discovered read, when this request produced no contribution for it
+     * and a config lists it in this program, is unattributed: its own
+     * contribution names those reads. The global files are also the program's
+     * environment (see environmentOf).
+     *
+     * @param {string} programKey the program's key: a config's path for its
+     *   program, or the key fallbackProgramKey gives a fallback program
+     * @param {(relative: string) => boolean} ownedByProgram whether a config
+     *   lists the file in this program (see programOwnership)
+     */
+    program(program, programKey, ownedByProgram = () => true) {
+        const globals = new Set();
+        this.globalsByProgram.set(programKey, globals);
+        for (const sourceFile of program.getSourceFiles()) {
+            const relative = relativeInside(this.root, sourceFile.fileName);
+            if (relative === null) continue;
+            for (const key of this.#globalKeys(sourceFile, relative)) {
+                this.shared.add(key);
+                globals.add(key);
+            }
+            if (this.programOf.get(relative) === programKey) continue;
+            if (isProjectSource(relative)) {
+                // Its own contribution names its reads only as its owning
+                // program made them: under another program's paths, aliases
+                // and manifests the same import can land elsewhere, and that
+                // read is the request's to keep.
+                if (
+                    !this.sourceFiles.has(relative) ||
+                    !ownedByProgram(relative)
+                )
+                    continue;
+                this.#addRecorded(this.unattributed, sourceFile.fileName);
+                for (const key of this.#directReads(program, sourceFile, false))
+                    this.unattributed.add(key);
+                continue;
+            }
+            for (const key of this.#directReads(program, sourceFile, false))
+                this.shared.add(key);
+        }
+    }
+
+    /**
+     * A digest of the global declarations a program's files saw: one line,
+     * `path`, NUL and the hash `input_hashes` carries (empty for null), per
+     * file of the program that declares globally, sorted. Two scans that agree
+     * on it agree on every name a file of the program can use without an
+     * import. Computed once per program, after the request's last read.
+     */
+    environmentOf(programKey) {
+        let digest = this.environmentCache.get(programKey);
+        if (digest === undefined) {
+            const lines = [...(this.globalsByProgram.get(programKey) ?? [])]
+                .map((key) => `${key}\0${this.reads.value(key) ?? ""}`)
+                .sort((left, right) =>
+                    left < right ? -1 : left > right ? 1 : 0,
+                );
+            digest = createHash("sha256")
+                .update(lines.join("\n"))
+                .digest("hex");
+            this.environmentCache.set(programKey, digest);
+        }
+        return digest;
+    }
+
+    /**
+     * The result's `environments`: the digest of every program this request
+     * built, keyed by program, whether or not it emitted a contribution. A
+     * program built for a requested file another program emitted still tells
+     * the core what its own cached contributions now see.
+     *
+     * @returns {Record<string, string>}
+     */
+    environments() {
+        return Object.fromEntries(
+            [...this.globalsByProgram.keys()]
+                .sort((left, right) =>
+                    left < right ? -1 : left > right ? 1 : 0,
+                )
+                .map((key) => [key, this.environmentOf(key)]),
+        );
+    }
+
+    /** The `reads` of a requested file's contribution; `{}` when it read nothing. */
+    readsOf(relative) {
+        return this.reads.select(this.byFile.get(relative) ?? []);
+    }
+
+    /**
+     * The result's `reads`: every read shared whoever named it, and every
+     * read neither a contribution's `reads` nor the unattributed reads name,
+     * other than a requested file's own.
+     *
+     * @param {Iterable<string>} requested the paths the request named
+     */
+    sharedReads(requested) {
+        const named = this.#named(requested);
+        const keys = new Set(this.shared);
+        for (const key of this.reads.keys()) {
+            if (!named.has(key) && !this.unattributed.has(key)) keys.add(key);
+        }
+        return this.reads.select(keys);
+    }
+
+    /**
+     * The result's `unattributed_reads`: what the program's other discovered
+     * project files read, less anything a contribution or the shared reads
+     * name. The core confirms them against `input_hashes` and stores them for
+     * nobody.
+     *
+     * @param {Iterable<string>} requested the paths the request named
+     */
+    unattributedReads(requested) {
+        const named = this.#named(requested);
+        return this.reads.select(
+            [...this.unattributed].filter(
+                (key) => !named.has(key) && !this.shared.has(key),
             ),
         );
+    }
+
+    /** The requested paths and every key a contribution's `reads` names. */
+    #named(requested) {
+        const named = new Set(requested);
+        for (const keys of this.byFile.values())
+            for (const key of keys) named.add(key);
+        return named;
+    }
+
+    /** The recorded keys of a file that declares globally; none otherwise. */
+    #globalKeys(sourceFile, relative) {
+        if (!declaresGlobally(sourceFile)) return [];
+        const { key } = this.#keyOf(sourceFile.fileName);
+        return [...new Set([relative, key])].filter(
+            (candidate) => candidate !== null && this.reads.has(candidate),
+        );
+    }
+
+    /**
+     * The keys of what one file of a program read directly. With `probe`, a
+     * location this request has not recorded yet (a resolution answered from
+     * the cache another file filled, or a candidate the compiler skipped
+     * because its directory is missing) is probed now and recorded; without
+     * it, only recorded keys count.
+     */
+    #directReads(program, sourceFile, probe) {
+        const keys = new Set();
+        const add = probe
+            ? (location) => this.#addProbed(keys, location)
+            : (location) => this.#addRecorded(keys, location);
+        const addResolution = (resolution, resolvedFileName) => {
+            if (resolvedFileName !== undefined) add(resolvedFileName);
+            for (const location of resolution.failedLookupLocations ?? [])
+                add(location);
+            for (const location of resolution.affectingLocations ?? [])
+                add(location);
+        };
+        program.forEachResolvedModule(
+            (resolution) =>
+                addResolution(
+                    resolution,
+                    resolution.resolvedModule?.resolvedFileName,
+                ),
+            sourceFile,
+        );
+        program.forEachResolvedTypeReferenceDirective(
+            (resolution) =>
+                addResolution(
+                    resolution,
+                    resolution.resolvedTypeReferenceDirective?.resolvedFileName,
+                ),
+            sourceFile,
+        );
+        // A `/// <reference path>` is loaded as written, or with each source
+        // extension when it has none; every attempt went through the host.
+        for (const reference of sourceFile.referencedFiles) {
+            const target = normalize(
+                path.resolve(
+                    path.dirname(sourceFile.fileName),
+                    reference.fileName,
+                ),
+            );
+            this.#addRecorded(keys, target);
+            for (const extension of REFERENCE_EXTENSIONS)
+                this.#addRecorded(keys, `${target}${extension}`);
+        }
+        for (const location of sourceFile.packageJsonLocations ?? [])
+            add(location);
+        return keys;
+    }
+
+    #keyOf(location) {
+        const absolute = realSourcePath(normalize(path.resolve(location)));
+        return { absolute, key: inputHashKey(this.root, absolute) };
+    }
+
+    #addRecorded(keys, location) {
+        const { key } = this.#keyOf(location);
+        if (key !== null && this.reads.has(key)) keys.add(key);
+    }
+
+    /**
+     * Add a location's keys, probing it first when this request has not
+     * recorded it. A path the project's layout refuses is never read, so it
+     * has nothing to report. A file found present is hashed as a read of it
+     * would be, so its key carries the value any other read gives it.
+     *
+     * A dependency candidate the compiler did not probe is left out: it skips
+     * the candidates below a node_modules directory that does not exist, a
+     * dozen per package import and ancestor directory, and installing a
+     * package changes a package.json that resolution did read.
+     */
+    #addProbed(keys, location) {
+        const { absolute, key } = this.#keyOf(location);
+        if (key === null) return;
+        if (this.reads.has(key)) {
+            keys.add(key);
+            return;
+        }
+        if (
+            belowNodeModules(key) ||
+            excludedByProjectLayoutPath(this.root, absolute)
+        )
+            return;
+        const walked = walkPath(absolute);
+        const present =
+            walked.kind === "file" && contains(this.root, walked.location);
+        const walkedKeys = walkKeys(this.root, walked);
+        if (
+            present &&
+            walkedKeys.final !== null &&
+            !this.reads.has(walkedKeys.final)
+        )
+            this.reads.record(
+                walkedKeys.final,
+                boundedHash(walked.location, this.maxFileBytes),
+            );
+        recordProbe(this.reads, this.root, walked, present, this.maxFileBytes);
+        for (const candidate of [
+            walkedKeys.final,
+            ...walkedKeys.through,
+            ...walkedKeys.directories,
+        ]) {
+            if (candidate !== null && this.reads.has(candidate))
+                keys.add(candidate);
+        }
+    }
+}
+
+// What the compiler appends to a `/// <reference path>` written without one.
+const REFERENCE_EXTENSIONS = [".ts", ".tsx", ".d.ts", ".js", ".jsx"];
+
+/**
+ * Whether a config's program must be built for this request.
+ *
+ * It is when a requested file is among the config's own root files, the
+ * files its `files`, `include` and `exclude` name, whichever config owns
+ * that file: the program's environment follows every root file, so an edit
+ * that imports a global script into a file two configs both root changes
+ * what every file of both programs sees, and the core learns that only from
+ * the environment of each program built. It also is when a requested file
+ * not yet emitted is a root file of no config at all: such a file is emitted
+ * by the first config's program that reaches it through imports, so each
+ * config's program is built in turn until one holds it, or the fallback
+ * program of the file's own group takes it (see #scanFallback).
+ */
+function needsProgram(request, requested, configPath, parsed) {
+    const rootNames = new Set(
+        (parsed.ownFileNames ?? parsed.fileNames).map((fileName) =>
+            relativeInside(request.root, fileName),
+        ),
+    );
+    return requested.some((relative) => {
+        const key = normalize(relative);
+        if (rootNames.has(key)) return true;
+        if (request.emitted.has(key)) return false;
+        const owner = request.owners.get(key);
+        return owner === undefined || owner === configPath;
+    });
+}
+
+/**
+ * Every discovered file no config lists, the project's own declaration files
+ * among them, grouped as the fallback reads them: the whole group is a
+ * fallback program's root list.
+ *
+ * @returns {Map<string, {files: string[], parsed: object | undefined}>} directory => group
+ */
+function fallbackMembers(root, request, parsedConfigs) {
+    return fallbackGroups(
+        root,
+        request.sourceFiles.filter(
+            (relative) => !request.owners.has(normalize(relative)),
+        ),
+        parsedConfigs,
+        request.packageDirectories,
+    );
+}
+
+/** The program key of the fallback program for a group's directory. */
+function fallbackProgramKey(root, directory) {
+    return `fallback:${relativeInside(root, directory) || "."}`;
+}
+
+/**
+ * Whether a program's reads for a file are the file's own contribution's:
+ * only when a config lists the file and the program being built is that
+ * config's program. A file no config lists is emitted by whichever config's
+ * program reaches it first, or else by the fallback program of its own group,
+ * so no program can claim its reads, the fallback program of its own group
+ * included; nor can any program claim the reads of a file the core never
+ * discovered.
+ *
+ * @param {{owners: Map<string, string>}} request the request, whose owners
+ *   are taken as they are now: the answer does not follow a later change
+ * @returns {(relative: string, programKey: string) => boolean}
+ */
+function programOwnership(request) {
+    const owners = request.owners;
+    return (relative, programKey) =>
+        owners.has(relative) && owners.get(relative) === programKey;
+}
+
+/**
+ * Which files of a program it does not emit, whether it was built or failed:
+ * a file outside the project or under node_modules, one the request did not
+ * name, one already emitted, one another config lists (its own program
+ * describes it under the options the project really uses) and, in a fallback
+ * program, one of another fallback group, which its own group's program
+ * emits (see #scanFallback). A failed program marks only the files it would
+ * have emitted, so a file left to another program is answered by that one.
+ *
+ * @param {Map<string, string>} owners the config owners this program defers
+ *   to: the request's for a config's program, none for a fallback program
+ * @returns {(relative: string | null) => boolean}
+ */
+function emissionSkipped(request, owners, fallback) {
+    const { requestedSet, emitted, owner } = request;
+    return (relative) =>
+        relative === null ||
+        belowNodeModules(relative) ||
+        !requestedSet.has(relative) ||
+        emitted.has(relative) ||
+        (owners.has(relative) && owners.get(relative) !== owner) ||
+        (fallback &&
+            request.fallbackGroupOf.get(relative) !==
+                request.fallbackDirectory);
+}
+
+/**
+ * Whether every file of a program sees a file's declarations without importing
+ * it: a script, a module that augments the global scope or another module, or
+ * one that exports a UMD global (`export as namespace X`).
+ */
+function declaresGlobally(sourceFile) {
+    try {
+        return (
+            !ts.isExternalOrCommonJsModule(sourceFile) ||
+            (sourceFile.moduleAugmentations?.length ?? 0) > 0 ||
+            sourceFile.statements.some((statement) =>
+                ts.isNamespaceExportDeclaration(statement),
+            )
+        );
+    } catch (error) {
+        // A file that cannot be inspected might declare anything: shared.
+        rethrowStackOverflow(error);
+        return true;
+    }
+}
+
+/**
+ * The checker, noting the source file of every declaration behind a symbol,
+ * type or signature it answers with, so a requested file is attributed the
+ * files its facts were resolved against. `files` is replaced per file.
+ */
+function declarationTracker(checker) {
+    const tracker = { files: new Set() };
+    const wrapped = new Map();
+    tracker.checker = new Proxy(checker, {
+        get(target, property) {
+            const value = target[property];
+            if (typeof value !== "function") return value;
+            let wrapper = wrapped.get(property);
+            if (wrapper === undefined) {
+                wrapper = (...args) => {
+                    const answer = value.apply(target, args);
+                    noteDeclarationFiles(answer, tracker.files);
+                    return answer;
+                };
+                wrapped.set(property, wrapper);
+            }
+            return wrapper;
+        },
+    });
+    return tracker;
+}
+
+/** Add the files declaring what a checker answer names. */
+function noteDeclarationFiles(answer, files) {
+    if (answer === null || typeof answer !== "object") return;
+    if (Array.isArray(answer)) {
+        for (const item of answer) noteDeclarationFiles(item, files);
+        return;
+    }
+    const symbols = [
+        answer.escapedName === undefined ? undefined : answer,
+        answer.symbol,
+        answer.aliasSymbol,
+    ];
+    const declarations = symbols.flatMap(
+        (symbol) => symbol?.declarations ?? [],
+    );
+    if (answer.declaration !== undefined) declarations.push(answer.declaration);
+    for (const declaration of declarations) {
+        // A synthesized declaration hangs off no file.
+        const file = declaration?.getSourceFile?.();
+        if (file !== undefined) files.add(file);
     }
 }
 
@@ -219,11 +834,65 @@ export class TypeScriptScanner {
     /**
      * Stream deterministic owned contributions for the requested source files.
      *
-     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, declaration_files?: unknown}} params
+     * `source_files` lists every file of the language the core discovered: a
+     * program for files no config includes is rooted on the whole group such
+     * a file sits in, and only a listed file's reads can be unattributed.
+     * A contribution for a file no config lists carries `listed: false`,
+     * since whichever program reaches it first emits it.
+     *
+     * The result's `reads` are what every file of the request shares;
+     * `unattributed_reads` are what the programs' other discovered files read
+     * in the program that describes them, confirmed by `input_hashes` and
+     * owned by no contribution; `environments` maps every program the request
+     * built to the digest of its global declarations.
+     *
+     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, source_files?: unknown, exclusions?: unknown}} params
      * @param {(contribution: object) => void} emit
-     * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>}}
+     * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>, reads: Record<string, string|null>, unattributed_reads: Record<string, string|null>, environments: Record<string, string>}}
      */
     scan(params, emit) {
+        // Held until the request has finished reading: a later program can
+        // read a path again and disagree, which turns its value null, and a
+        // contribution's `reads` must carry the value `input_hashes` ends with.
+        const contributions = [];
+        activeExclusions = exclusionRules(
+            params.exclusions ?? BUILT_IN_EXCLUSIONS,
+        );
+        const { result, attribution } = this.#scanRequest(
+            params,
+            (contribution) => contributions.push(contribution),
+        );
+        for (const contribution of contributions) {
+            emit({
+                ...contribution,
+                ...(contribution.program === undefined
+                    ? {}
+                    : {
+                          environment: attribution.environmentOf(
+                              contribution.program,
+                          ),
+                      }),
+                reads: attribution.readsOf(
+                    contribution.owner_key.slice(OWNER_KEY_PREFIX.length),
+                ),
+            });
+        }
+        const requested = Array.isArray(params.files) ? params.files : [];
+        return {
+            ...result,
+            reads: attribution.sharedReads(requested),
+            unattributed_reads: attribution.unattributedReads(requested),
+            environments: attribution.environments(),
+        };
+    }
+
+    /**
+     * Scan one request, handing each contribution to `emit` without its
+     * `reads`, which `attribution` gives once every read is in.
+     *
+     * @returns {{result: {files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>}, attribution: ReadAttribution}}
+     */
+    #scanRequest(params, emit) {
         const root = validateRoot(params.root);
         const { accepted: requested, rejected } = validateRequestedFiles(
             root,
@@ -231,6 +900,14 @@ export class TypeScriptScanner {
             params.limits,
         );
         const reads = new InputReadRecorder(this.observeHostPath);
+        const maxFileBytes = maxFileBytesFrom(params.limits);
+        const sourceFiles = sourceFilesFrom(params.source_files);
+        const attribution = new ReadAttribution(
+            root,
+            reads,
+            maxFileBytes,
+            new Set(sourceFiles),
+        );
         // Emitted before anything else so a file this worker cannot read still
         // gets its own contribution: raising it to the request would discard the
         // facts every other file in the batch contributes.
@@ -247,7 +924,6 @@ export class TypeScriptScanner {
         }
         const requestedSet = new Set(requested.map((file) => normalize(file)));
         const configPaths = configFilesForScan(root, params.config_files);
-        const maxFileBytes = maxFileBytesFrom(params.limits);
         const emitted = new Set();
         let programs = 0;
         let programsReused = 0;
@@ -257,6 +933,7 @@ export class TypeScriptScanner {
             root,
             maxFileBytes,
             reads,
+            attribution,
             requestedSet,
             emitted,
             emit,
@@ -264,7 +941,7 @@ export class TypeScriptScanner {
             vueProjects: Array.isArray(params.vue_projects)
                 ? params.vue_projects
                 : [],
-            declarationFiles: declarationFilesFrom(params.declaration_files),
+            sourceFiles,
             packageDirectories: Array.isArray(params.package_directories)
                 ? params.package_directories.filter(
                       (directory) => typeof directory === "string",
@@ -283,22 +960,9 @@ export class TypeScriptScanner {
         ]);
         request.owners = configOwners(root, parsedConfigs);
         request.outputSources = outputSources(root, parsedConfigs);
-
-        for (const [configPath, parsed] of parsedConfigs) {
-            request.owner = configPath;
-            tally(
-                this.#scanProgram(
-                    `${root}\0${configPath}`,
-                    programConfig(
-                        request,
-                        path.dirname(path.join(root, configPath)),
-                        parsed,
-                    ),
-                    request,
-                ),
-            );
-            if (emitted.size === requestedSet.size) break;
-        }
+        request.fallbackMembers = fallbackMembers(root, request, parsedConfigs);
+        request.ownedByProgram = programOwnership(request);
+        this.#scanConfigPrograms(parsedConfigs, requested, request, tally);
 
         const remaining = requested.filter(
             (relative) => !emitted.has(normalize(relative)),
@@ -333,11 +997,46 @@ export class TypeScriptScanner {
         }
 
         return {
-            files_scanned: emitted.size + rejected.length,
-            programs,
-            programs_reused: programsReused,
-            input_hashes: reads.toResult(),
+            result: {
+                files_scanned: emitted.size + rejected.length,
+                programs,
+                programs_reused: programsReused,
+                input_hashes: reads.toResult(),
+            },
+            attribution,
         };
+    }
+
+    /**
+     * Build each config's program the request needs (see needsProgram) and
+     * emit the requested files it covers, in config order.
+     *
+     * A program emits a requested file another config includes only from
+     * that config's own program, so a program that includes none of the
+     * requested files, while each of the files still to emit has a config of
+     * its own, would emit nothing and only read files for nobody.
+     *
+     * @param {Array<[string, object]>} parsedConfigs config path and its parsed config
+     * @param {string[]} requested the accepted requested files
+     */
+    #scanConfigPrograms(parsedConfigs, requested, request, tally) {
+        const { root } = request;
+        for (const [configPath, parsed] of parsedConfigs) {
+            if (!needsProgram(request, requested, configPath, parsed)) continue;
+            request.owner = configPath;
+            request.program = configPath;
+            tally(
+                this.#scanProgram(
+                    `${root}\0${configPath}`,
+                    programConfig(
+                        request,
+                        path.dirname(path.join(root, configPath)),
+                        parsed,
+                    ),
+                    request,
+                ),
+            );
+        }
     }
 
     /**
@@ -345,32 +1044,52 @@ export class TypeScriptScanner {
      * options of the config beside it: a package's tests are often outside
      * its tsconfig's `include`, and its test runner still resolves them
      * through that package's aliases and paths.
+     *
+     * The program's root files are every discovered file of the group that
+     * no config lists, not only the files this request named: a test sees
+     * the globals its setup file declares and the augmentations it imports
+     * whether or not the setup was requested with it, and the program's
+     * environment then does not follow the request. A declaration file no
+     * config lists is rooted with its group the same way, so an importer
+     * requested on its own still has an ambient `declare module` satisfied
+     * from inside its program.
+     *
+     * A fallback program emits only the files of its own group. It can
+     * reach a file of another group through an import, but that file is
+     * emitted by its own group's program, which holds its whole group under
+     * the options of the config beside it; otherwise which program emitted
+     * it would follow the order the groups are built in and the imports of
+     * files no read of its own records.
      */
     #scanFallback(root, remaining, parsedConfigs, request, tally) {
         request.owner = undefined;
-        request.owners = new Map();
-        // The project's declaration files, grouped as the files are: an
-        // ambient `declare module` satisfies an import only from inside the
-        // importer's program, and the files requested with it are whatever
-        // this batch or this incremental scan happened to hold.
-        const declarations = fallbackGroups(
-            root,
-            request.declarationFiles,
-            parsedConfigs,
-            request.packageDirectories,
-        );
-        for (const [directory, group] of fallbackGroups(
+        const members = request.fallbackMembers;
+        const groups = fallbackGroups(
             root,
             remaining,
             parsedConfigs,
             request.packageDirectories,
-        )) {
+        );
+        request.fallbackGroupOf = new Map();
+        for (const source of [groups, members]) {
+            for (const [directory, group] of source) {
+                for (const relative of group.files) {
+                    request.fallbackGroupOf.set(normalize(relative), directory);
+                }
+            }
+        }
+        for (const [directory, group] of groups) {
+            // Sorted, so every batch of a request hands the compiler the same
+            // root list and the program built for the first is reused by the
+            // rest instead of being rebuilt for each.
             const files = [
                 ...new Set([
                     ...group.files,
-                    ...(declarations.get(directory)?.files ?? []),
+                    ...(members.get(directory)?.files ?? []),
                 ]),
-            ];
+            ].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+            request.program = fallbackProgramKey(root, directory);
+            request.fallbackDirectory = directory;
             tally(
                 this.#scanProgram(
                     `${directory}${FALLBACK_KEY}`,
@@ -400,20 +1119,8 @@ export class TypeScriptScanner {
      *
      * @returns {{reused: boolean}|undefined} undefined when the program failed
      */
-    #scanProgram(
-        key,
-        parsed,
-        {
-            root,
-            maxFileBytes,
-            reads,
-            requestedSet,
-            emitted,
-            emit,
-            owner,
-            owners,
-        },
-    ) {
+    #scanProgram(key, parsed, request) {
+        const { root, maxFileBytes, reads, emitted, emit } = request;
         this.#reserveProgramSlot(key);
         this.#collectReleasedPrograms();
         const oldProgram = this.programCache.get(key);
@@ -428,16 +1135,9 @@ export class TypeScriptScanner {
             );
             this.#cacheProgram(key, program);
             recordUnreadSourceFiles(root, program, reads, maxFileBytes);
-            this.#emitProgram(
-                root,
-                program,
-                requestedSet,
-                emitted,
-                emit,
-                maxFileBytes,
-                owner,
-                owners ?? new Map(),
-                key.endsWith(FALLBACK_KEY),
+            this.#emitProgram(program, request, key.endsWith(FALLBACK_KEY));
+            request.attribution.program(program, request.program, (relative) =>
+                request.ownedByProgram(relative, request.program),
             );
         } catch (error) {
             const overflowed = isStackOverflow(error);
@@ -447,16 +1147,18 @@ export class TypeScriptScanner {
                     (file) => file.fileName,
                 ),
             ];
+            // The same files the program would have emitted: one another
+            // config lists, or one of another fallback group, is answered
+            // by its own program, which this failure says nothing about.
+            const fallback = key.endsWith(FALLBACK_KEY);
+            const skipped = emissionSkipped(
+                request,
+                fallback ? new Map() : request.owners,
+                fallback,
+            );
             for (const fileName of covered) {
                 const relative = relativeInside(root, fileName);
-                if (
-                    relative === null ||
-                    belowNodeModules(relative) ||
-                    !requestedSet.has(relative) ||
-                    emitted.has(relative)
-                ) {
-                    continue;
-                }
+                if (skipped(relative)) continue;
                 emit(
                     overflowed
                         ? factFreeContribution(
@@ -543,18 +1245,14 @@ export class TypeScriptScanner {
         }
     }
 
-    #emitProgram(
-        root,
-        program,
-        requestedSet,
-        emitted,
-        emit,
-        maxFileBytes,
-        owner,
-        owners,
-        fallback,
-    ) {
-        const checker = program.getTypeChecker();
+    #emitProgram(program, request, fallback) {
+        const { root, emitted, emit, maxFileBytes, owner } = request;
+        // The fallback program emits whatever no config's program did, a
+        // file some config lists included, so it is given no owners to defer
+        // to; what it leaves to another program is a file of another group.
+        // The request's own map is left as the configs filled it.
+        const owners = fallback ? new Map() : request.owners;
+        const tracker = declarationTracker(program.getTypeChecker());
         const { byFile: diagnosticsByFile, programLevel } = programDiagnostics(
             program,
             root,
@@ -562,14 +1260,7 @@ export class TypeScriptScanner {
             fallback,
         );
 
-        const skipped = (relative) =>
-            relative === null ||
-            belowNodeModules(relative) ||
-            !requestedSet.has(relative) ||
-            emitted.has(relative) ||
-            // Another config includes this file itself; its program
-            // describes it under the options the project really uses.
-            (owners.has(relative) && owners.get(relative) !== owner);
+        const skipped = emissionSkipped(request, owners, fallback);
         // A diagnostic that names no file describes the whole program, so it
         // is reported once, on one fixed file of the program. The carrier is
         // chosen from the program itself, never from the request: a project is
@@ -597,49 +1288,18 @@ export class TypeScriptScanner {
                 continue;
             }
 
-            // Isolate per-file collection: a single adversarial/minified file can
-            // overflow the visitor recursion (RangeError). One bad file must
-            // degrade to a diagnostic, not discard facts for every other file in
-            // the request.
-            let contribution;
-            try {
-                const collector = new FactCollector(root, sourceFile, checker, {
-                    options: program.getCompilerOptions(),
-                    sourceFileAt: (fileName) => program.getSourceFile(fileName),
-                });
-                collector.collect();
-                contribution = {
-                    owner_key: `knossos.typescript:file:${relative}`,
-                    nodes: collector.nodes,
-                    edges: collector.edges,
-                    diagnostics: [
-                        ...(diagnosticsByFile.get(relative) ?? []),
-                        ...programWide(relative),
-                    ],
-                };
-            } catch (error) {
-                contribution = {
-                    owner_key: `knossos.typescript:file:${relative}`,
-                    nodes: [],
-                    edges: [],
-                    diagnostics: [
-                        {
-                            severity: "error",
-                            code: "TS_INTERNAL_ERROR",
-                            message:
-                                error instanceof Error
-                                    ? error.message
-                                    : String(error),
-                            evidence: {
-                                path: relative,
-                                start_line: 1,
-                                end_line: 1,
-                            },
-                        },
-                        ...programWide(relative),
-                    ],
-                };
-            }
+            const probes = [];
+            tracker.files = new Set();
+            const contribution = collectFile(
+                root,
+                program,
+                sourceFile,
+                { tracker, probes },
+                {
+                    own: diagnosticsByFile.get(relative) ?? [],
+                    programWide: programWide(relative),
+                },
+            );
             // Every SourceFile the restricted host creates has an entry. One
             // without would reach the core with facts but no hash, which it
             // refuses as a contract violation instead of trusting the read.
@@ -651,9 +1311,82 @@ export class TypeScriptScanner {
             if (contentHash !== undefined) {
                 contribution.content_hash = contentHash;
             }
+            contribution.program = request.program;
+            // A file no config lists is emitted by whichever program reaches
+            // it first, so its facts follow other files' imports, which no
+            // read of its own records; the core rebuilds it whenever a
+            // program a config describes was rebuilt.
+            if (!owners.has(relative)) contribution.listed = false;
+            request.attribution.requested(
+                program,
+                sourceFile,
+                relative,
+                tracker.files,
+                probes,
+                request.program,
+            );
             emit(contribution);
             emitted.add(relative);
         }
+    }
+}
+
+/**
+ * One requested file's contribution, without its hash or reads.
+ *
+ * Collection is isolated per file: a single adversarial or minified file can
+ * overflow the visitor recursion (RangeError), and one bad file must degrade
+ * to a diagnostic, not discard the facts of every other file in the request.
+ *
+ * @param {{tracker: {checker: ts.TypeChecker}, probes: string[]}} reads the
+ *   checker that notes declaration files, and where the paths the file's facts
+ *   asked about beyond its imports are listed
+ * @param {{own: object[], programWide: object[]}} diagnostics the compiler's
+ *   diagnostics on this file, and the program-wide ones it carries
+ */
+function collectFile(
+    root,
+    program,
+    sourceFile,
+    { tracker, probes },
+    diagnostics,
+) {
+    const relative = relativeInside(root, sourceFile.fileName);
+    try {
+        const collector = new FactCollector(root, sourceFile, tracker.checker, {
+            options: program.getCompilerOptions(),
+            sourceFileAt: (fileName) => {
+                probes.push(fileName);
+                return program.getSourceFile(fileName);
+            },
+            fileExists: (fileName) => {
+                probes.push(fileName);
+                return inRootFile(root, fileName);
+            },
+        });
+        collector.collect();
+        return {
+            owner_key: `${OWNER_KEY_PREFIX}${relative}`,
+            nodes: collector.nodes,
+            edges: collector.edges,
+            diagnostics: [...diagnostics.own, ...diagnostics.programWide],
+        };
+    } catch (error) {
+        return {
+            owner_key: `${OWNER_KEY_PREFIX}${relative}`,
+            nodes: [],
+            edges: [],
+            diagnostics: [
+                {
+                    severity: "error",
+                    code: "TS_INTERNAL_ERROR",
+                    message:
+                        error instanceof Error ? error.message : String(error),
+                    evidence: { path: relative, start_line: 1, end_line: 1 },
+                },
+                ...diagnostics.programWide,
+            ],
+        };
     }
 }
 
@@ -1594,10 +2327,10 @@ class TypeScriptLanguageFactCollector {
             // A file the program leaves out (a tsconfig `exclude`, or `.js`
             // without `allowJs`) is still the module the call loads. Only its
             // existence is asked, as the compiler host asks it, so nothing is
-            // read.
+            // read; the answer is attributed to this file like any probe.
             if (
                 allowedCompilerPath(this.root, fileName) &&
-                ts.sys.fileExists(fileName)
+                this.project.fileExists(fileName)
             )
                 return { fileName };
         }
@@ -2160,8 +2893,11 @@ function parseConfig(root, configPath, reads) {
             allowedCompilerPath(root, file)
                 ? readRecorded(root, file, reads, Number.MAX_SAFE_INTEGER)
                 : undefined,
+        // An `extends` target is probed before it is read, and a probe that
+        // finds nothing decides the options as surely as a read.
         fileExists: (file) =>
-            allowedCompilerPath(root, file) && ts.sys.fileExists(file),
+            allowedCompilerPath(root, file) &&
+            probeRecorded(reads, root, file, Number.MAX_SAFE_INTEGER),
         readDirectory: (directory, extensions, excludes, includes, depth) => {
             if (!allowedCompilerPath(root, directory)) return [];
             return ts.sys
@@ -2216,8 +2952,10 @@ function parseConfig(root, configPath, reads) {
         referencedOutputs.push([referenceConfig, referenced.options]);
         pending.push(...(referenced.projectReferences ?? []));
     }
-    parsed.fileNames = [...fileNames].map(offeredComponentPath);
-    parsed.ownFileNames = ownFileNames.map(offeredComponentPath);
+    parsed.fileNames = [...fileNames].map((file) => offeredComponentPath(file));
+    parsed.ownFileNames = ownFileNames.map((file) =>
+        offeredComponentPath(file),
+    );
     parsed.referencedOutputs = referencedOutputs;
     // References are kept, and the host resolves a reference's build output
     // back to its source (see createRestrictedProgram), so an import of
@@ -2578,6 +3316,31 @@ function linkedFileHash(root, relative, maxFileBytes) {
         : null;
 }
 
+/**
+ * Whether a path is an in-root file, recorded as a probe whose answer feeds
+ * facts (recordProbe). A default-library file is the worker's own and is
+ * answered without a record; anything else outside the root is absent.
+ */
+function probeRecorded(reads, root, file, maxFileBytes) {
+    const absolute = normalize(path.resolve(file));
+    if (contains(defaultLibDirectory(), absolute))
+        return ts.sys.fileExists(absolute);
+    if (!contains(root, absolute)) return false;
+    const walked = walkPath(absolute);
+    const present = walked.kind === "file" && contains(root, walked.location);
+    // A path discovery leaves out is never read, whatever the answer: the
+    // host refuses it, so no file there can change a fact.
+    if (!excludedByProjectLayoutPath(root, absolute))
+        recordProbe(reads, root, walked, present, maxFileBytes);
+    return present;
+}
+
+/** Whether a path walks to a file inside the root, without recording it. */
+function inRootFile(root, file) {
+    const walked = walkPath(normalize(path.resolve(file)));
+    return walked.kind === "file" && contains(root, walked.location);
+}
+
 /** Record a path the host would not or could not read as a failed read. */
 function recordRefused(reads, root, absolute, maxFileBytes) {
     recordWalked(reads, root, walkPath(absolute), null, maxFileBytes);
@@ -2910,7 +3673,10 @@ function withBundlerAliases(root, directory, parsed, reads, maxFileBytes) {
     const aliases = {};
     for (const name of ALIAS_CONFIGS) {
         const config = path.join(directory, name);
-        if (!allowedCompilerPath(root, config) || !isRegularFile(config))
+        if (
+            !allowedCompilerPath(root, config) ||
+            !probeRecorded(reads, root, config, maxFileBytes)
+        )
             continue;
         if (name.startsWith("svelte.")) aliases.$lib ??= "src/lib";
         const text = readRecorded(root, config, reads, maxFileBytes);
@@ -3474,17 +4240,8 @@ function createRestrictedProgram(
     };
     // Module resolution decides an import's target by these answers, so an
     // in-root answer is recorded (recordProbe).
-    host.fileExists = (file) => {
-        const absolute = normalize(path.resolve(realSourcePath(file)));
-        if (contains(defaultLibDirectory(), absolute))
-            return ts.sys.fileExists(absolute);
-        if (!contains(root, absolute)) return false;
-        const walked = walkPath(absolute);
-        const present =
-            walked.kind === "file" && contains(root, walked.location);
-        recordProbe(reads, root, walked, present, maxFileBytes);
-        return present;
-    };
+    host.fileExists = (file) =>
+        probeRecorded(reads, root, realSourcePath(file), maxFileBytes);
     // Resolution realpaths a package's files before the host is asked for
     // them, so a link on that path is walked here, where its name is still
     // known, rather than lost behind the resolved name getSourceFile sees. The
@@ -3558,19 +4315,6 @@ function createRestrictedProgram(
 }
 
 /**
- * Module resolution as the compiler does it, with two corrections for
- * components.
- *
- * An import that names a component (`./Card.vue`) means the component even
- * when a real `Card.vue.ts` sits beside it, which the compiler would try
- * first. And in a Vue project (`vueProject`, from the manifests), a relative
- * or path-mapped specifier with no extension that resolves to nothing
- * resolves to `.vue`, as webpack and Vue CLI list it in
- * `resolve.extensions`; the retry probes paths that are then recorded, so it
- * stays off elsewhere. The resolution mode follows a project reference's own
- * options, as the compiler's default loader does.
- */
-/**
  * Where each config in the scan, and each config one references, emits
  * (`outDir`) and what it emits from (`rootDir`, else its own directory).
  */
@@ -3641,6 +4385,19 @@ function sourceOfBuildOutput(result, outputs, host) {
     return undefined;
 }
 
+/**
+ * Module resolution as the compiler does it, with two corrections for
+ * components.
+ *
+ * An import that names a component (`./Card.vue`) means the component even
+ * when a real `Card.vue.ts` sits beside it, which the compiler would try
+ * first. And in a Vue project (`vueProject`, from the manifests), a relative
+ * or path-mapped specifier with no extension that resolves to nothing
+ * resolves to `.vue`, as webpack and Vue CLI list it in
+ * `resolve.extensions`; the retry probes paths that are then recorded, so it
+ * stays off elsewhere. The resolution mode follows a project reference's own
+ * options, as the compiler's default loader does.
+ */
 function componentResolver(host, cache, vueProject, outputs, readable) {
     return (
         literals,
@@ -3683,10 +4440,23 @@ function componentResolver(host, cache, vueProject, outputs, readable) {
             )
                 return resolved;
             const component = resolve(`${literal.text}.vue`);
+            // Both attempts probed, and a file at any of those paths would
+            // change the answer, so each carries the other's misses.
             return component.resolvedModule !== undefined
-                ? component
-                : resolved;
+                ? withFailedLookups(component, resolved)
+                : withFailedLookups(resolved, component);
         });
+}
+
+/** A resolution that also names another attempt's failed lookups. */
+function withFailedLookups(resolution, attempt) {
+    return {
+        ...resolution,
+        failedLookupLocations: [
+            ...(resolution.failedLookupLocations ?? []),
+            ...(attempt.failedLookupLocations ?? []),
+        ],
+    };
 }
 
 /**
@@ -4715,7 +5485,7 @@ function unscannableContribution(relative, message) {
 // A contribution with no facts, only a diagnostic saying why.
 function factFreeContribution(relative, code, message) {
     return {
-        owner_key: `knossos.typescript:file:${relative}`,
+        owner_key: `${OWNER_KEY_PREFIX}${relative}`,
         nodes: [],
         edges: [],
         diagnostics: [
@@ -5179,7 +5949,6 @@ function configOwners(root, parsedConfigs) {
     return owners;
 }
 
-/** The program for requested files no config's program emitted. */
 /**
  * Files no config's program emitted, grouped by the package they sit in: the
  * nearest config's directory, or the nearest package.json's where that is
@@ -5275,6 +6044,10 @@ const FALLBACK_OPTIONS = {
     jsx: ts.JsxEmit.Preserve,
 };
 
+/**
+ * The options and root files of a fallback program: the files no config's
+ * program emitted, under the resolution options of the config beside them.
+ */
 function fallbackConfig(root, remaining, config, directory = root) {
     const configOptions = config?.options;
     const inherited = {};
@@ -5332,11 +6105,12 @@ function assertScannablePath(relative) {
 }
 
 /**
- * The project's declaration files the core listed, keeping only well-formed
- * project-relative `.d.ts`, `.d.mts` and `.d.cts` names. They are only offered
- * to a program; the compiler host still decides whether each may be read.
+ * The well-formed project-relative paths of a request's `source_files`: every
+ * file of the language the core discovered, so the fallback program and the
+ * unattributed reads can tell a file the core holds a contribution for from
+ * one it never saw.
  */
-function declarationFilesFrom(input) {
+function sourceFilesFrom(input) {
     if (!Array.isArray(input)) return [];
     return input.filter((relative) => {
         try {
@@ -5344,7 +6118,7 @@ function declarationFilesFrom(input) {
         } catch {
             return false;
         }
-        return /\.d\.[cm]?ts$/.test(relative);
+        return true;
     });
 }
 
@@ -5378,10 +6152,11 @@ function excludedByProjectLayoutPath(root, absolute) {
 }
 
 /**
- * Whether the project's own directory exclusions refuse a project-relative path.
+ * Whether the exclusions discovery applies refuse a project-relative path.
  *
- * The exclusions name directories a project builds into or vendors under, so
- * they describe the project's layout. Inside a dependency tree they describe
+ * The exclusions name directories a project builds into or vendors under, and
+ * whatever the project's own ignores add, so they describe the project's
+ * layout. Inside a dependency tree they describe
  * nothing: a package ships its declarations wherever its own package.json
  * points, and `dist` is the most common answer of all. Applying the project's
  * rules there refused `node_modules/@eslint/core/dist/cjs/types.d.cts`, the one
@@ -5402,20 +6177,23 @@ function excludedByProjectLayout(relative) {
     );
     const governed =
         dependencyRoot === -1 ? segments : segments.slice(0, dependencyRoot);
+    return governed.length > 0 && excludedFromDiscovery(governed.join("/"));
+}
+
+/**
+ * Whether the core scans a project-relative path as one of this worker's own
+ * sources, so that file's contribution reports what it read. A dependency's
+ * file, one the project's layout excludes, and a file of another kind (JSON)
+ * report nothing of their own. A program holds an extensionless file only as a
+ * requested shebang script.
+ */
+function isProjectSource(relative) {
+    if (excludedFromDiscovery(relative)) return false;
+    const extension = path.extname(relative);
     return (
-        governed.some(
-            (segment) =>
-                isExcludedDirectoryName(segment) &&
-                !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
-        ) ||
-        governed.some(
-            (segment, index) =>
-                index + 1 < governed.length &&
-                EXCLUDED_SEGMENT_SEQUENCES.some(
-                    ([first, second]) =>
-                        segment === first && governed[index + 1] === second,
-                ),
-        )
+        extension === "" ||
+        SOURCE_EXTENSIONS.has(extension.toLowerCase()) ||
+        componentDialect(relative) !== null
     );
 }
 
@@ -5527,9 +6305,9 @@ function walk(root, directory, onFile) {
         return;
     }
     for (const entry of entries) {
-        if (isExcludedDirectoryName(entry.name)) continue;
         const absolute = path.join(directory, entry.name);
         const relative = normalize(path.relative(root, absolute));
+        if (excludedFromDiscovery(relative)) continue;
         if (entry.isSymbolicLink()) continue;
         if (entry.isDirectory()) walk(root, absolute, onFile);
         else if (entry.isFile()) onFile(absolute, relative);

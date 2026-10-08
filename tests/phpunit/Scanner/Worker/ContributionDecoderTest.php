@@ -414,4 +414,58 @@ final class ContributionDecoderTest extends TestCase
             assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode, $label);
         }
     }
+
+    public function testTheProgramAndItsEnvironmentSurviveTheCacheRoundTrip(): void
+    {
+        $environment = hash('sha256', 'globals');
+        $wire = ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'program' => 'tsconfig.json', 'environment' => $environment];
+
+        $contribution = ContributionDecoder::decode($wire);
+        $again = ContributionDecoder::decode(json_decode((string) json_encode($contribution), true));
+
+        assertSame('tsconfig.json', $contribution->program);
+        assertSame($environment, $contribution->environment);
+        assertSame([$contribution->program, $contribution->environment], [$again->program, $again->environment]);
+        $plain = ContributionDecoder::decode(['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => []]);
+        assertSame([null, null], [$plain->program, $plain->environment]);
+        self::assertArrayNotHasKey('program', $plain->jsonSerialize());
+    }
+
+    public function testAMalformedProgramOrEnvironmentIsAnInvalidContribution(): void
+    {
+        $base = ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => []];
+        foreach (['an empty program' => ['program' => ''], 'a program number' => ['program' => 3], 'a non-hex environment' => ['environment' => 'NOTHEX']] as $label => $fields) {
+            $error = captureThrows(fn() => ContributionDecoder::decode($base + $fields), WorkerException::class);
+            assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode, $label);
+        }
+    }
+
+    public function testAFileNoConfigListsSurvivesTheCacheRoundTripAsUnlisted(): void
+    {
+        $base = ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'program' => 'fallback:.'];
+
+        $unlisted = ContributionDecoder::decode($base + ['listed' => false]);
+        $again = ContributionDecoder::decode(json_decode((string) json_encode($unlisted), true));
+        $listed = ContributionDecoder::decode($base + ['listed' => true]);
+        $unsaid = ContributionDecoder::decode($base);
+
+        assertSame(false, $unlisted->listed);
+        assertSame(false, $again->listed);
+        assertSame(false, $unlisted->jsonSerialize()['listed']);
+        assertSame(true, $listed->listed);
+        assertSame(true, $unsaid->listed);
+        // Only the exception travels, so every payload already cached keeps its bytes.
+        self::assertArrayNotHasKey('listed', $listed->jsonSerialize());
+        self::assertArrayNotHasKey('listed', $unsaid->jsonSerialize());
+    }
+
+    public function testAListedFlagThatIsNotABooleanIsAnInvalidContribution(): void
+    {
+        $base = ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => []];
+        foreach (['a string' => 'false', 'a number' => 0, 'null' => null] as $label => $value) {
+            $error = captureThrows(fn() => ContributionDecoder::decode($base + ['listed' => $value]), WorkerException::class);
+            assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode, $label);
+            assertSame('listed must be a boolean.', $error->getMessage(), $label);
+        }
+    }
 }

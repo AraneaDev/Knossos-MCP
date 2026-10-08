@@ -27,6 +27,11 @@ final readonly class LanguageDescriptor
      *                             second V8 isolate (the scan thread) that mirrors the same heap
      *                             cap, so its resident memory can exceed this value (1.16 GB RSS
      *                             was observed at a 1024 MB cap).
+     * @param bool $addedFilesAffectAll whether a file added in one of these languages can change what
+     *                                  every file already scanned produced, as a global script can; the
+     *                                  planner then rebuilds every cached file of this scanner on an added
+     *                                  file. Authoritative for the packaged workers: their manifests also
+     *                                  declare `added_files_affect_all`, which the core does not consult.
      */
     public function __construct(
         public string $key,
@@ -38,6 +43,7 @@ final readonly class LanguageDescriptor
         public bool $optional = false,
         public ?int $workerMemoryMb = null,
         public array $analysisInputs = [],
+        public bool $addedFilesAffectAll = false,
     ) {}
 
     /**
@@ -106,6 +112,9 @@ final readonly class LanguageDescriptor
                 scanBatchSourceBytes: 3_000_000,
                 workerMemoryMb: 2048,
                 analysisInputs: ['workers/typescript/src/**', 'workers/typescript/bin/worker.js', 'workers/typescript/node_modules/typescript/package.json'],
+                // A script declares globals any file may use, and no read of
+                // an existing file names a script that did not exist.
+                addedFilesAffectAll: true,
             ),
             // Python 3.12+ prints a SyntaxWarning to stderr for every invalid
             // escape the parser meets; ignoring that category at start keeps a
@@ -145,6 +154,24 @@ final readonly class LanguageDescriptor
         foreach (self::defaults('') as $descriptor) {
             foreach ($descriptor->languages as $language) {
                 $scanners[$language] = $descriptor->scannerId();
+            }
+        }
+
+        return $scanners;
+    }
+
+    /**
+     * The scanner ids whose added files can affect every file they scanned,
+     * from the default descriptors.
+     *
+     * @return array<string, true>
+     */
+    public static function scannersWhoseAddedFilesAffectAll(): array
+    {
+        $scanners = [];
+        foreach (self::defaults('') as $descriptor) {
+            if ($descriptor->addedFilesAffectAll) {
+                $scanners[$descriptor->scannerId()] = true;
             }
         }
 
@@ -199,6 +226,7 @@ final readonly class LanguageDescriptor
             optional: $this->optional,
             workerMemoryMb: $mb,
             analysisInputs: $this->analysisInputs,
+            addedFilesAffectAll: $this->addedFilesAffectAll,
         );
     }
 

@@ -118,9 +118,11 @@ like any other module.
 - A file no tsconfig `include` covers (a package's tests, a nested tools
   package) is read with its package's paths, aliases and project references,
   under the TypeScript and installed types of the package it sits in, and with a
-  bundler's resolution as its test runner uses. The package's declaration files
-  are in its program too, so an ambient `declare module 'x'` there satisfies the
-  import however the scan batched the files.
+  bundler's resolution as its test runner uses. Every such file of the package
+  is in that program, whichever of them a scan or a batch happens to read, so
+  an ambient `declare module 'x'` in the package's declaration files satisfies
+  the import, a test sees the globals its setup file declares, and an
+  incremental scan of one such file reads it as a full scan did.
 - A template name that resolves to nothing (an Options API method reached
   through the component instance) is listed in the module's
   `unresolved_member_calls`, so a method by that name is only possibly dead.

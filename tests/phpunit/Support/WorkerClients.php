@@ -62,6 +62,27 @@ trait WorkerClients
         );
     }
 
+    /**
+     * The nulls the TypeScript worker records for the bundler configs a
+     * program's directory lacks: a config created later declares aliases that
+     * change what imports resolve to.
+     *
+     * @param string $directory the program's directory, project-relative ('' for the root)
+     * @return array<string, null>
+     */
+    public static function absentTypescriptAliasConfigs(string $directory = ''): array
+    {
+        $names = [
+            'svelte.config.js', 'svelte.config.mjs', 'svelte.config.ts',
+            'vite.config.js', 'vite.config.mjs', 'vite.config.ts', 'vite.config.mts',
+            'webpack.config.js', 'webpack.config.cjs', 'webpack.config.mjs', 'webpack.mix.js',
+            'vue.config.js',
+        ];
+        $prefix = $directory === '' ? '' : $directory . '/';
+
+        return array_fill_keys(array_map(static fn(string $name): string => $prefix . $name, $names), null);
+    }
+
     public function pythonWorkerClient(): ProcessScannerClient
     {
         return new ProcessScannerClient(

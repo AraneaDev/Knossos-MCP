@@ -35,8 +35,12 @@ would. It rescans every changed file, and every cached file that read a changed
 file while it was scanned: an importer, a file that resolved a re-export, a
 file that used a dependency's declarations, or a module that probed a path that
 has since appeared. It follows those readers in turn, so a reader of a reader
-is rescanned too. A worker that does not report which files it read has its
-whole language rescanned whenever any of that language's inputs change.
+is rescanned too. A TypeScript file is also rescanned when the global
+declarations its program sees change, such as a script or an augmentation an
+edit elsewhere imports into the program, and a TypeScript file added or
+deleted rescans the whole language. A worker that does not report which files
+it read has its whole language rescanned whenever any of that language's
+inputs change.
 
 You do not need to clear anything by hand when a worker changes. Each cached
 result is keyed on a hash of the files of the worker that produced it, so

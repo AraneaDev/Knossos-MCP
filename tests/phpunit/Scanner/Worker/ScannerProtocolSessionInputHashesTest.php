@@ -157,6 +157,75 @@ final class ScannerProtocolSessionInputHashesTest extends TestCase
         assertSame(['input_hashes' => ['src/b.ts' => self::hash('b')]], $session->lastScanResult());
     }
 
+    public function testSharedReadsSentInPartsMergeWithTheResultField(): void
+    {
+        // A request's shared reads can outgrow one frame as its input_hashes
+        // can, so a part may carry some of them beside its input_hashes.
+        $session = $this->session([
+            self::part(['src/a.ts' => self::hash('a'), 'tsconfig.json' => self::hash('config')], ['tsconfig.json' => self::hash('config')]),
+            self::part([], ['node_modules/x/index.d.ts' => null]),
+            ['jsonrpc' => '2.0', 'id' => 2, 'result' => ['input_hashes' => ['node_modules/x/index.d.ts' => null], 'reads' => ['package.json' => null]]],
+        ], capabilities: ['content_hash', 'input_hashes', 'read_attribution']);
+
+        iterator_to_array($session->scan(['files' => []]), false);
+
+        assertSame([
+            'tsconfig.json' => self::hash('config'),
+            'node_modules/x/index.d.ts' => null,
+            'package.json' => null,
+        ], $session->lastScanResult()['reads']);
+    }
+
+    public function testSharedReadsSentOnlyInPartsBecomeTheResultField(): void
+    {
+        $session = $this->session([
+            self::part(['tsconfig.json' => self::hash('config')], ['tsconfig.json' => self::hash('config')]),
+            ['jsonrpc' => '2.0', 'id' => 2, 'result' => ['input_hashes' => []]],
+        ], capabilities: ['content_hash', 'input_hashes', 'read_attribution']);
+
+        iterator_to_array($session->scan(['files' => []]), false);
+
+        assertSame(['tsconfig.json' => self::hash('config')], $session->lastScanResult()['reads']);
+    }
+
+    public function testASharedReadTwoPartsReportDifferentlyBecomesNull(): void
+    {
+        $session = $this->session([
+            self::part([], ['src/a.ts' => self::hash('a')]),
+            ['jsonrpc' => '2.0', 'id' => 2, 'result' => ['input_hashes' => [], 'reads' => ['src/a.ts' => self::hash('changed')]]],
+        ], capabilities: ['content_hash', 'input_hashes', 'read_attribution']);
+
+        iterator_to_array($session->scan(['files' => []]), false);
+
+        assertSame(['src/a.ts' => null], $session->lastScanResult()['reads']);
+    }
+
+    public function testUnattributedReadsSentInPartsMergeWithTheResultFieldApartFromTheSharedReads(): void
+    {
+        $session = $this->session([
+            self::part(['src/b.ts' => self::hash('b')], ['tsconfig.json' => self::hash('config')], ['src/b.ts' => self::hash('b')]),
+            self::part([], [], ['src/c.ts' => self::hash('c')]),
+            ['jsonrpc' => '2.0', 'id' => 2, 'result' => ['input_hashes' => [], 'unattributed_reads' => ['src/c.ts' => self::hash('changed')]]],
+        ], capabilities: ['content_hash', 'input_hashes', 'read_attribution']);
+
+        iterator_to_array($session->scan(['files' => []]), false);
+
+        assertSame(['tsconfig.json' => self::hash('config')], $session->lastScanResult()['reads']);
+        assertSame(['src/b.ts' => self::hash('b'), 'src/c.ts' => null], $session->lastScanResult()['unattributed_reads']);
+    }
+
+    public function testAMalformedSharedReadsPartFailsTheRequest(): void
+    {
+        $session = $this->session([
+            self::part([], ['src/a.ts' => 'not a hash']),
+            ['jsonrpc' => '2.0', 'id' => 2, 'result' => ['input_hashes' => []]],
+        ], capabilities: ['content_hash', 'input_hashes', 'read_attribution']);
+
+        $error = captureThrows(static fn() => iterator_to_array($session->scan(['files' => []]), false), WorkerException::class);
+
+        assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode);
+    }
+
     /**
      * @param list<array<string, mixed>> $scanMessages
      * @param list<string> $capabilities
@@ -202,11 +271,21 @@ final class ScannerProtocolSessionInputHashesTest extends TestCase
 
     /**
      * @param array<array-key, string|null> $inputHashes
+     * @param array<array-key, string|null>|null $reads part of the shared reads, when the part carries some
+     * @param array<array-key, string|null>|null $unattributed part of the unattributed reads, when the part carries some
      * @return array<string, mixed>
      */
-    private static function part(array $inputHashes): array
+    private static function part(array $inputHashes, ?array $reads = null, ?array $unattributed = null): array
     {
-        return ['jsonrpc' => '2.0', 'method' => 'scan/input_hashes', 'params' => ['input_hashes' => $inputHashes]];
+        $params = ['input_hashes' => $inputHashes];
+        if ($reads !== null) {
+            $params['reads'] = $reads;
+        }
+        if ($unattributed !== null) {
+            $params['unattributed_reads'] = $unattributed;
+        }
+
+        return ['jsonrpc' => '2.0', 'method' => 'scan/input_hashes', 'params' => $params];
     }
 
     /** @return array<string, mixed> */

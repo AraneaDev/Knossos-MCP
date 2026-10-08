@@ -106,6 +106,8 @@ async function handle(request) {
                     "partial_ast",
                     "content_hash",
                     "input_hashes",
+                    "read_attribution",
+                    "added_files_affect_all",
                 ],
             };
             break;

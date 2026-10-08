@@ -9,7 +9,8 @@ use PHPUnit\Framework\Attributes\Group;
 
 /**
  * The real, coverage-instrumented TypeScript worker client splits a large
- * `input_hashes` map into `scan/input_hashes` parts.
+ * `input_hashes` map, and each reads map of the result, into
+ * `scan/input_hashes` parts.
  *
  * `InputHashesPartsScanTest` already proves the merge is correct end to end,
  * but it builds its `ProcessScannerClient` directly from a `LanguageDescriptor`
@@ -58,6 +59,7 @@ final class TypescriptInputHashesPartsCoverageTest extends KnossosTestCase
         $expected['src/entry.ts'] = hash('sha256', (string) file_get_contents($this->root . '/src/entry.ts'));
         // The tsconfig decides the program, so its read is reported too.
         $expected['tsconfig.json'] = hash('sha256', (string) file_get_contents($this->root . '/tsconfig.json'));
+        $expected += self::absentTypescriptAliasConfigs();
 
         $client = $this->typescriptWorkerClient();
         $contributions = iterator_to_array($client->scan([
@@ -75,5 +77,85 @@ final class TypescriptInputHashesPartsCoverageTest extends KnossosTestCase
         ksort($expected);
         ksort($inputHashes);
         assertSame($expected, $inputHashes);
+    }
+
+    /**
+     * What a dependency's declarations read is shared by every file of the
+     * request, and that set outgrows one frame as `input_hashes` does, so it
+     * travels in parts too.
+     */
+    public function testSharedReadsThatOutgrowOneFrameStillReachTheResult(): void
+    {
+        $directory = 'node_modules/dep/' . str_repeat('long-directory-name-', 9);
+        mkdir($this->root . '/' . $directory, 0o777, true);
+        mkdir($this->root . '/src', 0o777, true);
+        file_put_contents($this->root . '/node_modules/dep/package.json', '{"name": "dep", "types": "index.d.ts"}');
+        $exports = '';
+        $expected = [];
+        for ($i = 0; $i < self::FILES; ++$i) {
+            $relative = sprintf('%s/module-%04d.d.ts', $directory, $i);
+            $contents = sprintf("export declare const value%d: number;\n", $i);
+            file_put_contents($this->root . '/' . $relative, $contents);
+            $expected[$relative] = hash('sha256', $contents);
+            $exports .= sprintf("export * from './%s/module-%04d';\n", substr($directory, strlen('node_modules/dep/')), $i);
+        }
+        file_put_contents($this->root . '/node_modules/dep/index.d.ts', $exports);
+        file_put_contents($this->root . '/src/entry.ts', "import { value0 } from 'dep';\nexport const entry = value0;\n");
+
+        $client = $this->typescriptWorkerClient();
+        iterator_to_array($client->scan(['root' => $this->root, 'files' => ['src/entry.ts']]));
+        $result = $client->lastScanResult();
+        $client->shutdown();
+
+        $reads = $result['reads'] ?? [];
+        assertSame(true, strlen((string) json_encode($reads)) > 256_000);
+        assertSame($expected, array_intersect_key($reads, $expected));
+        // Each shared read is one input_hashes confirms with the same value.
+        $confirmed = array_intersect_key($result['input_hashes'] ?? [], $reads);
+        ksort($confirmed);
+        ksort($reads);
+        assertSame($reads, $confirmed);
+    }
+
+    /**
+     * A program's other discovered files are read for nobody in particular,
+     * and that set outgrows one frame as the shared reads do, so it travels in
+     * parts of its own and never lands in the shared reads.
+     */
+    public function testUnattributedReadsThatOutgrowOneFrameStillReachTheResult(): void
+    {
+        $directory = 'src/' . str_repeat('long-directory-name-', 9);
+        mkdir($this->root . '/' . $directory, 0o777, true);
+        file_put_contents($this->root . '/tsconfig.json', json_encode([
+            'compilerOptions' => ['strict' => true],
+            'include' => ['src'],
+        ]));
+        $expected = [];
+        for ($i = 0; $i < self::FILES; ++$i) {
+            $relative = sprintf('%s/module-%04d.ts', $directory, $i);
+            $contents = sprintf("export const value%d = %d;\n", $i, $i);
+            file_put_contents($this->root . '/' . $relative, $contents);
+            $expected[$relative] = hash('sha256', $contents);
+        }
+        file_put_contents($this->root . '/src/entry.ts', "export const entry = 1;\n");
+
+        $client = $this->typescriptWorkerClient();
+        iterator_to_array($client->scan([
+            'root' => $this->root,
+            'files' => ['src/entry.ts'],
+            'config_files' => ['tsconfig.json'],
+            'source_files' => [...array_keys($expected), 'src/entry.ts'],
+        ]));
+        $result = $client->lastScanResult();
+        $client->shutdown();
+
+        $unattributed = $result['unattributed_reads'] ?? [];
+        assertSame(true, strlen((string) json_encode($unattributed)) > 256_000);
+        assertSame($expected, array_intersect_key($unattributed, $expected));
+        assertSame([], array_intersect_key($result['reads'] ?? [], $expected));
+        $confirmed = array_intersect_key($result['input_hashes'] ?? [], $unattributed);
+        ksort($confirmed);
+        ksort($unattributed);
+        assertSame($unattributed, $confirmed);
     }
 }

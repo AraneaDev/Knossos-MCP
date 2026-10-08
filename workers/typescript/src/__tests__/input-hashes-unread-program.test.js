@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { withoutAbsentAliasConfigs } from "./support/absent-alias-configs.mjs";
 
 // TypeScript's exports are non-configurable getters, so vi.spyOn cannot replace
 // createProgram; the module is wrapped instead, with a hook each test sets.
@@ -81,7 +82,9 @@ describe("input_hashes for a program this request did not read", () => {
         );
         const second = scan();
 
-        expect(Object.values(first.input_hashes)).not.toContain(null);
+        expect(
+            Object.values(withoutAbsentAliasConfigs(first.input_hashes)),
+        ).not.toContain(null);
         expect(second.input_hashes).toEqual(first.input_hashes);
     });
 
@@ -93,7 +96,7 @@ describe("input_hashes for a program this request did not read", () => {
             createProgram({ rootNames, options }),
         );
 
-        expect(scan().input_hashes).toEqual({
+        expect(withoutAbsentAliasConfigs(scan().input_hashes)).toEqual({
             "src/a.ts": null,
             "src/b.ts": null,
         });
@@ -134,7 +137,9 @@ describe("input_hashes for a requested file the compiler leaves out of every pro
 
         const { result, contributions } = scanDropping(root);
 
-        expect(Object.keys(result.input_hashes)).toEqual(["src/a.ts"]);
+        expect(
+            Object.keys(withoutAbsentAliasConfigs(result.input_hashes)),
+        ).toEqual(["src/a.ts"]);
         expect(
             contributions.find((c) => c.owner_key.endsWith(":src/b.ts"))
                 .diagnostics[0].code,
