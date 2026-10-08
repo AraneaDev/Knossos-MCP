@@ -40,6 +40,10 @@ interface ProcessSupervisorInterface
     public function stderr();
 
     /**
+     * The process status. Once the worker has ended, the status that described
+     * its ending (exit code, signal) stays the same on every later read;
+     * callers such as NdjsonRpcChannel rely on that.
+     *
      * @return array{
      *     command: string,
      *     pid: int,
