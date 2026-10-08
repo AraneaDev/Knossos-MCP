@@ -8,6 +8,7 @@
 #![warn(clippy::missing_docs_in_private_items)]
 
 pub mod facts;
+pub mod layout;
 pub mod protocol;
 pub mod resolve;
 pub mod server;

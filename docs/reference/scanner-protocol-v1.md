@@ -53,7 +53,7 @@ Version mismatch is fatal and occurs before project paths are sent.
 
 ### `scan`
 
-Accepts a request ID and `params` that carry the project's real root (`root`), the project-relative paths this request must scan (`files`), and the bounds (`limits`: `max_files` and `max_file_bytes`). The core sends only the files that need scanning: a file whose cached contribution is still valid is not sent. The packaged workers receive extra fields for their own language: `frameworks` (PHP, Python and Rust), `config_files` (TypeScript and Rust), `exclusions` (TypeScript and Python), `source_files` (TypeScript and Python: every discovered file of the language, sorted), and several TypeScript project lists. A worker streams zero or more
+Accepts a request ID and `params` that carry the project's real root (`root`), the project-relative paths this request must scan (`files`), and the bounds (`limits`: `max_files` and `max_file_bytes`). The core sends only the files that need scanning: a file whose cached contribution is still valid is not sent. The packaged workers receive extra fields for their own language: `frameworks` (PHP, Python and Rust), `config_files` (TypeScript and Rust), `exclusions` (TypeScript and Python), `source_files` (TypeScript, Python and Rust: every discovered file of the language, sorted), and several TypeScript project lists. A worker streams zero or more
 `scan/contribution` notifications, and zero or more `scan/input_hashes`
 notifications (below), followed by a final result containing counts.
 
@@ -275,6 +275,18 @@ hold the probes that found no `__init__.py` in a top-level directory, which
 decide every file's module id; a marker that is present is not recorded, and
 deleting one is a layout change the core rebuilds every Python file for.
 
+The packaged Rust worker reads every file of the request's `source_files` to
+build its declaration index, whichever files the request names. Each
+contribution names the files of every module above each name its walk looked
+up, found or not, and of every module above its own, with `null` for each path
+such a file could have that does not exist, plus the crate roots of the package
+whose `src/` holds it. The manifests are the request's `reads`; the files read
+only for the index go on `unattributed_reads`. Those reads are direct: a Rust
+file's facts depend on the bytes of the files it names and on nothing those
+files read in turn. For the packaged Rust worker the core takes this from its
+own worker descriptors, and an owner of that worker that a scan rebuilds
+reaches its readers only when its own bytes changed, not transitively.
+
 No read can name a file that did not exist anywhere a worker looked, and for
 some languages a new file still changes what other files mean: a script that
 declares global names any file may use. A worker for such a language also
@@ -400,9 +412,10 @@ splitting the batch could not shrink it. They have a budget of their own,
 the largest tree a scan accepts: exceeding it fails the request as
 `WORKER_RESPONSE_INVALID`, which degrades the language and is never retried as
 a smaller batch. A map bounded by its batch still needs parts: the packaged PHP
-and Rust workers report little more than the files they were asked for, but a
-batch of 400 files with long enough paths outgrows one line, so they split
-their maps the same way.
+worker reports little more than the files it was asked for, but a batch of 400
+files with long enough paths outgrows one line, so it splits its map the same
+way. The packaged Rust worker's maps follow the project's Rust files, and it
+splits `input_hashes`, `reads` and `unattributed_reads` alike.
 
 #### Keying reads in `input_hashes`
 

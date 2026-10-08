@@ -421,6 +421,7 @@ impl Facts {
             edges: self.edges,
             diagnostics: self.diagnostics,
             content_hash: self.content_hash,
+            reads: BTreeMap::new(),
         }
     }
 }

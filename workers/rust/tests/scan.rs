@@ -1759,7 +1759,14 @@ fn the_result_reports_input_hashes_for_every_file_it_read() {
     let input_hashes = result["input_hashes"]
         .as_object()
         .expect("input_hashes must be a JSON object");
-    assert_eq!(2, input_hashes.len());
+    // Beyond the two files, only the paths a module above them could have
+    // been declared in, none of which exists.
+    for (relative, hash) in input_hashes {
+        assert!(
+            hash.is_null() || relative.starts_with("src/b"),
+            "{relative}"
+        );
+    }
     for (relative, bytes) in files {
         assert_eq!(
             Value::String(sha256_hex(bytes)),
@@ -1856,38 +1863,40 @@ fn a_requested_file_whose_read_fails_is_reported_as_null() {
 }
 
 #[test]
-fn an_absent_crate_root_probe_is_reported_as_null_and_a_present_unread_one_is_not() {
+fn every_file_below_a_packages_src_reads_both_of_its_crate_roots() {
     // Whether `src/lib.rs` exists decides where the package node attaches and
-    // what `src/main.rs`'s module path is. An absent answer is recorded, so a
-    // discovered root missing for that moment fails the scan; a present root
-    // this request never read carries no facts from it and stays unreported.
+    // what `src/main.rs`'s module path is, and whether either exists decides
+    // whether the files below `src/` belong to a crate. Each file there reads
+    // both: an absent root is null, so a discovered root missing for that
+    // moment fails the scan, and adding it reaches every one of those files.
     let root = fresh_root("input-hashes-crate-probes");
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"probe\"\n").unwrap();
     std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
     std::fs::write(root.join("src/other.rs"), "pub fn other() {}\n").unwrap();
 
-    let (_, result) = scan_existing_root(
+    let (contributions, result) = scan_existing_root(
         &root,
         &["src/other.rs"],
         &serde_json::json!({"config_files": ["Cargo.toml"]}),
     );
     let _ = std::fs::remove_dir_all(&root);
 
+    let main = Value::String(sha256_hex(b"fn main() {}\n"));
+    assert_eq!(Value::Null, result["input_hashes"]["src/lib.rs"]);
+    assert_eq!(main, result["input_hashes"]["src/main.rs"]);
+    assert_eq!(Value::Null, contributions[0]["reads"]["src/lib.rs"]);
+    assert_eq!(main, contributions[0]["reads"]["src/main.rs"]);
     assert_eq!(
-        serde_json::json!({
-            "Cargo.toml": sha256_hex(b"[package]\nname = \"probe\"\n"),
-            "src/lib.rs": null,
-            "src/other.rs": sha256_hex(b"pub fn other() {}\n"),
-        }),
-        result["input_hashes"]
+        serde_json::json!({"Cargo.toml": sha256_hex(b"[package]\nname = \"probe\"\n")}),
+        result["reads"]
     );
 }
 
 #[test]
 fn a_crate_root_that_is_not_a_regular_file_is_reported_as_null() {
-    // Not a file to the probe and not readable to the request: both answers
-    // are null, and a requested directory must not be mistaken for a crate root.
+    // Not a file to the probe and not readable to the request: the answer is
+    // null, and a requested directory must not be mistaken for a crate root.
     let root = fresh_root("input-hashes-crate-probe-conflict");
     std::fs::create_dir_all(root.join("src/lib.rs")).unwrap();
     std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"probe\"\n").unwrap();
@@ -1899,11 +1908,11 @@ fn a_crate_root_that_is_not_a_regular_file_is_reported_as_null() {
     );
     let _ = std::fs::remove_dir_all(&root);
 
+    // The directory scans as nothing, so it reads nothing beyond itself.
     assert_eq!(
         serde_json::json!({
             "Cargo.toml": sha256_hex(b"[package]\nname = \"probe\"\n"),
             "src/lib.rs": null,
-            "src/main.rs": null,
         }),
         result["input_hashes"]
     );
@@ -2026,7 +2035,13 @@ fn an_input_hashes_map_larger_than_one_part_goes_out_ahead_of_the_result_in_part
 
     assert!(result_seen);
     assert!(parts >= 1, "the map went out on the result's line alone");
-    assert_eq!(expected, merged);
+    // Beyond the files, only probes of the modules above them, none present.
+    for (relative, hash) in &expected {
+        assert_eq!(Some(hash), merged.get(relative), "{relative}");
+    }
+    assert!(merged
+        .iter()
+        .all(|(relative, hash)| expected.contains_key(relative) || hash.is_null()));
 }
 
 #[test]

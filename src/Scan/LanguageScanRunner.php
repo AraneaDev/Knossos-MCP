@@ -507,6 +507,9 @@ final readonly class LanguageScanRunner
                 static fn($unit): string => $unit->configPath,
                 array_filter($plan->preparation->discovery->units, static fn($unit): bool => $unit->kind === 'cargo'),
             ));
+            // The declaration index is built from every Rust file, so a name
+            // resolves the same whichever files a batch names.
+            $request['source_files'] = self::sourceFiles($files);
         }
 
         return $request;
