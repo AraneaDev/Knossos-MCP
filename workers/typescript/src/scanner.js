@@ -372,10 +372,10 @@ class ReadAttribution {
         for (const sourceFile of program.getSourceFiles()) {
             const relative = relativeInside(this.root, sourceFile.fileName);
             if (relative === null || this.byFile.has(relative)) continue;
-            if (isProjectSource(relative)) {
-                this.#shareIfGlobal(sourceFile, relative);
-                continue;
-            }
+            // A dependency's global script, such as a type library a config
+            // names, is seen by every file as surely as a project's own.
+            this.#shareIfGlobal(sourceFile, relative);
+            if (isProjectSource(relative)) continue;
             for (const key of this.#directReads(program, sourceFile, false))
                 this.shared.add(key);
         }
@@ -404,8 +404,11 @@ class ReadAttribution {
     }
 
     #shareIfGlobal(sourceFile, relative) {
-        if (declaresGlobally(sourceFile) && this.reads.has(relative))
-            this.shared.add(relative);
+        if (!declaresGlobally(sourceFile)) return;
+        const { key } = this.#keyOf(sourceFile.fileName);
+        for (const candidate of [relative, key])
+            if (candidate !== null && this.reads.has(candidate))
+                this.shared.add(candidate);
     }
 
     /**
@@ -524,13 +527,23 @@ const REFERENCE_EXTENSIONS = [".ts", ".tsx", ".d.ts", ".js", ".jsx"];
 
 /**
  * Whether every file of a program sees a file's declarations without importing
- * it: a script, or a module that augments the global scope or another module.
+ * it: a script, a module that augments the global scope or another module, or
+ * one that exports a UMD global (`export as namespace X`).
  */
 function declaresGlobally(sourceFile) {
-    return (
-        !ts.isExternalOrCommonJsModule(sourceFile) ||
-        (sourceFile.moduleAugmentations?.length ?? 0) > 0
-    );
+    try {
+        return (
+            !ts.isExternalOrCommonJsModule(sourceFile) ||
+            (sourceFile.moduleAugmentations?.length ?? 0) > 0 ||
+            sourceFile.statements.some((statement) =>
+                ts.isNamespaceExportDeclaration(statement),
+            )
+        );
+    } catch (error) {
+        // A file that cannot be inspected might declare anything: shared.
+        rethrowStackOverflow(error);
+        return true;
+    }
 }
 
 /**

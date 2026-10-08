@@ -230,6 +230,51 @@ describe("read attribution: what every file of a request shares", () => {
 
         expect(result.reads["src/globals.d.ts"]).toBe(sha256(globals));
     });
+});
+
+describe("read attribution: globals every file of a request sees", () => {
+    it("shares a dependency's global declarations, which no import names", () => {
+        // A type library the config names declares globals; the file that does
+        // not use them yet would see one added there.
+        const index = "declare function gfun(): void;\n";
+        const root = fixture({
+            "tsconfig.json": JSON.stringify({
+                compilerOptions: { types: ["g"] },
+                include: ["src"],
+            }),
+            "node_modules/@types/g/package.json": JSON.stringify({
+                name: "@types/g",
+                types: "index.d.ts",
+            }),
+            "node_modules/@types/g/index.d.ts": index,
+            "src/a.ts": "export function a() { gfun(); }\n",
+            "src/d.ts": "export function d() { hfun(); }\n",
+        });
+
+        const { result } = scan(root, ["src/a.ts", "src/d.ts"], {
+            config_files: ["tsconfig.json"],
+        });
+
+        expect(result.reads["node_modules/@types/g/index.d.ts"]).toBe(
+            sha256(index),
+        );
+    });
+
+    it("shares a module that exports a UMD global", () => {
+        const umd =
+            "export declare const version: string;\nexport as namespace Lib;\n";
+        const root = fixture({
+            "tsconfig.json": JSON.stringify({ include: ["src"] }),
+            "src/lib.d.ts": umd,
+            "src/a.ts": "export const v = Lib.version;\n",
+        });
+
+        const { result } = scan(root, ["src/a.ts"], {
+            config_files: ["tsconfig.json"],
+        });
+
+        expect(result.reads["src/lib.d.ts"]).toBe(sha256(umd));
+    });
 
     it("shares what a dependency's declarations read with the whole request", () => {
         // No contribution owns a dependency's files, so a file one of them
