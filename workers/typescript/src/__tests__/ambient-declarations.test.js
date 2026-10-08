@@ -44,14 +44,14 @@ const FILES = {
     "other/uses.ts": "import { e } from 'elsewhere'\nexport const u = e\n",
 };
 
-function scan(root, files, declarationFiles) {
+function scan(root, files, sourceFiles) {
     const contributions = [];
     const result = new TypeScriptScanner().scan(
         {
             root,
             files,
             config_files: ["hooks/tsconfig.json"],
-            declaration_files: declarationFiles,
+            source_files: sourceFiles,
         },
         (c) => contributions.push(c),
     );
@@ -90,7 +90,7 @@ describe("a file outside every tsconfig importing an ambient module", () => {
                 root,
                 files: ["other/uses.ts"],
                 config_files: ["hooks/tsconfig.json"],
-                declaration_files: ["hooks/host.d.ts", "other/elsewhere.d.ts"],
+                source_files: ["hooks/host.d.ts", "other/elsewhere.d.ts"],
                 package_directories: ["other"],
             },
             (c) => contributions.push(c),

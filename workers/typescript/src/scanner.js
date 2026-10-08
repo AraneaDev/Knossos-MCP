@@ -396,7 +396,8 @@ class ReadAttribution {
      * contribution names those reads. The global files are also the program's
      * environment (see environmentOf).
      *
-     * @param {string} programKey the program's key (see programKeyOf)
+     * @param {string} programKey the program's key: a config's path for its
+     *   program, or the key fallbackProgramKey gives a fallback program
      * @param {(relative: string) => boolean} ownedByProgram whether a config
      *   lists the file in this program (see programOwnership)
      */
@@ -642,15 +643,17 @@ class ReadAttribution {
 const REFERENCE_EXTENSIONS = [".ts", ".tsx", ".d.ts", ".js", ".jsx"];
 
 /**
- * Whether a config's program must be built for this request: it lists a
- * requested file among its own root files, whichever config describes that
- * file, or it could emit a requested file not yet emitted that no config
- * includes, which the first program holding it emits.
+ * Whether a config's program must be built for this request.
  *
- * A program that merely includes a requested file is built because its own
- * environment follows that file: an edit that imports a global script into a
- * file two configs include changes what every file of both programs sees,
- * and the core learns that only from the environment of each program built.
+ * It is when a requested file is among the config's own root files, the
+ * files its `files`, `include` and `exclude` name, whichever config owns
+ * that file: the program's environment follows every root file, so an edit
+ * that imports a global script into a file two configs both root changes
+ * what every file of both programs sees, and the core learns that only from
+ * the environment of each program built. It also is when a requested file
+ * not yet emitted is a root file of no config at all: such a file is emitted
+ * by the first program that reaches it through imports, so each config's
+ * program is built in turn until one holds it or the fallback takes it.
  */
 function needsProgram(request, requested, configPath, parsed) {
     const rootNames = new Set(
@@ -668,23 +671,18 @@ function needsProgram(request, requested, configPath, parsed) {
 }
 
 /**
- * Every discovered file no config lists, with the project's declaration
- * files, grouped as the fallback reads them: the whole group is a fallback
- * program's root list.
+ * Every discovered file no config lists, the project's own declaration files
+ * among them, grouped as the fallback reads them: the whole group is a
+ * fallback program's root list.
  *
  * @returns {Map<string, {files: string[], parsed: object | undefined}>} directory => group
  */
 function fallbackMembers(root, request, parsedConfigs) {
     return fallbackGroups(
         root,
-        [
-            ...new Set([
-                ...request.declarationFiles,
-                ...request.sourceFiles.filter(
-                    (relative) => !request.owners.has(normalize(relative)),
-                ),
-            ]),
-        ],
+        request.sourceFiles.filter(
+            (relative) => !request.owners.has(normalize(relative)),
+        ),
         parsedConfigs,
         request.packageDirectories,
     );
@@ -704,12 +702,14 @@ function fallbackProgramKey(root, directory) {
  * own group included; nor can any program claim the reads of a file the core
  * never discovered.
  *
+ * @param {{owners: Map<string, string>}} request the request, whose owners
+ *   are taken as they are now: the answer does not follow a later change
  * @returns {(relative: string, programKey: string) => boolean}
  */
 function programOwnership(request) {
+    const owners = request.owners;
     return (relative, programKey) =>
-        request.owners.has(relative) &&
-        request.owners.get(relative) === programKey;
+        owners.has(relative) && owners.get(relative) === programKey;
 }
 
 /**
@@ -819,7 +819,7 @@ export class TypeScriptScanner {
      * owned by no contribution; `environments` maps every program the request
      * built to the digest of its global declarations.
      *
-     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, declaration_files?: unknown, source_files?: unknown, exclusions?: unknown}} params
+     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, source_files?: unknown, exclusions?: unknown}} params
      * @param {(contribution: object) => void} emit
      * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>, reads: Record<string, string|null>, unattributed_reads: Record<string, string|null>, environments: Record<string, string>}}
      */
@@ -914,7 +914,6 @@ export class TypeScriptScanner {
             vueProjects: Array.isArray(params.vue_projects)
                 ? params.vue_projects
                 : [],
-            declarationFiles: declarationFilesFrom(params.declaration_files),
             sourceFiles,
             packageDirectories: Array.isArray(params.package_directories)
                 ? params.package_directories.filter(
@@ -1023,14 +1022,13 @@ export class TypeScriptScanner {
      * no config lists, not only the files this request named: a test sees
      * the globals its setup file declares and the augmentations it imports
      * whether or not the setup was requested with it, and the program's
-     * environment then does not follow the request. The project's
-     * declaration files are rooted the same way, so a caller that sends only
-     * those still gets an ambient `declare module` satisfied from inside the
-     * importer's program.
+     * environment then does not follow the request. A declaration file no
+     * config lists is rooted with its group the same way, so an importer
+     * requested on its own still has an ambient `declare module` satisfied
+     * from inside its program.
      */
     #scanFallback(root, remaining, parsedConfigs, request, tally) {
         request.owner = undefined;
-        request.owners = new Map();
         const members = request.fallbackMembers;
         for (const [directory, group] of fallbackGroups(
             root,
@@ -1205,7 +1203,10 @@ export class TypeScriptScanner {
     #emitProgram(program, request, fallback) {
         const { root, requestedSet, emitted, emit, maxFileBytes, owner } =
             request;
-        const owners = request.owners ?? new Map();
+        // The fallback program emits whatever no config's program did, a
+        // file some config lists included, so it is given no owners to defer
+        // to; the request's own map is left as the configs filled it.
+        const owners = fallback ? new Map() : request.owners;
         const tracker = declarationTracker(program.getTypeChecker());
         const { byFile: diagnosticsByFile, programLevel } = programDiagnostics(
             program,
@@ -6064,17 +6065,6 @@ function assertScannablePath(relative) {
         )
     )
         throw new Error("Project-relative path is invalid.");
-}
-
-/**
- * The project's declaration files the core listed, keeping only well-formed
- * project-relative `.d.ts`, `.d.mts` and `.d.cts` names. They are only offered
- * to a program; the compiler host still decides whether each may be read.
- */
-function declarationFilesFrom(input) {
-    return sourceFilesFrom(input).filter((relative) =>
-        /\.d\.[cm]?ts$/.test(relative),
-    );
 }
 
 /**
