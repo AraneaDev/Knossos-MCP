@@ -38,13 +38,50 @@ final class GlobalDeclarationEditsTest extends TestCase
             self::entry('plain.ts', self::hash('edited'), 'G-new'),
             // Global, but rescanned only because something it read changed.
             self::entry('same.ts', self::hash('same.ts'), 'G-new'),
-            self::entry('reused.ts', self::hash('edited'), 'G-old', fromCache: true),
+            self::entry('reused.ts', self::hash('edited'), 'G-old', [], true),
             // Added: the planner already rebuilt the scanner for it.
             self::entry('added.ts', self::hash('added'), 'G-new'),
         ];
 
         assertSame(['became.ts', 'was.ts'], GlobalDeclarationEdits::paths($entries, $groups, $cached));
         assertSame([], GlobalDeclarationEdits::paths($entries, $groups, null));
+    }
+
+    /**
+     * An edit that brings a file into the shared reads the edited file's
+     * earlier request never held, or drops a file it read that nothing reads
+     * now, changes what the program declares globally. An edit that does
+     * neither, and a scan that edits nothing, name no file.
+     */
+    public function testAnEditThatChangesTheProgramsFilesIsNamed(): void
+    {
+        $cached = new CachedReads(
+            [
+                'o:setup' => self::row('setup.ts', 'G-old'),
+                'o:drops' => self::row('drops.ts', 'G-old'),
+                'o:quiet' => self::row('quiet.ts', 'G-old'),
+                'o:reader' => self::row('reader.ts', 'G-old'),
+            ],
+            [
+                'o:drops' => ['node_modules/zone/index.d.ts' => self::hash('zone'), 'drops.tsx' => null],
+                'o:quiet' => ['reader.ts' => self::hash('reader.ts')],
+            ],
+            ['G-old' => ['tsconfig.json' => self::hash('t'), 'node_modules/zone/index.d.ts' => self::hash('zone')]],
+        );
+        $quietOnly = [self::entry('quiet.ts', self::hash('edited'), 'G-new', ['reader.ts' => self::hash('reader.ts')])];
+        $sameGroups = ['G-new' => ['tsconfig.json' => self::hash('t')]];
+
+        assertSame([], GlobalDeclarationEdits::paths($quietOnly, $sameGroups, $cached));
+        assertSame([], GlobalDeclarationEdits::paths([self::entry('reader.ts', self::hash('reader.ts'), 'G-new')], $sameGroups, $cached));
+        assertSame(
+            ['setup.ts'],
+            GlobalDeclarationEdits::paths(
+                [self::entry('setup.ts', self::hash('edited'), 'G-new', ['node_modules/aug/index.d.ts' => self::hash('aug')])],
+                ['G-new' => ['tsconfig.json' => self::hash('t'), 'node_modules/aug/index.d.ts' => self::hash('aug')]],
+                $cached,
+            ),
+        );
+        assertSame(['drops.ts'], GlobalDeclarationEdits::paths([self::entry('drops.ts', self::hash('edited'), 'G-new')], $sameGroups, $cached));
     }
 
     /** @return array{scanner_id: string, file_path: string, content_hash: string, scanner_version: string, configuration_hash: string, read_attribution: bool, read_group: ?string} */
@@ -61,11 +98,12 @@ final class GlobalDeclarationEditsTest extends TestCase
         ];
     }
 
-    private static function entry(string $path, string $hash, ?string $group, bool $fromCache = false): ContributionCacheEntry
+    /** @param array<string, ?string> $reads */
+    private static function entry(string $path, string $hash, ?string $group, array $reads = [], bool $fromCache = false): ContributionCacheEntry
     {
         $owner = 'o:' . substr($path, 0, -3);
 
-        return new ContributionCacheEntry($path, $hash, 'knossos.typescript', '1', 'cfg', new ScanContribution($owner), [], $group, true, $fromCache);
+        return new ContributionCacheEntry($path, $hash, 'knossos.typescript', '1', 'cfg', new ScanContribution($owner), $reads, $group, true, $fromCache);
     }
 
     private static function hash(string $seed): string

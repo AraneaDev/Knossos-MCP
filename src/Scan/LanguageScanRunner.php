@@ -99,9 +99,10 @@ final readonly class LanguageScanRunner
         ));
         // Keyed on the owner, like workerDiagnostics and scannerMetadata, so
         // a consumer can join the three. Recorded for every descriptor,
-        // including one with nothing to scan, so the shape is stable.
+        // including one with nothing to scan, so the shape is stable. A
+        // language run twice keeps the narrowest budget either pass used.
         $owner = $descriptor->scannerId();
-        $batchBudgets[$owner] = [
+        $batchBudgets[$owner] ??= [
             'files' => $descriptor->scanBatchFiles,
             'source_bytes' => $descriptor->scanBatchSourceBytes,
             'source_bytes_used' => $descriptor->scanBatchSourceBytes,
@@ -114,7 +115,7 @@ final readonly class LanguageScanRunner
         // value means a batch outgrew the worker's output cap or memory
         // and was re-split; a search for one oversized frame does not
         // count, since no batch of the language settled on it.
-        $sourceBytes = $descriptor->scanBatchSourceBytes;
+        $sourceBytes = $batchBudgets[$owner]['source_bytes_used'];
         try {
             return $this->runLanguage($descriptor, $files, $plan, $cancellation, $sourceBytes);
         } catch (Throwable $error) {
@@ -180,9 +181,13 @@ final readonly class LanguageScanRunner
         }
         foreach ($this->descriptors as $descriptor) {
             if (isset($outcomes[$descriptor->key], $reached[$descriptor->scannerId()])) {
+                $first = $outcomes[$descriptor->key];
                 unset($outcomes[$descriptor->key]);
                 $outcome = $this->attempt($descriptor, $wider, $cancellation, $workerDiagnostics, $batchBudgets);
                 if ($outcome !== null) {
+                    // The language's time is both passes; its counts and
+                    // facts are the second's, which replace the first's.
+                    $outcome['milliseconds'] += $first['milliseconds'];
                     $outcomes[$descriptor->key] = $outcome;
                 }
             }
