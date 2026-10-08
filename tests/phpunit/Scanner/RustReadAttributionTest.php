@@ -235,6 +235,42 @@ final class RustReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * `caller.rs` writes `crate::parse::a::x`, and `parse.rs`, which
+     * `caller.rs` sits beside rather than below, decides through `#[path]`
+     * which file `a` is: retargeting it rescans the caller.
+     */
+    public function testRetargetingAPathRescansTheFilesThatWroteItsDeclaredName(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod caller;\npub mod parse;\n");
+        $this->write('src/parse.rs', "#[path = \"impl_one.rs\"]\npub mod a;\n");
+        $this->write('src/impl_one.rs', "pub fn x() -> u32 {\n    1\n}\n");
+        $this->write('src/impl_two.rs', "pub fn x() -> u32 {\n    2\n}\n");
+        $this->write('src/caller.rs', "pub fn x_from_caller() -> u32 {\n    crate::parse::a::x()\n}\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('src/parse.rs', "#[path = \"impl_two.rs\"]\npub mod a;\n");
+        $this->scan($pdo);
+
+        self::assertContains('src/caller.rs', $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /** A binary's `mod helper;` was probed before `src/bin/helper.rs` existed. */
+    public function testAddingABinarySiblingModuleRescansTheBinary(): void
+    {
+        $this->writeCrate();
+        $this->write('src/bin/tool.rs', "mod helper;\n\nfn main() {\n    helper::aid();\n    crate::helper::aid();\n}\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('src/bin/helper.rs', "pub fn aid() {}\n");
+        $this->scan($pdo);
+
+        self::assertContains('src/bin/tool.rs', $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     /** `src/lib.rs` turns `src/main.rs` from the crate root into a binary beside a library. */
     public function testAddingALibraryRootRescansTheFilesOfItsCrate(): void
     {

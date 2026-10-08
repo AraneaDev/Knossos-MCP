@@ -152,6 +152,21 @@ impl Facts {
         self.test_scope = self.test_scope.saturating_sub(1);
     }
 
+    /// [`Facts::enter_test_scope`] when `test` is set, else nothing, so a
+    /// caller can bracket an item it may or may not mark.
+    pub fn enter_test_scope_if(&mut self, test: bool) {
+        if test {
+            self.enter_test_scope();
+        }
+    }
+
+    /// The closing half of [`Facts::enter_test_scope_if`].
+    pub fn exit_test_scope_if(&mut self, test: bool) {
+        if test {
+            self.exit_test_scope();
+        }
+    }
+
     /// The attributes every node emitted at the current scope carries.
     fn scope_attributes(&self) -> BTreeMap<String, Value> {
         let mut attributes = BTreeMap::new();

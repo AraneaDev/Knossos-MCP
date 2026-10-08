@@ -82,8 +82,8 @@ These get an attribute, so they stay off the
   and the trait may be a dependency's.
 - Code compiled only in a test build and `#[test]` functions (including
   `#[tokio::test]`) are marked as test code. The `cfg` predicate is evaluated:
-  `cfg(test)` and `cfg(all(test, feature = "x"))` mark an item and everything in
-  it, while `cfg(not(test))` and `cfg(any(test, feature = "x"))` stay production
+  `cfg(test)` and `cfg(all(test, feature = "x"))` mark an item (a module, a
+  function, an `impl`, or a single method) and everything in it, while `cfg(not(test))` and `cfg(any(test, feature = "x"))` stay production
   code, since a production build compiles them too.
 
 ### Speculative edges
@@ -137,7 +137,10 @@ library); any other `lib.rs` or `main.rs` is a module of its own, so
 `crate::bin::tool::main`. Outside `src/`, a file keeps its directory chain
 (`tests/smoke.rs` is `tests::smoke`), and only files under `tests/`,
 `examples/` and `benches/` enter the index, since Rust reaches no other file
-there without `#[path]`.
+there without `#[path]`. A file elsewhere outside `src/`, such as
+`crate/engine.rs`, keeps its own nodes but is not indexed, and its directory
+chain can give it the same id as a file under `src/` (`crate::engine`, the
+module of `src/engine.rs`).
 
 The package at the project root is rooted at `crate`, and a workspace member
 at its crate name (`crates/core-lib/src/app.rs` is `core_lib::app`). Code
@@ -152,7 +155,18 @@ that file is placed. A crate root and a `mod.rs` keep their children beside
 them, so `mod cli;` in `src/main.rs` is `crate::cli` (`src/cli.rs`), and
 `mod common;` in `tests/it.rs` is `tests::common`. `#[path = "x.rs"]` is
 followed: the declaration names the module of `x.rs`, and a path through the
-declared name in that file reaches it. An out-of-line `#[cfg(test)] mod name;`
+declared name reaches it, in that file and in any other (`crate::a::x` under
+`#[path = "impl_a.rs"] mod a;` is `crate::impl_a::x`). Two declarations of one
+name that load different files (under different `cfg`s) make paths through
+that name resolve to nothing.
+
+Each binary in `src/bin/`, integration test, example and benchmark is a crate
+of its own, and its `crate::` names that crate: `crate::helper` in
+`src/bin/tool.rs` is `crate::bin::helper` (`src/bin/helper.rs`), and
+`crate::common` in `tests/it.rs` is `tests::common`. Only the target's root
+file knows this; a module file below `src/bin/<name>/` could belong to that
+binary or to another, so its own `crate::` paths still start at the package's
+`crate`. An out-of-line `#[cfg(test)] mod name;`
 marks the file it loads as test code when the declaring file sits in a module
 above it, or is the crate root; a `#[path]` that sends a test module to a
 sibling (`src/net.rs` loading `src/net_tests.rs`) is not marked.
@@ -203,6 +217,8 @@ adds nothing to the index, so no file's facts depend on what another file read.
 - An import name bound to two different paths in one file resolves to nothing.
 - A bare `mod foo;` declaration emits only a containment edge. The module's own
   node comes from the file that defines it.
+- A `use` leaf whose parent is a type (`use crate::errors::Error::Io;`, or
+  `use Error::*;`) references that type instead of importing a module.
 - A `use` leaf that already names a module resolves to the module's parent:
   `use core::fmt;` emits `imports` to `core`, and `use crate::token;` emits it
   to `crate`. The declaration index records types, traits and functions rather

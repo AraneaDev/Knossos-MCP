@@ -37,22 +37,32 @@ struct FileIndex {
     declarations: BTreeSet<String>,
     /// Every out-of-line `#[cfg(test)] mod name;` the file declares.
     test_modules: crate::visit::TestModules,
+    /// Every `mod name;` the file declares at a path other than the module
+    /// it loads, see [`crate::visit::declared_renames`].
+    renames: BTreeMap<String, Option<String>>,
 }
 
 impl FileIndex {
     /// The index entries of `relative`, placed in `module`. A file the index
     /// does not answer for (see [`Layout::is_indexed`]) declares nothing to
-    /// it, though its test modules still count.
+    /// it, no names and no renamed modules, though its test modules still
+    /// count.
     fn of(relative: &str, module: &str, items: &[syn::Item], layout: &Layout) -> Self {
         let mut test_modules = crate::visit::TestModules::new();
         crate::visit::collect_test_modules(relative, module, items, layout, &mut test_modules);
+        let indexed = layout.is_indexed(relative, module);
         Self {
-            declarations: if layout.is_indexed(relative, module) {
+            declarations: if indexed {
                 crate::visit::declaration_paths(module, items)
             } else {
                 BTreeSet::new()
             },
             test_modules,
+            renames: if indexed {
+                crate::visit::declared_renames(relative, module, items, layout)
+            } else {
+                BTreeMap::new()
+            },
         }
     }
 }
@@ -315,6 +325,7 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
         };
         if let Some(index) = &index {
             declarations.add_file(&index.declarations);
+            declarations.add_renames(&index.renames);
             test_modules.extend(index.test_modules.iter().cloned());
         }
         if let Some(hash) = &value {

@@ -149,6 +149,37 @@ impl Layout {
     /// relative to the deepest package directory holding it.
     #[must_use]
     pub fn is_crate_root(&self, relative: &str) -> bool {
+        self.is_package_root(relative) || self.is_target_root(relative)
+    }
+
+    /// Whether `relative` is a package's `src/lib.rs` or `src/main.rs`, the
+    /// roots `crate` names (see [`module_path_in_crate`]).
+    #[must_use]
+    pub fn is_package_root(&self, relative: &str) -> bool {
+        matches!(
+            self.package_inner(relative).as_slice(),
+            ["src", "lib.rs" | "main.rs"]
+        )
+    }
+
+    /// Whether `relative` is the root of a crate other than the package's
+    /// library or main binary: `build.rs`, a binary in `src/bin/`, or a
+    /// target under `tests/`, `examples/` or `benches/`. Its `crate::x`
+    /// names the module its `mod x;` loads beside it.
+    #[must_use]
+    pub fn is_target_root(&self, relative: &str) -> bool {
+        match self.package_inner(relative).as_slice() {
+            ["build.rs"] | ["src", "bin", _, "main.rs"] => true,
+            ["src", "bin", file] => file.ends_with(".rs"),
+            [target, file] => TARGET_DIRECTORIES.contains(target) && file.ends_with(".rs"),
+            [target, _, "main.rs"] => TARGET_DIRECTORIES.contains(target),
+            _ => false,
+        }
+    }
+
+    /// The segments of `relative` below the deepest package directory that
+    /// holds it, the project root when none does.
+    fn package_inner<'p>(&self, relative: &'p str) -> Vec<&'p str> {
         let directory = self
             .packages
             .iter()
@@ -156,15 +187,7 @@ impl Layout {
             .filter(|directory| relative.starts_with(directory))
             .max_by_key(|directory| directory.len())
             .unwrap_or("");
-        let inner: Vec<&str> = relative[directory.len()..].split('/').collect();
-        match inner.as_slice() {
-            ["src", "lib.rs" | "main.rs"] | ["build.rs"] => true,
-            ["src", "bin", file] => file.ends_with(".rs"),
-            ["src", "bin", _, "main.rs"] => true,
-            [target, file] => TARGET_DIRECTORIES.contains(target) && file.ends_with(".rs"),
-            [target, _, "main.rs"] => TARGET_DIRECTORIES.contains(target),
-            _ => false,
-        }
+        relative[directory.len()..].split('/').collect()
     }
 
     /// A path whose leading segment names one of the project's libraries,
@@ -471,5 +494,28 @@ mod tests {
         assert!(layout.is_project_root("core_lib"));
         assert!(!layout.is_project_root("demo"));
         assert!(!layout.is_project_root("serde"));
+    }
+
+    #[test]
+    fn a_target_root_is_told_apart_from_the_package_roots() {
+        let layout = layout();
+        for target in [
+            "src/bin/tool.rs",
+            "src/bin/deep/main.rs",
+            "tests/it.rs",
+            "examples/ex.rs",
+            "build.rs",
+        ] {
+            assert!(layout.is_target_root(target), "{target}");
+        }
+        for not_target in [
+            "src/lib.rs",
+            "src/main.rs",
+            "src/bin/deep/part.rs",
+            "tests/common/mod.rs",
+        ] {
+            assert!(!layout.is_target_root(not_target), "{not_target}");
+        }
+        assert!(layout.is_package_root("crates/core-lib/src/lib.rs"));
     }
 }

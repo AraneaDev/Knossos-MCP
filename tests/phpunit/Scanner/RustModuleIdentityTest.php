@@ -186,6 +186,105 @@ final class RustModuleIdentityTest extends KnossosTestCase
         self::assertSame([], array_values(array_filter($this->nodes($pdo), static fn(string $node): bool => str_contains($node, 'r#'))));
     }
 
+    /**
+     * A `#[path]` module is written by its declared name in other files too:
+     * `crate::a::x` there is the function the loaded file declares, and
+     * `crate::parse::discouraged` is the module `parse.rs` loads.
+     */
+    public function testAPathModuleIsReachedThroughItsDeclaredNameFromAnotherFile(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "#[path = \"impl_a.rs\"]\npub mod a;\npub mod other;\npub mod parse;\n");
+        $this->write('src/impl_a.rs', "pub struct Thing;\n\npub fn x() -> u32 {\n    1\n}\n");
+        $this->write('src/other.rs', "use crate::a::x;\nuse crate::a::Thing;\n\npub fn f(_t: Thing) -> u32 {\n    x() + crate::a::x() + crate::parse::discouraged::y()\n}\n");
+        $this->write('src/parse.rs', "#[path = \"discouraged.rs\"]\npub mod discouraged;\n");
+        $this->write('src/discouraged.rs', "pub fn y() -> u32 {\n    2\n}\n");
+        $pdo = $this->scanned();
+
+        $edges = $this->edges($pdo);
+        self::assertContains('calls crate::other::f -> crate::impl_a::x', $edges);
+        self::assertContains('calls crate::other::f -> crate::discouraged::y', $edges);
+        self::assertContains('imports crate::other -> crate::impl_a', $edges);
+        self::assertContains('references crate::other::f -> crate::impl_a::Thing', $edges);
+        self::assertSame([], $this->nodesStartingWith($pdo, 'crate::a'));
+        self::assertSame([], $this->nodesStartingWith($pdo, 'crate::parse::discouraged'));
+    }
+
+    /**
+     * Two `#[path]` declarations of one name under different `cfg`s name two
+     * modules, so a path through the name resolves to neither.
+     */
+    public function testTwoGatedPathDeclarationsOfOneNameResolveToNothing(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "#[cfg(unix)]\n#[path = \"sys/unix.rs\"]\nmod sys;\n#[cfg(windows)]\n#[path = \"sys/windows.rs\"]\nmod sys;\npub mod other;\n\npub fn run() {\n    sys::go();\n}\n");
+        $this->write('src/sys/unix.rs', "pub fn go() {}\n");
+        $this->write('src/sys/windows.rs', "pub fn go() {}\n");
+        $this->write('src/other.rs', "pub fn o() {\n    crate::sys::go();\n}\n");
+        $pdo = $this->scanned();
+
+        $edges = $this->edges($pdo);
+        self::assertContains('contains crate -> crate::sys::unix', $edges);
+        self::assertContains('contains crate -> crate::sys::windows', $edges);
+        foreach ($edges as $edge) {
+            self::assertStringNotContainsString('calls crate::run', $edge);
+            self::assertStringNotContainsString('calls crate::other::o', $edge);
+        }
+        self::assertSame([], $this->nodesStartingWith($pdo, 'crate::sys::go'));
+    }
+
+    /**
+     * `crate::` in a binary, an integration test or an example names that
+     * target's own crate, whose modules sit beside its root file.
+     */
+    public function testCrateInsideATargetRootNamesThatTarget(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod helper;\n");
+        $this->write('src/helper.rs', "pub fn aid() -> u32 {\n    9\n}\n");
+        $this->write('src/bin/tool.rs', "mod helper;\nmod lonely;\n\nfn main() {\n    crate::helper::aid();\n    crate::lonely::solo();\n}\n");
+        $this->write('src/bin/helper.rs', "pub fn aid() -> u32 {\n    1\n}\n");
+        $this->write('src/bin/lonely.rs', "pub fn solo() -> u32 {\n    1\n}\n");
+        $this->write('src/bin/deep/main.rs', "mod part;\n\nfn main() {\n    crate::part::go();\n}\n");
+        $this->write('src/bin/deep/part.rs', "pub fn go() {}\n");
+        $this->write('tests/it.rs', "mod common;\n\n#[test]\nfn t() {\n    crate::common::setup();\n}\n");
+        $this->write('tests/common/mod.rs', "pub fn setup() {}\n");
+        $pdo = $this->scanned();
+
+        $edges = $this->edges($pdo);
+        self::assertContains('calls crate::bin::tool::main -> crate::bin::helper::aid', $edges);
+        self::assertContains('calls crate::bin::tool::main -> crate::bin::lonely::solo', $edges);
+        self::assertNotContains('calls crate::bin::tool::main -> crate::helper::aid', $edges);
+        self::assertContains('calls crate::bin::deep::main::main -> crate::bin::deep::part::go', $edges);
+        self::assertContains('calls tests::it::t -> tests::common::setup', $edges);
+    }
+
+    /** A method compiled only for tests is test code, as a free function is. */
+    public function testAMethodCompiledOnlyForTestsIsTestCode(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub struct S;\n\nimpl S {\n    #[cfg(test)]\n    pub fn in_tests(&self) {}\n    pub fn always(&self) {}\n}\n\npub trait T {\n    #[cfg(test)]\n    fn probe(&self) {}\n    fn shipped(&self) {}\n}\n");
+        $pdo = $this->scanned();
+
+        $tests = $this->testNodes($pdo);
+        self::assertContains('crate::S::in_tests', $tests);
+        self::assertContains('crate::T::probe', $tests);
+        self::assertNotContains('crate::S::always', $tests);
+        self::assertNotContains('crate::T::shipped', $tests);
+    }
+
+    /** `use crate::errors::Error::Io;` imports a variant of a type, not a module. */
+    public function testImportingAVariantReferencesItsTypeNotAModule(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod errors;\n\nuse crate::errors::Error::Io;\nuse crate::errors::Error::*;\n\npub fn fail(e: std::io::Error) {\n    let _ = Io(e);\n}\n");
+        $this->write('src/errors.rs', "pub enum Error {\n    Io(std::io::Error),\n}\n");
+        $pdo = $this->scanned();
+
+        self::assertContains('references crate -> crate::errors::Error', $this->edges($pdo));
+        self::assertNotContains('module crate::errors::Error', $this->nodes($pdo));
+    }
+
     private function writeLayoutCrate(): void
     {
         $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");

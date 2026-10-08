@@ -31,6 +31,11 @@ pub struct Declarations {
     counts: BTreeMap<String, usize>,
     /// Every name asked about since the last [`Declarations::take_lookups`].
     lookups: RefCell<BTreeSet<String>>,
+    /// Each `mod name;` whose module is not the path it is declared at
+    /// (`#[path]`, a binary root's children), by that declared path; `None`
+    /// when two declarations send one path to two modules. See
+    /// [`declared_renames`].
+    renames: BTreeMap<String, Option<String>>,
 }
 
 impl Declarations {
@@ -53,10 +58,109 @@ impl Declarations {
         }
     }
 
+    /// Record one file's renamed `mod` declarations, as [`declared_renames`]
+    /// returned them; a path two declarations send apart resolves to nothing.
+    pub fn add_renames(&mut self, renames: &BTreeMap<String, Option<String>>) {
+        for (declared, placed) in renames {
+            merge_rename(&mut self.renames, declared, placed.clone());
+        }
+    }
+
+    /// `path` with its longest prefix that a `mod` declaration renamed
+    /// rewritten onto the module that declaration loads, repeatedly, so
+    /// `crate::a::x` under `#[path = "impl_a.rs"] mod a;` is
+    /// `crate::impl_a::x`. `Some(None)` when a prefix is ambiguous, `None`
+    /// when no prefix was renamed. Every path asked about is remembered as a
+    /// lookup: the declaring file sits in a module above it.
+    #[allow(clippy::option_option)]
+    pub fn renamed(&self, path: &str) -> Option<Option<String>> {
+        let mut current = path.to_owned();
+        let mut changed = false;
+        for _ in 0..=path.matches("::").count() {
+            self.lookups.borrow_mut().insert(current.clone());
+            let found = std::iter::successors(Some(current.as_str()), |prefix| {
+                prefix.rsplit_once("::").map(|(head, _)| head)
+            })
+            .find_map(|prefix| Some((prefix.len(), self.renames.get(prefix)?)));
+            match found {
+                Some((_, None)) => return Some(None),
+                Some((length, Some(placed))) => {
+                    current = format!("{placed}{}", &current[length..]);
+                    changed = true;
+                }
+                None => break,
+            }
+        }
+
+        changed.then_some(Some(current))
+    }
+
     /// Every name asked about since the last call, leaving the set empty.
     pub fn take_lookups(&self) -> BTreeSet<String> {
         std::mem::take(&mut *self.lookups.borrow_mut())
     }
+}
+
+/// Record that `declared` names `placed`, or that it is ambiguous when an
+/// earlier declaration sent it elsewhere.
+fn merge_rename(
+    renames: &mut BTreeMap<String, Option<String>>,
+    declared: &str,
+    placed: Option<String>,
+) {
+    match renames.get(declared) {
+        Some(existing) if *existing != placed => {
+            renames.insert(declared.to_owned(), None);
+        }
+        Some(_) => {}
+        None => {
+            renames.insert(declared.to_owned(), placed);
+        }
+    }
+}
+
+/// Every `mod name;` in one file whose module (see [`mod_child`]) is not the
+/// path it is declared at, by that path: what another file writing
+/// `crate::name::x` must be rewritten through. `None` marks a path two
+/// declarations of the file send to two modules.
+#[must_use]
+pub fn declared_renames(
+    relative: &str,
+    module: &str,
+    items: &[Item],
+    layout: &Layout,
+) -> BTreeMap<String, Option<String>> {
+    let mut out = BTreeMap::new();
+    collect_renames(relative, module, module, items, layout, &mut out);
+
+    out
+}
+
+/// [`declared_renames`] for the items of `container`.
+fn collect_renames(
+    relative: &str,
+    module: &str,
+    container: &str,
+    items: &[Item],
+    layout: &Layout,
+    out: &mut BTreeMap<String, Option<String>>,
+) {
+    let mut seen = BTreeMap::new();
+    for item in items {
+        let Item::Mod(node) = item else {
+            continue;
+        };
+        let (child, _) = mod_child(relative, module, container, node, layout);
+        let declared = format!("{container}::{}", ident_name(&node.ident));
+        match &node.content {
+            Some((_, inner)) => collect_renames(relative, module, &child, inner, layout, out),
+            None => merge_rename(&mut seen, &declared, Some(child)),
+        }
+    }
+    out.extend(
+        seen.into_iter()
+            .filter(|(declared, placed)| placed.as_deref() != Some(declared.as_str())),
+    );
 }
 
 /// Canonical paths of modules the crate declared `#[cfg(test)] mod name;`
@@ -135,8 +239,17 @@ struct Walk<'a> {
     relative: String,
     /// Each `mod name;` whose module is not `container::name` (a binary
     /// root's or a test target's children, `#[path]`), by its container and
-    /// name: a path through `name` there names that module.
-    renamed_children: BTreeMap<(String, String), String>,
+    /// name: a path through `name` there names that module. `None` marks a
+    /// name two declarations (under different `cfg`s) send to two modules.
+    renamed_children: BTreeMap<(String, String), Option<String>>,
+    /// What `crate` alone names in this file: the crate root module, which
+    /// for a target root (a binary in `src/bin/`, a test, an example) is the
+    /// file's own module.
+    crate_module: String,
+    /// What `crate::x` is placed under: the crate root for a package's own
+    /// files, the directory module a target root keeps its `mod`s in
+    /// (`crate::bin` for `src/bin/tool.rs`, `tests` for `tests/it.rs`).
+    crate_anchor: String,
     /// The files this file's `mod` declarations load, whose own placement
     /// decided the module each declaration names.
     placed: BTreeSet<String>,
@@ -161,6 +274,12 @@ pub fn walk(
         facts.enter_test_scope();
     }
     let relative = facts.relative().to_owned();
+    let root = module.split("::").next().unwrap_or("crate").to_owned();
+    let (crate_module, crate_anchor) = if layout.is_target_root(&relative) {
+        (module.to_owned(), parent_module(module).to_owned())
+    } else {
+        (root.clone(), root)
+    };
     let mut walker = Walk {
         facts,
         module: module.to_owned(),
@@ -177,6 +296,8 @@ pub fn walk(
         layout,
         relative,
         renamed_children: BTreeMap::new(),
+        crate_module,
+        crate_anchor,
         placed: BTreeSet::new(),
     };
     walker.collect_uses(module, &file.items);
@@ -242,13 +363,15 @@ fn mod_child(
 }
 
 /// A `use` path whose head names a `mod` of the module it is written in,
-/// rewritten onto that module's path (see [`mod_child`]); `None` for any
+/// rewritten onto that module's path (see [`mod_child`]); `Some(None)` when
+/// two declarations of that name load different modules, `None` for any
 /// other path. A leading `::` (`unrooted` false) always names a crate.
+#[allow(clippy::option_option)]
 fn through_child(
-    children: &BTreeMap<String, String>,
+    children: &BTreeMap<String, Option<String>>,
     unrooted: bool,
     path: &str,
-) -> Option<String> {
+) -> Option<Option<String>> {
     if !unrooted {
         return None;
     }
@@ -258,10 +381,10 @@ fn through_child(
     };
     let child = children.get(head)?;
 
-    Some(match rest {
+    Some(child.as_ref().map(|child| match rest {
         Some(rest) => format!("{child}::{rest}"),
         None => child.clone(),
-    })
+    }))
 }
 
 /// The value of a `#[path = "..."]` attribute.
@@ -386,18 +509,28 @@ impl Walk<'_> {
         // since the 2018 edition a path's first segment may be any name in
         // scope, and a module declared here is one. Left as written, the path
         // read as an external crate's.
-        let mut children: BTreeMap<String, String> = BTreeMap::new();
+        let mut children: BTreeMap<String, Option<String>> = BTreeMap::new();
         for item in items {
             if let Item::Mod(node) = item {
                 let (child, file) =
                     mod_child(&self.relative, &self.module, container, node, self.layout);
-                let name = ident_name(&node.ident);
-                if child != format!("{container}::{name}") {
-                    self.renamed_children
-                        .insert((container.to_owned(), name.clone()), child.clone());
-                }
                 self.placed.extend(file);
-                children.insert(name, child);
+                let name = ident_name(&node.ident);
+                match children.get(&name) {
+                    Some(Some(existing)) if *existing != child => {
+                        children.insert(name, None);
+                    }
+                    Some(_) => {}
+                    None => {
+                        children.insert(name, Some(child));
+                    }
+                }
+            }
+        }
+        for (name, child) in &children {
+            if child.as_deref() != Some(format!("{container}::{name}").as_str()) {
+                self.renamed_children
+                    .insert((container.to_owned(), name.clone()), child.clone());
             }
         }
         for item in items {
@@ -407,10 +540,18 @@ impl Walk<'_> {
                     flatten_use(&node.tree, "", &mut leaves);
                     let source = reference("module", &self.module);
                     for leaf in leaves {
-                        let written =
-                            through_child(&children, node.leading_colon.is_none(), &leaf.full)
-                                .unwrap_or_else(|| leaf.full.clone());
-                        let Some(full) = rebase(container, &self.anchor_crate(&written)) else {
+                        let written = match through_child(
+                            &children,
+                            node.leading_colon.is_none(),
+                            &leaf.full,
+                        ) {
+                            Some(Some(written)) => written,
+                            Some(None) => continue,
+                            None => leaf.full.clone(),
+                        };
+                        let Some(full) = rebase(container, &self.anchor_crate(&written))
+                            .and_then(|full| self.renamed(full))
+                        else {
                             continue;
                         };
                         let module = if leaf.names_module {
@@ -418,13 +559,7 @@ impl Walk<'_> {
                         } else {
                             parent_module(&full).to_owned()
                         };
-                        self.facts.edge(
-                            "imports",
-                            &source,
-                            &reference("module", &module),
-                            "certain",
-                            item.span(),
-                        );
+                        self.import(&source, &module, item.span());
                         let key = (container.to_owned(), leaf.alias.clone());
                         match self.module_aliases.get(&key) {
                             Some(Some(existing)) if existing != &full => {
@@ -440,8 +575,12 @@ impl Walk<'_> {
                     let mut globs = Vec::new();
                     glob_prefixes(&node.tree, "", &mut globs);
                     for glob in globs {
-                        let written = through_child(&children, node.leading_colon.is_none(), &glob)
-                            .unwrap_or(glob);
+                        let written =
+                            match through_child(&children, node.leading_colon.is_none(), &glob) {
+                                Some(Some(written)) => written,
+                                Some(None) => continue,
+                                None => glob,
+                            };
                         self.pending_globs.push((
                             container.to_owned(),
                             written,
@@ -459,6 +598,31 @@ impl Walk<'_> {
                 _ => {}
             }
         }
+    }
+
+    /// The edge a `use` leaves from `source` to the scope it imports from.
+    ///
+    /// A scope whose last segment is UpperCamelCase is a type, not a module:
+    /// `use crate::errors::Error::Io;` and `use Error::*;` take variants or
+    /// associated items of `Error`, so they reference the type (speculative,
+    /// struct or trait being unknown) instead of importing a module the graph
+    /// would invent.
+    fn import(&mut self, source: &str, scope: &str, span: proc_macro2::Span) {
+        let last = scope.rsplit("::").next().unwrap_or(scope);
+        if scope.contains("::") && last.starts_with(char::is_uppercase) {
+            for kind in ["class", "interface"] {
+                self.facts
+                    .speculative_edge("references", source, &reference(kind, scope), span);
+            }
+            return;
+        }
+        self.facts.edge(
+            "imports",
+            source,
+            &reference("module", scope),
+            "certain",
+            span,
+        );
     }
 
     /// Walk one item list whose declarations belong to `container`.
@@ -598,6 +762,10 @@ impl Walk<'_> {
                 }
                 for member in &node.items {
                     if let TraitItem::Fn(method) = member {
+                        // A member compiled only for tests is test code, as
+                        // a free function is (see `Walk::walk_items`).
+                        let is_test = is_cfg_test(&method.attrs);
+                        self.facts.enter_test_scope_if(is_test);
                         let method_canonical = self.declare(
                             &canonical,
                             "interface",
@@ -615,6 +783,7 @@ impl Walk<'_> {
                                 block,
                             );
                         }
+                        self.facts.exit_test_scope_if(is_test);
                     }
                 }
             }
@@ -704,6 +873,8 @@ impl Walk<'_> {
                 let exported_impl = node.attrs.iter().any(is_wasm_bindgen);
                 for member in &node.items {
                     if let ImplItem::Fn(method) = member {
+                        let is_test = is_cfg_test(&method.attrs);
+                        self.facts.enter_test_scope_if(is_test);
                         let name = ident_name(&method.sig.ident);
                         let method_canonical =
                             self.declare(&target, "class", &name, "method", member.span());
@@ -746,6 +917,7 @@ impl Walk<'_> {
                             &method.sig,
                             &method.block,
                         );
+                        self.facts.exit_test_scope_if(is_test);
                     }
                 }
                 self.current_impl_target = old_target;
@@ -890,11 +1062,16 @@ impl Walk<'_> {
         }
         let single_segment = path.segments.len() == 1;
         if path.leading_colon.is_some() {
-            let rendered = self.library_path(&rendered).unwrap_or(rendered);
-            return Some((rendered, single_segment));
+            return match self.library_path(&rendered) {
+                Some(library) => self.renamed(library),
+                None => Some(rendered),
+            }
+            .map(|target| (target, single_segment));
         }
         if rendered == "crate" || rendered.starts_with("crate::") {
-            return Some((self.anchor_crate(&rendered), single_segment));
+            return self
+                .renamed(self.anchor_crate(&rendered))
+                .map(|target| (target, single_segment));
         }
         if rendered == "Self" || rendered.starts_with("Self::") {
             if let Some(target) = &self.current_impl_target {
@@ -906,7 +1083,9 @@ impl Walk<'_> {
             || rendered == "super"
             || rendered.starts_with("super::")
         {
-            return rebase(container, &rendered).map(|target| (target, single_segment));
+            return rebase(container, &rendered)
+                .and_then(|target| self.renamed(target))
+                .map(|target| (target, single_segment));
         }
         if let Some(answer) = self.through_renamed_child(container, &rendered) {
             return answer;
@@ -915,7 +1094,7 @@ impl Walk<'_> {
             return Some((expanded, false));
         }
         if let Some(library) = self.library_path(&rendered) {
-            return Some((library, single_segment));
+            return self.renamed(library).map(|target| (target, single_segment));
         }
         let head = rendered.split("::").next().unwrap_or(&rendered);
         if self.aliases.is_ambiguous(head) {
@@ -958,9 +1137,12 @@ impl Walk<'_> {
         rendered: &str,
     ) -> Option<Option<(String, bool)>> {
         let (head, rest) = rendered.split_once("::")?;
-        let child = self
+        let Some(child) = self
             .renamed_children
-            .get(&(container.to_owned(), head.to_owned()))?;
+            .get(&(container.to_owned(), head.to_owned()))?
+        else {
+            return Some(None);
+        };
         let target = format!("{child}::{rest}");
 
         Some(match self.declarations.get(&target) {
@@ -992,16 +1174,12 @@ impl Walk<'_> {
                     _ => written.clone(),
                 }
             };
-            let Some(full) = rebase(&container, &self.anchor_crate(&expanded)) else {
+            let Some(full) = rebase(&container, &self.anchor_crate(&expanded))
+                .and_then(|full| self.renamed(full))
+            else {
                 continue;
             };
-            self.facts.edge(
-                "imports",
-                &source,
-                &reference("module", &full),
-                "certain",
-                span,
-            );
+            self.import(&source, &full, span);
             let glob = (container, full);
             if !self.globs.contains(&glob) {
                 self.globs.push(glob);
@@ -1017,16 +1195,34 @@ impl Walk<'_> {
     }
 
     /// A path as written, with its root as the graph names it: `crate` is
-    /// this file's crate root, and a project library's crate name its root
-    /// (see [`Walk::library_path`]).
+    /// this file's crate root (a target root's own module, its `crate::x`
+    /// beside it, see [`Walk::crate_anchor`]), and a project library's crate
+    /// name its root (see [`Walk::library_path`]).
     fn anchor_crate(&self, path: &str) -> String {
-        let root = self.crate_root();
         if path == "crate" {
-            return root.to_owned();
+            return self.crate_module.clone();
         }
         match path.strip_prefix("crate::") {
-            Some(rest) => format!("{root}::{rest}"),
+            Some(rest) => format!("{}::{rest}", self.crate_anchor),
             None => self.library_path(path).unwrap_or_else(|| path.to_owned()),
+        }
+    }
+
+    /// A path inside the project, rewritten through every `mod` declaration
+    /// of the project that loads a module other than its declared path (see
+    /// [`Declarations::renamed`]); `None` when one of those is ambiguous.
+    /// A path outside the project is returned unchanged and asks nothing.
+    fn renamed(&self, path: String) -> Option<String> {
+        let head = path.split("::").next().unwrap_or(&path);
+        if head != self.crate_root()
+            && head != self.crate_anchor.split("::").next().unwrap_or("")
+            && !self.layout.is_project_root(head)
+        {
+            return Some(path);
+        }
+        match self.declarations.renamed(&path) {
+            Some(placed) => placed,
+            None => Some(path),
         }
     }
 
@@ -2585,6 +2781,32 @@ mod tests {
                 "{target}"
             );
         }
+    }
+
+    /// A `#[path]` declaration renames its declared path for every file, and
+    /// two declarations that disagree leave the path unresolvable.
+    #[test]
+    fn a_renamed_mod_rewrites_the_longest_declared_prefix() {
+        let layout = Layout::default();
+        let file: syn::File = syn::parse_str(
+            "#[path = \"impl_a.rs\"]\npub mod a;\npub mod plain;\n#[cfg(unix)]\n#[path = \"u.rs\"]\nmod sys;\n#[cfg(windows)]\n#[path = \"w.rs\"]\nmod sys;",
+        )
+        .expect("parses");
+        let mut declarations = Declarations::new();
+        declarations.add_renames(&super::declared_renames(
+            "src/lib.rs",
+            "crate",
+            &file.items,
+            &layout,
+        ));
+
+        assert_eq!(
+            Some(Some("crate::impl_a::x".to_owned())),
+            declarations.renamed("crate::a::x")
+        );
+        assert_eq!(None, declarations.renamed("crate::plain::x"));
+        assert_eq!(Some(None), declarations.renamed("crate::sys::go"));
+        assert!(declarations.take_lookups().contains("crate::plain::x"));
     }
 
     #[test]
