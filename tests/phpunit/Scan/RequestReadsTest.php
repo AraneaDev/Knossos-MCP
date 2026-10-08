@@ -41,6 +41,7 @@ final class RequestReadsTest extends TestCase
             $this->manifest(['scan', 'read_attribution']),
             $inputs + ['c.ts' => null],
             [$contribution],
+            ['a.ts'],
         );
 
         $group = $reads['owners']['o:a']['group'];
@@ -76,6 +77,47 @@ final class RequestReadsTest extends TestCase
         );
 
         assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode);
+    }
+
+    /**
+     * A read no contribution and no shared set names would invalidate nothing
+     * when it changes, so an attributing worker that leaves one out is refused.
+     */
+    public function testAReadNoContributionAndNoSharedSetNamesIsRefused(): void
+    {
+        $error = captureThrows(
+            fn() => RequestReads::forRequest(
+                ['reads' => ['tsconfig.json' => self::h('t')]],
+                $this->manifest(['read_attribution']),
+                ['a.ts' => self::h('a'), 'tsconfig.json' => self::h('t'), 'node_modules/x/index.d.ts' => self::h('x')],
+                [new ScanContribution('o:a', reads: [])],
+                ['a.ts'],
+            ),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode);
+        assertSame('knossos.fake read node_modules/x/index.d.ts but named it in no contribution\'s reads and not in the request\'s shared reads.', $error->getMessage());
+    }
+
+    public function testARequestedFilesOwnReadNeedsNoAttribution(): void
+    {
+        $reads = RequestReads::forRequest(
+            [],
+            $this->manifest(['read_attribution']),
+            ['a.ts' => self::h('a'), 'gone.ts' => null],
+            [new ScanContribution('o:a', reads: []), new ScanContribution('o:gone', reads: [])],
+            ['a.ts', 'gone.ts'],
+        );
+
+        assertSame([], $reads['groups']);
+    }
+
+    public function testAWorkerThatDoesNotAttributeOwesNoCoverage(): void
+    {
+        $reads = RequestReads::forRequest([], $this->manifest(['scan']), ['node_modules/x.d.ts' => self::h('x')], [new ScanContribution('o:a')]);
+
+        self::assertCount(1, $reads['groups']);
     }
 
     public function testAnAttributingWorkerMustReportReadsOnEveryContribution(): void

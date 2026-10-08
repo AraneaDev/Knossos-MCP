@@ -43,7 +43,25 @@ function scan(root, files, params = {}) {
         ]),
     );
     assertConfirmedByInputHashes(result, contributions);
+    assertEveryReadAttributed(result, contributions, files);
     return { result, byOwner };
+}
+
+/**
+ * The core also refuses a read named nowhere: a change to it would rescan
+ * nothing. Only a requested file's own read is its content hash instead.
+ */
+function assertEveryReadAttributed(result, contributions, requested) {
+    const named = new Set([
+        ...requested,
+        ...Object.keys(result.reads),
+        ...contributions.flatMap((contribution) =>
+            Object.keys(contribution.reads),
+        ),
+    ]);
+    expect(
+        Object.keys(result.input_hashes).filter((key) => !named.has(key)),
+    ).toEqual([]);
 }
 
 /**
@@ -331,6 +349,7 @@ describe("read attribution: the other reads a file's facts depend on", () => {
                 (contribution) => batch.push(contribution),
             );
             assertConfirmedByInputHashes(result, batch);
+            assertEveryReadAttributed(result, batch, [file]);
             contributions.push(...batch);
         }
 

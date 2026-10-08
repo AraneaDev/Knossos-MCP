@@ -31,10 +31,11 @@ final class RequestReads
      * @param array<string, mixed> $result the request's final result
      * @param array<string, string|null> $verifiedInputs the request's whole verified `input_hashes` map
      * @param list<ScanContribution> $contributions
+     * @param list<string> $requested the paths the request named, whose own reads need no attribution
      * @return array{groups: array<string, array<string, ?string>>, owners: array<string, array{reads: array<string, ?string>, group: ?string, attributed: bool}>}
-     * @throws WorkerException WORKER_CONTRIBUTION_INVALID when an attributing worker omits `reads` or reports one `input_hashes` does not confirm
+     * @throws WorkerException WORKER_CONTRIBUTION_INVALID when an attributing worker omits `reads`, reports one `input_hashes` does not confirm, or leaves a read in no `reads` at all
      */
-    public static function forRequest(array $result, ScannerManifest $manifest, array $verifiedInputs, array $contributions): array
+    public static function forRequest(array $result, ScannerManifest $manifest, array $verifiedInputs, array $contributions, array $requested = []): array
     {
         $attributing = in_array(Protocol::CAPABILITY_READ_ATTRIBUTION, $manifest->capabilities, true);
         $shared = $attributing
@@ -56,6 +57,9 @@ final class RequestReads
             }
             $owners[$contribution->ownerKey] = ['reads' => $reads, 'group' => $groupId, 'attributed' => $attributing];
         }
+        if ($attributing) {
+            self::assertAttributed($verifiedInputs, [$shared, ...array_column($owners, 'reads')], $requested, $manifest);
+        }
 
         return ['groups' => $groupId === null ? [] : [$groupId => $shared], 'owners' => $owners];
     }
@@ -72,6 +76,30 @@ final class RequestReads
             $path = (string) $path;
             if (!array_key_exists($path, $verifiedInputs) || $verifiedInputs[$path] !== $hash) {
                 throw new WorkerException('WORKER_CONTRIBUTION_INVALID', sprintf('%s reported a read of %s in %s that its input_hashes does not confirm.', $manifest->id, $path, $source));
+            }
+        }
+    }
+
+    /**
+     * Refuse a read that no contribution's reads and no shared set name.
+     *
+     * Such a read changes nothing the planner rescans when it changes, so the
+     * contributions derived from it would be reused against bytes they never
+     * saw. A requested file's own read is its contribution's content hash.
+     *
+     * @param array<string, string|null> $verifiedInputs
+     * @param list<array<string, ?string>> $readSets
+     * @param list<string> $requested
+     */
+    private static function assertAttributed(array $verifiedInputs, array $readSets, array $requested, ScannerManifest $manifest): void
+    {
+        $named = array_fill_keys($requested, true);
+        foreach ($readSets as $reads) {
+            $named += $reads;
+        }
+        foreach ($verifiedInputs as $path => $hash) {
+            if (!array_key_exists((string) $path, $named)) {
+                throw new WorkerException('WORKER_CONTRIBUTION_INVALID', sprintf("%s read %s but named it in no contribution's reads and not in the request's shared reads.", $manifest->id, $path));
             }
         }
     }

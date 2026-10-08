@@ -321,12 +321,13 @@ class InputReadRecorder {
  * its facts were collected. The core closes over those itself: a file it
  * rescans counts as a change to every file that read it.
  *
- * That closure runs only through files the core scans. What a dependency's
- * declarations read, and whatever no project source accounts for (a config, a
- * bundler alias config, a probe for a type library), is shared by the whole
- * request. So is a global script and a module that augments the global scope
- * or another module: every file of its program sees those declarations
- * without an import saying so.
+ * That closure runs only through files the core scans. Every other read is
+ * shared by the whole request, since the core refuses a read no `reads` names:
+ * a config, a bundler alias config, a probe for a type library, what a
+ * dependency's declarations read, and a project file a program loaded that
+ * no requested file read directly. So is a global script and a module that
+ * augments the global scope or another module, whoever read it: every file of
+ * its program sees those declarations without an import saying so.
  *
  * Values are taken from the recorder once the request has finished, so a path
  * two programs read differently carries the same null here as in
@@ -340,8 +341,6 @@ class ReadAttribution {
         this.maxFileBytes = maxFileBytes;
         // Requested path to the keys its contribution read.
         this.byFile = new Map();
-        // Keys a project source's own contribution reports.
-        this.accounted = new Set();
         // Keys every file of the request shares, whoever else read them.
         this.shared = new Set();
     }
@@ -360,24 +359,25 @@ class ReadAttribution {
         for (const probe of probes) this.#addProbed(keys, probe);
         keys.delete(relative);
         this.byFile.set(relative, keys);
-        this.#account(sourceFile, relative, keys);
+        this.#shareIfGlobal(sourceFile, relative);
     }
 
     /**
-     * Account for the files of a program this request did not attribute: a
-     * project source reports its own reads when it is scanned, and whatever a
-     * dependency's file read is shared.
+     * Share what the files of a program this request did not attribute need
+     * shared whoever else read it: a project source's own declarations when
+     * they are global, and whatever a dependency's file read, since no
+     * contribution of the core's reports it.
      */
     program(program) {
         for (const sourceFile of program.getSourceFiles()) {
             const relative = relativeInside(this.root, sourceFile.fileName);
             if (relative === null || this.byFile.has(relative)) continue;
-            const keys = this.#directReads(program, sourceFile, false);
             if (isProjectSource(relative)) {
-                this.#account(sourceFile, relative, keys);
+                this.#shareIfGlobal(sourceFile, relative);
                 continue;
             }
-            for (const key of keys) this.shared.add(key);
+            for (const key of this.#directReads(program, sourceFile, false))
+                this.shared.add(key);
         }
     }
 
@@ -386,18 +386,24 @@ class ReadAttribution {
         return this.reads.select(this.byFile.get(relative) ?? []);
     }
 
-    /** The result's `reads`: everything no project source accounts for. */
-    sharedReads() {
+    /**
+     * The result's `reads`: every read no contribution's `reads` names, other
+     * than a requested file's own, and every read shared whoever named it.
+     *
+     * @param {Iterable<string>} requested the paths the request named
+     */
+    sharedReads(requested) {
+        const named = new Set(requested);
+        for (const keys of this.byFile.values())
+            for (const key of keys) named.add(key);
         const keys = new Set(this.shared);
         for (const key of this.reads.keys()) {
-            if (!this.accounted.has(key)) keys.add(key);
+            if (!named.has(key)) keys.add(key);
         }
         return this.reads.select(keys);
     }
 
-    #account(sourceFile, relative, keys) {
-        this.accounted.add(relative);
-        for (const key of keys) this.accounted.add(key);
+    #shareIfGlobal(sourceFile, relative) {
         if (declaresGlobally(sourceFile) && this.reads.has(relative))
             this.shared.add(relative);
     }
@@ -625,7 +631,12 @@ export class TypeScriptScanner {
                 ),
             });
         }
-        return { ...result, reads: attribution.sharedReads() };
+        return {
+            ...result,
+            reads: attribution.sharedReads(
+                Array.isArray(params.files) ? params.files : [],
+            ),
+        };
     }
 
     /**
