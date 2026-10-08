@@ -587,11 +587,16 @@ class ProjectModuleIndex:
         each wheel ``packages`` path) and PDM (``build.package-dir``). A file
         that is missing, excluded, outside the root, over the byte cap or not
         TOML declares none, and so does a path that is absolute or climbs out.
+
+        The probe is recorded, hashed, as the request's shared read: a
+        pyproject discovery leaves out (a gitignored one) is no unit, so no
+        configuration hash covers it, and editing, creating or deleting it
+        must still reach every file.
         """
         walked = walk_path(self.root / "pyproject.toml")
         location = self._in_root_file(walked)
+        self._record_probe(walked, location is not None)
         try:
-            # One discovery leaves out is no unit, so no configuration hash would cover it.
             if location is None or self.exclusions.excludes(("pyproject.toml",)):
                 return set()
             source = read_bounded(location, self.max_bytes)
@@ -638,7 +643,7 @@ class ProjectModuleIndex:
             for candidate in (base / "__init__.py", base.with_suffix(".py")):
                 if self._is_project_file(candidate):
                     return candidate
-            # Last, the suffixless file itself. Discovery admits an extensionless
+            # Then the suffixless file itself. Discovery admits an extensionless
             # script on its shebang, so such a file is scanned and its symbols
             # are emitted, but a name derived from it round-trips only to
             # ``<name>.py`` — which does not exist. Its own declarations were
@@ -649,6 +654,11 @@ class ProjectModuleIndex:
             # named ``config``.
             if self._is_python_script(base):
                 return base
+            # Last, a stub with no module beside it: the declarations of an
+            # extension module, which is all an importer can resolve against.
+            for candidate in (base / "__init__.pyi", base.with_suffix(".pyi")):
+                if self._is_project_file(candidate):
+                    return candidate
         return None
 
     def file_identity(self, relative: str, absolute: Path, found_as: str | None = None) -> tuple[str, str, Path | None]:
@@ -659,11 +669,11 @@ class ProjectModuleIndex:
         (a ``mod.py`` beside ``mod/__init__.py``, a module at the bare root and
         one in ``src/``, a stub beside its module), this file is named
         ``<location>.<relative>`` instead, so no two files share one id; the
-        probes deciding that are recorded. A location no import finds names the
-        file as it is, its own scan then declares nothing under it, and the
-        owner returned is ``None``. ``found_as`` is a module whose import just
-        found this file; when it is the location, the location is not probed
-        again.
+        probes deciding that are recorded. A stub with no module beside it owns
+        its location. A location no import finds names the file as it is, its
+        own scan then declares nothing under it, and the owner returned is
+        ``None``. ``found_as`` is a module whose import just found this file;
+        when it is the location, the location is not probed again.
         """
         location = self.module_for(relative)
         owner = Path(absolute) if found_as == location else self.module_file(location)
@@ -704,7 +714,12 @@ class ProjectModuleIndex:
         if not directory.parts:
             return None  # the bare root is already a source root
         base = self.root.joinpath(*directory.parts, *parts)
-        for candidate in (base / "__init__.py", base.with_suffix(".py")):
+        for candidate in (
+            base / "__init__.py",
+            base.with_suffix(".py"),
+            base / "__init__.pyi",
+            base.with_suffix(".pyi"),
+        ):
             if self._is_project_file(candidate):
                 # Spelled from the bare root, which is searched first, so an import of it finds this very file.
                 return module_name(candidate.relative_to(self.root).as_posix())
@@ -809,7 +824,7 @@ class ProjectModuleIndex:
             if path is not None and tree is not None:
                 self.open_scope()
                 try:
-                    cached = self._declare(tree, name, path.name == "__init__.py", location, module)
+                    cached = self._declare(tree, name, path.stem == "__init__", location, module)
                 except BaseException:
                     located |= self.close_scope()
                     self._note(located)
@@ -1494,7 +1509,7 @@ class RouterMounts:
         self.routers: set[str] = set()
 
     def emit_router(self, variable: str, value: ast.Call, framework: str, prefix: str) -> None:
-        """Declare the router node ``variable = APIRouter(...)`` or ``Blueprint(...)`` builds."""
+        """Declare the router node a module-level ``variable = APIRouter(...)`` or ``Blueprint(...)`` builds."""
         router_id = ref("router", f"{self.module}.{variable}")
         self.facts.add_node(
             router_id,
@@ -1540,7 +1555,7 @@ class RouterMounts:
 class FastApiFactEnricher(RouterMounts):
     """Add FastAPI routes, dependencies, routers, and middleware facts."""
 
-    def register_assignment(self, variable: str, value: ast.AST | None) -> None:
+    def register_assignment(self, variable: str, value: ast.AST | None, module_level: bool = True) -> None:
         if not isinstance(value, ast.Call):
             return
         called = dotted(value.func)
@@ -1549,7 +1564,9 @@ class FastApiFactEnricher(RouterMounts):
         if resolved.endswith(("fastapi.FastAPI", "fastapi.APIRouter")):
             prefix = keyword_string(value, "prefix") or ""
             self.framework_objects[variable] = ("fastapi", prefix)
-        if resolved.endswith("fastapi.APIRouter"):
+        # A router built inside a function is that call's own, one per call:
+        # no module-level node names it, though its routes keep its prefix.
+        if module_level and resolved.endswith("fastapi.APIRouter"):
             self.emit_router(variable, value, "fastapi", keyword_string(value, "prefix") or "")
 
     def register_parameters(
@@ -1754,7 +1771,7 @@ class FlaskFactEnricher(RouterMounts):
     `PY_DYNAMIC_ROUTE_PATH`.
     """
 
-    def register_assignment(self, variable: str, value: ast.AST | None) -> None:
+    def register_assignment(self, variable: str, value: ast.AST | None, module_level: bool = True) -> None:
         if not isinstance(value, ast.Call):
             return
         called = dotted(value.func)
@@ -1762,7 +1779,7 @@ class FlaskFactEnricher(RouterMounts):
         if resolved.endswith(("flask.Flask", "flask.Blueprint")):
             prefix = keyword_string(value, "url_prefix") or ""
             self.framework_objects[variable] = ("flask", prefix)
-        if resolved.endswith("flask.Blueprint"):
+        if module_level and resolved.endswith("flask.Blueprint"):
             self.emit_router(variable, value, "flask", keyword_string(value, "url_prefix") or "")
 
     def route_decorators(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple[str, str, ast.AST]]:
@@ -2324,9 +2341,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.emit_value_references(node.value)
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             variable = node.targets[0].id
-            self.fastapi.register_assignment(variable, node.value)
+            self.fastapi.register_assignment(variable, node.value, not self.containers)
             self.django.enrich_assignment(variable, node.value, node)
-            self.flask.register_assignment(variable, node.value)
+            self.flask.register_assignment(variable, node.value, not self.containers)
             self.remember_local(variable, node.value)
         if len(node.targets) == 1:
             attribute = self.self_attribute(node.targets[0])
@@ -2342,8 +2359,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
             # An annotation states the type outright, which beats inferring it.
             self.remember_attribute(attribute, node.value, node.annotation)
         elif isinstance(node.target, ast.Name):
-            self.fastapi.register_assignment(node.target.id, node.value)
-            self.flask.register_assignment(node.target.id, node.value)
+            self.fastapi.register_assignment(node.target.id, node.value, not self.containers)
+            self.flask.register_assignment(node.target.id, node.value, not self.containers)
             self.remember_local(node.target.id, node.value, node.annotation)
         self.generic_visit(node)
 

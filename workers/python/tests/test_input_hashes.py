@@ -218,7 +218,7 @@ def test_a_module_that_no_longer_resolves_at_all_is_null(worker: ModuleType, pro
     index._is_project_file = lambda path: path.name == "b.py"
 
     assert index.module_declarations("pkg.b") == {}
-    assert index.read_hashes == {"pkg/b.py": None}
+    assert index.read_hashes == {"pkg/b.py": None, "pyproject.toml": None}
 
 
 def test_a_module_refused_as_over_the_byte_cap_is_null_and_not_read(monkeypatch, worker: ModuleType, project) -> None:
@@ -307,7 +307,7 @@ def test_an_unreadable_requested_file_is_null_and_an_empty_request_reports_an_em
     monkeypatch.setattr(worker, "read_bounded", failing)
     result, contributions = _scan(worker, root, ["gone.py"])
     assert contributions["gone.py"]["diagnostics"][0]["code"] == "PY_UNSCANNABLE_FILE"
-    assert result["input_hashes"] == {"gone.py": None}
+    assert result["input_hashes"] == {"gone.py": None, "pyproject.toml": None}
 
 
 def test_a_requested_file_the_filesystem_refuses_is_null_and_a_policy_refusal_is_not_reported(
@@ -366,7 +366,7 @@ def test_a_requested_file_that_grows_past_the_cap_before_its_read_is_null_and_no
     result, contributions = _scan_limited(worker, root, ["grows.py"], 50)
 
     assert sizes == [51]
-    assert result["input_hashes"] == {"grows.py": None}
+    assert result["input_hashes"] == {"grows.py": None, "pyproject.toml": None}
     assert contributions["grows.py"]["diagnostics"][0]["message"] == "Python input exceeds the configured byte limit."
     assert "content_hash" not in contributions["grows.py"]
 
@@ -882,14 +882,14 @@ def test_a_competitor_absent_while_the_collision_probe_runs_fails_verification(w
 def test_the_source_root_probe_records_an_absent_package_marker_and_not_a_present_one(
     worker: ModuleType, project
 ) -> None:
-    # Whether a top-level directory holds __init__.py decides every module id
-    # below it.
+    # Whether src/ holds __init__.py decides every module id below it, and
+    # the pyproject (absent here) decides the declared roots.
     root = project({"src/app.py": "", "pkg/__init__.py": "", "top.py": ""})
 
     index = worker.ProjectModuleIndex(root, 2_000_000)
 
     assert index.prefixes == [(), ("src",)]
-    assert index.read_hashes == {"src/__init__.py": None}
+    assert index.read_hashes == {"pyproject.toml": None, "src/__init__.py": None}
 
 
 def test_a_package_marker_absent_while_the_source_roots_are_detected_fails_verification(

@@ -113,7 +113,7 @@ def test_source_roots_are_shared_and_labelled(worker: ModuleType, project: Any) 
     root = project(PACKAGE)
     result, contributions = _scan(worker, root, ["other.py"], sorted(PACKAGE))
 
-    assert result["reads"] == {"src/__init__.py": None}
+    assert result["reads"] == {"pyproject.toml": None, "src/__init__.py": None}
     item = contributions["other.py"]
     assert item["program"] == "python"
     assert result["environments"] == {"python": item["environment"]}
@@ -206,7 +206,7 @@ def test_large_shared_reads_travel_in_parts(
     for part in parts:
         shared |= part.get("reads", {})
         unattributed |= part.get("unattributed_reads", {})
-    assert set(shared) == {"src/__init__.py"}
+    assert set(shared) == {"pyproject.toml", "src/__init__.py"}
     assert {"pkg/impl.py", "pkg/star.py"} <= set(unattributed)
     assert any("unattributed_reads" in part for part in parts)
 

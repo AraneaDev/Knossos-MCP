@@ -202,6 +202,24 @@ final class PythonReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * A gitignored pyproject is no unit, so no configuration hash covers it,
+     * yet it decides the source roots: the worker's shared read of it rebuilds
+     * every Python file when it changes.
+     */
+    public function testEditingAGitignoredPyprojectRebuildsEveryPythonFile(): void
+    {
+        $this->write('.gitignore', "pyproject.toml\n");
+        $this->writeSourceRoots();
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('pyproject.toml', "[tool.setuptools.packages.find]\nwhere = [\"elsewhere\"]\n");
+        $this->scan($pdo);
+
+        assertSame(['lib/shared.py', 'other.py', 'src/run.py'], $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     /** A new top-level directory is no source root: nothing else is rebuilt for it. */
     public function testANewTopLevelDirectoryRescansOnlyItsOwnFiles(): void
     {

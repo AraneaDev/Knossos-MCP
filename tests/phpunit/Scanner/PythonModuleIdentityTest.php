@@ -156,6 +156,21 @@ final class PythonModuleIdentityTest extends KnossosTestCase
         self::assertContains('py:function:mod.f', $this->nodeIds($this->scanned(), 'code/mod.py'));
     }
 
+    /** A `.pyi` with no module beside it is the module an import finds, so its names resolve rather than turning external. */
+    public function testAnImportOfAStubOnlyModuleReachesTheStub(): void
+    {
+        $this->write('pkg/__init__.py', '');
+        $this->write('pkg/ext.pyi', "def g() -> int: ...\n");
+        $this->write('use.py', "from pkg.ext import g\n\n\ndef u():\n    return g()\n");
+
+        $facts = $this->scanned();
+
+        self::assertContains('py:function:pkg.ext.g', $this->nodeIds($facts, 'pkg/ext.pyi'));
+        $edges = $this->edges($facts, 'use.py');
+        self::assertContains(['calls', 'py:function:use.u', 'py:function:pkg.ext.g'], $edges);
+        self::assertNotContains(['calls', 'py:function:use.u', 'py:external_symbol:pkg.ext.g'], $edges);
+    }
+
     /**
      * pytest puts a test module's own directory first on `sys.path` when that
      * directory is no package, and so does a script run from it: a bare
@@ -318,8 +333,33 @@ final class PythonModuleIdentityTest extends KnossosTestCase
             '',
         ]));
 
+        // Each call of a factory builds its own router: no module-level node
+        // names either, though a route inside keeps the router's prefix.
+        $this->write('fac.py', implode("\n", [
+            'from fastapi import APIRouter',
+            '',
+            '',
+            'def make_a():',
+            '    router = APIRouter(prefix="/a")',
+            '',
+            '    @router.get("/x")',
+            '    def x():',
+            '        return 1',
+            '',
+            '    return router',
+            '',
+            '',
+            'def make_b():',
+            '    router = APIRouter(prefix="/b")',
+            '    return router',
+            '',
+        ]));
+
         $facts = $this->scanned();
 
+        $factory = $this->nodeIds($facts, 'fac.py');
+        self::assertSame([], array_values(array_filter($factory, static fn(string $id): bool => str_starts_with($id, 'py:router:'))));
+        self::assertContains('py:route:GET /a/x => fac.make_a.<locals>.x', $factory);
         $main = $this->nodeIds($facts, 'main.py');
         self::assertContains('py:router:main.local', $main);
         self::assertContains('py:router:main.bp', $main);

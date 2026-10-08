@@ -372,9 +372,11 @@ those files need have read it, so the core rebuilds every Python contribution
 when it is deleted, from its own worker descriptors, as it does for an added
 file of a worker that declares `added_files_affect_all`. An added one needs
 no such rule: the worker read its absence, and every file of the request
-shares that read. The worker reads `pyproject.toml` without recording it: the
-core's configuration hash for Python covers every `pyproject.toml`, so an edit
-of one rebuilds every Python file. Any other top-level directory is no source
+shares that read. The root `pyproject.toml` is a shared read too, by its hash
+or as `null` when it is absent: the core's configuration hash covers it only
+while discovery records it, and a gitignored one decides the source roots all
+the same, so an edit, creation or deletion of it rebuilds every Python file
+either way. Any other top-level directory is no source
 root, so creating or deleting one, or a package marker in it, reaches only
 the files that probed it.
 

@@ -98,8 +98,9 @@ final class PythonWorkerReadsTest extends KnossosTestCase
         // contribution names what it re-exports.
         self::assertArrayNotHasKey('src/impl2.py', $zz);
         self::assertArrayHasKey('src/impl2.py', $result['unattributed_reads']);
-        // `src/` is the only top-level directory that is a source root.
-        assertSame(['src/__init__.py' => null], $result['reads']);
+        // `src/` is the only top-level directory that is a source root, and
+        // the absent pyproject declares none.
+        assertSame(['pyproject.toml' => null, 'src/__init__.py' => null], $result['reads']);
 
         // Facts are labelled with the source roots; a file without facts is not.
         $environment = $result['environments']['python'];

@@ -51,8 +51,10 @@ another file (`utils.py` at the root and `src/utils.py`, or `mod.py` beside a
 `mod/` package), the file the import finds keeps the name and the other one is
 named by its path, `utils.<src/utils.py>`, with a `PY_MODULE_ID_COLLISION`
 warning. A stub beside its module (`mod.pyi` beside `mod.py`) is named the
-same way, `mod.<mod.pyi>`, without a warning, and every symbol of a `.pyi`
-file is a declaration that the dead-code analysis leaves out.
+same way, `mod.<mod.pyi>`, without a warning. A stub with no module beside it,
+such as the stub of an extension module, is the module an import finds, so
+its names resolve. Every symbol of a `.pyi` file is a declaration that the
+dead-code analysis leaves out.
 
 ## What ends up in the graph
 
@@ -99,11 +101,15 @@ dependency metadata is incomplete or absent.
 
 Blueprint prefixes and route paths combine only when both are literals in the
 same file, for a decorated route and for `add_url_rule` alike. An `APIRouter`
-or `Blueprint` assigned to a name is a `router` node, `py:router:<module>.<name>`,
-and a `mounts` edge from `include_router` or `register_blueprint` reaches the
-router node it names, in the same file or imported from another module. A
-router handed in as a parameter has no node of its own, so its mount is kept
-only when its target resolves.
+or `Blueprint` assigned to a name at module level is a `router` node,
+`py:router:<module>.<name>`, and a `mounts` edge from `include_router` or
+`register_blueprint` reaches the router node it names, in the same file or
+imported from another module. A router built inside a function belongs to each
+call of it, so it has no node, though routes declared on it keep its prefix. A
+router handed in as a parameter has no node of its own either, so its mount is
+kept only when its target resolves. One module mounting one router twice keeps
+one `mounts` edge, with the prefix of the first mount: edges are unique by kind,
+source and target.
 
 ## Limits
 

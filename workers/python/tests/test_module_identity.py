@@ -8,6 +8,7 @@ whose location another file owns is named, and the routers a module declares.
 from __future__ import annotations
 
 import ast
+import hashlib
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -54,7 +55,7 @@ def test_src_is_a_source_root_only_without_a_marker(worker: ModuleType, project:
     root = project({"src/a.py": "", "app/b.py": "", "tests/c.py": ""})
     index = worker.ProjectModuleIndex(root, 2_000_000)
     assert index.prefixes == [(), ("src",)]
-    assert index.read_hashes == {"src/__init__.py": None}
+    assert index.read_hashes == {"pyproject.toml": None, "src/__init__.py": None}
     assert [index.module_for(path) for path in ("src/a.py", "app/b.py", "tests/c.py")] == ["a", "app.b", "tests.c"]
 
     (root / "src" / "__init__.py").write_text("")
@@ -85,8 +86,8 @@ def test_a_file_whose_location_another_file_owns_is_named_by_its_path(worker: Mo
         root / "utils.py",
     )
     assert index.file_identity("pkg/mod.pyi", root / "pkg/mod.pyi")[1] == "pkg.mod.<pkg/mod.pyi>"
-    # No import finds a stub, so one alone keeps its location and owns nothing.
-    assert index.file_identity("pkg/ext.pyi", root / "pkg/ext.pyi") == ("pkg.ext", "pkg.ext", None)
+    # A stub with no module beside it is what an import finds, so it owns its location.
+    assert index.file_identity("pkg/ext.pyi", root / "pkg/ext.pyi") == ("pkg.ext", "pkg.ext", root / "pkg/ext.pyi")
     # Every spelling of an import names the file it finds by that file's own id.
     assert index.canonical_module("src.utils") == "utils.<src/utils.py>"
     assert index.canonical_module("utils") == "utils"
@@ -165,3 +166,46 @@ def test_a_module_level_router_is_a_declaration(worker: ModuleType, project: Any
 def test_a_route_path_joins_its_prefix_with_one_slash(worker: ModuleType, prefix: str, path: str, joined: str) -> None:
     """Prefix and path meet at exactly one slash, and an empty pair is the root."""
     assert worker.prefixed_path(prefix, path) == joined
+
+
+def test_a_present_pyproject_is_a_shared_read_by_its_hash(worker: ModuleType, project: Any) -> None:
+    """The pyproject decides the roots whether or not discovery records it, so its bytes are the request's read."""
+    root = project({"pyproject.toml": '[tool.setuptools.packages.find]\nwhere = ["lib"]\n', "lib/a.py": ""})
+    emitted: list[dict[str, Any]] = []
+    result = worker.scan({"root": str(root), "files": ["lib/a.py"], "source_files": ["lib/a.py"]}, emitted.append)
+
+    digest = hashlib.sha256((root / "pyproject.toml").read_bytes()).hexdigest()
+    assert result["reads"]["pyproject.toml"] == result["input_hashes"]["pyproject.toml"] == digest
+
+
+def test_an_import_of_a_stub_only_module_reaches_its_declarations(worker: ModuleType, project: Any) -> None:
+    """A ``.pyi`` with no module beside it is the module an import finds, so its names resolve."""
+    root = project(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ext.pyi": "def g() -> int: ...\n",
+            "pkg/sub/__init__.pyi": "class S: ...\n",
+            "use.py": "from pkg.ext import g\nfrom pkg.sub import S\n\n\ndef u():\n    return g(), S()\n",
+        }
+    )
+    files = ["pkg/__init__.py", "pkg/ext.pyi", "pkg/sub/__init__.pyi", "use.py"]
+    contributions = _scan(worker, root, files)
+
+    edges = _edges(contributions["use.py"])
+    assert ("calls", "py:function:use.u", "py:function:pkg.ext.g") in edges
+    assert ("calls", "py:function:use.u", "py:class:pkg.sub.S") in edges
+    assert "py:package:pkg.sub" in _ids(contributions["pkg/sub/__init__.pyi"])
+
+
+def test_a_router_built_inside_a_function_is_no_module_level_node(worker: ModuleType, project: Any) -> None:
+    """Each call builds its own router, so neither function's router merges into a module node."""
+    root = project(
+        {
+            "fac.py": "from fastapi import APIRouter\n\n\ndef make_a():\n    router = APIRouter(prefix='/a')\n"
+            "\n    @router.get('/x')\n    def x():\n        return 1\n\n    return router\n",
+        }
+    )
+    facts = _scan(worker, root, ["fac.py"])["fac.py"]
+
+    assert not any(node["kind"] == "router" for node in facts["nodes"])
+    assert "py:route:GET /a/x => fac.make_a.<locals>.x" in _ids(facts)
