@@ -162,6 +162,12 @@ knossos suggest-location project_... "refund a completed checkout" --json
 Each candidate shows its `factors` (name, member and role relevance, and
 internal dependency cohesion) next to the score, so a ranking you disagree with
 can be argued with. The `ranking` block says which mode was applied.
+Cohesion counts dependency relationships only, the same kinds
+`impact_analysis` follows: `contains`, which links every declaration to its
+own members, is left out, so a boundary is not rewarded for how many
+declarations it holds. Members and relationships are read within
+`timeout_ms`, `max_members` and `max_edges`, and `bounds.truncation_reasons`
+names whichever cut the read.
 
 ### Optional semantic ranking
 

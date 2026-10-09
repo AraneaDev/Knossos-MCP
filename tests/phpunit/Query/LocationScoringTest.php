@@ -186,6 +186,74 @@ final class LocationScoringTest extends KnossosTestCase
     }
 
     /**
+     * `contains` is every declaration's link to its own members; counting it
+     * rewarded a boundary for how many declarations it held, not for how much
+     * its code depends on itself.
+     */
+    #[Group('query')]
+    public function testContainsEdgesDoNotCountAsCohesion(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $class = StableId::symbol($project, 'php', 'class', 'App\\Billing\\Invoice');
+        $method = StableId::symbol($project, 'php', 'method', 'App\\Billing\\Invoice::total');
+        $repository->saveNode($class, $project, 'php', 'class', 'App\\Billing\\Invoice', 'Invoice', null, $ids['file'], 1, 20, 'ast', 'certain', [], 'php:file:src/Billing/Invoice.php', $ids['scan']);
+        $repository->saveNode($method, $project, 'php', 'method', 'App\\Billing\\Invoice::total', 'total', null, $ids['file'], 5, 9, 'ast', 'certain', [], 'php:file:src/Billing/Invoice.php', $ids['scan']);
+        $repository->saveEdge(StableId::edge($project, 'contains', $class, $method, 'member'), $project, 'contains', $class, $method, $ids['file'], 5, 9, 'ast', 'certain', [], 'php:file:src/Billing/Invoice.php', $ids['scan']);
+        $billing = StableId::boundary($project, 'Billing', 'explicit');
+        $repository->saveBoundary($billing, $project, 'Billing', ['path_prefix' => 'src/Billing'], 'explicit', $ids['scan']);
+        $repository->saveBoundaryMembership($billing, $project, $class, $ids['scan']);
+        $repository->saveBoundaryMembership($billing, $project, $method, $ids['scan']);
+        $repository->completeScan($project, $ids['scan']);
+
+        $candidate = self::candidateNamed($pdo, $project, 'invoice billing', 'Billing');
+
+        assertSame(0, $candidate['factors']['internal_edges']);
+        assertSame(0, $candidate['factors']['incident_edges']);
+        assertSame(0.0, $candidate['factors']['internal_dependency_cohesion']);
+    }
+
+    /**
+     * The member read was one fetchAll() of up to 50,000 rows, finished before
+     * the deadline was first consulted; it now streams and stops at it.
+     */
+    #[Group('query')]
+    public function testTheMemberReadStopsAtTheDeadline(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $billing = StableId::boundary($project, 'Billing', 'explicit');
+        $repository->saveBoundary($billing, $project, 'Billing', ['path_prefix' => 'src'], 'explicit', $ids['scan']);
+        $nodes = [];
+        $memberships = [];
+        for ($i = 0; $i < 300; $i++) {
+            $name = sprintf('App\\Billing\\Part%03d', $i);
+            $id = StableId::symbol($project, 'php', 'class', $name);
+            $nodes[] = [
+                'id' => $id, 'language' => 'php', 'kind' => 'class', 'canonical_name' => $name, 'display_name' => sprintf('Part%03d', $i),
+                'file_id' => $ids['file'], 'start_line' => 1, 'end_line' => 1, 'origin' => 'ast', 'confidence' => 'certain',
+                'attributes' => [], 'owner_key' => 'php:file:src/Billing.php',
+            ];
+            $memberships[] = ['boundary_id' => $billing, 'node_id' => $id];
+        }
+        $repository->bulkTransaction(static function ($repository) use ($nodes, $memberships, $project, $ids): void {
+            $repository->saveNodes($nodes, $project, $ids['scan']);
+            $repository->saveBoundaryMemberships($memberships, $project, $ids['scan']);
+        });
+        $repository->completeScan($project, $ids['scan']);
+        $ticks = 0;
+        $clock = static function () use (&$ticks): int {
+            return ++$ticks * 1_000_000;
+        };
+
+        $result = (new ArchitectureQueryService($pdo, $clock))->suggestLocation($project, 'billing parts', timeoutMs: 1);
+
+        assertSame(true, in_array('time_limit', $result->data['bounds']['truncation_reasons'], true));
+        assertSame(true, $result->truncated);
+        assertSame(true, $result->data['bounds']['members_examined'] < 300, 'The member read stops at the deadline instead of reading every row first.');
+    }
+
+    /**
      * The suggestion for one named boundary.
      *
      * @return array<string, mixed>
