@@ -121,7 +121,7 @@ final class DoctorServiceTest extends KnossosTestCase
             // Status is exactly 'ok', 'error', or 'skipped' (no other values).
             // 'skipped' reports an optional worker (Rust) whose binary is not
             // installed — visible in doctor output without counting as a fault.
-            $this->assertContains($check['status'], ['ok', 'error', 'skipped']);
+            $this->assertContains($check['status'], ['ok', 'error', 'skipped', 'warning']);
         }
 
         // The 17 checks fired when databasePath is ':memory:' (data.writable
@@ -527,6 +527,118 @@ final class DoctorServiceTest extends KnossosTestCase
         assertSame('skipped', $rust['status']);
 
         self::assertTrue($result['ok'], 'a report with only ok and skipped checks must be healthy');
+    }
+
+    // ----- stale Rust worker -----
+
+    public function testARustWorkerBuiltFromOtherSourceIsAWarningWithTheFix(): void
+    {
+        $this->installFakeRustWorker(str_repeat('0', 64));
+
+        $result = (new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run();
+        $rust = $this->findCheck($result, 'worker.rust');
+
+        assertSame('warning', $rust['status']);
+        self::assertStringContainsString('knossos.rust@0.2.0 protocol 1.0', $rust['detail']);
+        self::assertStringContainsString('not built from the source in workers/rust', $rust['detail']);
+        self::assertStringContainsString('tools/install', $rust['detail']);
+        self::assertStringContainsString('cargo build --release --locked', $rust['detail']);
+        self::assertStringContainsString('binary 000000000000, checkout ', $rust['detail']);
+        self::assertStringContainsString('target/release/knossos-rust-worker into workers/rust/bin/', $rust['detail']);
+        self::assertNotContains('worker.rust', array_column(array_filter($result['checks'], static fn(array $check): bool => $check['status'] === 'error'), 'name'));
+    }
+
+    public function testARustWorkerBuiltFromThisSourceIsOk(): void
+    {
+        $this->installFakeRustWorker(null);
+
+        $rust = $this->findCheck((new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run(), 'worker.rust');
+
+        assertSame('ok', $rust['status']);
+        assertSame('knossos.rust@0.2.0 protocol 1.0', $rust['detail']);
+        assertSame(0, (new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run()['warnings']);
+    }
+
+    public function testAStaleRustWorkerAloneLeavesTheReportHealthy(): void
+    {
+        $this->installFakeRustWorker(str_repeat('0', 64));
+        $this->pdo->exec('CREATE TABLE schema_migrations (version TEXT PRIMARY KEY)');
+
+        $result = (new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run();
+        $warnings = array_filter($result['checks'], static fn(array $check): bool => $check['status'] === 'warning');
+
+        // sqlite.migrations is the only error here; the warning must not add one.
+        assertSame(['worker.rust'], array_values(array_column($warnings, 'name')));
+        assertSame(1, $result['warnings']);
+        assertSame(['sqlite.migrations'], array_values(array_intersect(
+            array_column(array_filter($result['checks'], static fn(array $check): bool => $check['status'] === 'error'), 'name'),
+            ['sqlite.migrations', 'worker.rust'],
+        )));
+    }
+
+    public function testARustWorkerWithoutItsSourceBesideItIsNotCompared(): void
+    {
+        $this->installFakeRustWorker(str_repeat('0', 64));
+        exec('rm -rf ' . escapeshellarg($this->installationRoot . '/workers/rust/src'));
+
+        assertSame('ok', $this->findCheck((new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run(), 'worker.rust')['status']);
+    }
+
+    public function testARustWorkerFromBeforeSourceHashesIsAWarningToo(): void
+    {
+        // The first `git pull` after source hashes landed leaves exactly this
+        // binary behind: one that announces no hash at all.
+        $this->installFakeRustWorker('');
+
+        $rust = $this->findCheck((new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run(), 'worker.rust');
+
+        assertSame('warning', $rust['status']);
+        self::assertStringContainsString('predates source hashes', $rust['detail']);
+        self::assertStringContainsString('tools/install', $rust['detail']);
+    }
+
+    public function testAWorkerWithoutACargoManifestIsNotCompared(): void
+    {
+        $this->installFakeRustWorker('');
+        unlink($this->installationRoot . '/workers/rust/Cargo.toml');
+
+        assertSame('ok', $this->findCheck((new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run(), 'worker.rust')['status']);
+    }
+
+    /**
+     * Put a scripted Rust worker and a small Rust source tree in the fixture root.
+     *
+     * The script answers `initialize` like the real binary, announcing
+     * `$sourceHash`: null announces the hash of the tree beside it (a fresh
+     * build), '' announces none (a worker from before the field existed).
+     */
+    private function installFakeRustWorker(?string $sourceHash): void
+    {
+        $worker = $this->installationRoot . '/workers/rust';
+        mkdir($worker . '/src', 0777, true);
+        mkdir($worker . '/bin');
+        file_put_contents($worker . '/Cargo.toml', "[package]\nname = \"fake\"\n");
+        file_put_contents($worker . '/src/main.rs', "fn main() {}\n");
+        $sourceHash ??= \Knossos\Runtime\WorkerSourceHash::of($worker);
+        $manifest = [
+            'id' => 'knossos.rust', 'version' => '0.2.0', 'protocol_version' => '1.0', 'output_schema_version' => '1.0',
+            'languages' => ['rust'], 'file_extensions' => ['rs'], 'capabilities' => ['partial_ast'],
+        ] + ($sourceHash === '' ? [] : ['source_hash' => $sourceHash]);
+        $script = <<<'PHP'
+            #!/usr/bin/env php
+            <?php
+            while (($line = fgets(STDIN)) !== false) {
+                $request = json_decode($line, true);
+                $result = $request['method'] === 'initialize' ? json_decode(MANIFEST, true) : null;
+                fwrite(STDOUT, json_encode(['jsonrpc' => '2.0', 'id' => $request['id'], 'result' => $result]) . "\n");
+                fflush(STDOUT);
+                if ($request['method'] === 'shutdown') {
+                    exit(0);
+                }
+            }
+            PHP;
+        file_put_contents($worker . '/bin/knossos-rust-worker', str_replace('MANIFEST', var_export(json_encode($manifest), true), $script));
+        chmod($worker . '/bin/knossos-rust-worker', 0755);
     }
 
     // ----- helpers -----

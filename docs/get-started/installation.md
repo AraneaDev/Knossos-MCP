@@ -259,6 +259,16 @@ Cargo 1.82 or newer is optional. With it, `tools/install` builds the Rust worker
 and Rust scanning works. Without it, `doctor` reports `worker.rust` as `skipped`
 and every other language keeps working.
 
+The Rust worker binary is git-ignored, so `git pull` updates its source but not
+the binary, and Rust scans keep running the old code until you rebuild it. Run
+`tools/install` again after every pull. `doctor` reports a binary built from
+other source than the checkout as a `worker.rust` warning: the binary embeds a
+hash of `workers/rust/src`, `Cargo.toml`, `Cargo.lock` and `build.rs`, and
+`doctor` compares it with the same hash of the files on disk. The warning
+leaves the report healthy. To rebuild by hand, run
+`cargo build --release --locked` in `workers/rust` and copy
+`target/release/knossos-rust-worker` into `workers/rust/bin/`.
+
 `doctor` verifies the effective runtime, the workers, the protocol, the
 database, the migrations and whether the data directory is writable. CI runs on
 Linux. On Windows, use Docker Desktop or WSL2; native Windows is untested.

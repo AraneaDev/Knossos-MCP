@@ -48,7 +48,8 @@ final class MaintenanceCommand implements CliCommand
     private function doctor(array $options, CliCommandContext $context): int
     {
         $report = (new DoctorService($context->database(), $context->installationRoot(), $context->databasePath()))->run();
-        $text = ($report['ok'] ? 'Knossos doctor: healthy' : 'Knossos doctor: problems found') . "\n";
+        $text = ($report['ok'] ? 'Knossos doctor: healthy' : 'Knossos doctor: problems found')
+            . ($report['warnings'] > 0 ? sprintf(', %d warning(s)', $report['warnings']) : '') . "\n";
         foreach ($report['checks'] as $check) {
             $text .= sprintf("[%s] %s: %s\n", strtoupper($check['status']), $check['name'], $check['detail']);
         }

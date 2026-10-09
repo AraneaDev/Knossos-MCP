@@ -47,7 +47,10 @@ final readonly class DoctorService
     /**
      * Run every check, reporting each rather than stopping at the first failure.
      *
-     * @return array{ok: bool, checks: list<array{name: string, status: string, detail: string}>}
+     * `warnings` counts the checks that passed with a warning: they leave the
+     * report `ok`, so a headline that reads only `ok` would bury them.
+     *
+     * @return array{ok: bool, warnings: int, checks: list<array{name: string, status: string, detail: string}>}
      */
     public function run(): array
     {
@@ -97,7 +100,9 @@ final readonly class DoctorService
             $this->worker($checks, $descriptor);
         }
 
-        return ['ok' => count(array_filter($checks, static fn(array $check): bool => $check['status'] === 'error')) === 0, 'checks' => $checks];
+        $count = static fn(string $status): int => count(array_filter($checks, static fn(array $check): bool => $check['status'] === $status));
+
+        return ['ok' => $count('error') === 0, 'warnings' => $count('warning'), 'checks' => $checks];
     }
 
     /**
@@ -141,18 +146,54 @@ final readonly class DoctorService
         }
         $command = $descriptor->command;
         $expectedId = $descriptor->scannerId();
-        $this->check($checks, $name, static function () use ($command, $expectedId): string {
+        $built = null;
+        $this->check($checks, $name, static function () use ($command, $expectedId, &$built): string {
             $client = new ProcessScannerClient($command);
             try {
                 $manifest = $client->initialize();
                 if ($manifest->id !== $expectedId) {
                     throw new \RuntimeException(sprintf('Unexpected worker ID: %s', $manifest->id));
                 }
+                $built = $manifest->sourceHash;
                 return $manifest->id . '@' . $manifest->version . ' protocol ' . $manifest->protocolVersion;
             } finally {
                 $client->shutdown();
             }
         });
+        $this->compareSource($checks, $descriptor, $built);
+    }
+
+    /**
+     * Downgrade the last worker check to a warning when its binary was built from other source.
+     *
+     * Only a compiled worker, one with a `Cargo.toml` beside its `src/`, is
+     * compared. `git pull` updates that source but not the git-ignored binary,
+     * so a binary whose embedded `source_hash` differs from the checkout's, or
+     * that announces none because it predates the field, runs code older than
+     * the checkout. That is a warning, not an error: the worker still works.
+     * The comparison hashes content ({@see WorkerSourceHash}), never mtimes,
+     * which a checkout resets, and never runs cargo.
+     *
+     * @param non-empty-list<array{name: string, status: string, detail: string}> $checks
+     */
+    private function compareSource(array &$checks, LanguageDescriptor $descriptor, ?string $built): void
+    {
+        $last = array_key_last($checks);
+        $root = $this->installationRoot . '/workers/' . $descriptor->key;
+        $source = is_file($root . '/Cargo.toml') ? WorkerSourceHash::of($root) : null;
+        if ($checks[$last]['status'] !== 'ok' || $source === null || $source === $built) {
+            return;
+        }
+        $checks[$last]['status'] = 'warning';
+        $checks[$last]['detail'] .= sprintf(
+            '; the binary was not built from the source in workers/%1$s (%2$s), so scans do not run the checked-out code.'
+            . ' Rebuild it: run tools/install, or `cargo build --release --locked` in workers/%1$s and copy target/release/%3$s into workers/%1$s/bin/',
+            $descriptor->key,
+            $built === null
+                ? 'the binary predates source hashes'
+                : sprintf('binary %s, checkout %s', substr($built, 0, 12), substr($source, 0, 12)),
+            basename($descriptor->command[0]),
+        );
     }
 
     /**
