@@ -50,18 +50,24 @@ final readonly class ResourceService
     }
 
     /**
-     * The keyset position an opaque cursor encodes, refusing anything this server would not have issued.
+     * The keyset position an opaque cursor encodes, refusing anything not of
+     * the shape this server issues.
+     *
+     * A well-formed position the server did not issue is accepted: it only
+     * chooses where a page starts, and the query binds it as a parameter, so it
+     * can neither read past the catalogue nor inject anything.
      *
      * @return array{string, string} [created_at, id] of the last project on the previous page
      */
     private static function position(string $cursor): array
     {
         $decoded = base64_decode(strtr($cursor, '-_', '+/'), true);
+        // Decoded without assoc, so a JSON object (even {"0": .., "1": ..})
+        // stays an object and only a JSON list becomes an array.
         $pair = is_string($decoded) && str_starts_with($decoded, self::CURSOR_PREFIX)
-            ? json_decode(substr($decoded, strlen(self::CURSOR_PREFIX)), true)
+            ? json_decode(substr($decoded, strlen(self::CURSOR_PREFIX)))
             : null;
-        // Exactly [string, string], both non-empty: array_map keeps the keys,
-        // so an object, a longer list or a non-string entry all differ.
+        // Exactly the list [string, string], both non-empty.
         if (!is_array($pair) || array_map(get_debug_type(...), $pair) !== ['string', 'string'] || in_array('', $pair, true)) {
             throw new InvalidArgumentException('Invalid cursor.');
         }

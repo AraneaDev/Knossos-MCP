@@ -193,6 +193,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
         yield 'not strings' => [$cursor('after:[1,2]')];
         yield 'empty id' => [$cursor('after:["2026-01-01T00:00:00Z",""]')];
         yield 'an object' => [$cursor('after:{"a":"x","b":"y"}')];
+        yield 'an object with list-like keys' => [$cursor('after:{"0":"2026-01-01T00:00:00Z","1":"project_x"}')];
     }
 
     #[Group('mcp')]
