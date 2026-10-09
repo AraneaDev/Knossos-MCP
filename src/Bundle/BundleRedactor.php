@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Bundle;
 
+use SensitiveParameter;
+
 /**
  * Rewrites a bundle's tables so no discovered path survives in any column.
  *
@@ -35,7 +37,7 @@ final readonly class BundleRedactor
      *
      * @param array<string, list<array<string, mixed>>> $tables @return array<string, list<array<string, mixed>>>
      */
-    public static function redact(array $tables, bool $strict, string $salt): array
+    public static function redact(array $tables, bool $strict, #[SensitiveParameter] string $salt): array
     {
         $redactor = new self(RedactionMap::fromPayload($tables, $salt), $strict);
         foreach ($tables as $table => $rows) {

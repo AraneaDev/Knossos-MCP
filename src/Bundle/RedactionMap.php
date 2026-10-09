@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Bundle;
 
+use SensitiveParameter;
+
 /**
  * Maps every discovered path in a graph to a salted token, for one export.
  *
@@ -31,14 +33,14 @@ final readonly class RedactionMap
      *
      * @param array<string, string> $replacements key to token
      */
-    private function __construct(private string $salt, private array $replacements, private int $longest) {}
+    private function __construct(#[SensitiveParameter] private string $salt, private array $replacements, private int $longest) {}
 
     /**
      * Build the map from a bundle's files, nodes and boundaries, in that order of precedence.
      *
      * @param array<string, list<array<string, mixed>>> $tables
      */
-    public static function fromPayload(array $tables, string $salt): self
+    public static function fromPayload(array $tables, #[SensitiveParameter] string $salt): self
     {
         $replacements = [];
         $directories = [];
@@ -152,7 +154,7 @@ final readonly class RedactionMap
     }
 
     /** The first `$length` hex characters of the salted digest of a value. */
-    private static function digest(string $value, string $salt, int $length): string
+    private static function digest(string $value, #[SensitiveParameter] string $salt, int $length): string
     {
         return substr(hash_hmac('sha256', $value, $salt), 0, $length);
     }
