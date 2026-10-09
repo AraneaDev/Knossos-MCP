@@ -126,12 +126,10 @@ merge succeeded, which is the check branch protection requires: a job that is
 skipped or cancelled when it should have run fails it just as a red one does.
 A second push to a pull request cancels the run in progress.
 
-A pull request runs PHPUnit once. The `tests` lane gets
-`KNOSSOS_PHPUNIT_IN_COVERAGE=1` and runs only the shell tests from
-`composer test`, because the suite already runs under pcov in the coverage
-shards. A push to `main` leaves the variable unset, so the suite also runs there
-once without pcov, which catches a defect that only shows when pcov is not
-loaded. Locally the variable is unset and `tools/quality` runs the whole suite.
+CI runs PHPUnit once, on pull requests and on pushes to `main` alike. The
+`tests` lane gets `KNOSSOS_PHPUNIT_IN_COVERAGE=1` and runs only the shell tests
+from `composer test`, because the suite already runs under pcov in the coverage
+shards. Locally the variable is unset and `tools/quality` runs the whole suite.
 
 A release-please pull request runs `static` alone and skips the coverage jobs.
 Its diff is version files, a manifest and a changelog entry, so every other lane would re-verify code
