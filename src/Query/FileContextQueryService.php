@@ -32,9 +32,13 @@ final readonly class FileContextQueryService extends AbstractArchitectureQuerySe
             return new ResultEnvelope($projectId, $project['active_scan_id'], sprintf('%s is not in the graph: not a source file Knossos scans, or not scanned yet.', $relative), ['status' => $status, 'path' => $relative, 'file' => null, 'policies' => []]);
         }
         $boundary = $file['boundary'];
+        // A policy names its boundary by id, name or a former name; resolved
+        // here as the check resolves it, it is listed when it names the
+        // boundary the file is labelled with.
+        $references = $this->boundaryReferences($projectId);
         $policies = $boundary === null ? [] : array_values(array_filter(
             FileViolationQuery::policies($root, null),
-            static fn(array $policy): bool => ($policy['from_boundary'] ?? null) === $boundary,
+            static fn(array $policy): bool => is_string($policy['from_boundary'] ?? null) && $references->nameOf($policy['from_boundary']) === $boundary,
         ));
 
         return new ResultEnvelope(

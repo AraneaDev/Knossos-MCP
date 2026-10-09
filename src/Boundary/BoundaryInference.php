@@ -53,7 +53,7 @@ final class BoundaryInference
             // with the path prefix that defined its members. Boundary NAMES stay
             // exactly as they were before this change ("kind:name", e.g.
             // "composer:acme/lib") — a policy's `from_boundary` resolves by name
-            // (see AbstractArchitectureQueryService::resolvePolicyBoundary()), so this
+            // (see BoundaryReferences, which also accepts a former name), so this
             // fix must not rename any boundary, only stop two of them from colliding
             // on the same internal key. TypeScript units have no declared package name
             // (tsconfig.json carries none), so they keep displaying their key, as
@@ -92,6 +92,8 @@ final class BoundaryInference
                     $configPath = substr($key, strpos($key, ':') + 1);
                     $directory = dirname(str_replace('\\', '/', $configPath));
                     $rules[$key]['display'] = $rule['display'] . ' (' . ($directory === '.' ? 'root' : $directory) . ')';
+                    // The name it had while it was the only one, which a policy may still use.
+                    $rules[$key]['aliases'] = [$rule['display']];
                 }
             }
         }
@@ -160,6 +162,15 @@ final class BoundaryInference
                     $byMatcher[$key] = $name;
                 } else {
                     $rules[$byMatcher[$key]]['merged_names'][] = $rule['display'] ?? $name;
+                    // A merged-in rule's names (its own, the ones it had before,
+                    // and the identity its stable id was derived from) stop
+                    // naming a boundary of their own.
+                    $rules[$byMatcher[$key]]['aliases'] = [
+                        ...$rules[$byMatcher[$key]]['aliases'] ?? [],
+                        ...$rule['aliases'] ?? [],
+                        $rule['display'] ?? $name,
+                        ...isset($rule['identity']) ? [$rule['identity']] : [],
+                    ];
                     unset($rules[$name]);
                 }
             }
@@ -193,10 +204,26 @@ final class BoundaryInference
                 if ($identityName === null) {
                     $identityName = $baseName;
                 }
+                $rule['aliases'][] = $baseName;
             }
-            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], $members, $identityName);
+            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], $members, $identityName, self::aliases($rule['aliases'] ?? [], $displayName));
         }
         return $facts;
+    }
+
+    /**
+     * The names a boundary was known by, as {@see BoundaryFact} holds them:
+     * sorted, distinct, and never its own name.
+     *
+     * @param list<string> $names
+     * @return list<string>
+     */
+    private static function aliases(array $names, string $displayName): array
+    {
+        $aliases = array_values(array_unique(array_diff($names, [$displayName])));
+        sort($aliases, SORT_STRING);
+
+        return $aliases;
     }
 
     /**

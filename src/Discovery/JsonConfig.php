@@ -17,13 +17,24 @@ final class JsonConfig
 {
     private function __construct() {}
 
+    /** The UTF-8 byte order mark some editors write at the start of a file. */
+    private const BYTE_ORDER_MARK = "\xEF\xBB\xBF";
+
     /**
      * Decode JSON, optionally tolerating comments and trailing commas for JSONC.
+     *
+     * One leading UTF-8 byte order mark is skipped, since json_decode rejects
+     * it and editors on some platforms write it. The root must be an object:
+     * that is decided from the first significant byte rather than from the
+     * decoded value, because PHP decodes `{}` and `[]` to the same empty array.
      *
      * @return array<string, mixed>
      */
     public static function decode(string $contents, bool $allowComments = false): array
     {
+        if (str_starts_with($contents, self::BYTE_ORDER_MARK)) {
+            $contents = substr($contents, strlen(self::BYTE_ORDER_MARK));
+        }
         if ($allowComments) {
             $contents = self::stripComments($contents);
             $contents = self::stripTrailingCommas($contents);
@@ -35,12 +46,13 @@ final class JsonConfig
             throw new DiscoveryException('Invalid JSON configuration: ' . $error->getMessage(), previous: $error);
         }
 
-        if (!is_array($decoded) || array_is_list($decoded)) {
+        if (!is_array($decoded) || !str_starts_with(ltrim($contents), '{')) {
             throw new DiscoveryException('Configuration root must be a JSON object.');
         }
 
         return $decoded;
     }
+
     /** Remove comments without disturbing string contents. */
 
     private static function stripComments(string $input): string

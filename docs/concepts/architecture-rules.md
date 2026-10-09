@@ -15,8 +15,9 @@ Boundaries are explained in [the graph and its evidence](graph-and-evidence.md#b
 ## Boundary policies
 
 `check_architecture` evaluates explicit boundary dependency rules against the
-active static graph. A policy names its source boundary by stable ID or by an
-unambiguous name and declares allowed and/or forbidden target boundaries.
+active static graph. A policy names its source boundary, and each target, by
+stable ID, by exact name, or by any name the boundary has had, and declares
+allowed and/or forbidden target boundaries.
 Internal dependencies within the source boundary are implicitly allowed unless
 that boundary is explicitly denied. Use `@unassigned` to match targets without
 boundary membership.
@@ -53,8 +54,21 @@ knossos policies .
 equivalent MCP tool accepts the JSON array as `policies`, and without it checks
 the declared ones too. Optional
 `min_confidence`, `limit`, `max_edges`, and `timeout_ms` inputs control the
-evaluation. Boundary names that resolve to both explicit and inferred
-boundaries are rejected; use the stable ID returned by `list_boundaries`.
+evaluation.
+
+An inferred boundary is renamed when a manifest joins it: adding a
+`composer.json` beside a `package.json` named `web` turns `node:web` into
+`composer:acme/lib (+node:web)`, and a second `package.json` named `loc` turns
+`node:loc` into `node:loc (a)` and `node:loc (b)`. The names a boundary had are
+listed under `aliases` in `list_boundaries`, and a policy that uses one, or the
+stable ID that name had, still resolves. A name or alias that two boundaries
+share, such as `node:loc` above or a name both an explicit and an inferred
+boundary carry, is rejected with the candidates' stable IDs; use one of those.
+`file_context`, the session brief, the dashboard and `export_diagram` read a
+policy's boundaries the same way. A policy whose source boundary reference is
+ambiguous or names no boundary is therefore not listed by `file_context` for
+any file, `check_architecture` and `quality_gate` refuse it, and the session
+brief shows the reference as written.
 
 Findings include the policy ID, the violating relationship (with its kind,
 confidence and origin), both components, the boundary memberships on each side,

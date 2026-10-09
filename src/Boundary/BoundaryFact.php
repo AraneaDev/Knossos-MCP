@@ -25,6 +25,10 @@ final readonly class BoundaryFact
      *     `composer:acme/lib (+node:web-app)`), identityName holds the surviving rule's
      *     pre-suffix identity so the stable id stays independent of which other rules
      *     happened to merge into it.
+     * @param list<string> $aliases the names this boundary was known by, sorted and
+     *     distinct, never its own name: its pre-suffix name when a suffix was added,
+     *     and each merged-in rule's name and identity. A policy that names any of them
+     *     still resolves here. Explicit boundaries are never renamed and have none.
      */
     public function __construct(
         public string $name,
@@ -32,6 +36,7 @@ final readonly class BoundaryFact
         public string $source,
         public array $nodeReferences,
         public ?string $identityName = null,
+        public array $aliases = [],
     ) {
         if ($name === '' || !in_array($source, ['explicit', 'inferred'], true)) {
             throw new InvalidArgumentException('Boundary name and source are invalid.');
@@ -47,5 +52,21 @@ final readonly class BoundaryFact
                 throw new InvalidArgumentException('Boundary member references must be non-empty strings.');
             }
         }
+        $names = array_filter($aliases, static fn(mixed $alias): bool => is_string($alias) && $alias !== '' && $alias !== $name);
+        $sorted = array_values(array_unique($names));
+        sort($sorted, SORT_STRING);
+        if ($aliases !== $sorted) {
+            throw new InvalidArgumentException("Boundary aliases must be a sorted list of distinct names other than the boundary's own.");
+        }
+    }
+
+    /**
+     * The matcher as stored, with the aliases inside it.
+     *
+     * @return array<string, mixed>
+     */
+    public function storedMatcher(): array
+    {
+        return BoundaryAliases::merge($this->matcher, $this->aliases);
     }
 }

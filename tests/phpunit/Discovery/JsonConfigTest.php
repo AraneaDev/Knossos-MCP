@@ -19,16 +19,34 @@ final class JsonConfigTest extends TestCase
         assertSame(['name' => 'app', 'version' => '1.0'], $decoded);
     }
 
-    public function testEmptyJsonObjectIsRejectedAsRootConfiguration(): void
+    /**
+     * `{}` decodes to the same empty PHP array as `[]`, and the old list check
+     * rejected it as "not an object", so an empty composer.json or tsconfig.json
+     * lost its unit.
+     */
+    public function testEmptyJsonObjectDecodesToAnEmptyConfiguration(): void
     {
-        // {} decodes to [] which PHP considers a list (array_is_list([]) is true),
-        // so the source rejects empty objects as non-object roots.
+        assertSame([], JsonConfig::decode('{}'));
+        assertSame([], JsonConfig::decode(" \n\t{}"));
+        assertSame([], JsonConfig::decode("// note\n{}", true));
+    }
+
+    /** A leading UTF-8 byte order mark made json_decode reject an otherwise valid manifest. */
+    public function testDecodeSkipsALeadingByteOrderMark(): void
+    {
+        assertSame(['a' => 1], JsonConfig::decode("\xEF\xBB\xBF{\"a\":1}"));
+        assertSame(['a' => 1], JsonConfig::decode("\xEF\xBB\xBF{\"a\":1,}", true));
+    }
+
+    /** Only one byte order mark is a byte order mark; a second one is content. */
+    public function testDecodeStripsOnlyOneByteOrderMark(): void
+    {
         $error = captureThrows(
-            static fn () => JsonConfig::decode('{}'),
+            static fn () => JsonConfig::decode("\xEF\xBB\xBF\xEF\xBB\xBF{}"),
             DiscoveryException::class,
         );
 
-        assertSame('Configuration root must be a JSON object.', $error->getMessage());
+        $this->assertStringStartsWith('Invalid JSON configuration:', $error->getMessage());
     }
 
     public function testDecodeReturnsNestedStructures(): void

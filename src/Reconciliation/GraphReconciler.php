@@ -323,7 +323,8 @@ final readonly class GraphReconciler
                 // merged-from suffix; see BoundaryFact::$identityName.
                 'id' => StableId::boundary($projectId, $fact->identityName ?? $fact->name, $fact->source),
                 'name' => $fact->name,
-                'matcher' => $fact->matcher,
+                // The former names ride along in the stored matcher; see BoundaryAliases.
+                'matcher' => $fact->storedMatcher(),
                 'source' => $fact->source,
                 'node_ids' => array_values(array_unique($nodeIds)),
             ];

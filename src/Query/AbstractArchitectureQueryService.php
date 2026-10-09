@@ -6,6 +6,8 @@ namespace Knossos\Query;
 
 use Closure;
 use InvalidArgumentException;
+use Knossos\Boundary\BoundaryAliases;
+use Knossos\Boundary\BoundaryReferences;
 use PDO;
 use PDOStatement;
 
@@ -157,24 +159,25 @@ abstract readonly class AbstractArchitectureQueryService
     }
 
     /**
-     * Resolve a policy's boundary reference by id or name, reporting an ambiguous match.
-     *
-     * @param list<array<string, mixed>> $boundaries
+     * The project's boundaries as policy references resolve against them: by
+     * stable id, exact name, or a name the boundary had before a manifest
+     * renamed it. Every reader of a policy's boundary references goes through
+     * this one resolver, so they cannot disagree about what a policy names.
      */
-    protected function resolvePolicyBoundary(string $reference, array $boundaries): string
+    protected function boundaryReferences(string $projectId): BoundaryReferences
     {
-        $idMatches = array_values(array_filter($boundaries, static fn(array $boundary): bool => $boundary['id'] === $reference));
-        if (count($idMatches) === 1) {
-            return $idMatches[0]['id'];
-        }
-        $nameMatches = array_values(array_filter($boundaries, static fn(array $boundary): bool => $boundary['name'] === $reference));
-        if ($nameMatches === []) {
-            throw new InvalidArgumentException('Unknown policy boundary: ' . $reference);
-        }
-        if (count($nameMatches) > 1) {
-            throw new InvalidArgumentException('Ambiguous policy boundary name; use its stable ID: ' . $reference);
-        }
-        return $nameMatches[0]['id'];
+        return BoundaryReferences::load($this->pdo, $projectId);
+    }
+
+    /**
+     * A stored boundary matcher as an output shows it: the matcher without
+     * the former names it carries, and those names beside it.
+     *
+     * @return array{0: array<string, mixed>, 1: list<string>}
+     */
+    protected static function matcherAndAliases(string $json): array
+    {
+        return BoundaryAliases::split(self::decode($json));
     }
     /** The clock, injectable so time-dependent results are testable. */
 

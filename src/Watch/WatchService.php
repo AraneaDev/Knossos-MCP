@@ -43,8 +43,11 @@ final readonly class WatchService
     /**
      * @param ProjectScanner|\Closure(string, ?string, CancellationToken): ResultEnvelope $scanner a scanner, or a closure taking the root, mode and cancellation
      * @param AllowedRoots|list<string> $allowedRoots
+     * @param ?\Closure(): int $clock the wall clock in seconds (`time()` when null) the
+     *        stat gate dates a walk by; injectable so a test can place the walk after
+     *        every ctime its fixture carries instead of sleeping
      */
-    public function __construct(private ProjectScanner|\Closure $scanner, AllowedRoots|array $allowedRoots)
+    public function __construct(private ProjectScanner|\Closure $scanner, AllowedRoots|array $allowedRoots, private ?\Closure $clock = null)
     {
         $this->roots = AllowedRoots::of($allowedRoots);
     }
@@ -81,13 +84,13 @@ final readonly class WatchService
                 $observer($event);
             }
         };
-        $gate = new StatGate($root);
+        $gate = new StatGate($root, clock: $this->clock);
 
         // Snapshot the fingerprint BEFORE the initial scan (matching the poll
         // loop's pre-snapshot ordering). Capturing it afterwards would silently
         // miss every file changed while the initial scan was running.
-        $state->fingerprint = TreeFingerprint::of($root, $this->roots);
-        $gate->remember($state->fingerprint);
+        [$state->fingerprint, $directories, $walkStartedAt] = TreeFingerprint::observe($root, $this->roots, clock: $this->clock);
+        $gate->remember($state->fingerprint, $directories, $walkStartedAt);
         $scanned = $hooks->current === null || !($hooks->current)($state->fingerprint, null);
         $running = true;
         if ($scanned) {
@@ -176,12 +179,12 @@ final readonly class WatchService
     {
         if ($gate->mayHaveChanged()) {
             try {
-                $current = TreeFingerprint::of($root, $this->roots);
+                [$current, $directories, $walkStartedAt] = TreeFingerprint::observe($root, $this->roots, clock: $this->clock);
             } catch (Throwable $error) {
                 $emit(['event' => 'error', 'message' => $error->getMessage()]);
                 return $state->pending !== [] || $state->overflow;
             }
-            $gate->remember($current);
+            $gate->remember($current, $directories, $walkStartedAt);
             $changes = TreeFingerprint::changes($state->fingerprint, $current);
             $state->fingerprint = $current;
             if ($changes !== [] && $state->pending === [] && !$state->overflow) {

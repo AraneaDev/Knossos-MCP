@@ -143,9 +143,9 @@ final class IgnoreMatcherTest extends TestCase
      * removed or altered. IgnoreMatcher decides what gets scanned at all, so a
      * silent change here distorts every graph the project produces.
      *
-     * Note the directory names: `dist` and `build` are built-in exclusions and
-     * cannot be negated, so user-pattern behaviour has to be exercised through
-     * names the built-in list does not already cover.
+     * Note the directory names: `dist` and `build` are built-in exclusions at
+     * the root, so user-pattern behaviour has to be exercised through names the
+     * built-in list does not already cover.
      */
     public function testSurroundingWhitespaceInAPatternIsIgnored(): void
     {
@@ -532,6 +532,78 @@ final class IgnoreMatcherTest extends TestCase
         assertSame(true, $matcher->matches('dist/bundle.js'));
     }
 
+    /**
+     * build, dist, site and coverage were excluded at any depth, so a source
+     * directory of that name anywhere in the tree (src/build, apps/site)
+     * vanished. Without a predicate only the project root anchors them.
+     */
+    public function testBuildOutputNamesAreExcludedOnlyDirectlyUnderTheRoot(): void
+    {
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('dist'));
+        assertSame(true, $matcher->matches('dist/bundle.js'));
+        assertSame(true, $matcher->matches('build/output.bin'));
+        assertSame(true, $matcher->matches('coverage/clover.xml'));
+        assertSame(true, $matcher->matches('site/assets/chunks/app.js'));
+        assertSame(false, $matcher->matches('src/build/x.ts'));
+        assertSame(false, $matcher->matches('apps/site/c.ts'));
+        assertSame(false, $matcher->matches('src/coverage'));
+        assertSame(false, $matcher->matches('distribution/x.ts'));
+    }
+
+    /** A manifest root anchors the build-output names directly below it, and only there. */
+    public function testAManifestRootAnchorsBuildOutputBelowIt(): void
+    {
+        $asked = [];
+        $matcher = new IgnoreMatcher([], static function (string $directory) use (&$asked): bool {
+            $asked[] = $directory;
+
+            return $directory === 'packages/a';
+        });
+
+        assertSame(true, $matcher->matches('packages/a/dist/x.js'));
+        assertSame(true, $matcher->matches('packages/a/dist'));
+        assertSame(false, $matcher->matches('packages/b/dist/x.js'));
+        assertSame(false, $matcher->matches('packages/a/src/dist/x.js'));
+        assertSame(false, $matcher->matches('packages/a/x.js'));
+        assertSame(true, $matcher->matches('dist/x.js'));
+        assertSame(true, $matcher->matches('public/build/app.js'));
+        // The predicate is asked about the directory holding the segment, never the root.
+        $this->assertNotContains('', $asked);
+        $this->assertContains('packages/a/src', $asked);
+    }
+
+    /** A user pattern decides after an anchored built-in, so a `!` pattern re-includes build output. */
+    public function testANegatedPatternReincludesAnchoredBuildOutput(): void
+    {
+        $matcher = new IgnoreMatcher(['!packages/a/dist/**', '!dist'], static fn(string $directory): bool => $directory === 'packages/a');
+
+        assertSame(false, $matcher->matches('packages/a/dist/x.js'));
+        assertSame(false, $matcher->matches('dist/x.js'));
+        assertSame(true, (new IgnoreMatcher(['!dist', 'dist']))->matches('dist/x.js'));
+        assertSame(true, (new IgnoreMatcher(['!node_modules/**']))->matches('node_modules/x/index.js'));
+    }
+
+    /**
+     * Only the anchored rule's own exclusions are build output to report: a
+     * directory a user pattern ignores was asked for, one a `!` pattern
+     * re-includes is not skipped, and an absolute built-in is not build output.
+     */
+    public function testAnchoredBuiltInIsTrueOnlyWhenTheAnchoredRuleAloneExcludes(): void
+    {
+        $manifestRoot = static fn(string $directory): bool => $directory === 'packages/a';
+
+        assertSame(true, (new IgnoreMatcher([]))->anchoredBuiltIn('dist'));
+        assertSame(true, (new IgnoreMatcher(['*.log'], $manifestRoot))->anchoredBuiltIn('packages/a/coverage'));
+        assertSame(false, (new IgnoreMatcher([]))->anchoredBuiltIn('src/build'));
+        assertSame(false, (new IgnoreMatcher(['dist']))->anchoredBuiltIn('dist'));
+        assertSame(false, (new IgnoreMatcher(['!dist']))->anchoredBuiltIn('dist'));
+        assertSame(false, (new IgnoreMatcher([]))->anchoredBuiltIn('node_modules'));
+        assertSame(false, (new IgnoreMatcher([]))->anchoredBuiltIn('node_modules/dist'));
+        assertSame(false, (new IgnoreMatcher([]))->anchoredBuiltIn('src'));
+    }
+
     public function testMatchesPathInsideStrykerTmpSegment(): void
     {
         // Stryker mutation sandboxes must be excluded to avoid scanning copies.
@@ -907,19 +979,27 @@ final class IgnoreMatcherTest extends TestCase
     }
     /**
      * A worker applies the exported rules to one path at a time, so the rules
-     * applied to a path alone must answer as matches() does.
+     * applied to a path alone must answer as matches() does, with the same
+     * manifest roots.
      *
      * @param list<string> $patterns
+     * @param list<string> $anchorRoots
      */
     #[DataProvider('workerRuleCases')]
-    public function testWorkerRulesAnswerAsMatchesDoes(array $patterns, string $path): void
+    public function testWorkerRulesAnswerAsMatchesDoes(array $patterns, string $path, array $anchorRoots): void
     {
-        $matcher = new IgnoreMatcher($patterns);
+        $matcher = new IgnoreMatcher($patterns, static fn(string $directory): bool => in_array($directory, $anchorRoots, true));
 
-        assertSame($matcher->matches($path), self::matchedByWorkerRules($matcher->workerRules(), $path));
+        assertSame($matcher->matches($path), self::matchedByWorkerRules($matcher->workerRules($anchorRoots), $path));
     }
 
-    /** @return iterable<string, array{0: list<string>, 1: string}> */
+    /**
+     * The shared case list. The TypeScript worker's exclusions test and the
+     * Python worker's test_exclusions.py carry a literal copy of it, with the
+     * answers matches() gives, so the three implementations agree.
+     *
+     * @return iterable<string, array{0: list<string>, 1: string, 2: list<string>}>
+     */
     public static function workerRuleCases(): iterable
     {
         $patterns = ['legacy/**', '*.gen.ts', '!keep.gen.ts', 'docs/[[:alpha:]]*.md', 'tmp?', 'a/**/b', '/rooted'];
@@ -928,22 +1008,59 @@ final class IgnoreMatcherTest extends TestCase
             'public/buildings/app.js', 'lib/x.min.js', 'site/.vitepress/cache/x.js', '.vitepress/cache', 'legacy',
             'legacy/old.ts', 'src/legacy/old.ts', 'src/x.gen.ts', 'src/keep.gen.ts', 'docs/readme.md', 'docs/1.md',
             'tmp1', 'src/tmp2/x.ts', 'tmp12', 'a/b', 'a/x/y/b', 'rooted', 'src/rooted', '_ide_helper.php',
+            'dist/a.js', 'src/dist/a.js', 'packages/a/dist/a.js', 'packages/b/dist/a.js', 'packages/a/src/build/x.ts',
+            'packages/a/coverage', 'apps/site/c.ts',
         ];
         foreach ($paths as $path) {
-            yield $path => [$patterns, $path];
+            yield $path => [$patterns, $path, ['', 'packages/a']];
         }
+        foreach (['dist/a.js', 'packages/a/dist/a.js', 'packages/a/build/a.js'] as $path) {
+            yield 'negated ' . $path => [['!packages/a/dist'], $path, ['', 'packages/a']];
+        }
+        yield 'no manifest roots' => [[], 'packages/a/dist/a.js', []];
+    }
+
+    /** The anchored names travel apart from the absolute ones, with the manifest roots that anchor them. */
+    public function testWorkerRulesCarryTheAnchoredSegmentsAndTheirRoots(): void
+    {
+        $rules = (new IgnoreMatcher([]))->workerRules(['packages/a', 'crates/x']);
+
+        assertSame(['build', 'coverage', 'dist', 'site'], $rules['anchored_segments']);
+        assertSame(['', 'crates/x', 'packages/a'], $rules['anchor_roots']);
+        assertSame([], array_values(array_intersect(['build', 'coverage', 'dist', 'site'], $rules['segments'])));
+        assertSame([''], (new IgnoreMatcher([]))->workerRules()['anchor_roots']);
+    }
+
+    /**
+     * The walk never enters an excluded directory, so a path below one is
+     * excluded whatever a later pattern says of the path itself. matches()
+     * answers for one path alone; the ancestors are the walk's answer.
+     */
+    public function testMatchesWithAncestorsAnswersAsTheWalkDoes(): void
+    {
+        $matcher = new IgnoreMatcher(['legacy', '!old.ts', '!keep.ts']);
+
+        assertSame(false, $matcher->matches('legacy/old.ts'));
+        assertSame(true, $matcher->matchesWithAncestors('legacy/old.ts'));
+        assertSame(true, $matcher->matchesWithAncestors('dist/keep.ts'));
+        assertSame(false, $matcher->matchesWithAncestors('src/keep.ts'));
+        assertSame(false, $matcher->matchesWithAncestors('src/build/x.ts'));
+        assertSame(true, $matcher->matchesWithAncestors('legacy'));
+        assertSame(false, $matcher->matchesWithAncestors(''));
     }
 
     /**
      * The rules as a worker reads them: a segment or segment prefix anywhere, a
      * path prefix, a file-name suffix, a pair of segments, then the patterns,
-     * the last match deciding.
+     * the last match deciding, seeded by an anchored segment directly under
+     * one of the anchor roots.
      *
-     * @param array{segments: list<string>, prefixes: list<string>, sequences: list<array{0: string, 1: string}>, suffixes: list<string>, path_prefixes: list<string>, patterns: list<array{regex: string, anchored: bool, negated: bool}>} $rules
+     * @param array{segments: list<string>, anchored_segments: list<string>, anchor_roots: list<string>, prefixes: list<string>, sequences: list<array{0: string, 1: string}>, suffixes: list<string>, path_prefixes: list<string>, patterns: list<array{regex: string, anchored: bool, negated: bool}>} $rules
      */
     private static function matchedByWorkerRules(array $rules, string $path): bool
     {
         $segments = explode('/', $path);
+        $ignored = false;
         foreach ($segments as $index => $segment) {
             if (in_array($segment, $rules['segments'], true)) {
                 return true;
@@ -958,6 +1075,10 @@ final class IgnoreMatcherTest extends TestCase
                     return true;
                 }
             }
+            if (in_array($segment, $rules['anchored_segments'], true)
+                && in_array(implode('/', array_slice($segments, 0, $index)), $rules['anchor_roots'], true)) {
+                $ignored = true;
+            }
         }
         foreach ($rules['path_prefixes'] as $prefix) {
             if ($path === $prefix || str_starts_with($path, $prefix . '/')) {
@@ -969,7 +1090,6 @@ final class IgnoreMatcherTest extends TestCase
                 return true;
             }
         }
-        $ignored = false;
         foreach ($rules['patterns'] as $pattern) {
             $matched = $pattern['anchored']
                 ? preg_match('#^' . $pattern['regex'] . '(?:/.*)?$#', $path) === 1

@@ -1177,9 +1177,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $evidence = [];
         foreach ($rows as $row) {
             $members = $this->boundaryMemberSample($row['id'], 5);
+            [$matcher, $aliases] = self::matcherAndAliases($row['matcher_json']);
             $boundaries[] = [
                 'id' => $row['id'], 'name' => $row['name'], 'source' => $row['source'],
-                'matcher' => self::decode($row['matcher_json']), 'member_count' => (int) $row['member_count'],
+                'matcher' => $matcher, 'aliases' => $aliases, 'member_count' => (int) $row['member_count'],
                 'sample_members' => array_map(static fn(array $member): array => [
                     'id' => $member['id'], 'kind' => $member['kind'], 'canonical_name' => $member['canonical_name'],
                 ], $members),

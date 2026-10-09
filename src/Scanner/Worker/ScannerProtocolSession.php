@@ -375,6 +375,11 @@ final class ScannerProtocolSession
     /**
      * Validate a reply into a contribution, rejecting anything malformed.
      *
+     * A malformed node, edge or diagnostic costs its own file, which arrives
+     * with no facts and an error diagnostic, rather than every file of the
+     * language ({@see ContributionDecoder::decode()}). A malformed envelope
+     * still rejects the reply.
+     *
      * @param array<string, mixed> $message
      */
     private function decodeContribution(array $message): ?ScanContribution
@@ -386,7 +391,7 @@ final class ScannerProtocolSession
         if (!is_array($params) || array_is_list($params)) {
             throw new WorkerException('WORKER_CONTRIBUTION_INVALID', 'Contribution params must be an object.');
         }
-        return ContributionDecoder::decode($params);
+        return ContributionDecoder::decode($params, degradeMalformedFacts: true);
     }
 
     /**

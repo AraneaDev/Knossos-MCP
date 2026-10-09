@@ -228,4 +228,24 @@ final class BoundaryFactTest extends TestCase
         assertSame('node-0', $fact->nodeReferences[0]);
         assertSame('node-49', $fact->nodeReferences[49]);
     }
+
+    /** The names a boundary was known by: a sorted list of distinct non-empty strings other than its name. */
+    public function testAliasesAreValidated(): void
+    {
+        $fact = new BoundaryFact('a (+b)', [], 'inferred', [], 'a', ['a', 'b']);
+        assertSame(['a', 'b'], $fact->aliases);
+        assertSame([], (new BoundaryFact('a', [], 'inferred', []))->aliases);
+
+        foreach ([
+            'not a list' => ['x' => 'a'],
+            'empty' => [''],
+            'not a string' => [1],
+            'its own name' => ['a (+b)'],
+            'unsorted' => ['b', 'a'],
+            'repeated' => ['a', 'a'],
+        ] as $label => $aliases) {
+            $error = captureThrows(static fn() => new BoundaryFact('a (+b)', [], 'inferred', [], null, $aliases), InvalidArgumentException::class);
+            assertSame('Boundary aliases must be a sorted list of distinct names other than the boundary\'s own.', $error->getMessage(), $label);
+        }
+    }
 }

@@ -27,33 +27,79 @@ final class ContributionDecoder
     /**
      * Validate a worker's reply into a contribution, rejecting anything malformed.
      *
+     * With `$degradeMalformedFacts`, a reply whose envelope (owner, lists,
+     * content hash, reads, program, flags) is sound but one of whose nodes,
+     * edges or diagnostics is not becomes the same file with no facts and an
+     * error diagnostic saying why, rather than an error that fails every file
+     * of the language. The file is the smallest unit that can go: facts name
+     * one another by local id (an edge's source, a `contains` edge to a
+     * declaration), so dropping one row would leave an edge to a node no
+     * scanner emitted, which fails the whole reconcile. Nothing malformed is
+     * kept either way; only how much of the rest goes with it changes. Off,
+     * any malformed fact rejects the reply, which a cached payload, already
+     * decoded once, never has.
+     *
      * @param array<string, mixed> $data
      */
-    public static function decode(array $data): ScanContribution
+    public static function decode(array $data, bool $degradeMalformedFacts = false): ScanContribution
     {
         try {
             $owner = self::string($data, 'owner_key');
             $nodes = self::list($data, 'nodes');
             $edges = self::list($data, 'edges');
             $diagnostics = self::list($data, 'diagnostics');
+            $contentHash = self::contentHash($data);
+            $reads = array_key_exists('reads', $data) ? ReadsMap::decode($data['reads']) : null;
+            $program = array_key_exists('program', $data) ? self::string($data, 'program') : null;
+            $environment = array_key_exists('environment', $data) ? self::string($data, 'environment') : null;
+            $listed = !array_key_exists('listed', $data) || self::bool($data, 'listed');
+            $readsPartial = array_key_exists('reads_partial', $data) && self::bool($data, 'reads_partial');
+            try {
+                $facts = [
+                    array_map(self::node(...), $nodes),
+                    array_map(self::edge(...), $edges),
+                    array_map(self::diagnostic(...), $diagnostics),
+                ];
+            } catch (Throwable $error) {
+                if (!$degradeMalformedFacts) {
+                    throw $error;
+                }
+                $facts = [[], [], [self::malformedFacts($owner, $error)]];
+            }
 
-            return new ScanContribution(
-                $owner,
-                array_map(self::node(...), $nodes),
-                array_map(self::edge(...), $edges),
-                array_map(self::diagnostic(...), $diagnostics),
-                self::contentHash($data),
-                array_key_exists('reads', $data) ? ReadsMap::decode($data['reads']) : null,
-                array_key_exists('program', $data) ? self::string($data, 'program') : null,
-                array_key_exists('environment', $data) ? self::string($data, 'environment') : null,
-                !array_key_exists('listed', $data) || self::bool($data, 'listed'),
-                array_key_exists('reads_partial', $data) && self::bool($data, 'reads_partial'),
-            );
+            return new ScanContribution($owner, ...$facts, ...[$contentHash, $reads, $program, $environment, $listed, $readsPartial]);
         } catch (WorkerException $error) {
             throw $error;
         } catch (Throwable $error) {
             throw new WorkerException('WORKER_CONTRIBUTION_INVALID', $error->getMessage(), $error);
         }
+    }
+
+    /**
+     * The diagnostic a file keeps in place of facts that did not validate,
+     * anchored on the file its owner key names when that is a valid path.
+     */
+    private static function malformedFacts(string $owner, Throwable $error): Diagnostic
+    {
+        $marker = strpos($owner, ':file:');
+        $subject = $marker === false ? $owner : substr($owner, $marker + strlen(':file:'));
+        try {
+            $evidence = $marker === false ? null : new Evidence($subject, 1, 1);
+        } catch (Throwable) {
+            $evidence = null;
+        }
+
+        return new Diagnostic(
+            'error',
+            'WORKER_CONTRIBUTION_INVALID',
+            sprintf(
+                'Left out of the graph: the scanner reported a malformed fact for %s (%s). '
+                . 'Its facts are omitted and the rest of the language is kept.',
+                $subject,
+                $error->getMessage(),
+            ),
+            $evidence,
+        );
     }
 
     /**
