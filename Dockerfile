@@ -12,7 +12,15 @@ WORKDIR /build
 COPY workers/rust ./
 RUN cargo build --release --locked
 
-FROM php:8.5-cli-trixie@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS runtime
+# Everything slow and large lives in the stages from here to quality_tools:
+# system packages, PHP extensions, composer and npm dependencies, the Rust
+# toolchain and the compiled Rust worker. Their inputs are the files
+# tools/quality-deps-key hashes, so CI builds and publishes them once per key
+# and each lane adds this commit's source on top in the thin runtime and
+# quality stages below. A file copied into one of these stages that the key
+# does not hash would reuse a stale image; QualityDepsKeyTest holds the two to
+# each other.
+FROM php:8.5-cli-trixie@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS runtime_deps
 
 # x-release-please-start-version
 LABEL org.opencontainers.image.title="Knossos" \
@@ -62,24 +70,26 @@ COPY --from=composer_runtime /usr/bin/composer /usr/local/bin/composer
 
 WORKDIR /opt/knossos
 
+# The autoloader is written later, by the stage that copies the source: an
+# optimised classmap lists the classes under src/, and src/ is not here yet.
+# `dump-autoload --optimize` there produces what `install --optimize-autoloader`
+# did when the source was present.
 COPY composer.json composer.lock ./
 RUN composer install \
     --no-dev \
     --no-interaction \
     --no-progress \
     --no-scripts \
-    --optimize-autoloader
+    --no-autoloader
 
 COPY workers/php/composer.json workers/php/composer.lock ./workers/php/
-COPY workers/php/src ./workers/php/src
-COPY workers/php/bin ./workers/php/bin
 RUN composer install \
     --working-dir=workers/php \
     --no-dev \
     --no-interaction \
     --no-progress \
     --no-scripts \
-    --optimize-autoloader
+    --no-autoloader
 
 COPY workers/typescript/package.json workers/typescript/package-lock.json ./workers/typescript/
 RUN npm ci \
@@ -88,12 +98,29 @@ RUN npm ci \
     --ignore-scripts \
     --no-audit \
     --no-fund
+
+COPY --from=rust_builder /build/target/release/knossos-rust-worker ./workers/rust/bin/
+RUN chmod 0755 /opt/knossos/workers/rust/bin/knossos-rust-worker \
+    && mkdir -p /data \
+    && chown www-data:www-data /data
+
+ENV KNOSSOS_DATA_DIR=/data
+ENV NODE_OPTIONS=--max-old-space-size=1024
+
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["php", "/opt/knossos/bin/knossos", "version", "--json"]
+
+# The shipped image: the dependencies above plus this commit's source. Nothing
+# here installs anything, so a source change rebuilds only these layers.
+FROM runtime_deps AS runtime
+
+COPY workers/php/src ./workers/php/src
+COPY workers/php/bin ./workers/php/bin
 COPY workers/typescript/src ./workers/typescript/src
 COPY workers/typescript/bin ./workers/typescript/bin
 
 COPY workers/python/bin ./workers/python/bin
-
-COPY --from=rust_builder /build/target/release/knossos-rust-worker ./workers/rust/bin/
 
 COPY bin ./bin
 COPY src ./src
@@ -111,36 +138,43 @@ COPY .claude-plugin ./.claude-plugin
 COPY hooks ./hooks
 COPY skills ./skills
 COPY types ./types
-RUN chmod 0755 \
+RUN composer dump-autoload --no-dev --optimize --no-interaction --no-scripts \
+    && composer dump-autoload --working-dir=workers/php --no-dev --optimize --no-interaction --no-scripts \
+    && chmod 0755 \
     /opt/knossos/bin/knossos \
     /opt/knossos/workers/php/bin/worker \
     /opt/knossos/workers/typescript/bin/worker.js \
     /opt/knossos/workers/python/bin/worker.py \
-    /opt/knossos/workers/rust/bin/knossos-rust-worker \
-    && mkdir -p /data \
-    && chown -R www-data:www-data /data \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 USER www-data
 
-ENV KNOSSOS_DATA_DIR=/data
-ENV NODE_OPTIONS=--max-old-space-size=1024
-
-STOPSIGNAL SIGTERM
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD ["php", "/opt/knossos/bin/knossos", "version", "--json"]
-
 ENTRYPOINT ["/opt/knossos/bin/knossos"]
 CMD ["help"]
 
-FROM runtime AS quality
+# The quality stage's tooling, on top of the same dependencies the runtime
+# stage ships. Every tree an install creates is handed to the knossos user in
+# the same RUN that created it (or by COPY --chown), never by a recursive chown
+# afterwards: a later chown rewrites every file it touches into a new layer, and
+# the one that used to end this stage stored a second 1.17 GB copy of rustup,
+# cargo, node_modules and vendor.
+FROM runtime_deps AS quality_tools
 
 USER root
 
-COPY --from=node_runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
-RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+# The quality stage installs its tooling as root (Trivy, the docker socket, and
+# pcov all need it), but the permission-error tests -- DoctorService's
+# unwritable-data-dir path, MigrationRunner's unreadable-migration path, and
+# ProjectDiscoverer's permission-denied path -- skip themselves entirely when the
+# suite runs as root, so those branches would never execute. tools/quality drops
+# to this dedicated non-root user for `composer test` (see run_test_suite there),
+# which owns the tree so PHPUnit's cache and coverage output stay writable.
+# It is created before anything is installed, so every later step can hand
+# what it creates to it directly. /usr/local/cargo and /usr/local/rustup arrive
+# owned by it: `cargo audit` needs to write its advisory-db clone under
+# CARGO_HOME, and `cargo test`/clippy/llvm-cov all run as this user.
+RUN useradd --system --create-home --home-dir /home/knossos --shell /usr/sbin/nologin knossos
 
 # pcov is built from a checksum-pinned GitHub tarball rather than installed with
 # `pecl install`. pecl.php.net is repeatedly unreachable from GitHub-hosted
@@ -183,6 +217,12 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove $PHPIZE_DEPS \
     && rm -rf /var/lib/apt/lists/* /tmp/hadolint.sha256
 
+# The runtime stage removes npm, npx and corepack from the image it ships;
+# this stage keeps npm and npx for the JavaScript suites and drops corepack the
+# same way, so the two images differ only in what the quality tools need.
+RUN rm -rf /usr/local/lib/node_modules/corepack \
+    && rm -f /usr/local/bin/corepack
+
 # The venv's bin directory leads PATH, so `python3` resolves to it as well and
 # `python3 -m coverage` / `python3 -m pytest` see the pinned tools.
 ENV PATH="/opt/quality-python/bin:${PATH}"
@@ -217,15 +257,15 @@ RUN mkdir -p /usr/libexec/docker/cli-plugins \
     && chmod 0755 /usr/libexec/docker/cli-plugins/docker-compose \
     && rm -f /tmp/compose.sha256
 
-COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY --chown=knossos:knossos package.json package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund \
+    && chown -R knossos:knossos node_modules
 
-# The runtime stage installs the TypeScript worker with --omit=dev; reinstall
-# with dev dependencies so the vitest suite can run in this stage.
-RUN npm --prefix workers/typescript ci --ignore-scripts --no-audit --no-fund
-COPY workers/typescript/vitest.config.js ./workers/typescript/
-# The mod's vitest suite (`npm run test:mod`) reads this at the root.
-COPY vitest.config.mjs ./
+# The runtime_deps stage installs the TypeScript worker with --omit=dev;
+# reinstall with dev dependencies so the vitest suite can run in this stage.
+RUN npm --prefix workers/typescript ci --ignore-scripts --no-audit --no-fund \
+    && chown -R knossos:knossos workers/typescript/node_modules
+
 
 # The Claude Code CLI runs `claude plugin validate` and `claude plugin test` for
 # the mod in tools/quality's tests lane. It needs no authentication for either.
@@ -242,10 +282,9 @@ RUN npm install --global @anthropic-ai/claude-code@2.1.287 --no-audit --no-fund 
 
 # The quality profile runs cargo fmt, clippy, the crate's tests, and llvm-cov, so
 # this stage needs the toolchain the runtime stage deliberately does not ship.
-COPY --from=rust_builder /usr/local/rustup /usr/local/rustup
-COPY --from=rust_builder /usr/local/cargo /usr/local/cargo
+COPY --from=rust_builder --chown=knossos:knossos /usr/local/rustup /usr/local/rustup
+COPY --from=rust_builder --chown=knossos:knossos /usr/local/cargo /usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
-COPY workers/rust ./workers/rust
 
 # cargo-llvm-cov and cargo-audit are fetched as checksum-pinned GitHub release
 # binaries, the same way Trivy and cosign are above. llvm-tools-preview is the
@@ -276,58 +315,107 @@ RUN apt-get update \
     && tar -xzf /tmp/cargo-audit.tar.gz -C /usr/local/cargo/bin --strip-components=1 \
         cargo-audit-x86_64-unknown-linux-gnu-v0.22.2/cargo-audit \
     && chmod 0755 /usr/local/cargo/bin/cargo-audit \
-    && rm -f /tmp/cargo-audit.tar.gz /tmp/cargo-audit.sha256 \
-    && rustup component add clippy rustfmt llvm-tools-preview
+    && chown knossos:knossos /usr/local/cargo/bin/cargo-llvm-cov /usr/local/cargo/bin/cargo-audit \
+    && rm -f /tmp/cargo-audit.tar.gz /tmp/cargo-audit.sha256
+
+# The components land under RUSTUP_HOME, which the knossos user owns, so they
+# are installed as that user and need no chown afterwards.
+USER knossos
+RUN rustup component add clippy rustfmt llvm-tools-preview
+USER root
 
 RUN composer install \
     --no-interaction \
     --no-progress \
     --no-scripts \
-    --optimize-autoloader
+    --no-autoloader \
+    && chown -R knossos:knossos vendor
 
-COPY .editorconfig .hadolint.yaml .trivyignore .php-cs-fixer.dist.php .prettierignore .markdownlint-cli2.jsonc ./
+# What runtime_deps created as root and the suite runs as knossos: the PHP
+# worker's dependencies (2 MB), the Rust worker binary, the manifests, and the
+# directories the source stage copies into. The two recursive chowns copy only
+# those small trees into this layer.
+RUN chown -R knossos:knossos workers/php/vendor workers/rust/bin \
+    && chown knossos:knossos \
+        /opt/knossos \
+        /opt/knossos/workers \
+        /opt/knossos/workers/php \
+        /opt/knossos/workers/typescript \
+        /opt/knossos/workers/rust \
+        composer.json composer.lock \
+        workers/php/composer.json workers/php/composer.lock \
+        workers/typescript/package.json workers/typescript/package-lock.json
+
+ENV KNOSSOS_QUALITY_CONTAINER=1
+ENV DOCKER_API_VERSION=1.44
+
+# The quality image: the tools above plus this commit's source, last so that a
+# source change rebuilds only this stage. CI pulls quality_tools for the run's
+# dependency key and builds this stage on top of it in each lane, which takes
+# seconds; nothing here installs anything or rewrites a whole tree.
+FROM quality_tools AS quality
+
+COPY --chown=knossos:knossos workers/php/src ./workers/php/src
+COPY --chown=knossos:knossos workers/php/bin ./workers/php/bin
+COPY --chown=knossos:knossos workers/typescript/src ./workers/typescript/src
+COPY --chown=knossos:knossos workers/typescript/bin ./workers/typescript/bin
+COPY --chown=knossos:knossos workers/python/bin ./workers/python/bin
+COPY --chown=knossos:knossos bin ./bin
+COPY --chown=knossos:knossos src ./src
+COPY --chown=knossos:knossos migrations ./migrations
+COPY --chown=knossos:knossos schemas ./schemas
+COPY --chown=knossos:knossos .claude-plugin ./.claude-plugin
+COPY --chown=knossos:knossos hooks ./hooks
+COPY --chown=knossos:knossos skills ./skills
+COPY --chown=knossos:knossos types ./types
+
+# The development classmap covers src/ and the dependencies, and is written
+# before tests/ is copied so it matches what the suite has always loaded. The
+# knossos user owns vendor, so it writes the autoloader and the files stay its.
+# COMPOSER_HOME points away from /home/knossos, where composer would otherwise
+# leave a cache directory the image never had.
+USER knossos
+RUN COMPOSER_HOME=/tmp/composer-home composer dump-autoload --optimize --no-interaction --no-scripts \
+    && COMPOSER_HOME=/tmp/composer-home composer dump-autoload --working-dir=workers/php --no-dev --optimize --no-interaction --no-scripts \
+    && rm -rf /tmp/composer-home
+USER root
+
+COPY --chown=knossos:knossos workers/typescript/vitest.config.js ./workers/typescript/
+# The mod's vitest suite (`npm run test:mod`) reads this at the root.
+COPY --chown=knossos:knossos vitest.config.mjs ./
+COPY --chown=knossos:knossos workers/rust ./workers/rust
+
+COPY --chown=knossos:knossos .editorconfig .hadolint.yaml .trivyignore .php-cs-fixer.dist.php .prettierignore .markdownlint-cli2.jsonc ./
 # DockerIgnoreTest holds .dockerignore to every directory .gitignore anchors at
 # the root, and CI runs it in this image, so both files have to be here for the
 # check to run at all. Only this stage copies them: the runtime image ships
 # exactly what it did before.
-COPY .gitignore .dockerignore ./
-COPY eslint.config.js phpstan.neon pyproject.toml .pre-commit-config.yaml .coveragerc ./
-COPY phpunit.xml infection.json5 ./
-COPY README.md CONTRIBUTING.md CHANGELOG.md LICENSE ./
-COPY version.txt release-please-config.json .release-please-manifest.json ./
-COPY coverage-budgets.json ./
-COPY maintainability-budgets.json ./
+COPY --chown=knossos:knossos .gitignore .dockerignore ./
+COPY --chown=knossos:knossos eslint.config.js phpstan.neon pyproject.toml .pre-commit-config.yaml .coveragerc ./
+COPY --chown=knossos:knossos phpunit.xml infection.json5 ./
+COPY --chown=knossos:knossos README.md CONTRIBUTING.md CHANGELOG.md LICENSE ./
+COPY --chown=knossos:knossos version.txt release-please-config.json .release-please-manifest.json ./
+COPY --chown=knossos:knossos coverage-budgets.json ./
+COPY --chown=knossos:knossos maintainability-budgets.json ./
 # The `gate` lane scans this repository and holds it to its own budgets, which
 # live here along with the boundaries and policies the scan needs to reproduce
 # the numbers those budgets were set from.
-COPY knossos.json ./
-COPY Dockerfile ./
-COPY docker-compose.yml .env.example ./
-COPY docs ./docs
-COPY plugins ./plugins
-COPY benchmarks ./benchmarks
-COPY tests ./tests
-COPY workers/python/tests ./workers/python/tests
-COPY tools ./tools
-COPY .github ./.github
-RUN chmod 0755 tools/quality tools/quality-container tools/quality-deps-key tools/install-hooks tools/coverage tools/benchmark tools/supply-chain tools/release-lifecycle tools/scanner-conformance
-
-# The quality stage installs its tooling as root (Trivy, the docker socket, and
-# pcov all need it), but the permission-error tests -- DoctorService's
-# unwritable-data-dir path, MigrationRunner's unreadable-migration path, and
-# ProjectDiscoverer's permission-denied path -- skip themselves entirely when the
-# suite runs as root, so those branches would never execute. tools/quality drops
-# to this dedicated non-root user for `composer test` (see run_test_suite there),
-# which owns the tree so PHPUnit's cache and coverage output stay writable.
-# /usr/local/cargo and /usr/local/rustup are chowned too: they arrived via
-# COPY --from=rust_builder as root-owned, but `cargo audit` needs to write its
-# advisory-db clone under CARGO_HOME, and `cargo test`/clippy/llvm-cov all run
-# as this user.
-RUN useradd --system --create-home --home-dir /home/knossos --shell /usr/sbin/nologin knossos \
-    && chown -R knossos:knossos /opt/knossos /home/knossos /usr/local/cargo /usr/local/rustup
-
-ENV KNOSSOS_QUALITY_CONTAINER=1
-ENV DOCKER_API_VERSION=1.44
+COPY --chown=knossos:knossos knossos.json ./
+COPY --chown=knossos:knossos Dockerfile ./
+COPY --chown=knossos:knossos docker-compose.yml .env.example ./
+COPY --chown=knossos:knossos docs ./docs
+COPY --chown=knossos:knossos plugins ./plugins
+COPY --chown=knossos:knossos benchmarks ./benchmarks
+COPY --chown=knossos:knossos tests ./tests
+COPY --chown=knossos:knossos workers/python/tests ./workers/python/tests
+COPY --chown=knossos:knossos tools ./tools
+COPY --chown=knossos:knossos .github ./.github
+RUN chmod 0755 \
+    bin/knossos \
+    workers/php/bin/worker \
+    workers/typescript/bin/worker.js \
+    workers/python/bin/worker.py \
+    tools/quality tools/quality-container tools/quality-deps-key tools/install-hooks tools/coverage tools/benchmark tools/supply-chain tools/release-lifecycle tools/scanner-conformance
 
 ENTRYPOINT ["/opt/knossos/tools/quality"]
 CMD ["fast"]
