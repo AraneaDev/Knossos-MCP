@@ -280,8 +280,8 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
      * columns the comparison uses ({@see SnapshotGraphReader}), and analysed
      * the way {@see self::qualityGate()} analyses them: the same reportable components, impact
      * edges, cycles and unreferenced candidates. A component is the same in
-     * both graphs when its language, kind and full name are (ids change with
-     * a rescan, and a name alone is not unique). A dependency is new when no
+     * both graphs when its language, kind and full name are, the tuple its id
+     * is a hash of; a full name alone is not unique. A dependency is new when no
      * impact edge joined the same two components before;
      * boundaries are the active graph's labels ({@see BoundaryLabels}); a
      * cycle is new unless all its members already formed one cycle; a hub
@@ -438,10 +438,12 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     /**
      * Each node's identity across two graphs, by id: `language\0kind\0canonical_name`.
      *
-     * Ids change with a rescan, so two graphs are matched by what a node is.
-     * The full name alone is not enough: a module and a package, or a class
-     * and a function, can share one, and keying by it merged two components
-     * into one in every comparison.
+     * This is the tuple a node id is a hash of ({@see \Knossos\Store\StableId::symbol()},
+     * with the project), so it names the same component across two graphs
+     * that the id does, and can be printed and compared without the hash.
+     * The defect it replaces was keying by the full name alone: a module and
+     * a package, or a class and a function, can share one, and keying by it
+     * merged two components into one in every comparison.
      *
      * @param array<string, list<array<string, mixed>>> $facts
      * @return array<string, string>
