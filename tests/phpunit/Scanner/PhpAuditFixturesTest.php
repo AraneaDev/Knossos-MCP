@@ -10,8 +10,9 @@ use PDO;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * The audit's PHP fixtures through the whole scan: each call reaches the
- * class its receiver holds in the scope it is made in.
+ * The audit's PHP scope and route fixtures through the whole scan: each call
+ * reaches the class its receiver holds in that scope, and each route carries
+ * what its groups give it.
  */
 #[Group('php-scanner')]
 final class PhpAuditFixturesTest extends KnossosTestCase
@@ -87,6 +88,68 @@ final class PhpAuditFixturesTest extends KnossosTestCase
             static fn(array $e): bool => $e['kind'] === 'references' && $e['source'] === 'App\\Svc::m' && $e['target'] === 'App\\Foo',
         ));
         self::assertNotSame([], $references, 'a closure parameter type is a class the method names');
+    }
+
+    /**
+     * `Route::group([...], fn)` applies its prefix, middleware, name and
+     * namespace, and a namespace from either group form qualifies the
+     * `Class@method` actions inside it.
+     */
+    public function testM28RouteGroupArrayFormAndNamespace(): void
+    {
+        $this->write('composer.json', '{"require": {"laravel/framework": "^11.0"}, "autoload": {"psr-4": {"App\\\\": "app/"}}}');
+        $this->write('app/Http/Controllers/Admin/UserController.php', "<?php\nnamespace App\\Http\\Controllers\\Admin;\nclass UserController { public function index() {} }\n");
+        $this->write('app/Http/Controllers/Admin/Reports/DailyController.php', "<?php\nnamespace App\\Http\\Controllers\\Admin\\Reports;\nclass DailyController { public function show() {} }\n");
+        $this->write('app/Http/Controllers/Admin/PhotoController.php', "<?php\nnamespace App\\Http\\Controllers\\Admin;\nclass PhotoController { public function index() {} }\n");
+        $this->write('app/Http/Controllers/RootController.php', "<?php\nnamespace App\\Http\\Controllers;\nclass RootController { public function show() {} }\n");
+        $this->write('routes/web.php', <<<'PHP'
+            <?php
+            use Illuminate\Support\Facades\Route;
+            Route::group(['prefix' => 'admin', 'middleware' => ['auth'], 'namespace' => 'App\Http\Controllers\Admin', 'as' => 'admin.'], function () {
+                Route::get('/users', 'UserController@index')->name('users');
+                Route::get('/root', '\App\Http\Controllers\RootController@show');
+                Route::resource('photos', 'PhotoController')->only(['index']);
+                Route::namespace('Reports')->prefix('reports')->group(function () {
+                    Route::get('/daily', 'DailyController@show');
+                });
+            });
+            Route::get('/plain', 'PlainController@index');
+            PHP);
+        $pdo = $this->scan();
+
+        $routes = [];
+        foreach ($this->nodes($pdo) as $node) {
+            if ($node['kind'] === 'route') {
+                $attributes = json_decode($node['attributes_json'], true);
+                $routes[$node['canonical_name']] = [$attributes['name'], $attributes['middleware']];
+            }
+        }
+        ksort($routes);
+        self::assertSame([
+            'GET /admin/photos => App\\Http\\Controllers\\Admin\\PhotoController::index' => ['admin.photos.index', ['auth']],
+            'GET /admin/reports/daily => App\\Http\\Controllers\\Admin\\Reports\\DailyController@show' => ['admin.', ['auth']],
+            'GET /admin/root => \\App\\Http\\Controllers\\RootController@show' => ['admin.', ['auth']],
+            'GET /admin/users => App\\Http\\Controllers\\Admin\\UserController@index' => ['admin.users', ['auth']],
+            'GET /plain => PlainController@index' => ['', []],
+        ], $routes);
+
+        $targets = [];
+        foreach ($this->edges($pdo) as $edge) {
+            if ($edge['kind'] === 'routes_to') {
+                $targets[$edge['target']] = $edge['target_kind'];
+            }
+            if ($edge['kind'] === 'uses_middleware') {
+                self::assertSame('laravel.middleware:auth', $edge['target']);
+            }
+        }
+        ksort($targets);
+        self::assertSame([
+            'App\\Http\\Controllers\\Admin\\PhotoController::index' => 'method',
+            'App\\Http\\Controllers\\Admin\\Reports\\DailyController::show' => 'method',
+            'App\\Http\\Controllers\\Admin\\UserController::index' => 'method',
+            'App\\Http\\Controllers\\RootController::show' => 'method',
+            'PlainController::index' => 'external_method',
+        ], $targets);
     }
 
     private function scan(): PDO
