@@ -976,9 +976,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $edgesTruncated = false;
         $visited = 0;
         while ($queue !== []) {
-            if ($this->now() > $deadline || $visited >= 10_000) {
+            // No visit bound: only accepted dependants are queued, and at most
+            // $limit (100) are accepted, so at most $limit + 1 states are visited.
+            if ($this->now() > $deadline) {
                 $truncated = true;
-                $truncationReason = $visited >= 10_000 ? 'visit_limit' : 'time_limit';
+                $truncationReason = 'time_limit';
                 break;
             }
             [$current, $distance] = array_shift($queue);
