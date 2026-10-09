@@ -20,6 +20,14 @@ use Knossos\Query\StalenessSnapshot;
  */
 final readonly class ResultEnricher
 {
+    /**
+     * The flags the stdio transport encodes a response with (StdioServer::write()).
+     * The budget measures with the same ones, so max_chars counts what is sent:
+     * without JSON_INVALID_UTF8_SUBSTITUTE, invalid UTF-8 made json_encode
+     * return false and the result measured 0 bytes.
+     */
+    public const WIRE_FLAGS = JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE;
+
     private const COMPACT_EVIDENCE = 3;
     /** Reserved key under which the evidence list joins the victim walk; NUL keeps it clear of real data keys. */
     private const EVIDENCE_KEY = "\0evidence";
@@ -39,7 +47,7 @@ final readonly class ResultEnricher
     private function measure(ResultEnvelope $candidate): int
     {
         return $this->measurer === null
-            ? strlen((string) json_encode($candidate->jsonSerialize(), JSON_UNESCAPED_SLASHES))
+            ? strlen(json_encode($candidate->jsonSerialize(), self::WIRE_FLAGS))
             : ($this->measurer)($candidate);
     }
     /**

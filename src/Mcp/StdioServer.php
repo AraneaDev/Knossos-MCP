@@ -489,6 +489,8 @@ final class StdioServer
      */
     private function write($output, array $message): void
     {
+        // ResultEnricher::WIRE_FLAGS measures max_chars with these same flags;
+        // a test pins the two equal, so change both together.
         $encoded = json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (strlen($encoded) > $this->maxResponseBytes) {
             $encoded = json_encode(
