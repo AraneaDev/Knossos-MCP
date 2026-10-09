@@ -14,6 +14,11 @@ use Throwable;
  * Shells out rather than linking a Git library: the binary is already required, and
  * its output is a stable contract. The deadline matters because a huge or
  * pathological history would otherwise hang a query.
+ *
+ * Paths are relative to the project root, and only commits that touch the
+ * project count, also for a project in a subdirectory of its repository: git
+ * runs there (`-C`), `--relative` strips the directory and the `.` pathspec
+ * keeps sibling packages' commits out of the max_commits budget.
  */
 final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
 {
@@ -43,7 +48,7 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
         $output = $this->runner->run([
             'git', '-c', 'core.quotePath=false', '--no-optional-locks', '--no-pager', '-C', $root, 'log',
             '--since=' . $sinceDays . ' days ago', '--max-count=' . ($maxCommits + 1),
-            '--format=KNOSSOS_COMMIT%x1f%H%x1f%aI%x1f%at%x1f%ae', '--name-only', '--no-renames', '--',
+            '--format=KNOSSOS_COMMIT%x1f%H%x1f%aI%x1f%at%x1f%ae', '--name-only', '--no-renames', '--relative', '--', '.',
         ], $timeoutMs, 'history');
         return $this->parse($output, $maxCommits);
     }

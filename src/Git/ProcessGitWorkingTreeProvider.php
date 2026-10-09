@@ -8,7 +8,15 @@ use Knossos\Scanner\Protocol\RelativePath;
 use RuntimeException;
 use Throwable;
 
-/** Reads the working-tree diff by running `git`, under the same deadline and output caps. */
+/**
+ * Reads the working-tree diff by running `git`, under the same deadline and output caps.
+ *
+ * Every path is relative to the project root and inside it, also for a project
+ * in a subdirectory of its repository: git runs there (`-C`), `--relative`
+ * strips the directory from what it prints and the `.` pathspec drops sibling
+ * packages. A rename from outside the project into it reads as an add, because
+ * `--relative` filters the other side of the pair out.
+ */
 final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProvider
 {
     private GitProcessRunnerInterface $runner;
@@ -43,7 +51,7 @@ final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProv
         }
         $output = $this->runner->run([
             'git', '--no-optional-locks', '--no-pager', '-C', $root, 'diff', '--name-status', '-z',
-            '--no-ext-diff', '--find-renames', $revision, '--',
+            '--no-ext-diff', '--find-renames', '--relative', $revision, '--', '.',
         ], $timeoutMs, 'working-tree query');
         $tokens = explode("\0", rtrim($output, "\0"));
         $paths = [];
@@ -65,7 +73,7 @@ final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProv
         }
         if ($baseRef === null) {
             foreach (explode("\0", rtrim($this->runner->run([
-                'git', '--no-optional-locks', '--no-pager', '-C', $root, 'ls-files', '--others', '--exclude-standard', '-z', '--',
+                'git', '--no-optional-locks', '--no-pager', '-C', $root, 'ls-files', '--others', '--exclude-standard', '-z', '--', '.',
             ], $timeoutMs, 'working-tree query'), "\0")) as $path) {
                 if ($path === '') {
                     continue;

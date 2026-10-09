@@ -351,7 +351,158 @@ final class ProcessGitProviderTest extends KnossosTestCase
         assertSame('-c', $captured[(int) $configIndex - 1]);
     }
 
+    // ── Scope: a project in a repository subdirectory ────────────────
+
+    /**
+     * Without --relative and a pathspec, git printed repository-root paths and
+     * included sibling packages, so a project in a subdirectory matched none of
+     * its own changed files.
+     */
+    public function testWorkingTreeDiffIsScopedToTheProjectDirectory(): void
+    {
+        $runner = $this->recordingRunner(static fn(array $command): string => in_array('rev-parse', $command, true) ? str_repeat('a', 40) . "\n" : '');
+        (new ProcessGitWorkingTreeProvider(runner: $runner))->changes($this->existingDir, null, 10, 100);
+
+        $diffs = $runner->commandsWith('diff');
+        assertSame(1, count($diffs));
+        assertSame(true, in_array('--relative', $diffs[0], true));
+        assertSame(['--', '.'], array_slice($diffs[0], -2));
+        $listings = $runner->commandsWith('ls-files');
+        assertSame(1, count($listings));
+        assertSame(['--', '.'], array_slice($listings[0], -2));
+    }
+
+    /**
+     * The history log, like the diff, listed repository-root paths and let a
+     * sibling package's commits use up the max_commits budget.
+     */
+    public function testHistoryIsScopedToTheProjectDirectory(): void
+    {
+        $runner = $this->recordingRunner(static fn(array $command): string => '');
+        (new ProcessGitHistoryProvider(runner: $runner))->history($this->existingDir, 30, 10, 100);
+
+        $logs = $runner->commandsWith('log');
+        assertSame(1, count($logs));
+        assertSame(true, in_array('--relative', $logs[0], true));
+        assertSame(['--', '.'], array_slice($logs[0], -2));
+    }
+
+    /**
+     * A project one and two levels below the repository root sees only its own
+     * changes, relative to its own root; a rename from a sibling package into
+     * the project reads as an add. The repository-root project is unchanged.
+     */
+    public function testANestedProjectSeesOnlyItsOwnChangesRelativeToItsRoot(): void
+    {
+        $repo = $this->gitRepository();
+        try {
+            $this->writeFiles($repo, ['pkg/src/x.ts' => "x\n", 'other/y.ts' => "y\n", 'pkg/deep/sub/z.ts' => "z\n"]);
+            $this->git($repo, ['add', '.']);
+            $this->git($repo, ['commit', '--quiet', '-m', 'first']);
+            $this->writeFiles($repo, ['pkg/src/x.ts' => "x2\n", 'other/y.ts' => "y2\n", 'pkg/deep/sub/z.ts' => "z2\n", 'pkg/new.ts' => "n\n"]);
+            $this->git($repo, ['mv', 'other/y.ts', 'pkg/moved.ts']);
+            $provider = new ProcessGitWorkingTreeProvider();
+
+            $nested = $provider->changes($repo . '/pkg', null, 100, 5000);
+            assertSame(['deep/sub/z.ts', 'moved.ts', 'new.ts', 'src/x.ts'], $nested['paths']);
+            assertSame([], $nested['renames']);
+            assertSame(['sub/z.ts'], $provider->changes($repo . '/pkg/deep', null, 100, 5000)['paths']);
+            $whole = $provider->changes($repo, null, 100, 5000)['paths'];
+            foreach (['pkg/src/x.ts', 'pkg/moved.ts', 'pkg/new.ts', 'pkg/deep/sub/z.ts', 'other/y.ts'] as $path) {
+                $this->assertContains($path, $whole);
+            }
+        } finally {
+            $this->removeTempTree($repo);
+        }
+    }
+
+    /** A sibling package's commit is neither counted nor allowed to use the commit budget. */
+    public function testANestedProjectsHistoryCountsOnlyItsOwnCommits(): void
+    {
+        $repo = $this->gitRepository();
+        try {
+            foreach ([['pkg/src/x.ts', "1\n"], ['other/y.ts', "2\n"], ['pkg/src/x.ts', "3\n"]] as [$file, $content]) {
+                $this->writeFiles($repo, [$file => $content]);
+                $this->git($repo, ['add', $file]);
+                $this->git($repo, ['commit', '--quiet', '-m', 'change ' . $file]);
+            }
+
+            $history = (new ProcessGitHistoryProvider())->history($repo . '/pkg', 30, 2, 5000);
+
+            assertSame(['src/x.ts'], array_keys($history['files']));
+            assertSame(2, $history['files']['src/x.ts']['commit_count']);
+            assertSame([2, false], [$history['commits_examined'], $history['truncated']]);
+        } finally {
+            $this->removeTempTree($repo);
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
+
+    /** A fresh, empty repository under the temporary directory; skips the test without git. */
+    private function gitRepository(): string
+    {
+        if (self::locateGit() === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $repo = sys_get_temp_dir() . '/knossos-stale-git-' . bin2hex(random_bytes(6));
+        mkdir($repo, 0o700, true);
+        $this->git($repo, ['init', '--quiet']);
+
+        return (string) realpath($repo);
+    }
+
+    /** @param list<string> $args */
+    private function git(string $repo, array $args): void
+    {
+        $this->runFixtureCommand(['git', '-C', $repo, '-c', 'user.name=Knossos Test', '-c', 'user.email=test@example.test', '-c', 'commit.gpgsign=false', ...$args]);
+    }
+
+    /** @param array<string, string> $files */
+    private function writeFiles(string $root, array $files): void
+    {
+        foreach ($files as $path => $content) {
+            if (!is_dir(dirname($root . '/' . $path))) {
+                mkdir(dirname($root . '/' . $path), 0o700, true);
+            }
+            file_put_contents($root . '/' . $path, $content);
+        }
+    }
+
+    /**
+     * A runner that records every command and answers through `$respond`.
+     *
+     * @param callable(list<string>): string $respond
+     */
+    private function recordingRunner(callable $respond): GitProcessRunnerInterface
+    {
+        return new class($respond) implements GitProcessRunnerInterface {
+            /** @var list<list<string>> */
+            public array $commands = [];
+
+            /** @var callable(list<string>): string */
+            private $respond;
+
+            /** @param callable(list<string>): string $respond */
+            public function __construct(callable $respond)
+            {
+                $this->respond = $respond;
+            }
+
+            public function run(array $command, int $timeoutMs, string $operation): string
+            {
+                $this->commands[] = $command;
+
+                return ($this->respond)($command);
+            }
+
+            /** @return list<list<string>> the recorded commands whose subcommand is `$subcommand` */
+            public function commandsWith(string $subcommand): array
+            {
+                return array_values(array_filter($this->commands, static fn(array $command): bool => in_array($subcommand, $command, true)));
+            }
+        };
+    }
 
     private function mockRunner(string $returnValue): GitProcessRunnerInterface
     {
