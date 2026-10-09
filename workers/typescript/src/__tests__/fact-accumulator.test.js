@@ -129,3 +129,22 @@ describe("FactAccumulator edges", () => {
         expect(acc.edges[0].attributes.dynamic).toBe(false);
     });
 });
+
+describe("FactAccumulator declarations past a file's own text", () => {
+    const sourceFile = {
+        getLineAndCharacterOfPosition: () => ({ line: 1, character: 0 }),
+    };
+    const at = (start) => ({ getStart: () => start });
+
+    it("says whether a node was kept, so its enrichment can be skipped", () => {
+        const acc = new FactAccumulator(sourceFile, "f.svelte", stubEvidence, {
+            end: 10,
+            moduleId: "m",
+        });
+
+        expect(acc.addNode("own", "function", "own", "own", at(2))).toBe(true);
+        expect(acc.addNode("own", "function", "own", "own", at(2))).toBe(true);
+        expect(acc.addNode("tail", "type_alias", "T", "T", at(12))).toBe(false);
+        expect(acc.nodes.map((node) => node.local_id)).toEqual(["own"]);
+    });
+});

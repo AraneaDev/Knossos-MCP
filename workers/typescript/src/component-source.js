@@ -44,7 +44,9 @@ export function blankSource(text) {
  * `scriptRanges` are the offsets kept byte for byte, `templateRanges` the
  * markup expressions were read from, and `typed` whether the script is
  * TypeScript (always for Astro). `fileName` names SvelteKit's route files,
- * whose props the framework types.
+ * whose props the framework types. `sourceLength` is the length of the
+ * component's own text: what follows it in `text` is declarations the
+ * framework implies, which are typed but are no facts of the file.
  */
 export function toVirtualSource(text, dialect, fileName = "") {
     const out = blankSource(text).split("");
@@ -74,6 +76,7 @@ export function toVirtualSource(text, dialect, fileName = "") {
             (dialect === "astro" ? astroGlobal(text, blocks.scripts) : "") +
             (dialect === "svelte" ? routeProps(fileName) : "") +
             typeParameters(blocks.generics),
+        sourceLength: text.length,
         scriptRanges: blocks.scripts,
         templateRanges: blocks.markup,
         typed: blocks.typed,

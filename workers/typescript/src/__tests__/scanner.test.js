@@ -306,6 +306,200 @@ describe("TypeScriptScanner.scan packages below node_modules", () => {
     });
 });
 
+/** The import targets and package nodes of one file nothing configures. */
+function packageTargets(source) {
+    const root = fixture({ "src/a.ts": source });
+    const contributions = [];
+    new TypeScriptScanner().scan({ root, files: ["src/a.ts"] }, (c) =>
+        contributions.push(c),
+    );
+    return {
+        targets: contributions
+            .flatMap((c) => c.edges)
+            .filter((e) => e.kind === "imports")
+            .map((e) => e.target)
+            .sort(),
+        nodes: contributions
+            .flatMap((c) => c.nodes)
+            .filter((n) => n.kind === "package")
+            .map((n) => n.canonical_name)
+            .sort(),
+    };
+}
+
+describe("TypeScriptScanner.scan specifiers nothing resolves", () => {
+    it("name a package only when the specifier can be an npm package", () => {
+        const { targets, nodes } = packageTargets(
+            [
+                'import a from "@/components";',
+                'import b from "~/stores/user";',
+                'import c from "@/";',
+                'import d from "Bad Name";',
+                'import e from "@scope/pkg/sub";',
+                'import f from "lodash/fp";',
+                'import g from "~";',
+                "export const all = [a, b, c, d, e, f, g];",
+                "",
+            ].join("\n"),
+        );
+
+        expect(targets).toEqual(["ts:package:@scope/pkg", "ts:package:lodash"]);
+        expect(nodes).toEqual(["@scope/pkg", "lodash"]);
+    });
+});
+
+describe("TypeScriptScanner.scan specifiers that look like packages", () => {
+    it("name no package for a specifier a tsconfig paths key covers", () => {
+        const root = fixture({
+            "tsconfig.json": JSON.stringify({
+                compilerOptions: {
+                    paths: { "@app/*": ["./src/*"], "@lib/*": ["./lib/*"] },
+                },
+                include: ["src"],
+            }),
+            "src/util.ts": "export const u = 1;\n",
+            "src/a.ts": [
+                'import { u } from "@app/util";',
+                'import missing from "@app/missing";',
+                'import thing from "@lib/thing";',
+                'import real from "@scope/real";',
+                "export const all = [u, missing, thing, real];",
+                "",
+            ].join("\n"),
+        });
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            { root, files: ["src/a.ts"], config_files: ["tsconfig.json"] },
+            (c) => contributions.push(c),
+        );
+
+        expect(
+            contributions
+                .flatMap((c) => c.edges)
+                .filter((e) => e.kind === "imports")
+                .map((e) => e.target)
+                .sort(),
+        ).toEqual(["ts:module:src/util.ts", "ts:package:@scope/real"]);
+    });
+});
+
+/** The import targets of `src/a.ts` in a fixture with a tsconfig. */
+function importTargets(files) {
+    const root = fixture(files);
+    const contributions = [];
+    new TypeScriptScanner().scan(
+        { root, files: ["src/a.ts"], config_files: ["tsconfig.json"] },
+        (c) => contributions.push(c),
+    );
+    return contributions
+        .flatMap((c) => c.edges)
+        .filter((e) => e.kind === "imports")
+        .map((e) => e.target)
+        .sort();
+}
+
+const lodash = {
+    "node_modules/lodash/package.json":
+        '{"name":"lodash","types":"index.d.ts"}',
+    "node_modules/lodash/index.d.ts": "export declare const x: number;\n",
+    "src/a.ts": 'import { x } from "lodash";\nexport const a = x;\n',
+};
+
+describe("TypeScriptScanner.scan imports a dependency or Node provides", () => {
+    it("keep a package a paths key maps into node_modules", () => {
+        expect(
+            importTargets({
+                ...lodash,
+                "tsconfig.json": JSON.stringify({
+                    compilerOptions: {
+                        paths: { lodash: ["./node_modules/lodash"] },
+                    },
+                    include: ["src"],
+                }),
+            }),
+        ).toEqual(["ts:package:lodash"]);
+    });
+
+    it("keep a package a bundler alias maps to one of its own files", () => {
+        expect(
+            importTargets({
+                "tsconfig.json": JSON.stringify({
+                    compilerOptions: {
+                        module: "esnext",
+                        moduleResolution: "bundler",
+                    },
+                    include: ["src"],
+                }),
+                "vite.config.js":
+                    "export default { resolve: { alias: { vue: 'vue/dist/vue.esm-bundler.js' } } };\n",
+                "node_modules/vue/package.json":
+                    '{"name":"vue","types":"index.d.ts"}',
+                "node_modules/vue/index.d.ts":
+                    "export declare function ref<T>(value: T): { value: T };\n",
+                "src/a.ts":
+                    'import { ref } from "vue";\nexport const a = ref(1);\n',
+            }),
+        ).toEqual(["ts:package:vue"]);
+    });
+
+    it("name an underscored built-in bare as with its node: prefix", () => {
+        const { targets } = packageTargets(
+            [
+                'import a from "_http_agent";',
+                'import c from "fs/promises";',
+                "export const all = [a, c];",
+                "",
+            ].join("\n"),
+        );
+
+        expect(targets).toEqual(["ts:package:_http_agent", "ts:package:fs"]);
+    });
+
+    it("name a built-in from a fixed list, whatever Node runs the worker", () => {
+        const { targets } = packageTargets(
+            [
+                'import a from "node:sqlite";',
+                'import b from "node:sea";',
+                'import c from "node:test/reporters";',
+                'import d from "node:quic";',
+                'import e from "node:not-a-module";',
+                'import f from "node:_http_agent";',
+                "export const all = [a, b, c, d, e, f];",
+                "",
+            ].join("\n"),
+        );
+
+        expect(targets).toEqual([
+            "ts:package:_http_agent",
+            "ts:package:node:sea",
+            "ts:package:node:sqlite",
+            "ts:package:node:test",
+        ]);
+    });
+
+    it("name a Node built-in the same with or without its node: prefix", () => {
+        const { targets } = packageTargets(
+            [
+                'import { readFileSync } from "node:fs";',
+                'import { statSync } from "fs";',
+                'import { readFile } from "node:fs/promises";',
+                'import { join } from "node:path";',
+                // Only reachable under its prefix: without it, `test` names
+                // an npm package.
+                'import { it } from "node:test";',
+                "export const all = [readFileSync, statSync, readFile, join, it];",
+                "",
+            ].join("\n"),
+        );
+
+        expect(targets).toEqual([
+            "ts:package:fs",
+            "ts:package:node:test",
+            "ts:package:path",
+        ]);
+    });
+});
+
 // A code-split route hands the module object to React and never names the
 // component: `lazy(() => import('./pages/Admin'))`. The module gets its edge,
 // the component inside it gets nothing.

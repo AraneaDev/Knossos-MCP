@@ -4,6 +4,7 @@ import path from "node:path";
 import ts from "typescript";
 import { FactAccumulator } from "./fact-accumulator.js";
 import { NestJsFactEnricher } from "./nestjs-fact-enricher.js";
+import { nodeBuiltinPackage } from "./node-builtins.js";
 import { TypeScriptApplicationEnricher } from "./typescript-application-enricher.js";
 import {
     bindingKeyword,
@@ -1253,6 +1254,7 @@ export class TypeScriptScanner {
         // The request's own map is left as the configs filled it.
         const owners = fallback ? new Map() : request.owners;
         const tracker = declarationTracker(program.getTypeChecker());
+        const skipped = emissionSkipped(request, owners, fallback);
         const { byFile: diagnosticsByFile, programLevel } = programDiagnostics(
             program,
             root,
@@ -1260,7 +1262,6 @@ export class TypeScriptScanner {
             fallback,
         );
 
-        const skipped = emissionSkipped(request, owners, fallback);
         // A diagnostic that names no file describes the whole program, so it
         // is reported once, on one fixed file of the program. The carrier is
         // chosen from the program itself, never from the request: a project is
@@ -1363,6 +1364,13 @@ function collectFile(
                 probes.push(fileName);
                 return inRootFile(root, fileName);
             },
+            // Whether the compiler resolved an import's specifier to any
+            // file, a dependency's included. An internal compiler method.
+            resolved: (specifier) =>
+                program.getResolvedModuleFromModuleSpecifier(
+                    specifier,
+                    sourceFile,
+                )?.resolvedModule !== undefined,
         });
         collector.collect();
         return {
@@ -1432,10 +1440,14 @@ class TypeScriptLanguageFactCollector {
         this.relative = relativeInside(root, sourceFile.fileName);
         this.container = [];
         this.moduleId = reference("module", this.relative);
+        const ownEnd = componentSources.get(sourceFile)?.sourceLength;
         this.accumulator = new FactAccumulator(
             sourceFile,
             this.relative,
             evidence,
+            ownEnd === undefined
+                ? {}
+                : { end: ownEnd, moduleId: this.moduleId },
         );
         this.application = new TypeScriptApplicationEnricher(this);
         this.nest = new NestJsFactEnricher(this);
@@ -1885,7 +1897,9 @@ class TypeScriptLanguageFactCollector {
             : `${this.relative}#${this.container.length > 0 ? `${this.container.map((item) => item.name).join(".")}.` : ""}${descriptor.name}`;
         const id = reference(descriptor.kind, canonical);
         this.declaredIds.set(node, id);
-        this.addNode(
+        // False for a declaration a component's framework implies, which is
+        // no node, so it takes no roles or attributes either.
+        const kept = this.addNode(
             id,
             descriptor.kind,
             canonical,
@@ -1901,17 +1915,16 @@ class TypeScriptLanguageFactCollector {
                 : ambientAttributes(node, descriptor.attributes),
         );
         this.addEdge("contains", parent.id, id, node);
-        if (this.overridesSupertypeMember(node)) {
+        if (kept && this.overridesSupertypeMember(node)) {
             const fact = this.accumulator.nodesById.get(id);
             fact.attributes = { ...fact.attributes, overrides: true };
         }
-        const nest = this.nest.declaration(node, id, canonical);
-        const applicationRoles = this.application.declaration(
-            node,
-            id,
-            canonical,
-            descriptor.name,
-        );
+        const nest = kept
+            ? this.nest.declaration(node, id, canonical)
+            : { roles: [], controllerPrefix: null };
+        const applicationRoles = kept
+            ? this.application.declaration(node, id, canonical, descriptor.name)
+            : [];
         if (applicationRoles.length > 0) {
             const fact = this.accumulator.nodesById.get(id);
             fact.attributes = {
@@ -2756,6 +2769,13 @@ class TypeScriptLanguageFactCollector {
     moduleTarget(specifier, location) {
         const internal = this.internalModuleTarget(location);
         if (internal !== null) return internal;
+        // An import nothing resolved under a tsconfig `paths` key (bundler
+        // aliases are folded into them) names the project's own code that is
+        // missing, not a dependency: `@app/missing` under `@app/*`. One that
+        // resolved into a dependency (`vue` aliased to a file of the `vue`
+        // package) is that package.
+        if (!this.resolvedImport(location) && this.underAlias(specifier))
+            return null;
 
         const packageName = externalPackageName(specifier);
         if (packageName !== null) {
@@ -2766,6 +2786,53 @@ class TypeScriptLanguageFactCollector {
             return id;
         }
         return null;
+    }
+
+    /** Whether the compiler resolved an import's specifier to any file. */
+    resolvedImport(location) {
+        if (this.checker.getSymbolAtLocation(location) !== undefined)
+            return true;
+        return (
+            ts.isStringLiteralLike(location) &&
+            this.project.resolved?.(location) === true
+        );
+    }
+
+    /**
+     * Whether a `paths` key covers a specifier, as the compiler matches them.
+     *
+     * `ts.tryParsePatterns` and `ts.matchPatternOrExact` are the compiler's
+     * internal helpers, not its public API, and their shape changed in
+     * TypeScript 5.6; the package-name tests import `@app/missing` under
+     * `@app/*`, so a TypeScript release that changes them again fails there.
+     */
+    underAlias(specifier) {
+        return this.aliasPatterns().some(
+            (patterns) =>
+                ts.matchPatternOrExact(patterns, specifier) !== undefined,
+        );
+    }
+
+    /**
+     * The program's `paths` keys as the compiler matches them, without the
+     * catch-all `*`, which says nothing about a name. Wrapped in a list, as
+     * a program without `paths` has none.
+     */
+    aliasPatterns() {
+        if (this.parsedAliases === undefined) {
+            const keys = Object.keys(this.project.options?.paths ?? {}).filter(
+                (key) => key !== "*",
+            );
+            this.parsedAliases =
+                keys.length === 0
+                    ? []
+                    : [
+                          ts.tryParsePatterns(
+                              Object.fromEntries(keys.map((key) => [key, []])),
+                          ),
+                      ];
+        }
+        return this.parsedAliases;
     }
 
     /**
@@ -2846,6 +2913,7 @@ class TypeScriptLanguageFactCollector {
         return this.container.at(-1)?.id ?? this.moduleId;
     }
 
+    /** Add a node; false when it is a declaration past the file's own text. */
     addNode(
         id,
         kind,
@@ -2855,7 +2923,7 @@ class TypeScriptLanguageFactCollector {
         attributes = {},
         origin = "ast",
     ) {
-        this.accumulator.addNode(
+        return this.accumulator.addNode(
             id,
             kind,
             canonicalName,
@@ -4568,98 +4636,132 @@ function hasControlCharacter(name) {
     return false;
 }
 
+/**
+ * A program's compiler diagnostics by file, and the ones that name no file.
+ *
+ * The whole program is checked, in program order, before any fact is
+ * collected, whichever files the request names. Checking one file can change
+ * what the checker has cached for the next: a type instantiated in one file
+ * comes back whole in another where, checked alone, that file ran out of
+ * instantiation depth and its facts differed. Checking every file keeps a
+ * file's facts and diagnostics the same in every batch, at the cost of the
+ * program's whole type check for a one-file request. A diagnostic that names
+ * no file is taken before the check (see programLevelDiagnostics).
+ */
 function diagnosticsForProgram(program, root, maxFileBytes) {
     const result = new Map();
-    const programLevel = [];
+    const programLevel = programLevelDiagnostics(program);
     for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
-        if (!diagnostic.file) {
-            // An option or configuration error names no file; it applies to
-            // the whole program and is reported once, on the program's carrier.
-            const message =
-                ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n") +
-                " (applies to the whole program)";
-            const code = `TS${diagnostic.code}`;
-            if (
-                programLevel.some(
-                    (item) => item.code === code && item.message === message,
-                )
-            )
-                continue;
-            programLevel.push({
-                severity:
-                    diagnostic.category === ts.DiagnosticCategory.Error
-                        ? "error"
-                        : "warning",
-                code,
-                message,
-            });
-            continue;
-        }
-        const component = componentSources.get(diagnostic.file);
+        if (diagnostic.file)
+            addFileDiagnostic(
+                { program, root, maxFileBytes },
+                diagnostic,
+                result,
+            );
+    }
+    componentParseDiagnostics(program, root, result);
+    return { byFile: result, programLevel };
+}
+
+/**
+ * The diagnostics of a program that name no file: an option or configuration
+ * error, or a global type the checker cannot find. Each applies to the whole
+ * program and is reported once, on the program's carrier.
+ *
+ * Taken before any file is checked. Checking a file can add a global
+ * diagnostic of its own (a global type only that file's code asks for), and
+ * the carrier is not rebuilt when another file's edit adds or removes one,
+ * so it would go stale after an incremental scan. What the checker reports
+ * when it is created, and what the config and options report, depends only
+ * on the program's configuration.
+ */
+function programLevelDiagnostics(program) {
+    const programLevel = [];
+    const diagnostics = ts.sortAndDeduplicateDiagnostics([
+        ...program.getConfigFileParsingDiagnostics(),
+        ...program.getOptionsDiagnostics(),
+        ...program.getGlobalDiagnostics(),
+    ]);
+    for (const diagnostic of diagnostics) {
+        if (diagnostic.file) continue;
+        const message =
+            ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n") +
+            " (applies to the whole program)";
+        const code = `TS${diagnostic.code}`;
         if (
-            component !== undefined &&
-            !componentDiagnosticKept(component, diagnostic)
+            programLevel.some(
+                (item) => item.code === code && item.message === message,
+            )
         )
             continue;
-        if (diagnostic.code === 6059) continue; // Analysis-only project-reference source merging triggers this.
-        if (namesComponentDefaultExport(diagnostic)) continue;
-        const relative = relativeInside(root, diagnostic.file.fileName);
-        if (relative === null || belowNodeModules(relative)) continue;
-        const overCap = declarationOverCap(
-            program,
-            diagnostic,
-            root,
-            maxFileBytes,
-        );
-        if (overCap !== null) {
-            const start = diagnostic.file.getLineAndCharacterOfPosition(
-                diagnostic.start ?? 0,
-            );
-            const list = result.get(relative) ?? [];
-            list.push({
-                severity: "warning",
-                code: "TS_DECLARATION_OVER_CAP",
-                message: overCap,
-                evidence: {
-                    path: relative,
-                    start_line: start.line + 1,
-                    end_line: start.line + 1,
-                },
-            });
-            result.set(relative, list);
-            continue;
-        }
-        const start = diagnostic.start ?? 0;
-        const startPosition =
-            diagnostic.file.getLineAndCharacterOfPosition(start);
-        const endPosition = diagnostic.file.getLineAndCharacterOfPosition(
-            start + (diagnostic.length ?? 0),
-        );
-        const item = {
+        programLevel.push({
             severity:
                 diagnostic.category === ts.DiagnosticCategory.Error
                     ? "error"
                     : "warning",
-            code: `TS${diagnostic.code}`,
-            message: ts.flattenDiagnosticMessageText(
-                diagnostic.messageText,
-                "\n",
-            ),
+            code,
+            message,
+        });
+    }
+    return programLevel;
+}
+
+/** One compiler diagnostic on a file, added to that file's list. */
+function addFileDiagnostic(
+    { program, root, maxFileBytes },
+    diagnostic,
+    result,
+) {
+    const component = componentSources.get(diagnostic.file);
+    if (
+        component !== undefined &&
+        !componentDiagnosticKept(component, diagnostic)
+    )
+        return;
+    if (diagnostic.code === 6059) return; // Analysis-only project-reference source merging triggers this.
+    if (namesComponentDefaultExport(diagnostic)) return;
+    const relative = relativeInside(root, diagnostic.file.fileName);
+    if (relative === null || belowNodeModules(relative)) return;
+    const overCap = declarationOverCap(program, diagnostic, root, maxFileBytes);
+    if (overCap !== null) {
+        const start = diagnostic.file.getLineAndCharacterOfPosition(
+            diagnostic.start ?? 0,
+        );
+        const list = result.get(relative) ?? [];
+        list.push({
+            severity: "warning",
+            code: "TS_DECLARATION_OVER_CAP",
+            message: overCap,
             evidence: {
                 path: relative,
-                start_line: startPosition.line + 1,
-                end_line: Math.max(
-                    startPosition.line + 1,
-                    endPosition.line + 1,
-                ),
+                start_line: start.line + 1,
+                end_line: start.line + 1,
             },
-        };
-        const list = result.get(relative) ?? [];
-        list.push(item);
+        });
         result.set(relative, list);
+        return;
     }
-    componentParseDiagnostics(program, root, result);
-    return { byFile: result, programLevel };
+    const start = diagnostic.start ?? 0;
+    const startPosition = diagnostic.file.getLineAndCharacterOfPosition(start);
+    const endPosition = diagnostic.file.getLineAndCharacterOfPosition(
+        start + (diagnostic.length ?? 0),
+    );
+    const item = {
+        severity:
+            diagnostic.category === ts.DiagnosticCategory.Error
+                ? "error"
+                : "warning",
+        code: `TS${diagnostic.code}`,
+        message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+        evidence: {
+            path: relative,
+            start_line: startPosition.line + 1,
+            end_line: Math.max(startPosition.line + 1, endPosition.line + 1),
+        },
+    };
+    const list = result.get(relative) ?? [];
+    list.push(item);
+    result.set(relative, list);
 }
 
 /**
@@ -5212,15 +5314,32 @@ function unalias(checker, symbol) {
         : symbol;
 }
 
+/**
+ * A name npm can publish: an optional scope and a name of letters, digits,
+ * `-`, `.` and `_`, neither starting with `.`, `_` or `-`. Capitals are
+ * allowed, as older packages have them.
+ */
+const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+
+/**
+ * The package a specifier names, or null when it names none.
+ *
+ * Only a name npm can publish is a package. A specifier nothing resolved
+ * that is not one (`@/components`, `~/stores/user`, `$lib/x`, a bundler's
+ * `virtual:` module) is a path under a name the project's bundler gives it,
+ * and no dependency. A `node:` specifier is named by nodeBuiltinPackage.
+ */
 function externalPackageName(specifier) {
-    if (
-        specifier.startsWith(".") ||
-        specifier.startsWith("/") ||
-        specifier.startsWith("#")
-    )
-        return null;
+    if (specifier.startsWith("node:")) return nodeBuiltinPackage(specifier);
+    // A built-in Node also offers bare, `_http_agent` included, which npm's
+    // grammar would refuse for its leading underscore.
+    const builtin = nodeBuiltinPackage(`node:${specifier}`);
+    if (builtin !== null && !builtin.startsWith("node:")) return builtin;
     const parts = specifier.split("/");
-    return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+    const name = specifier.startsWith("@")
+        ? parts.slice(0, 2).join("/")
+        : parts[0];
+    return NPM_PACKAGE_NAME.test(name) ? name : null;
 }
 
 function evidence(sourceFile, relative, node) {
