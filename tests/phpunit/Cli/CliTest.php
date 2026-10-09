@@ -34,6 +34,30 @@ final class CliTest extends KnossosTestCase
         assertContains('KNOSSOS_INVALID_ARGUMENT:', $stderr);
     }
 
+    /**
+     * `--db PATH` stored db = 'true', the path became a stray positional, and
+     * the command opened (and created) a database file named 'true' in the
+     * working directory. It is refused before any database is touched.
+     */
+    #[Group('cli')]
+    public function testAValueOptionWrittenWithoutEqualsIsRefusedBeforeAnyDatabaseOpens(): void
+    {
+        $directory = sys_get_temp_dir() . '/knossos-stale-db-flag-' . bin2hex(random_bytes(6));
+        mkdir($directory);
+        try {
+            [$exit, , $stderr] = $this->runFixtureCommandOutput([
+                '/bin/sh', '-c', 'cd "$1" && shift && exec "$@"', 'sh', $directory,
+                PHP_BINARY, self::repositoryRoot() . '/bin/knossos', 'list-projects', '--db', $directory . '/x.sqlite',
+            ]);
+
+            assertSame(2, $exit);
+            assertSame('KNOSSOS_INVALID_ARGUMENT: --db takes a value; write --db=VALUE.' . PHP_EOL, $stderr);
+            assertSame([], array_values(array_diff((array) scandir($directory), ['.', '..'])), 'No database file (named "true" or otherwise) was created.');
+        } finally {
+            $this->removeTempTree($directory);
+        }
+    }
+
     #[Group('cli')]
     public function testCliOptionParsingPreservesRepeatedValuesFlagsAndPositionalOrder(): void
     {
@@ -41,7 +65,7 @@ final class CliTest extends KnossosTestCase
         [$positionals, $options] = $parser->parse(['project', '--edge-kind=calls', 'target', '--edge-kind=imports', '--json']);
         assertSame(['project', 'target'], $positionals);
         assertSame(['calls', 'imports'], $options['edge-kind']);
-        assertSame(['true'], $options['json']);
+        assertSame([''], $options['json']);
         assertSame(12, $parser->integer(['limit' => ['12']], 'limit', 20, 1, 100));
         assertThrows(fn() => $parser->single(['limit' => ['1', '2']], 'limit'), InvalidArgumentException::class);
     }
@@ -68,14 +92,19 @@ final class CliTest extends KnossosTestCase
         assertSame([], $options);
     }
 
+    /**
+     * A bare switch is stored as '' (it was 'true', which a value option then
+     * took as its value) and flag() reads it as on.
+     */
     #[Group('cli')]
-    public function testParseTreatsFlagWithoutValueAsTrue(): void
+    public function testParseStoresABareSwitchAsEmptyAndFlagReadsItAsOn(): void
     {
         $parser = new CliOptionParser();
         [$positionals, $options] = $parser->parse(['--verbose', '--debug']);
 
         assertSame([], $positionals);
-        assertSame(['verbose' => ['true'], 'debug' => ['true']], $options);
+        assertSame(['verbose' => [''], 'debug' => ['']], $options);
+        assertSame(true, $parser->flag($options, 'verbose'));
     }
 
     #[Group('cli')]
@@ -112,7 +141,7 @@ final class CliTest extends KnossosTestCase
         ]);
 
         assertSame(['first', 'second', 'third'], $positionals);
-        assertSame(['name' => ['alice', 'bob'], 'flag' => ['true']], $options);
+        assertSame(['name' => ['alice', 'bob'], 'flag' => ['']], $options);
     }
 
     // ── CliOptionParser: flag() ─────────────────────────────────────────

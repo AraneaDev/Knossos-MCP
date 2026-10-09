@@ -43,7 +43,9 @@ final class CliOptionParser
             if ($name === '') {
                 throw new InvalidArgumentException('Invalid empty option.');
             }
-            $options[$name][] = $parts[1] ?? 'true';
+            // A bare `--name` is stored as '': a switch reads it as on, and a
+            // value option refuses it rather than taking a made-up value.
+            $options[$name][] = $parts[1] ?? '';
         }
         return [$positionals, $options];
     }
@@ -71,6 +73,7 @@ final class CliOptionParser
     /**
      * Resolves a boolean flag, treating an explicit `--flag=false|0|no|off` as
      * disabled (last occurrence wins) rather than the mere presence of the key.
+     * A bare `--flag` and an empty `--flag=` are both on.
      *
      * @param array<string, list<string>> $options
      */
@@ -94,10 +97,34 @@ final class CliOptionParser
         if (!isset($options[$name])) {
             return null;
         }
-        if (count($options[$name]) !== 1 || $options[$name][0] === '') {
+        if (count($options[$name]) !== 1) {
             throw new InvalidArgumentException(sprintf('--%s must have one non-empty value.', $name));
         }
-        return $options[$name][0];
+        return self::value($options[$name][0], $name);
+    }
+
+    /**
+     * Every value of a repeatable option, in order; none when it is absent.
+     *
+     * @param array<string, list<string>> $options
+     * @return list<string>
+     */
+    public function values(array $options, string $name): array
+    {
+        return array_map(static fn(string $value): string => self::value($value, $name), $options[$name] ?? []);
+    }
+
+    /**
+     * One value of a value option, refusing the empty value a bare `--name`
+     * (or `--name=`) leaves: written without `=`, the value would otherwise
+     * become a stray positional.
+     */
+    private static function value(string $value, string $name): string
+    {
+        if ($value === '') {
+            throw new InvalidArgumentException(sprintf('--%s takes a value; write --%s=VALUE.', $name, $name));
+        }
+        return $value;
     }
 
     /**

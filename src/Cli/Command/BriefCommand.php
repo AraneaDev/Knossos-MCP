@@ -171,7 +171,7 @@ final class BriefCommand implements CliCommand
         $policiesFile = $context->options->single($options, 'policies');
         return (new TurnBriefService($pdo, $databasePath, $context->installationRoot()))->brief(
             $path,
-            $options['files'] ?? [],
+            $context->options->values($options, 'files'),
             $policiesFile === null ? null : $context->input->policies($policiesFile),
             !$context->options->flag($options, 'no-policies'),
             $context->options->single($options, 'since'),

@@ -54,7 +54,8 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
             '--json',
         ]);
         assertSame(['cmd', 'src/'], $positionals);
-        assertSame(['limit' => ['10'], 'mode' => ['auto', 'incremental'], 'json' => ['true']], $options);
+        // A bare switch is stored as '' (no longer 'true'); flag() reads it as on.
+        assertSame(['limit' => ['10'], 'mode' => ['auto', 'incremental'], 'json' => ['']], $options);
     }
 
     public function testOptionParserTreatsBareDoubleDashAsEndOfOptions(): void
@@ -66,7 +67,7 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         [$positionals, $options] = $parser->parse(['scan', '--json', '--', '--not-an-option', 'src/']);
 
         assertSame(['scan', '--not-an-option', 'src/'], $positionals);
-        assertSame(['json' => ['true']], $options);
+        assertSame(['json' => ['']], $options);
     }
 
     public function testOptionParserRejectsEmptyOptionName(): void
@@ -88,14 +89,15 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         $parser = new CliOptionParser();
         assertSame(null, $parser->single([], 'missing'));
         assertSame('auto', $parser->single(['mode' => ['auto']], 'mode'));
-        assertThrows(
+        assertSame('--mode must have one non-empty value.', captureThrows(
             fn() => $parser->single(['mode' => ['auto', 'incremental']], 'mode'),
             InvalidArgumentException::class,
-        );
-        assertThrows(
+        )->getMessage());
+        // An empty value is a value option written as a bare switch.
+        assertSame('--mode takes a value; write --mode=VALUE.', captureThrows(
             fn() => $parser->single(['mode' => ['']], 'mode'),
             InvalidArgumentException::class,
-        );
+        )->getMessage());
     }
 
     public function testOptionParserIntegerBoundsCheck(): void

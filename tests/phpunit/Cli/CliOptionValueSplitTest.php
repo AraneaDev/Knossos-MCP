@@ -29,14 +29,58 @@ final class CliOptionValueSplitTest extends KnossosTestCase
         assertSame(['path'], $positionals);
     }
 
-    /** An option with no value at all is a flag. */
+    /**
+     * An option with no value at all is a switch, and on.
+     *
+     * The parser used to store a bare `--name` as 'true', which a value option
+     * then took as its value (`--db /x.sqlite` opened a database named
+     * 'true'). It stores '' now, which flag() reads as on and single() refuses.
+     */
     #[Group('cli')]
     public function testAnOptionWithNoValueIsAFlag(): void
     {
-        [, $options] = (new CliOptionParser())->parse(['--json', '--filter=']);
+        $parser = new CliOptionParser();
+        [, $options] = $parser->parse(['--json', '--filter=']);
 
-        assertSame(['true'], $options['json']);
+        assertSame([''], $options['json']);
+        assertSame(true, $parser->flag($options, 'json'));
         assertSame([''], $options['filter'], 'An explicit empty value is empty, not absent.');
+    }
+
+    /** --db /x.sqlite became db = 'true' plus a stray positional, and the command opened a database file named 'true'. */
+    #[Group('cli')]
+    public function testAValueOptionWithoutEqualsIsRefused(): void
+    {
+        $parser = new CliOptionParser();
+        [$positionals, $options] = $parser->parse(['--db', '/x.sqlite']);
+
+        assertSame(['/x.sqlite'], $positionals);
+        $error = captureThrows(static fn() => $parser->single($options, 'db'), \InvalidArgumentException::class);
+        assertSame('--db takes a value; write --db=VALUE.', $error->getMessage());
+    }
+
+    /** A repeatable value option has the same rule, for every occurrence. */
+    #[Group('cli')]
+    public function testARepeatableValueOptionWithoutEqualsIsRefused(): void
+    {
+        $parser = new CliOptionParser();
+
+        $error = captureThrows(static fn() => $parser->values($parser->parse(['--edge-kind=calls', '--edge-kind', 'calls'])[1], 'edge-kind'), \InvalidArgumentException::class);
+
+        assertSame('--edge-kind takes a value; write --edge-kind=VALUE.', $error->getMessage());
+        assertSame(['calls', 'imports'], $parser->values($parser->parse(['--edge-kind=calls', '--edge-kind=imports'])[1], 'edge-kind'));
+        assertSame([], $parser->values([], 'edge-kind'));
+    }
+
+    /** A bare switch is on, and an explicit false turns it off. */
+    #[Group('cli')]
+    public function testABareSwitchIsStillOn(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertSame(true, $parser->flag($parser->parse(['--json'])[1], 'json'));
+        assertSame(true, $parser->flag($parser->parse(['--json='])[1], 'json'));
+        assertSame(false, $parser->flag($parser->parse(['--json=false'])[1], 'json'));
     }
 
     /** A boundary prefix may itself contain a colon. */

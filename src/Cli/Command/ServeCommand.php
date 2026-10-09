@@ -28,7 +28,7 @@ final class ServeCommand implements CliCommand
     /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
-        $allowedRoots = self::resolveRoots($options, $context->databasePath());
+        $allowedRoots = self::resolveRoots($context->options->values($options, 'allow-root'), $context->databasePath());
 
         return (new McpServerAssembly(
             $context->database(),
@@ -45,11 +45,10 @@ final class ServeCommand implements CliCommand
      * The file is the portable source: it is re-read per request, so a project
      * added to it becomes scannable without re-registering this server.
      *
-     * @param array<string, list<string>> $options
+     * @param list<string> $staticRoots the --allow-root values
      */
-    private static function resolveRoots(array $options, string $databasePath): AllowedRoots
+    private static function resolveRoots(array $staticRoots, string $databasePath): AllowedRoots
     {
-        $staticRoots = $options['allow-root'] ?? [];
         if ($staticRoots === []) {
             $staticRoots = AllowedRoots::fromEnvironment();
         }
