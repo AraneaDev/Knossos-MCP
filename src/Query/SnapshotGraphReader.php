@@ -93,9 +93,35 @@ final readonly class SnapshotGraphReader
      */
     public function archived(string $storedPayload, string $scanId): array
     {
-        $facts = str_starts_with($storedPayload, self::PREFIX) ? $this->streamed($storedPayload) : null;
+        return $this->read($storedPayload, $scanId, self::COLUMNS);
+    }
 
-        return $facts ?? $this->decodedWhole($storedPayload, $scanId);
+    /**
+     * One table of an archived snapshot, every column of every row, in the payload's order.
+     *
+     * For snapshot_diff, which compares whole rows a table at a time: read
+     * this way, the working set is the table's rows alone, never the payload
+     * decoded whole beside them.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function archivedTable(string $storedPayload, string $table, string $scanId): array
+    {
+        return $this->read($storedPayload, $scanId, [$table => null])[$table];
+    }
+
+    /**
+     * The tables named in `$columns` from an archived payload, each cut to its
+     * columns (null keeps them all).
+     *
+     * @param array<string, list<string>|null> $columns
+     * @return array<string, list<array<string, mixed>>>
+     */
+    private function read(string $storedPayload, string $scanId, array $columns): array
+    {
+        $facts = str_starts_with($storedPayload, self::PREFIX) ? $this->streamed($storedPayload, $columns) : null;
+
+        return $facts ?? $this->decodedWhole($storedPayload, $scanId, $columns);
     }
 
     /** Marks a compressed payload, as {@see SnapshotPayload} writes it. */
@@ -127,21 +153,22 @@ final readonly class SnapshotGraphReader
      * not laid out as the archive writes it (or cannot be inflated), so the
      * caller decodes it whole.
      *
+     * @param array<string, list<string>|null> $columns
      * @return array<string, list<array<string, mixed>>>|null
      */
-    private function streamed(string $storedPayload): ?array
+    private function streamed(string $storedPayload, array $columns): ?array
     {
         $inflate = @inflate_init(ZLIB_ENCODING_GZIP);
         if ($inflate === false) {
             return null;
         }
-        $facts = array_fill_keys(array_keys(self::COLUMNS), []);
+        $facts = array_fill_keys(array_keys($columns), []);
         $state = ['phase' => 'head', 'table' => null, 'buffer' => ''];
         $length = strlen($storedPayload);
         for ($at = strlen(self::PREFIX); $at < $length; $at += self::SLICE) {
             $compressed = base64_decode(substr($storedPayload, $at, self::SLICE), true);
             $chunk = $compressed === false ? false : @inflate_add($inflate, $compressed, $at + self::SLICE >= $length ? ZLIB_FINISH : ZLIB_SYNC_FLUSH);
-            if ($chunk === false || !$this->take($state, $chunk, $facts)) {
+            if ($chunk === false || !$this->take($state, $chunk, $facts, $columns)) {
                 return null;
             }
         }
@@ -156,8 +183,9 @@ final readonly class SnapshotGraphReader
      *
      * @param array{phase: string, table: ?string, buffer: string} $state
      * @param array<string, list<array<string, mixed>>> $facts
+     * @param array<string, list<string>|null> $columns the tables to keep, each with its columns or null for all
      */
-    private function take(array &$state, string $chunk, array &$facts): bool
+    private function take(array &$state, string $chunk, array &$facts, array $columns): bool
     {
         $buffer = $state['buffer'] . $chunk;
         $at = 0;
@@ -186,13 +214,14 @@ final readonly class SnapshotGraphReader
                     $state['phase'] = 'tables';
                 } elseif (preg_match(self::ROW, $buffer, $match, 0, $at) === 1) {
                     $at += strlen($match[0]);
-                    $columns = self::COLUMNS[$state['table']] ?? null;
-                    if ($columns !== null) {
+                    if (array_key_exists((string) $state['table'], $columns)) {
+                        /** @var array<string, mixed>|null $row a flat object decodes to string keys */
                         $row = json_decode($match[1], true, 4);
                         if (!is_array($row)) {
                             return false;
                         }
-                        $facts[$state['table']][] = self::kept($state['table'], $row, $columns);
+                        $kept = $columns[$state['table']];
+                        $facts[$state['table']][] = $kept === null ? $row : self::kept((string) $state['table'], $row, $kept);
                     }
                 } else {
                     break;
@@ -227,11 +256,15 @@ final readonly class SnapshotGraphReader
     }
 
     /**
-     * The rows of a payload decoded whole, cut to the columns kept.
+     * The rows of a payload decoded whole, cut to the columns kept (null keeps every column).
      *
+     * Only for a payload the streamed read does not recognise, which earlier
+     * versions wrote as plain JSON.
+     *
+     * @param array<string, list<string>|null> $columns
      * @return array<string, list<array<string, mixed>>>
      */
-    private function decodedWhole(string $storedPayload, string $scanId): array
+    private function decodedWhole(string $storedPayload, string $scanId, array $columns): array
     {
         $payload = json_decode(SnapshotPayload::decode($storedPayload), true, 512, JSON_THROW_ON_ERROR);
         $tables = is_array($payload) ? ($payload['facts'] ?? null) : null;
@@ -239,8 +272,9 @@ final readonly class SnapshotGraphReader
             throw new InvalidArgumentException(sprintf('Snapshot archive payload is invalid: %s', $scanId));
         }
         $facts = [];
-        foreach (self::COLUMNS as $table => $columns) {
-            $facts[$table] = array_map(static fn(array $row): array => self::kept($table, $row, $columns), $tables[$table] ?? []);
+        foreach ($columns as $table => $kept) {
+            $rows = $tables[$table] ?? [];
+            $facts[$table] = $kept === null ? array_values($rows) : array_map(static fn(array $row): array => self::kept($table, $row, $kept), $rows);
         }
 
         return $facts;

@@ -6,7 +6,6 @@ namespace Knossos\Query;
 
 use Closure;
 use InvalidArgumentException;
-use Knossos\Store\SnapshotPayload;
 use PDO;
 
 /**
@@ -804,21 +803,12 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         $resolved = $this->resolveSnapshot($projectId, $identifier, $activeScanId);
         $scanId = $resolved['scan_id'];
         if (!$resolved['is_active']) {
-            // A single JSON blob can only be decoded once; cache it and hand out
-            // per-table slices, reusing the one decoded payload.
-            $archived = $resolved['archived'];
-            $decoded = null;
-            $load = static function (string $table) use (&$decoded, $archived, $scanId): array {
-                if ($decoded === null) {
-                    $payload = json_decode(SnapshotPayload::decode((string) $archived['payload_json']), true, 512, JSON_THROW_ON_ERROR);
-                    $facts = $payload['facts'] ?? null;
-                    if (!is_array($facts)) {
-                        throw new InvalidArgumentException(sprintf('Snapshot archive payload is invalid: %s', $scanId));
-                    }
-                    $decoded = $facts;
-                }
-                return $decoded[$table] ?? [];
-            };
+            // One table per read, inflated a few kilobytes at a time: decoding
+            // the payload whole once and handing out slices held its JSON and
+            // every table's rows beside the rows being compared.
+            $payload = (string) $resolved['archived']['payload_json'];
+            $reader = new SnapshotGraphReader($this->pdo);
+            $load = static fn(string $table): array => $reader->archivedTable($payload, $table, $scanId);
         } else {
             $load = fn(string $table): array => $this->activeSnapshotRows($projectId, $scanId, $table);
         }

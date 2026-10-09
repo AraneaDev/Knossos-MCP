@@ -72,7 +72,7 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
             $json = SnapshotPayload::decode($stored);
             $pretty = json_encode(json_decode($json, true, 512, JSON_THROW_ON_ERROR), JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR);
             // The archive's own layout is read as it inflates, never decoded whole.
-            assertSame(true, is_array((new \ReflectionMethod($reader, 'streamed'))->invoke($reader, $stored)));
+            assertSame(true, is_array((new \ReflectionMethod($reader, 'streamed'))->invoke($reader, $stored, SnapshotGraphReader::COLUMNS)));
             foreach (['compressed' => $stored, 'plain' => $json, 'laid out otherwise' => SnapshotPayload::encode($pretty)] as $how => $payload) {
                 $archived = $reader->archived($payload, 'scan_test');
                 foreach (SnapshotGraphReader::COLUMNS as $table => $columns) {
