@@ -129,4 +129,27 @@ final class AgentBriefTest extends KnossosTestCase
         $result = $tools->call('export_agent_brief', ['project_id' => $ids['project'], 'max_chars' => 1500]);
         assertSame(true, strlen($result->data['markdown']) <= 1500);
     }
+
+    /**
+     * A hub list cut short by a bound is labelled as partial, so a reader does
+     * not take the five listed for the five most depended-on.
+     */
+    #[Group('query')]
+    public function testATruncatedHubRankingIsLabelledPartial(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        // On time while the deadline is set and the node slice is read, late
+        // from the edge walk on: the hubs come from the slice, the walk is cut.
+        $reads = 0;
+        $clock = static function () use (&$reads): int {
+            return ++$reads <= 2 ? 0 : PHP_INT_MAX >> 1;
+        };
+
+        $markdown = (new ArchitectureQueryService($pdo, $clock))->exportAgentBrief($ids['project'])->data['markdown'];
+        $whole = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+
+        assertSame(true, str_contains($markdown, "## Key hubs (most depended-on, partial: time_limit)\n"), $markdown);
+        assertSame(true, str_contains($whole, "## Key hubs (most depended-on)\n"));
+    }
 }

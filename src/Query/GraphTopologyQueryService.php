@@ -171,7 +171,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // roles and boundaries are loaded for the reported page alone. A full
         // row per node, with its roles and boundaries, needed more than 128 MB
         // well before the 50,000-node default.
-        $slice = $this->healthSlice($projectId, $maxNodes, $deadline);
+        $slice = $this->healthSlice($projectId, $edgeKinds, $confidenceRank[$minConfidence], $maxNodes, $deadline);
         $truncationReasons = $slice['truncation_reasons'];
         $truncated = $truncationReasons !== [];
 
@@ -307,28 +307,50 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
 
 
     /**
-     * The nodes architecture_health ranks, as the three facts the ranking reads.
+     * The nodes architecture_health ranks, as the facts the ranking reads.
      *
-     * Each node in the slice is numbered in name order and keeps whether it is
-     * external, whether it is test code, and which boundaries it belongs to;
-     * nothing else about it is held. The boundaries are kept as one of a few
-     * distinct sets (most nodes share their set with many others), with the
-     * repository-wide boundaries left out because they partition nothing.
+     * Each node in the slice is numbered in degree order (highest first, then
+     * name) and keeps its in and out degree, whether it is external, whether
+     * it is test code, and which boundaries it belongs to; nothing else about
+     * it is held. Degree is counted in SQL over every selected edge of the
+     * project, so a node's callers count whether or not they are in the slice,
+     * and `max_nodes` drops the lowest-degree nodes, which cannot be hubs. The
+     * slice used to be the first `max_nodes` by name, which dropped a hub
+     * named late together with every edge from outside the window. The
+     * boundaries are kept as one of a few distinct sets (most nodes share
+     * their set with many others), with the repository-wide boundaries left
+     * out because they partition nothing.
      *
-     * @return array{ids: list<string>, index: array<string, int>, external: list<bool>, test: array<int, true>, boundary_set: array<int, int>, boundary_sets: list<list<string>>, truncation_reasons: list<string>}
+     * @param list<string> $edgeKinds
+     * @return array{ids: list<string>, index: array<string, int>, in: list<int>, out: list<int>, external: list<bool>, test: array<int, true>, boundary_set: array<int, int>, boundary_sets: list<list<string>>, truncation_reasons: list<string>}
      */
-    private function healthSlice(string $projectId, int $maxNodes, int $deadline): array
+    private function healthSlice(string $projectId, array $edgeKinds, int $minimumRank, int $maxNodes, int $deadline): array
     {
-        $slice = ['ids' => [], 'index' => [], 'external' => [], 'test' => [], 'boundary_set' => [], 'boundary_sets' => [], 'truncation_reasons' => []];
-        $statement = $this->pdo->prepare('SELECT n.id, n.kind, n.origin FROM nodes n WHERE n.project_id = :project ORDER BY n.canonical_name, n.id LIMIT :limit');
-        $statement->bindValue(':project', $projectId);
-        $statement->bindValue(':limit', $maxNodes + 1, PDO::PARAM_INT);
+        $slice = ['ids' => [], 'index' => [], 'in' => [], 'out' => [], 'external' => [], 'test' => [], 'boundary_set' => [], 'boundary_sets' => [], 'truncation_reasons' => []];
+        $selected = sprintf(
+            "FROM edges WHERE project_id = ? AND kind IN (%s) AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER)",
+            implode(',', array_fill(0, count($edgeKinds), '?')),
+        );
+        $statement = $this->pdo->prepare(
+            'SELECT n.id, n.kind, n.origin, COALESCE(d.in_degree, 0) AS in_degree, COALESCE(d.out_degree, 0) AS out_degree FROM nodes n LEFT JOIN (' .
+            'SELECT node_id, SUM(inbound) AS in_degree, SUM(outbound) AS out_degree FROM (' .
+            'SELECT target_id AS node_id, 1 AS inbound, 0 AS outbound ' . $selected . ' UNION ALL SELECT source_id, 0, 1 ' . $selected .
+            ') GROUP BY node_id) d ON d.node_id = n.id WHERE n.project_id = ? ' .
+            'ORDER BY COALESCE(d.in_degree, 0) + COALESCE(d.out_degree, 0) DESC, n.canonical_name, n.id LIMIT ?',
+        );
+        $position = 0;
+        foreach ([...[$projectId, ...$edgeKinds, $minimumRank], ...[$projectId, ...$edgeKinds, $minimumRank], $projectId] as $value) {
+            $statement->bindValue(++$position, $value);
+        }
+        $statement->bindValue(++$position, $maxNodes + 1, PDO::PARAM_INT);
         $statement->execute();
         // Streamed: max_nodes reaches 50,000 rows, and fetchAll() read every
         // one of them before the deadline was ever consulted.
         $slice['truncation_reasons'] = $this->streamBounded($statement, $maxNodes, $deadline, static function (array $row) use (&$slice): bool {
             $slice['index'][$row['id']] = count($slice['ids']);
             $slice['ids'][] = (string) $row['id'];
+            $slice['in'][] = (int) $row['in_degree'];
+            $slice['out'][] = (int) $row['out_degree'];
             $slice['external'][] = ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
 
             return true;
@@ -395,9 +417,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     }
 
     /**
-     * One streamed pass over the edge slice, producing the degrees the hub and
-     * hotspot rankings read: in/out degree, and the cross-boundary degree
-     * hotspots rank on. An edge counts only when both ends are in the node slice.
+     * One streamed pass over the edge slice, producing the cross-boundary
+     * degree hotspots rank on. In and out degree come from the slice, counted
+     * in SQL over every selected edge; they are passed through unchanged.
+     * Cross-boundary degree still needs both ends of an edge in the node slice
+     * (an edge to a node outside it has no boundary set to compare) and is
+     * read from the edge stream `max_edges` bounds.
      *
      * Extracted from architectureHealth because that method is up against the
      * repository's own function-length budget, and this is the seam that pays:
@@ -405,7 +430,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * here decides what any of it means. Dead-code candidates are decided over
      * the whole graph by DeadCodeCandidates, not from this slice.
      *
-     * @param array{index: array<string, int>, boundary_set: array<int, int>, boundary_sets: list<list<string>>} $slice
+     * @param array{index: array<string, int>, in: list<int>, out: list<int>, boundary_set: array<int, int>, boundary_sets: list<list<string>>} $slice
      * @return array{
      *     metrics: array{in: list<int>, out: list<int>, cross: list<int>},
      *     edges_examined: int,
@@ -415,7 +440,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     private function walkDegrees(PDOStatement $edges, array $slice, int $maxEdges, int $deadline): array
     {
         $count = count($slice['index']);
-        $metrics = ['in' => array_fill(0, $count, 0), 'out' => array_fill(0, $count, 0), 'cross' => array_fill(0, $count, 0)];
+        $metrics = ['in' => $slice['in'], 'out' => $slice['out'], 'cross' => array_fill(0, $count, 0)];
         $edgesExamined = 0;
         // Two nodes cross a boundary when both belong to some boundary and
         // they share none; decided once per pair of distinct sets.
@@ -427,8 +452,6 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             if ($source === null || $target === null) {
                 return true;
             }
-            ++$metrics['out'][$source];
-            ++$metrics['in'][$target];
             $a = $slice['boundary_set'][$source] ?? null;
             $b = $slice['boundary_set'][$target] ?? null;
             if ($a !== null && $b !== null && $a !== $b) {
@@ -453,8 +476,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * into the in-degree histogram, so a bucket says how many there are and
      * the ranking which few are listed.
      *
-     * Only the first `$limit` of each ranking are kept, by score and then by
-     * name, which is the slice's own order; the totals say how many there were.
+     * Only the first `$limit` of each ranking are kept, by score and then in
+     * the slice's own order (degree, then name); the totals say how many there were.
      * Dead-code candidates are not drawn from the slice; DeadCodeCandidates
      * finds them over the whole project. Nothing here reads the database.
      *
@@ -487,7 +510,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $hotspots[$index] = $degree + (2 * $metrics['cross'][$index]) + (isset($cycleMembers[$id]) ? 3 : 0);
             }
         }
-        // Stable: equal scores keep the slice's name order.
+        // Stable: equal scores keep the slice's order, degree then name.
         arsort($hubs);
         arsort($hotspots);
 

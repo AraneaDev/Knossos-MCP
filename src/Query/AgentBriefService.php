@@ -185,11 +185,18 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
         );
         return "\n## Entry points\n\n" . implode("\n", $lines) . "\n";
     }
-    /** The brief's hub section: the components a change is most likely to reach. */
-
+    /**
+     * The brief's hub section: the components a change is most likely to reach.
+     *
+     * A ranking a bound cut is labelled partial with its reasons, except the
+     * two that cannot change which hubs lead: `result_limit` (only five are
+     * asked for) and `node_limit` (the node window drops the lowest-degree
+     * components first).
+     */
     private function hubsSection(string $projectId): ?string
     {
-        $hubs = $this->topology->architectureHealth($projectId, limit: 5)->data['hubs'];
+        $health = $this->topology->architectureHealth($projectId, limit: 5);
+        $hubs = $health->data['hubs'];
         if ($hubs === []) {
             return null;
         }
@@ -202,7 +209,9 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
             ),
             $hubs,
         );
-        return "\n## Key hubs (most depended-on)\n\n" . implode("\n", $lines) . "\n";
+        $partial = $health->truncated ? array_values(array_diff($health->data['bounds']['truncation_reasons'], ['result_limit', 'node_limit'])) : [];
+        $heading = $partial === [] ? 'most depended-on' : sprintf('most depended-on, partial: %s', implode(', ', $partial));
+        return sprintf("\n## Key hubs (%s)\n\n", $heading) . implode("\n", $lines) . "\n";
     }
     /** The brief's framework section, since conventions change what the code means. */
 

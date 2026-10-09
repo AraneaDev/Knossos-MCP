@@ -240,9 +240,12 @@ final class HealthTest extends KnossosTestCase
      * `LaravelContainerFactCollector::__construct` — instantiated one file away
      * — as a `probable` unreferenced-code candidate.
      *
-     * `App\Zed` sorts last by canonical name, which is the order the node walk
-     * reads in, so max_nodes deterministically drops exactly the class that does
-     * the instantiating and nothing else.
+     * With five components and max_nodes 4 the node window is cut. It once
+     * dropped `App\Zed`, the instantiating class, because the window ran in
+     * name order; it now runs in degree order and drops the constructor, the
+     * one component without an edge. Either way the ranking is truncated while
+     * the dead-code decision, made over the whole graph, still excuses the
+     * constructor, which is what this pins.
      */
     #[Group('health')]
     public function testAConstructorSurvivesWhenItsClassIsInstantiatedBeyondTheNodeBound(): void
@@ -276,5 +279,38 @@ final class HealthTest extends KnossosTestCase
         assertSame(true, in_array('node_limit', $health->data['bounds']['truncation_reasons'], true));
         assertSame(1, $health->data['bounds']['excluded_constructors']);
         assertSame(false, in_array('App\\Mailer::__construct', array_column(array_column($health->data['dead_code_candidates'], 'component'), 'canonical_name'), true));
+    }
+
+    /**
+     * Nodes were windowed by name, so a hub named late vanished and its edges
+     * from outside the window were dropped. The window now keeps the
+     * highest-degree nodes, and degree is counted over every selected edge.
+     */
+    #[Group('health')]
+    public function testAHubThatSortsLastByNameIsRankedWhenTheNodeWindowIsCut(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $class = static function (string $name) use ($repository, $ids, $project): string {
+            $id = StableId::symbol($project, 'php', 'class', $name);
+            $repository->saveNode($id, $project, 'php', 'class', $name, substr($name, 4), null, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Hub.php', $ids['scan']);
+            return $id;
+        };
+        $zeta = $class('App\\Zeta');
+        foreach (range(1, 6) as $index) {
+            $caller = $class(sprintf('App\\Aaa%02d', $index));
+            $repository->saveEdge(StableId::edge($project, 'calls', $caller, $zeta, 'hub'), $project, 'calls', $caller, $zeta, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Hub.php', $ids['scan']);
+        }
+        foreach (range(1, 3) as $index) {
+            $class(sprintf('App\\Aab%d', $index));
+        }
+        $repository->completeScan($project, $ids['scan']);
+
+        $health = (new ArchitectureQueryService($pdo))->architectureHealth($project, maxNodes: 3);
+
+        assertSame('App\\Zeta', $health->data['hubs'][0]['component']['canonical_name']);
+        assertSame(6, $health->data['hubs'][0]['metrics']['in_degree'], 'Callers outside the window still count.');
+        assertSame(true, in_array('node_limit', $health->data['bounds']['truncation_reasons'], true));
+        assertSame(3, $health->data['bounds']['nodes_examined']);
     }
 }
