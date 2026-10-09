@@ -43,5 +43,6 @@ final class TreeFingerprintTest extends KnossosTestCase
         self::assertLessThanOrEqual(time(), $startedAt);
         assertSame($fingerprint, TreeFingerprint::of($this->root, $roots));
         assertSame(['src/a.ts'], array_keys(TreeFingerprint::observe($this->root, $roots, false)[0]));
+        assertSame(42, TreeFingerprint::observe($this->root, $roots, clock: static fn(): int => 42)[2]);
     }
 }

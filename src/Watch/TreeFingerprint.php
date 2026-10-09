@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Watch;
 
+use Closure;
 use Knossos\Configuration\ProjectConfigurationLoader;
 use Knossos\Discovery\AllowedRoots;
 use Knossos\Discovery\DiscoveryConfig;
@@ -37,11 +38,12 @@ final readonly class TreeFingerprint
      * the walk began, so a stat gate can track directories that hold no file
      * yet and treat anything that moved during the walk as unseen.
      *
+     * @param ?Closure(): int $clock the wall clock in seconds, `time()` when null
      * @return array{0: array<string, string>, 1: list<string>, 2: int}
      */
-    public static function observe(string $root, AllowedRoots $roots, bool $withUnits = true): array
+    public static function observe(string $root, AllowedRoots $roots, bool $withUnits = true, ?Closure $clock = null): array
     {
-        $startedAt = time();
+        $startedAt = $clock === null ? time() : $clock();
         $configuration = ProjectConfigurationLoader::load($root, $roots);
         $discovery = (new ProjectDiscoverer(new DiscoveryConfig(
             $roots->current(),

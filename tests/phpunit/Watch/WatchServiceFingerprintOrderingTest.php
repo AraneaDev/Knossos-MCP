@@ -90,15 +90,21 @@ final class WatchServiceFingerprintOrderingTest extends TestCase
      * the next poll. The gate tracked only the directories of discovered
      * files, so such a file moved nothing it stat'ed and waited for the
      * periodic full fingerprint, up to a minute later.
+     *
+     * The clock places every walk ten seconds after the fixture was written,
+     * so no ctime is racy and only a tracked directory can open the gate. One
+     * file lands during the initial scan (seen through the directories the
+     * initial walk passed) and one during the second scan (seen through the
+     * directories the poll's walk passed), so each call site is pinned.
      */
     public function testAFileCreatedInAnEmptyDirectoryIsSeenOnTheNextPoll(): void
     {
         $root = sys_get_temp_dir() . '/knossos-watch-order-' . bin2hex(random_bytes(6));
-        if (!mkdir($root . '/src/new', 0o700, true)) {
+        if (!mkdir($root . '/src/new', 0o700, true) || !mkdir($root . '/src/later', 0o700, true)) {
             throw new RuntimeException('Unable to create watch fixture.');
         }
         file_put_contents($root . '/src/A.php', "<?php\nfinal class A {}\n");
-        foreach (['', '/src', '/src/new', '/src/A.php'] as $path) {
+        foreach (['', '/src', '/src/new', '/src/later', '/src/A.php'] as $path) {
             touch($root . $path, time() - 10);
         }
         $scanner = new class ($root) implements ProjectScanner {
@@ -118,22 +124,26 @@ final class WatchServiceFingerprintOrderingTest extends TestCase
                 ?int $workerTimeoutMs = null,
                 ?int $workerMemoryMb = null,
             ): ResultEnvelope {
-                if (++$this->calls === 1) {
-                    // Written during the initial scan, with old times, so
-                    // only the directory holding it shows the change.
-                    file_put_contents($this->root . '/src/new/B.php', "<?php\nfinal class B {}\n");
-                    touch($this->root . '/src/new/B.php', time() - 10);
+                // Written during a scan, with an old mtime, so only the
+                // directory holding it shows the change.
+                $file = [1 => '/src/new/B.php', 2 => '/src/later/C.php'][++$this->calls] ?? null;
+                if ($file !== null) {
+                    file_put_contents($this->root . $file, "<?php\n");
+                    touch($this->root . $file, time() - 10);
                 }
                 return new ResultEnvelope('watch-project', 'snapshot-' . $this->calls, 'ok', ['parsed_files' => 1]);
             }
         };
 
         try {
-            $result = (new WatchService($scanner, [$root]))->run($root, pollMs: 1, debounceMs: 0, maxQueue: 10, maxPolls: 3);
+            $watcher = new WatchService($scanner, [$root], static fn(): int => time() + 10);
+            $result = $watcher->run($root, pollMs: 1, debounceMs: 0, maxQueue: 10, maxPolls: 3);
 
-            assertSame(2, $result->data['scans']);
+            assertSame(3, $result->data['scans']);
         } finally {
             @unlink($root . '/src/new/B.php');
+            @unlink($root . '/src/later/C.php');
+            @rmdir($root . '/src/later');
             @unlink($root . '/src/A.php');
             @rmdir($root . '/src/new');
             @rmdir($root . '/src');

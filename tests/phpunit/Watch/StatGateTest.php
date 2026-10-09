@@ -157,4 +157,17 @@ final class StatGateTest extends KnossosTestCase
 
         assertSame(true, $gate->mayHaveChanged());
     }
+
+    /** Without a walk time, "now" is the injected clock's: a clock ahead of every ctime trusts the stats. */
+    #[Group('watch')]
+    public function testTheDefaultWindowFollowsTheInjectedClock(): void
+    {
+        $ahead = new StatGate($this->root, clock: static fn(): int => time() + 10);
+        $ahead->remember(['src/deep/A.php' => 'h', 'B.php' => 'h']);
+        assertSame(false, $ahead->mayHaveChanged());
+
+        $now = new StatGate($this->root, clock: static fn(): int => time());
+        $now->remember(['src/deep/A.php' => 'h', 'B.php' => 'h']);
+        assertSame(true, $now->mayHaveChanged());
+    }
 }

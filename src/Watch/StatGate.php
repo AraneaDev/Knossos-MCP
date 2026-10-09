@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Watch;
 
+use Closure;
+
 /**
  * Whether a tree may have changed since it was last fingerprinted, from
  * `stat` alone.
@@ -36,8 +38,16 @@ final class StatGate
     /** Whether something the last fingerprint saw moved within the second it was taken. */
     private bool $racy = false;
 
-    /** @param int $fullEveryMs how long, at most, between two fingerprints taken regardless of the stats */
-    public function __construct(private readonly string $root, private readonly int $fullEveryMs = self::FULL_EVERY_MS) {}
+    /**
+     * @param int $fullEveryMs how long, at most, between two fingerprints taken regardless of the stats
+     * @param ?Closure(): int $clock the wall clock in seconds, `time()` when null; it dates
+     *        "now" when a snapshot is remembered without the time its walk started
+     */
+    public function __construct(
+        private readonly string $root,
+        private readonly int $fullEveryMs = self::FULL_EVERY_MS,
+        private readonly ?Closure $clock = null,
+    ) {}
 
     /**
      * Remembers what the fingerprint saw: its files, their directories, and
@@ -71,7 +81,7 @@ final class StatGate
         clearstatcache();
         $this->signatures = [];
         $this->racy = false;
-        $recent = ($walkStartedAt ?? time()) - 1;
+        $recent = ($walkStartedAt ?? ($this->clock === null ? time() : ($this->clock)())) - 1;
         foreach (array_keys($paths) as $path) {
             $stat = @stat((string) $path);
             $this->signatures[(string) $path] = self::signature($stat);
