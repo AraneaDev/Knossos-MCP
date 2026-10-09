@@ -408,7 +408,10 @@ final readonly class ProjectDiscoverer
         }
 
         try {
-            $decoded = JsonConfig::decode($contents, in_array($kind, ['typescript', 'knossos'], true));
+            $decoded = JsonConfig::decode(
+                $contents,
+                in_array($kind, ['typescript', 'knossos'], true) || str_ends_with(strtolower($relative), '.jsonc'),
+            );
         } catch (DiscoveryException $error) {
             $diagnostics[] = new DiscoveryDiagnostic(
                 'warning',

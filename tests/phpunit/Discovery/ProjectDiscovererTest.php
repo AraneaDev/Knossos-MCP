@@ -486,6 +486,42 @@ final class ProjectDiscovererTest extends KnossosTestCase
     }
 
     /**
+     * An empty-object manifest decoded to an empty list and was rejected as
+     * "Configuration root must be a JSON object", so its unit was lost.
+     */
+    public function testDiscoverReadsAnEmptyObjectManifestAsAUnit(): void
+    {
+        file_put_contents($this->root . '/composer.json', '{}');
+        file_put_contents($this->root . '/package.json', "\xEF\xBB\xBF{\"name\":\"web\"}");
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $kinds = array_map(static fn (ProjectUnit $unit): string => $unit->kind . ':' . $unit->configPath, $result->units);
+        $this->assertContains('composer:composer.json', $kinds);
+        $this->assertContains('node:package.json', $kinds);
+        assertSame([], array_values(array_filter(
+            $result->diagnostics,
+            static fn ($diagnostic): bool => $diagnostic->code === 'DISCOVERY_CONFIG_INVALID',
+        )));
+    }
+
+    /** A `.jsonc` file with comments or a trailing comma was rejected unless its kind was typescript or knossos. */
+    public function testDiscoverReadsACommentedJsoncManifest(): void
+    {
+        file_put_contents($this->root . '/knip.jsonc', "{\n  // entry\n  \"entry\": [\"src/cli.ts\",],\n}\n");
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            foreach ($unit->metadata['entry_points'] ?? [] as $path) {
+                $entryPoints[$path] = $unit->configPath;
+            }
+        }
+        assertSame('knip.jsonc', $entryPoints['src/cli.ts'] ?? null);
+    }
+
+    /**
      * The TypeScript a package declares decides which compiler defaults its
      * sources are checked under, since 6.0 changed several of them.
      */
