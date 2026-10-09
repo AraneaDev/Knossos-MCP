@@ -26,6 +26,7 @@ use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Tests\Phpunit\Support\CountingDriftOracle;
 use PDO;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 final class RefreshIfStaleTest extends KnossosTestCase
@@ -77,6 +78,45 @@ final class RefreshIfStaleTest extends KnossosTestCase
             $result = $tools->call('architecture_summary', ['project_id' => $projectId, 'refresh_if_stale' => true]);
 
             assertSame('fresh', $result->staleness['state']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Only keys were validated before the refresh, so a bad value cost a full
+     * rescan, holding the scan lock, before the call failed anyway.
+     *
+     * @return iterable<string, array{string, array<string, mixed>, string}>
+     */
+    public static function callsRefusedOnAValue(): iterable
+    {
+        yield 'an integer out of bounds' => ['find_component', ['name' => 'Checkout', 'limit' => 0], 'limit must be an integer between 1 and 100.'];
+        yield 'a blank string' => ['find_component', ['name' => '  '], 'name must be a non-empty string.'];
+        yield 'a nested shape' => ['quality_gate', ['baseline_snapshot' => 'active', 'budgets' => [1, 2]], 'budgets must be an object and policies must be a list.'];
+    }
+
+    #[Group('mcp')]
+    #[DataProvider('callsRefusedOnAValue')]
+    public function testAnInvalidValueFailsBeforeAnyRescan(string $tool, array $arguments, string $message): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $file = $root . '/src/CheckoutService.php';
+            file_put_contents($file, "\n// drift\n", FILE_APPEND);
+            touch($file, filemtime($file) + 60);
+            $scans = static fn(): int => (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn();
+            $before = $scans();
+
+            $error = null;
+            try {
+                $tools->call($tool, ['project_id' => $projectId, ...$arguments, 'refresh_if_stale' => true]);
+            } catch (InvalidArgumentException $refused) {
+                $error = $refused->getMessage();
+            }
+
+            assertSame($message, $error);
+            assertSame($before, $scans(), 'No rescan may run for a call that is going to be refused.');
         } finally {
             $this->removeTempTree($root);
         }
