@@ -61,7 +61,6 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
         $inheritance = $this->inheritedMethodContext($projectId, array_keys($methodNames), $methodNames);
         $excludedInherited = 0;
-        $untypedCalls = $facts->untypedMemberNames();
         $excludedConstructors = 0;
         $excludedContracts = 0;
         $excludedEntryScripts = 0;
@@ -162,7 +161,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             // be the one that reaches it, so the absence of an edge proves less.
             if ($confidence === 'probable'
                 && in_array($candidate['row']['kind'], ['method', 'function'], true)
-                && isset($untypedCalls[(string) $candidate['row']['display_name']])) {
+                && $facts->mayBeCalledUntyped((string) ($candidate['row']['language'] ?? ''), (string) $candidate['row']['display_name'])) {
                 $confidence = 'possible';
                 $reason = 'No inbound static reference was found, but a member of this name is called on a receiver the scan could not type, which may be this one.';
             }

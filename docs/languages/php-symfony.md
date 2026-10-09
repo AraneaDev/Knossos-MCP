@@ -14,18 +14,18 @@ injection) are in the graph whether or not a convention is recognized.
 
 ## What you get
 
-| Area        | Recognized source                                                                  | Graph facts                                       |
-| ----------- | ---------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Controllers | `AbstractController`, `#[AsController]`, `#[Route]`                                | controller and route-handler roles                |
-| Routes      | class-level and method-level `#[Route]` paths, names and method lists              | `route` nodes and `routes_to` edges               |
-| Commands    | `#[AsCommand(name: ...)]`                                                          | `command` nodes and `handles` edges               |
-| Messenger   | `#[AsMessageHandler]` and a typed handler parameter                                | message-handler roles and `handles_message` edges |
-| Events      | `#[AsEventListener]`, `EventSubscriberInterface`, static subscriber arrays         | listener and subscriber roles, `listens_to` edges |
-| Services    | `#[AsAlias]`, `#[Autoconfigure]`, typed constructors, `#[Autowire(service: ...)]`  | service roles, `binds` and `injects` edges        |
-| Validation  | Doctrine annotations such as `@AdminEmail`, and a `Constraint`'s `<Name>Validator` | `references` edges                                |
-| Migrations  | the directories `migrations_paths` names in the Doctrine Migrations YAML           | entry points                                      |
-| Handlers    | a `services.yaml` `resource:` block with `tags:`: every class in its directory     | entry points                                      |
-| Serializer  | JMS Serializer `@VirtualProperty` and `#[VirtualProperty]` methods                 | `runtime_invoked`                                 |
+| Area        | Recognized source                                                                                                                                                    | Graph facts                                       |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Controllers | `AbstractController`, `#[AsController]`, `#[Route]`                                                                                                                  | controller and route-handler roles                |
+| Routes      | class-level and method-level `#[Route]` paths, names and methods (a list or one string); the class-level route alone on an invokable controller routes to `__invoke` | `route` nodes and `routes_to` edges               |
+| Commands    | `#[AsCommand(name: ...)]`                                                                                                                                            | `command` nodes and `handles` edges               |
+| Messenger   | `#[AsMessageHandler]` and a typed handler parameter                                                                                                                  | message-handler roles and `handles_message` edges |
+| Events      | `#[AsEventListener]`, `EventSubscriberInterface`, static subscriber arrays                                                                                           | listener and subscriber roles, `listens_to` edges |
+| Services    | `#[AsAlias]`, `#[Autoconfigure]`, typed constructors, `#[Autowire(service: ...)]`                                                                                    | service roles, `binds` and `injects` edges        |
+| Validation  | Doctrine annotations such as `@AdminEmail`, and a `Constraint`'s `<Name>Validator`                                                                                   | `references` edges                                |
+| Migrations  | the directories `migrations_paths` names in the Doctrine Migrations YAML                                                                                             | entry points                                      |
+| Handlers    | a `services.yaml` `resource:` block with `tags:`: every class in its directory                                                                                       | entry points                                      |
+| Serializer  | JMS Serializer `@VirtualProperty` and `#[VirtualProperty]` methods                                                                                                   | `runtime_invoked`                                 |
 
 Attribute values have to be strings, string arrays or class constants. A dynamic
 route path, command name or event target produces a diagnostic instead of a

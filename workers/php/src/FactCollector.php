@@ -36,8 +36,20 @@ final class FactCollector extends NodeVisitorAbstract
     /** @var list<array{id: string, name: string, parent: ?string, interfaces: list<string>, properties: array<string, string>}> */
     private array $classes = [];
 
-    /** @var list<array{id: string, variables: array<string, array{type: ?string, confidence: string, returned_by?: string}>}> */
+    /** @var list<array{id: string}> */
     private array $callables = [];
+
+    /**
+     * The variables of each function-like node the traversal is inside,
+     * innermost last, beside the bindings a closure captured by reference.
+     *
+     * A closure and an arrow function have variables of their own: a
+     * parameter or an assignment there does not reach the code around them,
+     * which sees only what a by-reference capture may have changed.
+     *
+     * @var list<array{variables: array<string, array{type: ?string, confidence: string, returned_by?: string}>, by_reference: array<string, ?array{type: ?string, confidence: string, returned_by?: string}>}>
+     */
+    private array $scopeVariables = [];
 
     /**
      * The variables of code no callable encloses: a script's body.
@@ -47,7 +59,8 @@ final class FactCollector extends NodeVisitorAbstract
     private array $fileScopeVariables = [];
 
     /**
-     * Declared return types of the methods this file declares, keyed `Class::method`.
+     * Declared return types of the methods this file declares, keyed
+     * `Class::method` in lower case, since PHP reads both names so.
      *
      * Collected up front because a method is routinely called above its own
      * declaration, and a single-pass visitor would not have read the signature
@@ -151,7 +164,7 @@ final class FactCollector extends NodeVisitorAbstract
                 if ($method->returnType instanceof Name) {
                     // `self` and `static` name the declaring class itself.
                     $returned = $method->returnType->toString();
-                    $this->returnTypes[$className . '::' . $method->name->toString()] = in_array(strtolower($returned), ['self', 'static'], true) ? $className : $returned;
+                    $this->returnTypes[strtolower($className . '::' . $method->name->toString())] = in_array(strtolower($returned), ['self', 'static'], true) ? $className : $returned;
                 }
             }
         }
@@ -250,6 +263,7 @@ final class FactCollector extends NodeVisitorAbstract
     {
         if ($node instanceof Node\FunctionLike) {
             array_pop($this->variableScopes);
+            $this->leaveVariableTypes();
         }
         if ($node instanceof Stmt\ClassMethod || $node instanceof Stmt\Function_) {
             array_pop($this->callables);
@@ -335,7 +349,7 @@ final class FactCollector extends NodeVisitorAbstract
 
         if ($node instanceof Stmt\Class_ && $node->extends instanceof Name) {
             $this->addEdge('extends', $id, self::reference('class', $parent), $node->extends);
-            if ($parent === 'Symfony\\Component\\Validator\\Constraint' && $node->getMethod('validatedBy') === null) {
+            if (strcasecmp($parent, 'Symfony\\Component\\Validator\\Constraint') === 0 && $node->getMethod('validatedBy') === null) {
                 // Validated by `static::class . 'Validator'` unless its own
                 // `validatedBy()` says otherwise; kept only when that class
                 // exists.
@@ -376,7 +390,7 @@ final class FactCollector extends NodeVisitorAbstract
             ...(self::overridesSupertypeMember($node->name->toString(), $attributes, $class) ? ['overrides' => true] : []),
         ]);
         $this->addEdge('contains', $class['id'], $id, $node);
-        $this->callables[] = ['id' => $id, 'variables' => []];
+        $this->callables[] = ['id' => $id];
 
         $constructor = strtolower($node->name->toString()) === '__construct';
         $this->parametersAndReturn($node->params, $node->returnType, $constructor ? $class['id'] : $id, $constructor);
@@ -455,7 +469,7 @@ final class FactCollector extends NodeVisitorAbstract
         $name = $this->declarationName($node, $this->relativePath);
         $id = self::reference('function', $name);
         $this->addNode($id, 'function', $name, $node->name->toString(), $node);
-        $this->callables[] = ['id' => $id, 'variables' => []];
+        $this->callables[] = ['id' => $id];
         $this->parametersAndReturn($node->params, $node->returnType, $id, false);
     }
 
@@ -727,12 +741,12 @@ final class FactCollector extends NodeVisitorAbstract
             && $expression->name instanceof Identifier) {
             $class = $this->currentClass()['name'] ?? null;
 
-            return $class === null ? null : ($this->returnTypes[$class . '::' . $expression->name->toString()] ?? null);
+            return $class === null ? null : ($this->returnTypes[strtolower($class . '::' . $expression->name->toString())] ?? null);
         }
         if ($expression instanceof Expr\StaticCall
             && $expression->class instanceof Name
             && $expression->name instanceof Identifier) {
-            return $this->returnTypes[$this->resolvedClassName($expression->class) . '::' . $expression->name->toString()] ?? null;
+            return $this->returnTypes[strtolower($this->resolvedClassName($expression->class) . '::' . $expression->name->toString())] ?? null;
         }
 
         return null;
@@ -791,6 +805,77 @@ final class FactCollector extends NodeVisitorAbstract
         }
         foreach ($captured as $variable => $prefix) {
             $this->classPrefixes[$this->prefixKey($variable)] = $prefix;
+        }
+        $this->enterVariableTypes($node);
+    }
+
+    /**
+     * Open a function-like node's variable types: everything around an arrow
+     * function, which captures by value, the `use` list of a closure, and
+     * nothing for any other function. A closure's or arrow function's own
+     * parameters then bind over whatever was captured.
+     */
+    private function enterVariableTypes(Node\FunctionLike $node): void
+    {
+        $outer = $this->variables();
+        $variables = $node instanceof Expr\ArrowFunction ? $outer : [];
+        $byReference = [];
+        foreach ($node instanceof Expr\Closure ? $node->uses : [] as $use) {
+            // The grammar allows only a plain `$name` in a `use` list.
+            $name = (string) $use->var->name;
+            $binding = $outer[$name] ?? null;
+            if ($binding !== null) {
+                $variables[$name] = $binding;
+            }
+            if ($use->byRef) {
+                $byReference[$name] = $binding;
+            }
+        }
+        $this->scopeVariables[] = ['variables' => $variables, 'by_reference' => $byReference];
+        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
+            $this->closureSignature($node);
+        }
+    }
+
+    /**
+     * Close a function-like node's variable types. A variable a closure took
+     * by reference and rebound may hold either value once the closure might
+     * have run, so the code around it no longer knows its type.
+     */
+    private function leaveVariableTypes(): void
+    {
+        $scope = array_pop($this->scopeVariables);
+        foreach ($scope['by_reference'] ?? [] as $variable => $captured) {
+            if (($scope['variables'][$variable] ?? null) !== $captured) {
+                $this->clearVariableType($variable);
+            }
+        }
+    }
+
+    /**
+     * Bind a closure's or arrow function's parameters by their declared
+     * types, and record the classes its signature names as references of
+     * the code that writes it. An untyped parameter shadows a captured
+     * variable of the same name.
+     */
+    private function closureSignature(Expr\Closure|Expr\ArrowFunction $node): void
+    {
+        $source = $this->currentSource();
+        foreach ($node->params as $param) {
+            $types = $this->typeNames($param->type);
+            foreach ($types as $type) {
+                $this->addEdge('references', $source, self::reference('class', $type), $param);
+            }
+            if ($param->var instanceof Expr\Variable && is_string($param->var->name)) {
+                if ($types === []) {
+                    $this->clearVariableType($param->var->name);
+                } else {
+                    $this->setVariableType($param->var->name, $types[0]);
+                }
+            }
+        }
+        foreach ($this->typeNames($node->returnType) as $type) {
+            $this->addEdge('references', $source, self::reference('class', $type), $node->returnType ?? $node);
         }
     }
 
@@ -858,7 +943,7 @@ final class FactCollector extends NodeVisitorAbstract
      * already close by edging `references` to the declaring type.
      *
      * A class naming itself is skipped: `self::`, `static::`, and an explicit
-     * mention of the enclosing class are internal traffic, not usage, and
+     * mention of the enclosing class, in any case, are internal traffic, not usage, and
      * counting them would make every class with one internal static call look
      * reachable. `parent::` resolves to a different class and is kept.
      */
@@ -869,7 +954,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
         $source = $this->currentSource();
         $resolved = $this->resolvedClassName($class);
-        if ($resolved === ($this->currentClass()['name'] ?? null)) {
+        if (strcasecmp($resolved, $this->currentClass()['name'] ?? '') === 0) {
             return;
         }
         $this->addEdge('references', $source, self::reference('class', $resolved), $evidence);
@@ -1198,8 +1283,8 @@ final class FactCollector extends NodeVisitorAbstract
     }
 
     /**
-     * The variables of the scope being read: the innermost callable's, or the
-     * file's own when no callable encloses the code.
+     * The variables of the scope being read: the innermost function-like
+     * node's, closures included, or the file's own when none encloses the code.
      *
      * A script makes its calls from file scope (`$endpoint = new Endpoint();
      * $endpoint->handle();`), and leaving those variables untracked typed
@@ -1211,11 +1296,11 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private function &variables(): array
     {
-        if ($this->callables === []) {
+        if ($this->scopeVariables === []) {
             return $this->fileScopeVariables;
         }
 
-        return $this->callables[array_key_last($this->callables)]['variables'];
+        return $this->scopeVariables[array_key_last($this->scopeVariables)]['variables'];
     }
 
     /** Remember a variable's inferred class so later calls on it can be resolved. */

@@ -43,6 +43,14 @@ final class CandidateGraphFacts
     /** @var array<string, true>|null */
     private ?array $untyped = null;
 
+    /**
+     * The untyped member names PHP code calls, lower-cased, since PHP reads
+     * a method name without regard to case.
+     *
+     * @var array<string, true>
+     */
+    private array $untypedCaseless = [];
+
     /** @var list<string>|null */
     private ?array $suppressions = null;
 
@@ -168,13 +176,16 @@ final class CandidateGraphFacts
     {
         if ($this->untyped === null) {
             $this->untyped = [];
-            $statement = $this->pdo->prepare("SELECT attributes_json FROM nodes WHERE project_id = ? AND attributes_json LIKE '%unresolved_member_calls%'");
+            $statement = $this->pdo->prepare("SELECT language, attributes_json FROM nodes WHERE project_id = ? AND attributes_json LIKE '%unresolved_member_calls%'");
             $statement->execute([$this->projectId]);
-            foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $json) {
-                $calls = json_decode((string) $json, true)['unresolved_member_calls'] ?? null;
+            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $calls = json_decode((string) $row['attributes_json'], true)['unresolved_member_calls'] ?? null;
                 foreach (is_array($calls) ? $calls : [] as $name) {
                     if (is_string($name)) {
                         $this->untyped[$name] = true;
+                        if ($row['language'] === 'php') {
+                            $this->untypedCaseless[strtolower($name)] = true;
+                        }
                     }
                 }
             }
@@ -182,6 +193,17 @@ final class CandidateGraphFacts
         }
 
         return $this->untyped;
+    }
+
+    /**
+     * Whether a member of this name, in this language, is called somewhere on
+     * a receiver no scanner could type: by its own spelling, or for PHP, which
+     * reads method names without regard to case, by a PHP call in any case.
+     */
+    public function mayBeCalledUntyped(string $language, string $name): bool
+    {
+        return isset($this->untypedMemberNames()[$name])
+            || ($language === 'php' && isset($this->untypedCaseless[strtolower($name)]));
     }
 
     /**

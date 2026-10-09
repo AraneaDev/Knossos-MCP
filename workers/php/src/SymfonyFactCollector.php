@@ -27,7 +27,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
     private array $edges = [];
     /** @var list<array<string, mixed>> */
     private array $diagnostics = [];
-    /** @var list<array{name: string, route_prefix: string, message_handler: bool}> */
+    /** @var list<array{name: string, route_prefix: string, route_methods: list<string>, route_name: string, message_handler: bool}> */
     private array $classes = [];
 
     /**
@@ -99,9 +99,14 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         $this->classes[] = [
             'name' => $name,
             'route_prefix' => $prefix,
+            'route_methods' => $route === null ? [] : $this->stringListArgument($route, 'methods'),
+            'route_name' => $route === null ? '' : ($this->stringArgument($route, 'name') ?? ''),
             'message_handler' => $this->attribute($node->attrGroups, 'AsMessageHandler') !== null,
         ];
         $classId = $this->classReference($name);
+        if ($route !== null && $this->isInvokableRoute($node)) {
+            $this->invokableRoutes($node, $name);
+        }
 
         $command = $this->attribute($node->attrGroups, 'AsCommand');
         if ($command !== null) {
@@ -149,22 +154,16 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
                 $this->diagnostic('SYMFONY_DYNAMIC_ROUTE_PATH', 'Dynamic route path was skipped.', $route);
                 continue;
             }
-            $methods = $this->stringListArgument($route, 'methods');
-            if ($methods === []) {
-                $methods = ['ANY'];
-            }
-            $methods = array_map('strtoupper', $methods);
-            sort($methods, SORT_STRING);
-            $uri = '/' . trim(trim($class['route_prefix'], '/') . '/' . trim($path, '/'), '/');
-            $canonical = implode('|', $methods) . ' ' . $uri . ' => ' . $class['name'] . '::' . $node->name->toString();
-            $id = 'php:route:' . $canonical;
-            $this->nodes[$id] = $this->node($id, 'route', $canonical, implode('|', $methods) . ' ' . $uri, $route, [
-                'framework' => 'symfony',
-                'methods' => $methods,
-                'uri' => $uri,
-                'name' => $this->stringArgument($route, 'name'),
-            ]);
-            $this->edge('routes_to', $id, $methodId, $route);
+            // The class-level route's methods and name prefix apply to each
+            // route its methods declare, as Symfony merges them.
+            $name = $this->stringArgument($route, 'name');
+            $this->addRoute(
+                $class['name'] . '::' . $node->name->toString(),
+                [...$class['route_methods'], ...$this->stringListArgument($route, 'methods')],
+                '/' . trim(trim($class['route_prefix'], '/') . '/' . trim($path, '/'), '/'),
+                $name === null ? null : $class['route_name'] . $name,
+                $route,
+            );
         }
 
         $methodMessageHandler = $this->attribute($node->attrGroups, 'AsMessageHandler') !== null;
@@ -207,6 +206,60 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
                 }
             }
         }
+    }
+
+    /**
+     * Whether a class-level `#[Route]` routes to the class's `__invoke`
+     * rather than prefixing its methods' routes: Symfony reads it so when the
+     * class has an `__invoke` and none of its methods declares a route.
+     */
+    private function isInvokableRoute(Stmt\ClassLike $node): bool
+    {
+        if ($node->getMethod('__invoke') === null) {
+            return false;
+        }
+        foreach ($node->getMethods() as $method) {
+            if ($this->attribute($method->attrGroups, 'Route') !== null) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /** Record each class-level `#[Route]` of an invokable controller as a route to its `__invoke`. */
+    private function invokableRoutes(Stmt\ClassLike $node, string $className): void
+    {
+        foreach ($this->attributes($node->attrGroups, 'Route') as $route) {
+            $path = $this->stringArgument($route, 'path', 0);
+            if ($path !== null) {
+                $this->addRoute($className . '::__invoke', $this->stringListArgument($route, 'methods'), '/' . trim($path, '/'), $this->stringArgument($route, 'name'), $route);
+            }
+        }
+    }
+
+    /**
+     * Record one route node and its edge to the method it dispatches to. No
+     * method list means any method.
+     *
+     * @param list<string> $methods
+     */
+    private function addRoute(string $handler, array $methods, string $uri, ?string $name, Node\Attribute $route): void
+    {
+        $methods = array_values(array_unique(array_map('strtoupper', $methods)));
+        if ($methods === []) {
+            $methods = ['ANY'];
+        }
+        sort($methods, SORT_STRING);
+        $canonical = implode('|', $methods) . ' ' . $uri . ' => ' . $handler;
+        $id = 'php:route:' . $canonical;
+        $this->nodes[$id] = $this->node($id, 'route', $canonical, implode('|', $methods) . ' ' . $uri, $route, [
+            'framework' => 'symfony',
+            'methods' => $methods,
+            'uri' => $uri,
+            'name' => $name,
+        ]);
+        $this->edge('routes_to', $id, 'php:method:' . $handler, $route);
     }
 
     /**
@@ -256,13 +309,17 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
     }
 
     /**
-     * An attribute argument's literal string list, ignoring computed elements.
+     * An attribute argument's literal string list, ignoring computed
+     * elements. A single string is a list of one.
      *
      * @return list<string>
      */
     private function stringListArgument(Node\Attribute $attribute, string $name): array
     {
         $value = $this->argument($attribute, $name);
+        if ($value instanceof Scalar\String_) {
+            return [$value->value];
+        }
         if (!$value instanceof Expr\Array_) {
             return [];
         }
@@ -335,7 +392,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
     /**
      * The enclosing class, which Symfony facts are attributed to.
      *
-     * @return array{name: string, route_prefix: string, message_handler: bool}|null
+     * @return array{name: string, route_prefix: string, route_methods: list<string>, route_name: string, message_handler: bool}|null
      */
     private function currentClass(): ?array
     {

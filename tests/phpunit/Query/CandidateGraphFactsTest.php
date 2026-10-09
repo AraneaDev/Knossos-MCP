@@ -56,6 +56,29 @@ final class CandidateGraphFactsTest extends KnossosTestCase
         self::assertSame(['label' => true, 'open' => true, 'save' => true], $facts->untypedMemberNames());
     }
 
+    /**
+     * A PHP name called on an untyped receiver may reach a PHP method spelled
+     * in another case; a TypeScript name reaches only its own spelling.
+     */
+    public function testAnUntypedCallMatchesAPhpMemberWhateverItsCase(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        foreach (['php' => 'src/a.php', 'ts' => 'src/b.ts'] as $language => $name) {
+            $repository->saveNode(StableId::symbol($project, $language, 'module', $name), $project, $language, 'module', $name, $name, null, $ids['file'], 1, 2, 'ast', 'certain', ['unresolved_member_calls' => ['DOTHING']], $language . ':file:x', $ids['scan']);
+        }
+        $repository->saveNode(StableId::symbol($project, 'ts', 'module', 'src/c.ts'), $project, 'ts', 'module', 'src/c.ts', 'src/c.ts', null, $ids['file'], 1, 2, 'ast', 'certain', ['unresolved_member_calls' => ['render']], 'ts:file:y', $ids['scan']);
+        $repository->completeScan($project, $ids['scan']);
+
+        $facts = new CandidateGraphFacts($pdo, $project, ['calls'], 1);
+
+        self::assertTrue($facts->mayBeCalledUntyped('php', 'doThing'));
+        self::assertTrue($facts->mayBeCalledUntyped('php', 'DOTHING'));
+        self::assertFalse($facts->mayBeCalledUntyped('ts', 'doThing'), 'a TypeScript name keeps its case');
+        self::assertTrue($facts->mayBeCalledUntyped('ts', 'DOTHING'));
+        self::assertFalse($facts->mayBeCalledUntyped('php', 'Render'), 'only a PHP call folds case');
+    }
+
     public function testAnEdgeBelowTheConfidenceFloorOrOfAnotherKindDoesNotCount(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();

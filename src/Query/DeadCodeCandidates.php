@@ -291,7 +291,7 @@ final readonly class DeadCodeCandidates extends AbstractArchitectureQueryService
         $rows = [];
         foreach (array_chunk(array_values(array_unique($ids)), self::CHUNK) as $chunk) {
             $statement = $this->pdo->prepare(
-                'SELECT n.id, n.kind, n.canonical_name, n.display_name, n.origin, n.confidence, n.attributes_json, '
+                'SELECT n.id, n.language, n.kind, n.canonical_name, n.display_name, n.origin, n.confidence, n.attributes_json, '
                 . 'n.start_line, n.end_line, f.relative_path FROM nodes n LEFT JOIN files f ON f.id = n.file_id '
                 . sprintf('WHERE n.id IN (%s)', implode(',', array_fill(0, count($chunk), '?'))),
             );

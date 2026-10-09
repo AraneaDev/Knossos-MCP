@@ -24,10 +24,10 @@ final class UntypedReceiverTest extends KnossosTestCase
         $root = sys_get_temp_dir() . '/knossos-stale-untyped-' . bin2hex(random_bytes(6));
         mkdir($root . '/src', 0o777, true);
         $files = [
-            'src/Mode.php' => "<?php\nfinal class Mode\n{\n    public function phpLabel(): string { return ''; }\n    public function phpUnused(): string { return ''; }\n}\n",
-            'src/Loop.php' => "<?php\nfinal class Loop\n{\n    public function run(\$mode): string { return \$mode->phpLabel(); }\n}\n",
-            'src/mode.js' => "export class Mode {\n    jsLabel() {}\n    jsUnused() {}\n}\n",
-            'src/loop.js' => "export function loop(mode) {\n    mode.jsLabel();\n}\n",
+            'src/Mode.php' => "<?php\nfinal class Mode\n{\n    public function phpLabel(): string { return ''; }\n    public function phpUnused(): string { return ''; }\n    public function phpCased(): string { return ''; }\n}\n",
+            'src/Loop.php' => "<?php\nfinal class Loop\n{\n    public function run(\$mode): string { return \$mode->phpLabel() . \$mode->PHPCASED(); }\n}\n",
+            'src/mode.js' => "export class Mode {\n    jsLabel() {}\n    jsUnused() {}\n    jsCased() {}\n}\n",
+            'src/loop.js' => "export function loop(mode) {\n    mode.jsLabel();\n    mode.JSCASED();\n}\n",
             'src/mode.py' => "class Mode:\n    def py_label(self):\n        pass\n\n    def py_unused(self):\n        pass\n",
             'src/loop.py' => "def loop(mode):\n    mode.py_label()\n",
         ];
@@ -47,10 +47,11 @@ final class UntypedReceiverTest extends KnossosTestCase
         foreach ($data['dead_code_candidates'] as $candidate) {
             $confidence[$candidate['component']['display_name']] = $candidate['confidence'];
         }
-        foreach (['phpLabel', 'jsLabel', 'py_label'] as $called) {
+        // PHP reads a method name without regard to case; JavaScript does not.
+        foreach (['phpLabel', 'phpCased', 'jsLabel', 'py_label'] as $called) {
             self::assertSame('possible', $confidence[$called] ?? null, $called);
         }
-        foreach (['phpUnused', 'jsUnused', 'py_unused'] as $unused) {
+        foreach (['phpUnused', 'jsUnused', 'jsCased', 'py_unused'] as $unused) {
             self::assertSame('probable', $confidence[$unused] ?? null, $unused);
         }
     }
