@@ -25,8 +25,9 @@ final readonly class AnnotationService extends AbstractArchitectureQueryService
         if (trim($component) === '') {
             throw new InvalidArgumentException('component must not be empty.');
         }
-        if (strlen($value) > 2000) {
-            throw new InvalidArgumentException('value must not exceed 2000 bytes.');
+        // Characters, as the schema's maxLength counts them, not bytes.
+        if (mb_strlen($value) > 2000) {
+            throw new InvalidArgumentException('value must not exceed 2000 characters.');
         }
         // Exact matches only: a prefix match once turned `App\Invoice` into
         // `App\InvoiceService` and wrote the annotation on the wrong component.

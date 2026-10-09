@@ -49,6 +49,24 @@ final class AnnotationsTest extends KnossosTestCase
         assertSame(true, str_contains(implode(' ', $unknown->warnings), 'not found'));
     }
 
+    /** A note's limit is 2,000 characters: 2,000 CJK characters (6,000 bytes) fit, one more does not. */
+    #[Group('query')]
+    public function testANoteIsMeasuredInCharactersNotBytes(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        $queries->annotateComponent($ids['project'], 'App\\Checkout', 'note', str_repeat('界', 2000), execute: true);
+        assertSame(str_repeat('界', 2000), $queries->listAnnotations($ids['project'])->data['annotations'][0]['value']);
+
+        $refused = captureThrows(
+            fn() => $queries->annotateComponent($ids['project'], 'App\\Checkout', 'note', str_repeat('界', 2001), execute: true),
+            InvalidArgumentException::class,
+        );
+        assertSame('value must not exceed 2000 characters.', $refused->getMessage());
+    }
+
     #[Group('query')]
     public function testAnnotationsSurviveRescans(): void
     {

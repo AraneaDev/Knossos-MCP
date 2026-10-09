@@ -35,8 +35,9 @@ final class SuggestionArgumentsTest extends KnossosTestCase
      * the token check, because it has bytes but says nothing.
      *
      * Each gets the message that is true of it. The length guard used to trim
-     * first, so "   " was told it needed "between 1 and 2000 bytes", which it
-     * already had.
+     * first, so "   " was told it needed "between 1 and 2000 characters", which
+     * it already had. (The message said "bytes" until the limit was counted in
+     * characters, as the schema's maxLength always did.)
      */
     #[Group('query')]
     public function testEachEmptyDescriptionIsRefusedWithTheReasonThatAppliesToIt(): void
@@ -44,7 +45,7 @@ final class SuggestionArgumentsTest extends KnossosTestCase
         [$queries, $project] = $this->queries();
 
         $empty = captureThrows(static fn() => $queries->suggestLocation($project, ''), InvalidArgumentException::class);
-        assertContains('between 1 and 2000 bytes', $empty->getMessage());
+        assertContains('between 1 and 2000 characters', $empty->getMessage());
 
         $blank = captureThrows(static fn() => $queries->suggestLocation($project, "   \t\n"), InvalidArgumentException::class);
         assertContains('meaningful letter or number token', $blank->getMessage());

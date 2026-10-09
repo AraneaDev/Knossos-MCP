@@ -80,8 +80,8 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
             }
             $id = $policy['id'] ?? null;
             $from = $policy['from_boundary'] ?? null;
-            if (!is_string($id) || trim($id) === '' || strlen($id) > 100) {
-                throw new InvalidArgumentException('Policy id must be a non-empty string of at most 100 bytes.');
+            if (!is_string($id) || trim($id) === '' || mb_strlen($id) > 100) {
+                throw new InvalidArgumentException('Policy id must be a non-empty string of at most 100 characters.');
             }
             if (isset($policyIds[$id])) {
                 throw new InvalidArgumentException('Policy ids must be unique: ' . $id);
@@ -309,8 +309,8 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
             throw new InvalidArgumentException(sprintf('Policy %s must be a list of at most 50 values.', $key));
         }
         foreach ($values as $value) {
-            if (!is_string($value) || trim($value) === '' || strlen($value) > 200) {
-                throw new InvalidArgumentException(sprintf('Policy %s values must be non-empty strings of at most 200 bytes.', $key));
+            if (!is_string($value) || trim($value) === '' || mb_strlen($value) > 200) {
+                throw new InvalidArgumentException(sprintf('Policy %s values must be non-empty strings of at most 200 characters.', $key));
             }
         }
         return array_values(array_unique($values));

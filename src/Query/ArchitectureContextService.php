@@ -35,8 +35,8 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
         if ($taskDescription === '' && $files === []) {
             throw new InvalidArgumentException('Provide task_description, files, or both.');
         }
-        if (strlen($taskDescription) > 2000) {
-            throw new InvalidArgumentException('task_description must not exceed 2000 bytes.');
+        if (mb_strlen($taskDescription) > 2000) {
+            throw new InvalidArgumentException('task_description must not exceed 2000 characters.');
         }
         if ($maxChars < 4000 || $maxChars > 100_000) {
             throw new InvalidArgumentException('max_chars must be between 4000 and 100000.');

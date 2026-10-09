@@ -430,7 +430,8 @@ final readonly class ToolService
             self::string($arguments, 'project_id'),
             self::string($arguments, 'component'),
             self::string($arguments, 'kind'),
-            array_key_exists('value', $arguments) && is_string($arguments['value']) ? $arguments['value'] : '',
+            // Stored as given: a note's whitespace is content.
+            self::text($arguments, 'value', 2000, allowEmpty: true, default: '', trim: false),
             self::boolean($arguments, 'remove', false),
             self::boolean($arguments, 'execute', false),
         ];
@@ -482,7 +483,7 @@ final readonly class ToolService
         $args = [
             self::string($arguments, 'action'),
             self::boolean($arguments, 'execute', false),
-            array_key_exists('backup_name', $arguments) ? self::string($arguments, 'backup_name') : null,
+            array_key_exists('backup_name', $arguments) ? self::text($arguments, 'backup_name', 127) : null,
         ];
 
         return fn(): ResultEnvelope => $this->maintenance->maintain(...$args);
@@ -709,8 +710,8 @@ final readonly class ToolService
     {
         $args = [
             self::string($arguments, 'project_id'),
-            array_key_exists('path_contains', $arguments) ? self::string($arguments, 'path_contains') : null,
-            array_key_exists('language', $arguments) ? self::string($arguments, 'language') : null,
+            array_key_exists('path_contains', $arguments) ? self::text($arguments, 'path_contains', 1000) : null,
+            array_key_exists('language', $arguments) ? self::text($arguments, 'language', 100) : null,
             array_key_exists('sort_by', $arguments) ? self::string($arguments, 'sort_by') : 'line_count',
             array_key_exists('order', $arguments) ? self::string($arguments, 'order') : 'desc',
             self::integer($arguments, 'limit', 50, 1, 100),
@@ -878,7 +879,7 @@ final readonly class ToolService
     {
         $args = [
             self::string($arguments, 'project_id'),
-            self::string($arguments, 'feature_description'),
+            self::text($arguments, 'feature_description', 2000),
             self::integer($arguments, 'limit', 5, 1, 20),
             self::integer($arguments, 'max_members', 20_000, 1, 50_000),
             self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
@@ -924,7 +925,7 @@ final readonly class ToolService
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'files', 50),
             self::boolean($arguments, 'working_tree', false),
-            array_key_exists('base_ref', $arguments) ? self::string($arguments, 'base_ref') : null,
+            array_key_exists('base_ref', $arguments) ? self::text($arguments, 'base_ref', 200) : null,
             self::integer($arguments, 'max_depth', 4, 1, 8),
             self::integer($arguments, 'limit', 100, 1, 100),
             self::strings($arguments, 'edge_kinds'),
@@ -947,7 +948,7 @@ final readonly class ToolService
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'files', 50),
             self::boolean($arguments, 'working_tree', false),
-            array_key_exists('base_ref', $arguments) ? self::string($arguments, 'base_ref') : null,
+            array_key_exists('base_ref', $arguments) ? self::text($arguments, 'base_ref', 200) : null,
             self::integer($arguments, 'max_depth', 4, 1, 8),
             self::integer($arguments, 'limit', 100, 1, 100),
             self::strings($arguments, 'edge_kinds'),
@@ -976,7 +977,7 @@ final readonly class ToolService
         }
         $args = [
             self::string($arguments, 'project_id'),
-            array_key_exists('base_ref', $arguments) ? self::string($arguments, 'base_ref') : null,
+            array_key_exists('base_ref', $arguments) ? self::text($arguments, 'base_ref', 200) : null,
             self::strings($arguments, 'files', 50),
             $policies,
             $budgets,
@@ -1000,7 +1001,7 @@ final readonly class ToolService
     {
         $args = [
             self::string($arguments, 'project_id'),
-            array_key_exists('task_description', $arguments) ? self::string($arguments, 'task_description') : '',
+            self::text($arguments, 'task_description', 2000, allowEmpty: true, default: ''),
             self::strings($arguments, 'files', 50),
             self::integer($arguments, 'max_chars', 30_000, 4000, 100_000),
             self::integer($arguments, 'timeout_ms', 1500, 1, 5000),
@@ -1124,6 +1125,29 @@ final readonly class ToolService
         if ($value === '') {
             throw new InvalidArgumentException(sprintf('%s must be a non-empty string.', $key));
         }
+        return $value;
+    }
+
+    /**
+     * A string argument with an advertised maxLength, counted in characters as
+     * JSON Schema counts them (the limit used to be checked in bytes, or not at
+     * all). Absent, it is $default when one is given. Trimmed like
+     * {@see string()} unless $trim is false, for a value whose whitespace is
+     * content.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    private static function text(array $arguments, string $key, int $maxLength, bool $allowEmpty = false, ?string $default = null, bool $trim = true): string
+    {
+        $value = $arguments[$key] ?? $default;
+        if (!is_string($value) || mb_strlen($value) > $maxLength) {
+            throw new InvalidArgumentException(sprintf('%s must be a string of at most %d characters.', $key, $maxLength));
+        }
+        $value = $trim ? trim($value) : $value;
+        if (!$allowEmpty && $value === '') {
+            throw new InvalidArgumentException(sprintf('%s must be a non-empty string.', $key));
+        }
+
         return $value;
     }
 
