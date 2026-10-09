@@ -83,7 +83,8 @@ prefix (`node:fs` and `fs` are both `fs`); one Node only offers under the
 prefix, such as `node:test`, keeps it. Which names are built-ins is Node 24's
 list, whatever Node runs the scan. A specifier that resolves to nothing gets no
 edge when a tsconfig `paths` key or a bundler alias covers it (`@app/missing`
-under `@app/*`), or when it could not be an npm package name, such as an alias
+under `@app/*`; a catch-all `"*"` key does not count, since it covers every
+name), or when it could not be an npm package name, such as an alias
 your tsconfig does not know (`@/components`, `~/stores`): it names your own
 code, not a dependency, and in a file it type-checks the compiler reports it as
 a missing module.
@@ -188,7 +189,11 @@ than a guessed one.
 
 ## Compiler diagnostics
 
-Compiler errors that name a file are attached to that file. An option error that names no file, such as a deprecated
+Compiler errors that name a file are attached to that file. A scan builds only
+the programs whose files it reads, and type-checks each of them whole, in
+program order, before reading any facts, so a file's facts and diagnostics are
+the same whether a scan reads it alone or with the rest of its program. An
+option error that names no file, such as a deprecated
 `moduleResolution` value, or a global type your `lib` lacks, appears once per
 program, on the program's first file in path order, and its message says it
 applies to the whole program. That file is the same however your files are
@@ -197,8 +202,8 @@ drops the diagnostic. If a deprecation is not worth acting on yet, you can silen
 with `"ignoreDeprecations"` in your `tsconfig.json`. A global type the compiler only
 looks for while checking one file's code (`IterableIterator` for a generator
 under an ES5 `lib`) is not reported: an edit to that file would not rebuild
-the file the diagnostic sits on. Neither is a compiler budget running out
-(TS2589, TS2590, TS2321, TS7056), which describes the compiler's own counters
-rather than your code. A program the compiler
+the file the diagnostic sits on. A compiler budget running out (TS2589,
+TS2590, TS2321, TS7056) is reported where the whole program's check runs out,
+which is the same file in every scan. A program the compiler
 cannot build or check at all reports `TS_PROGRAM_FAILED` for its files and costs
 no other program's facts.

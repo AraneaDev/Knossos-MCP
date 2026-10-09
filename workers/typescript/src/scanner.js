@@ -4677,16 +4677,6 @@ function programLevelDiagnostics(program) {
     return programLevel;
 }
 
-/**
- * Diagnostics that say one of the checker's own budgets ran out: type
- * instantiation depth (TS2589), union size (TS2590), recursion depth in a
- * comparison (TS2321) and the size of an inferred declaration (TS7056). The
- * checker counts and caches across every file it checked before, so whether
- * a budget runs out on a file follows what else the same request checked,
- * not the file's code.
- */
-const CHECKER_BUDGET_CODES = new Set([2321, 2589, 2590, 7056]);
-
 /** One compiler diagnostic on a file, added to that file's list. */
 function addFileDiagnostic(
     { program, root, maxFileBytes },
@@ -4700,7 +4690,6 @@ function addFileDiagnostic(
     )
         return;
     if (diagnostic.code === 6059) return; // Analysis-only project-reference source merging triggers this.
-    if (CHECKER_BUDGET_CODES.has(diagnostic.code)) return;
     if (namesComponentDefaultExport(diagnostic)) return;
     const relative = relativeInside(root, diagnostic.file.fileName);
     if (relative === null || belowNodeModules(relative)) return;
