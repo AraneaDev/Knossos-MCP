@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Discovery;
 
 use DirectoryIterator;
-use Knossos\Classification\ToolConfigModuleRule;
+use Knossos\Discovery\Manifest\Toml;
 use Knossos\Scan\CancellationToken;
 use RuntimeException;
 use SplFileInfo;
@@ -19,16 +19,8 @@ use SplFileInfo;
  */
 final readonly class ProjectDiscoverer
 {
-    /** Bytes read when probing an extensionless file's shebang; one short line is enough. */
-    private const SHEBANG_PROBE_BYTES = 256;
-
-    /**
-     * The unit kinds that make their directory a manifest root: each declares a
-     * package or a build, which is what puts build output (`dist`, `coverage`)
-     * beside it. Entry-point configs (YAML, HTML, agent and tool configs) name
-     * files to run, not a build root, so they are not on the list.
-     */
-    public const MANIFEST_UNIT_KINDS = ['cargo', 'composer', 'node', 'python', 'requirements', 'typescript'];
+    /** The unit kinds that make their directory a manifest root; see {@see SourceClassifier::MANIFEST_UNIT_KINDS}. */
+    public const MANIFEST_UNIT_KINDS = SourceClassifier::MANIFEST_UNIT_KINDS;
 
     private RootGuard $rootGuard;
     private FileContentReader $contents;
@@ -97,7 +89,7 @@ final readonly class ProjectDiscoverer
                 // a name that is not valid UTF-8 cannot be encoded into a stable
                 // id, and one with a control character fails a worker's path
                 // check. Skipping a directory here also skips its children.
-                if (!self::isSupportedPath($relative)) {
+                if (!SourceClassifier::isSupportedPath($relative)) {
                     $diagnostics[] = new DiscoveryDiagnostic(
                         'warning',
                         'DISCOVERY_PATH_UNSUPPORTED',
@@ -105,7 +97,7 @@ final readonly class ProjectDiscoverer
                     );
                     continue;
                 }
-                if (!self::isConfigurationFile($relative) && $ignoreMatcher->matches($relative)) {
+                if (!SourceClassifier::isConfigurationFile($relative) && $ignoreMatcher->matches($relative)) {
                     self::reportBuildOutput($ignoreMatcher, $gitIgnore, $entry, $relative, $diagnostics);
                     continue;
                 }
@@ -129,12 +121,12 @@ final readonly class ProjectDiscoverer
                     if (!$entry->isFile()) {
                         continue;
                     }
-                    if (!self::isConfigurationFile($relative) && $gitIgnore->ignores($relative, false)) {
+                    if (!SourceClassifier::isConfigurationFile($relative) && $gitIgnore->ignores($relative, false)) {
                         continue;
                     }
 
-                    $language = self::languageFor($relative, $absolute);
-                    $unitKind = self::unitKindFor($relative);
+                    $language = SourceClassifier::languageFor($relative, $absolute);
+                    $unitKind = SourceClassifier::unitKindFor($relative);
                     if ($language === null && $unitKind === null) {
                         continue;
                     }
@@ -271,7 +263,7 @@ final readonly class ProjectDiscoverer
             $directoryPath = $this->relative($root, $directory);
             // The iterator's own message quotes the raw path, so an
             // unsupported name must not reach it either.
-            $supported = self::isSupportedPath($directoryPath);
+            $supported = SourceClassifier::isSupportedPath($directoryPath);
             $diagnostics[] = new DiscoveryDiagnostic(
                 'warning',
                 'DISCOVERY_DIRECTORY_UNREADABLE',
@@ -287,7 +279,7 @@ final readonly class ProjectDiscoverer
                 continue;
             }
             $names[] = $entry->getFilename();
-            if (self::isManifest($entry->getFilename())) {
+            if (SourceClassifier::isManifest($entry->getFilename())) {
                 $manifestRoots[$this->relative($root, $directory)] = true;
             }
         }
@@ -326,12 +318,6 @@ final readonly class ProjectDiscoverer
             sprintf('Skipped build output directory %s/; add "!/%s" to ignores to scan it.', $relative, $relative),
             $relative,
         );
-    }
-
-    /** Whether a path names a package or build manifest, which makes its directory a manifest root. */
-    public static function isManifest(string $relativePath): bool
-    {
-        return in_array(self::unitKindFor($relativePath), self::MANIFEST_UNIT_KINDS, true);
     }
 
     /**
@@ -376,7 +362,7 @@ final readonly class ProjectDiscoverer
         array $unparsedManifestHashes,
         array $walked,
     ): DiscoveryResult {
-        $files = self::withoutCompiledSiblings($files);
+        $files = SourceClassifier::withoutCompiledSiblings($files);
         usort($files, static fn(DiscoveredFile $left, DiscoveredFile $right): int =>
             $left->relativePath <=> $right->relativePath);
         usort($units, static fn(ProjectUnit $left, ProjectUnit $right): int =>
@@ -442,7 +428,7 @@ final readonly class ProjectDiscoverer
         // targeted regexes over the specific tables keep them self-contained.
         if ($kind === 'python') {
             return new ProjectUnit($kind, $relative, $contentHash, [
-                'name' => self::tableString($contents, '[project]') ?? self::tableString($contents, '[tool.poetry]'),
+                'name' => Toml::tableString($contents, '[project]') ?? Toml::tableString($contents, '[tool.poetry]'),
                 'requires' => self::pythonRequirements($contents),
                 'entry_points' => self::pythonEntryPoints($contents, $relative),
                 'library_roots' => self::pythonLibraryRoots($contents, $relative),
@@ -572,57 +558,7 @@ final readonly class ProjectDiscoverer
      */
     private static function cargoPackageName(string $contents): ?string
     {
-        return self::tableString($contents, '[package]');
-    }
-
-    /**
-     * A string key from a `[header]` table's scope, or null.
-     */
-    private static function tableString(string $contents, string $header): ?string
-    {
-        if (preg_match('/^[ \t]*' . preg_quote($header, '/') . '[ \t]*(?:#.*)?\r?$/m', $contents, $m, PREG_OFFSET_CAPTURE) !== 1) {
-            return null;
-        }
-        $rest = substr($contents, $m[0][1] + strlen($m[0][0]));
-        $end = preg_match('/^[ \t]*\[/m', $rest, $next, PREG_OFFSET_CAPTURE) === 1
-            ? $next[0][1]
-            : strlen($rest);
-        $table = substr($rest, 0, $end);
-        if (preg_match('/^\s*name\s*=\s*["\']([^"\']+)["\']/m', $table, $matches) === 1) {
-            return $matches[1];
-        }
-
-        return null;
-    }
-
-    /**
-     * Extract [[bin]]/[[test]]/[[example]] array-of-table blocks from a TOML.
-     *
-     * @return list<array{name: string, path: string}>
-     */
-    private static function arrayTables(string $contents, string $header): array
-    {
-        $found = [];
-        $offset = 0;
-        $pattern = '/^[ \t]*' . preg_quote($header, '/') . '[ \t]*(?:#.*)?\r?$/m';
-        while (preg_match($pattern, $contents, $m, PREG_OFFSET_CAPTURE, $offset) === 1) {
-            $start = $m[0][1] + strlen($m[0][0]);
-            $next = preg_match('/^[ \t]*\[/m', $contents, $n, PREG_OFFSET_CAPTURE, $start) === 1
-                ? $n[0][1]
-                : strlen($contents);
-            $block = substr($contents, $start, $next - $start);
-            $name = $path = '';
-            if (preg_match('/^\s*name\s*=\s*["\']([^"\']+)["\']/m', $block, $nm) === 1) {
-                $name = $nm[1];
-            }
-            if (preg_match('/^\s*path\s*=\s*["\']([^"\']+)["\']/m', $block, $pm) === 1) {
-                $path = $pm[1];
-            }
-            $found[] = ['name' => $name, 'path' => $path];
-            $offset = $next;
-        }
-
-        return $found;
+        return Toml::tableString($contents, '[package]');
     }
 
     /**
@@ -639,13 +575,13 @@ final readonly class ProjectDiscoverer
     {
         $result = [];
         $lists = [];
-        $block = self::tableBlock($contents, '[project]');
+        $block = Toml::tableBlock($contents, '[project]');
         if ($block !== null) {
-            $lists = array_merge($lists, self::tomlStringLists($block, ['dependencies']));
+            $lists = array_merge($lists, Toml::stringLists($block, ['dependencies']));
         }
-        $block = self::tableBlock($contents, '[project.optional-dependencies]');
+        $block = Toml::tableBlock($contents, '[project.optional-dependencies]');
         if ($block !== null) {
-            $lists = array_merge($lists, self::tomlStringLists($block, null));
+            $lists = array_merge($lists, Toml::stringLists($block, null));
         }
         foreach ($lists as $raw) {
             // Name, before any version specifier, marker, extras, or "@ URL".
@@ -681,11 +617,11 @@ final readonly class ProjectDiscoverer
     {
         $tail = '(?:dependencies|dev-dependencies|group\.[^.\[\]]+\.dependencies)';
         $result = [];
-        foreach (self::tomlHeaders($contents) as $header) {
+        foreach (Toml::headers($contents) as $header) {
             $names = [];
             if (preg_match('/^tool\.poetry\.' . $tail . '$/', $header) === 1) {
-                $block = self::tableBlock($contents, '[' . $header . ']');
-                $names = $block === null ? [] : self::tomlTableKeys($block);
+                $block = Toml::tableBlock($contents, '[' . $header . ']');
+                $names = $block === null ? [] : Toml::tableKeys($block);
             } elseif (preg_match('/^tool\.poetry\.' . $tail . '\.["\']?([A-Za-z0-9_.-]+)["\']?$/', $header, $m) === 1) {
                 $names = [strtolower($m[1])];
             }
@@ -744,14 +680,14 @@ final readonly class ProjectDiscoverer
     {
         $result = [];
         foreach (self::cargoDependencyHeaders($contents) as $header) {
-            $block = self::tableBlock($contents, $header);
+            $block = Toml::tableBlock($contents, $header);
             if ($block === null) {
                 continue;
             }
-            foreach (self::tomlTableKeys($block) as $dep) {
+            foreach (Toml::tableKeys($block) as $dep) {
                 $result[$dep] = '1';
             }
-            foreach (self::tomlInlinePackageNames($block) as $dep) {
+            foreach (Toml::inlinePackageNames($block) as $dep) {
                 $result[$dep] = '1';
             }
         }
@@ -778,7 +714,7 @@ final readonly class ProjectDiscoverer
     private static function cargoDependencyHeaders(string $contents): array
     {
         $headers = [];
-        foreach (self::tomlHeaders($contents) as $header) {
+        foreach (Toml::headers($contents) as $header) {
             if (preg_match('/(?:^|[-.])(dependencies|dev-dependencies|build-dependencies)$/', $header) === 1) {
                 $headers[] = '[' . $header . ']';
             }
@@ -803,73 +739,18 @@ final readonly class ProjectDiscoverer
     private static function cargoDependencySubTableNames(string $contents): array
     {
         $names = [];
-        foreach (self::tomlHeaders($contents) as $header) {
+        foreach (Toml::headers($contents) as $header) {
             if (preg_match('/(?:^|[-.])(?:dependencies|dev-dependencies|build-dependencies)\.["\']?([A-Za-z0-9_-]+)["\']?$/', $header, $m) !== 1) {
                 continue;
             }
             $names[] = strtolower($m[1]);
-            $block = self::tableBlock($contents, '[' . $header . ']');
+            $block = Toml::tableBlock($contents, '[' . $header . ']');
             if ($block !== null && preg_match('/^[ \t]*package[ \t]*=[ \t]*["\']([^"\']+)["\']/m', $block, $renamed) === 1) {
                 $names[] = strtolower($renamed[1]);
             }
         }
 
         return $names;
-    }
-
-    /**
-     * Crate names an inline dependency table renames with a `package` key.
-     *
-     * `web = { package = "actix-web", version = "4" }` depends on actix-web
-     * under the local name `web`. Both are recorded: the alias is what source
-     * code writes in a `use`, and the real crate name is what framework
-     * detection in ScanPlanner matches on, so keeping only the alias hides the
-     * dependency and silently gates worker enrichment off.
-     *
-     * @return list<string>
-     */
-    private static function tomlInlinePackageNames(string $block): array
-    {
-        $names = [];
-        $pattern = '/^[ \t]*["\']?[A-Za-z0-9_.-]+["\']?[ \t]*=[ \t]*\{[^}]*\bpackage[ \t]*=[ \t]*["\']([^"\']+)["\']/m';
-        if (preg_match_all($pattern, $block, $m) > 0) {
-            foreach ($m[1] as $name) {
-                $names[] = strtolower($name);
-            }
-        }
-
-        return $names;
-    }
-
-    /**
-     * Every table header in a TOML document, without its brackets.
-     *
-     * @return list<string>
-     */
-    private static function tomlHeaders(string $contents): array
-    {
-        if (preg_match_all('/^[ \t]*\[([^\]]+)\][ \t]*(?:#.*)?\r?$/m', $contents, $m) < 1) {
-            return [];
-        }
-
-        return array_values(array_map(trim(...), $m[1]));
-    }
-
-    /**
-     * The lowercased `key = ...` names at the top level of a table block.
-     *
-     * @return list<string>
-     */
-    private static function tomlTableKeys(string $block): array
-    {
-        $keys = [];
-        if (preg_match_all('/^[ \t]*["\']?([A-Za-z0-9_.-]+)["\']?[ \t]*=/m', $block, $m) > 0) {
-            foreach ($m[1] as $key) {
-                $keys[] = strtolower($key);
-            }
-        }
-
-        return $keys;
     }
 
     /**
@@ -887,7 +768,7 @@ final readonly class ProjectDiscoverer
         $directory = self::manifestDirectory($configPath);
         $scripts = [];
         foreach (['[project.scripts]', '[tool.poetry.scripts]'] as $header) {
-            $block = self::tableBlock($contents, $header);
+            $block = Toml::tableBlock($contents, $header);
             if ($block === null) {
                 continue;
             }
@@ -910,7 +791,7 @@ final readonly class ProjectDiscoverer
         }
 
         // vulture reads a whitelist as ordinary source through its `paths`.
-        $vulture = self::tableBlock($contents, '[tool.vulture]');
+        $vulture = Toml::tableBlock($contents, '[tool.vulture]');
         if ($vulture !== null && preg_match('/^\s*paths\s*=\s*\[([^\]]*)\]/m', $vulture, $paths) === 1
             && preg_match_all('/["\']([^"\']+\.py)["\']/', $paths[1], $files) > 0) {
             foreach ($files[1] as $file) {
@@ -942,7 +823,7 @@ final readonly class ProjectDiscoverer
     {
         $directory = self::manifestDirectory($configPath);
         $candidates = [];
-        foreach (self::arrayTables($contents, '[[bin]]') as $bin) {
+        foreach (Toml::arrayTables($contents, '[[bin]]') as $bin) {
             if ($bin['path'] !== '') {
                 $candidates[] = $bin['path'];
             } elseif ($bin['name'] !== '') {
@@ -954,7 +835,7 @@ final readonly class ProjectDiscoverer
         // A virtual workspace has no [package] and so no binary of its own.
         // Cargo runs a package's build script before compiling it: the file
         // `build =` names, or a `build.rs` beside the manifest.
-        $package = self::tableBlock($contents, '[package]');
+        $package = Toml::tableBlock($contents, '[package]');
         if ($package !== null) {
             if (preg_match('/^\s*build\s*=\s*"([^"]+)"/m', $package, $build) === 1) {
                 $candidates[] = $build[1];
@@ -1000,7 +881,7 @@ final readonly class ProjectDiscoverer
      */
     private static function cargoAutobins(string $contents): bool
     {
-        $block = self::tableBlock($contents, '[package]');
+        $block = Toml::tableBlock($contents, '[package]');
         if ($block === null) {
             return false;
         }
@@ -1009,7 +890,7 @@ final readonly class ProjectDiscoverer
         }
         $edition = preg_match('/^[ \t]*edition[ \t]*=[ \t]*["\']([^"\']+)["\']/m', $block, $m) === 1 ? $m[1] : '2015';
 
-        return $edition !== '2015' || self::arrayTables($contents, '[[bin]]') === [];
+        return $edition !== '2015' || Toml::arrayTables($contents, '[[bin]]') === [];
     }
 
     /**
@@ -1034,83 +915,6 @@ final readonly class ProjectDiscoverer
         sort($found, SORT_STRING);
 
         return $found;
-    }
-
-    /**
-     * The raw text after a `[header]` line until the next table header.
-     *
-     * @return non-empty-string|null
-     */
-    private static function tableBlock(string $contents, string $header): ?string
-    {
-        $pattern = '/^[ \t]*' . preg_quote($header, '/') . '[ \t]*(?:#.*)?\r?$/m';
-        if (preg_match($pattern, $contents, $m, PREG_OFFSET_CAPTURE) !== 1) {
-            return null;
-        }
-        $start = $m[0][1] + strlen($m[0][0]);
-        $end = preg_match('/^[ \t]*\[/m', $contents, $n, PREG_OFFSET_CAPTURE, $start) === 1
-            ? $n[0][1]
-            : strlen($contents);
-
-        return substr($contents, $start, $end - $start) . "\n";
-    }
-
-    /**
-     * The quoted strings inside `key = [...]` lists in a table block.
-     *
-     * Brackets are counted outside strings only, so a dependency like
-     * `fastapi[all]` does not end the list early. A null `$keys` accepts
-     * every list key in the block (needed for optional-dependency groups
-     * and script tables, whose group names are arbitrary).
-     *
-     * @param list<string>|null $keys
-     * @return list<string>
-     */
-    private static function tomlStringLists(string $block, ?array $keys): array
-    {
-        $result = [];
-        $offset = 0;
-        $length = strlen($block);
-        while ($offset < $length) {
-            $pattern = '/^[ \t]*([A-Za-z0-9_.-]+)[ \t]*=[ \t]*\[/m';
-            if (preg_match($pattern, $block, $m, PREG_OFFSET_CAPTURE, $offset) !== 1) {
-                break;
-            }
-            $key = $m[1][0];
-            if ($keys !== null && !in_array($key, $keys, true)) {
-                $offset = $m[0][1] + strlen($m[0][0]);
-                continue;
-            }
-            $open = $m[0][1] + strlen($m[0][0]) - 1; // position of '['
-            $depth = 0;
-            $inString = false;
-            $i = $open;
-            for (; $i < $length; ++$i) {
-                $c = $block[$i];
-                if ($c === '"' || $c === "'") {
-                    if ($i === 0 || $block[$i - 1] !== '\\') {
-                        $inString = !$inString;
-                    }
-                } elseif (!$inString) {
-                    if ($c === '[') {
-                        ++$depth;
-                    } elseif ($c === ']') {
-                        --$depth;
-                        if ($depth === 0) {
-                            ++$i; // stop just past the closing bracket
-                            break;
-                        }
-                    }
-                }
-            }
-            $list = substr($block, $open + 1, max(0, $i - $open - 2));
-            if (preg_match_all('/["\']([^"\']+)["\']/', $list, $pms) > 0) {
-                array_push($result, ...$pms[1]);
-            }
-            $offset = $i;
-        }
-
-        return $result;
     }
 
     /** Extensions a scanner emits nodes for (or anything else cannot be matched later). */
@@ -2045,68 +1849,6 @@ final readonly class ProjectDiscoverer
     }
 
     /**
-     * The files, less JavaScript `tsc` compiled beside its TypeScript source.
-     *
-     * Without an `outDir` the compiler writes `errors.js` next to `errors.ts`,
-     * and every import resolves to the `.ts`, so the `.js` read as a module
-     * nothing uses. It is build output: a same-named `.ts` or `.tsx` sits
-     * beside it and it ends with the source-map comment the compiler writes.
-     * Both are facts discovery already holds (the path list and the bytes it
-     * hashed), so the decision changes only when they do.
-     *
-     * @param list<DiscoveredFile> $files
-     * @return list<DiscoveredFile>
-     */
-    private static function withoutCompiledSiblings(array $files): array
-    {
-        $paths = [];
-        foreach ($files as $file) {
-            $paths[$file->relativePath] = true;
-        }
-
-        return array_values(array_filter(
-            $files,
-            static fn(DiscoveredFile $file): bool => !self::isCompiledSibling(
-                $file->relativePath,
-                $file->absolutePath,
-                static fn(string $sibling): bool => isset($paths[$sibling]),
-            ),
-        ));
-    }
-
-    /**
-     * Whether a JavaScript file is `tsc` output beside its TypeScript source:
-     * a same-named `.ts` or `.tsx` (`.mts` for `.mjs`, `.cts` for `.cjs`)
-     * exists, and the file ends with the source-map comment the compiler
-     * writes. Public because the drift probe must skip exactly what discovery
-     * skips; each caller says how a sibling's existence is known.
-     *
-     * @param callable(string): bool $exists whether a project-relative path exists
-     */
-    public static function isCompiledSibling(string $relativePath, string $absolutePath, callable $exists): bool
-    {
-        if (preg_match('/^(.*)\.(js|jsx|mjs|cjs)$/', $relativePath, $stem) !== 1) {
-            return false;
-        }
-        $sources = match ($stem[2]) {
-            'mjs' => ['mts'],
-            'cjs' => ['cts'],
-            default => ['ts', 'tsx'],
-        };
-        $sibling = false;
-        foreach ($sources as $source) {
-            $sibling = $sibling || $exists($stem[1] . '.' . $source);
-        }
-        if (!$sibling) {
-            return false;
-        }
-        $size = @filesize($absolutePath);
-        $tail = $size === false ? false : @file_get_contents($absolutePath, false, null, max(0, $size - 512));
-
-        return is_string($tail) && preg_match('~//# sourceMappingURL=\S+\s*$~', $tail) === 1;
-    }
-
-    /**
      * The directories a Doctrine Migrations config loads migrations from.
      *
      * `migrations_paths` maps a namespace to a directory, usually under
@@ -2766,191 +2508,6 @@ final readonly class ProjectDiscoverer
     }
 
     /**
-     * Whether a path is the project's own Knossos configuration, which the
-     * walk reads whatever the ignores say about it.
-     *
-     * The exception exists because a project that ignores its own settings
-     * file would be configuring a scan that never reads the configuration. It
-     * is public for the same reason {@see self::languageFor()} is: the drift
-     * oracles decide the same question about a path they were handed, and a
-     * second copy of this list would let a probe count a path discovery
-     * exempts, reporting drift no rescan can clear.
-     */
-    public static function isConfigurationFile(string $relativePath): bool
-    {
-        return in_array(strtolower(basename($relativePath)), ['knossos.json', 'knossos.jsonc'], true);
-    }
-
-    /**
-     * The language a file belongs to, or null when it is not source.
-     *
-     * Extension first, then a shebang for extensionless files. Executable entry
-     * points routinely have no extension — `artisan`, `bin/console`, this project's
-     * own `workers/php/bin/worker` — and skipping them makes whatever they invoke
-     * look unreferenced, so dead-code detection reports a live entry point as a
-     * deletion candidate.
-     *
-     * Public because the drift oracles have to answer the same question this
-     * loop answers, about a path they were handed rather than one they walked
-     * to: whether a file appearing beside the graph is source the scanner would
-     * have tracked, or a README the graph was never going to hold. Two
-     * definitions of "source" would let a probe report drift a rescan cannot
-     * clear.
-     *
-     * @param string|null $absolutePath needed only to read a shebang; omit and
-     *        extensionless files are simply not classified
-     */
-    public static function languageFor(string $relativePath, ?string $absolutePath = null): ?string
-    {
-        $extension = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
-        $byExtension = match ($extension) {
-            'php' => 'php',
-            'ts', 'tsx', 'mts', 'cts', 'vue', 'svelte', 'astro' => 'typescript',
-            'js', 'jsx', 'mjs', 'cjs' => 'javascript',
-            'py', 'pyi' => 'python',
-            'rs' => 'rust',
-            default => null,
-        };
-        if ($byExtension !== null || $extension !== '' || $absolutePath === null) {
-            return $byExtension;
-        }
-
-        return self::languageFromShebang($absolutePath);
-    }
-
-    /**
-     * The language named by a script's shebang, or null.
-     *
-     * Only the first line is read, and only for a file with no extension, so the
-     * cost is one bounded read of the handful of extensionless files in a tree
-     * (LICENSE, Dockerfile, Makefile) rather than of every file.
-     */
-    private static function languageFromShebang(string $absolutePath): ?string
-    {
-        $handle = @fopen($absolutePath, 'rb');
-        if (!is_resource($handle)) {
-            return null;
-        }
-        try {
-            $first = (string) fgets($handle, self::SHEBANG_PROBE_BYTES);
-        } finally {
-            fclose($handle);
-        }
-        if (!str_starts_with($first, '#!')) {
-            return null;
-        }
-
-        // Matches both `#!/usr/bin/php` and `#!/usr/bin/env php`, and tolerates a
-        // version suffix such as `php8.3`. Anchored to a word boundary so a path
-        // like /opt/phpstorm/bin/foo cannot be read as a PHP script.
-        return match (true) {
-            preg_match('#\b(php)[0-9.]*\b#i', $first) === 1 => 'php',
-            preg_match('#\b(node|nodejs|bun|deno)[0-9.]*\b#i', $first) === 1 => 'javascript',
-            preg_match('#\b(python)[0-9.]*\b#i', $first) === 1 => 'python',
-            default => null,
-        };
-    }
-    /**
-     * Which manifest kind a filename is, or null when it is not one.
-     *
-     * Public because it is half of what "an input this scanner reads" means,
-     * and the drift oracles need the same half: a path that is a unit here but
-     * not a language file has no `files` row, and a probe that asked only
-     * {@see self::languageFor()} treated editing composer.json as nothing at
-     * all. {@see \Knossos\Query\Drift\ScannedPaths} asks both.
-     */
-    public static function unitKindFor(string $relativePath): ?string
-    {
-        $basename = strtolower(basename($relativePath));
-        if ($basename === '.gitignore') {
-            return 'gitignore';
-        }
-        // A README writes down the command that runs a one-off script.
-        if (preg_match('/^readme(?:\.[a-z]+)?\.md$/', $basename) === 1) {
-            return 'readme';
-        }
-        // A shell script starts the programs it runs, which nothing imports.
-        if (str_ends_with($basename, '.sh') || str_ends_with($basename, '.bash')) {
-            return 'shell';
-        }
-        // A container's CMD and ENTRYPOINT start a script nothing imports.
-        if ($basename === 'dockerfile' || str_starts_with($basename, 'dockerfile.') || str_ends_with($basename, '.dockerfile')) {
-            return 'dockerfile';
-        }
-        if ($basename === 'composer.json') {
-            return 'composer';
-        }
-        if ($basename === 'knossos.json' || $basename === 'knossos.jsonc') {
-            return 'knossos';
-        }
-        if ($basename === 'package.json') {
-            return 'node';
-        }
-        // An Azure Functions binding manifest. The basename is generic enough
-        // that another tool could own it, so the reader below asks for the
-        // `scriptFile` key rather than assuming the shape; a function.json that
-        // is something else contributes no entry points and costs one unit.
-        if ($basename === 'function.json') {
-            return 'azure_function';
-        }
-        // An HTML shell is the only thing that reaches a single-page
-        // application's entry module, and nothing in the project imports it.
-        // Read as a unit rather than as a file: it contributes entry points,
-        // not nodes, and no scanner parses HTML.
-        if (str_ends_with($basename, '.html') || str_ends_with($basename, '.htm')) {
-            return 'html';
-        }
-        // Compose files, CI workflows and deployment manifests all name source
-        // files by path. Read for those paths only; no YAML parser is involved
-        // and none is needed, for the same reason the Composer script reader
-        // tokenises shell commands crudely.
-        if (str_ends_with($basename, '.yml') || str_ends_with($basename, '.yaml')) {
-            return 'yaml';
-        }
-        // NEON, PHPStan's config format, is YAML's shape: the rules and
-        // extensions it registers are class names nothing in PHP references.
-        if (str_ends_with($basename, '.neon') || str_ends_with($basename, '.neon.dist')) {
-            return 'yaml';
-        }
-        // A Claude Code plugin runs its hooks and MCP servers from commands in
-        // these files, which name the scripts by path; nothing imports them.
-        $normalized = str_replace('\\', '/', $relativePath);
-        if (in_array($basename, ['hooks.json', '.mcp.json', 'plugin.json'], true)
-            || preg_match('#(?:^|/)\.claude/settings(?:\.[a-z]+)?\.json$#', strtolower($normalized)) === 1) {
-            return 'agent_config';
-        }
-        if (in_array($basename, ['knip.json', 'knip.jsonc', '.knip.json', '.knip.jsonc'], true)) {
-            return 'knip';
-        }
-        if ($basename === 'pyproject.toml') {
-            return 'python';
-        }
-        // requirements.txt and its per-environment siblings (requirements-dev.txt,
-        // requirements-prod.txt) are the legacy Python dependency manifest — the
-        // pyproject.toml of projects that never migrated to PEP 621. Recorded as
-        // their own unit so an edit invalidates the analyzer cache the way a
-        // composer.json edit does.
-        if ($basename === 'requirements.txt' || (str_starts_with($basename, 'requirements-') && str_ends_with($basename, '.txt'))) {
-            return 'requirements';
-        }
-        if ($basename === 'tsconfig.json' || (str_starts_with($basename, 'tsconfig.') && str_ends_with($basename, '.json'))) {
-            return 'typescript';
-        }
-        if ($basename === 'cargo.toml') {
-            return 'cargo';
-        }
-
-        // A tool config is read TWICE: as an ordinary source module by the
-        // language worker, and as a unit here for the files it tells its tool
-        // to load. The two `if` blocks in discover() are independent, so one
-        // file may be both — which is why this needs no scanner change.
-        if (ToolConfigModuleRule::isToolConfigPath($relativePath) || $basename === 'cypress.json') {
-            return 'tool_config';
-        }
-
-        return null;
-    }
-    /**
      * The diagnostic for a symlink discovery skipped.
      *
      * A link that resolves stays inside the root or escapes it, and realpath
@@ -3019,16 +2576,6 @@ final readonly class ProjectDiscoverer
         return '/' . implode('/', $parts);
     }
 
-    /**
-     * Whether a project-relative path can be carried through ids, protocol
-     * messages and JSON results. Shared with the drift oracles so a name the
-     * walk skips is never reported as an addition.
-     */
-    public static function isSupportedPath(string $relative): bool
-    {
-        return mb_check_encoding($relative, 'UTF-8') && preg_match('/[\x00-\x1f\x7f]/', $relative) !== 1;
-    }
-
     /** A path expressed relative to the project root, which is the only form facts carry. */
 
     private function relative(string $root, string $path): string
@@ -3037,5 +2584,46 @@ final readonly class ProjectDiscoverer
         $path = str_replace('\\', '/', $path);
 
         return ltrim(substr($path, strlen($root)), '/');
+    }
+
+    /** Whether a path names a package or build manifest; see {@see SourceClassifier::isManifest()}. */
+    public static function isManifest(string $relativePath): bool
+    {
+        return SourceClassifier::isManifest($relativePath);
+    }
+
+    /**
+     * Whether a JavaScript file is `tsc` output beside its TypeScript source;
+     * see {@see SourceClassifier::isCompiledSibling()}.
+     *
+     * @param callable(string): bool $exists whether a project-relative path exists
+     */
+    public static function isCompiledSibling(string $relativePath, string $absolutePath, callable $exists): bool
+    {
+        return SourceClassifier::isCompiledSibling($relativePath, $absolutePath, $exists);
+    }
+
+    /** Whether a path is configuration discovery always reads; see {@see SourceClassifier::isConfigurationFile()}. */
+    public static function isConfigurationFile(string $relativePath): bool
+    {
+        return SourceClassifier::isConfigurationFile($relativePath);
+    }
+
+    /** The source language of a path, or null; see {@see SourceClassifier::languageFor()}. */
+    public static function languageFor(string $relativePath, ?string $absolutePath = null): ?string
+    {
+        return SourceClassifier::languageFor($relativePath, $absolutePath);
+    }
+
+    /** The project unit kind a path configures, or null; see {@see SourceClassifier::unitKindFor()}. */
+    public static function unitKindFor(string $relativePath): ?string
+    {
+        return SourceClassifier::unitKindFor($relativePath);
+    }
+
+    /** Whether a path's name can be carried by a stable id; see {@see SourceClassifier::isSupportedPath()}. */
+    public static function isSupportedPath(string $relative): bool
+    {
+        return SourceClassifier::isSupportedPath($relative);
     }
 }
