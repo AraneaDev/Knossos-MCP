@@ -220,13 +220,9 @@ final class ProcessGitProviderTest extends KnossosTestCase
     {
         // 10:00+02:00 is 08:00 UTC; 09:00+00:00 is 09:00 UTC — so the SECOND
         // commit is later, even though the first sorts higher as a string.
-        $log = implode("\n", [
-            "KNOSSOS_COMMIT\x1faaa\x1f2024-01-01T10:00:00+02:00\x1f1704096000\x1fa@example.com",
-            'src/Foo.php',
-            '',
-            "KNOSSOS_COMMIT\x1fbbb\x1f2024-01-01T09:00:00+00:00\x1f1704099600\x1fb@example.com",
-            'src/Foo.php',
-            '',
+        $log = self::logOutput([
+            ["KNOSSOS_COMMIT\x1faaa\x1f2024-01-01T10:00:00+02:00\x1f1704096000\x1fa@example.com", ['src/Foo.php']],
+            ["KNOSSOS_COMMIT\x1fbbb\x1f2024-01-01T09:00:00+00:00\x1f1704099600\x1fb@example.com", ['src/Foo.php']],
         ]);
 
         $result = (new ProcessGitHistoryProvider(runner: $this->mockRunner($log)))->history('/tmp', 30, 100, 1000);
@@ -236,17 +232,10 @@ final class ProcessGitProviderTest extends KnossosTestCase
 
     public function testHistoryParsesCommitsAndAggregatesFiles(): void
     {
-        $gitLog = implode("\n", [
-            "KNOSSOS_COMMIT\x1fabc123\x1f2026-07-20T10:00:00+00:00\x1f1784541600\x1fa@test.dev",
-            "src/InvoiceService.php",
-            "src/Checkout.php",
-            '',
-            "KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1f1784451600\x1fb@test.dev",
-            "src/InvoiceService.php",
-            '',
-            "KNOSSOS_COMMIT\x1fghi789\x1f2026-07-18T08:00:00+00:00\x1f1784361600\x1fa@test.dev",
-            "src/Order.php",
-            '',
+        $gitLog = self::logOutput([
+            ["KNOSSOS_COMMIT\x1fabc123\x1f2026-07-20T10:00:00+00:00\x1f1784541600\x1fa@test.dev", ['src/InvoiceService.php', 'src/Checkout.php']],
+            ["KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1f1784451600\x1fb@test.dev", ['src/InvoiceService.php']],
+            ["KNOSSOS_COMMIT\x1fghi789\x1f2026-07-18T08:00:00+00:00\x1f1784361600\x1fa@test.dev", ['src/Order.php']],
         ]);
         $mock = $this->mockRunner($gitLog);
         $provider = new ProcessGitHistoryProvider(runner: $mock);
@@ -263,14 +252,12 @@ final class ProcessGitProviderTest extends KnossosTestCase
 
     public function testHistoryTruncatesWhenExceedingMaxCommits(): void
     {
-        $lines = [];
+        $commits = [];
         for ($i = 0; $i < 5; ++$i) {
             $hash = str_pad((string) $i, 40, 'a');
-            $lines[] = "KNOSSOS_COMMIT\x1f{$hash}\x1f2026-07-20T10:00:00+00:00\x1f1784541600\x1fa@test.dev";
-            $lines[] = "src/file{$i}.php";
-            $lines[] = '';
+            $commits[] = ["KNOSSOS_COMMIT\x1f{$hash}\x1f2026-07-20T10:00:00+00:00\x1f1784541600\x1fa@test.dev", ["src/file{$i}.php"]];
         }
-        $mock = $this->mockRunner(implode("\n", $lines));
+        $mock = $this->mockRunner(self::logOutput($commits));
         $provider = new ProcessGitHistoryProvider(runner: $mock);
         $result = $provider->history($this->existingDir, 30, 3, 100);
 
@@ -282,14 +269,10 @@ final class ProcessGitProviderTest extends KnossosTestCase
     {
         // Malformed commit line (3 parts instead of 5) comes FIRST — its path
         // leaks into an undefined $current (null) and is dropped.
-        $gitLog = implode("\n", [
+        $gitLog = self::logOutput([
             // Short line — only 3 parts instead of 5
-            "KNOSSOS_COMMIT\x1fabc123\x1f2026-07-20T10:00:00+00:00",
-            "src/skipped_path.php",
-            '',
-            "KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1f1784451600\x1fb@test.dev",
-            "src/valid.php",
-            '',
+            ["KNOSSOS_COMMIT\x1fabc123\x1f2026-07-20T10:00:00+00:00", ['src/skipped_path.php']],
+            ["KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1f1784451600\x1fb@test.dev", ['src/valid.php']],
         ]);
         $mock = $this->mockRunner($gitLog);
         $provider = new ProcessGitHistoryProvider(runner: $mock);
@@ -307,14 +290,10 @@ final class ProcessGitProviderTest extends KnossosTestCase
         // preceding commit active across the malformed header, the orphaned path
         // is credited to it — silent per-file attribution corruption in
         // change_impact rather than a dropped record.
-        $gitLog = implode("\n", [
-            "KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1f1784451600\x1fb@test.dev",
-            'src/valid.php',
-            '',
+        $gitLog = self::logOutput([
+            ["KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1f1784451600\x1fb@test.dev", ['src/valid.php']],
             // Short line — only 3 parts instead of 5.
-            "KNOSSOS_COMMIT\x1fabc123\x1f2026-07-20T10:00:00+00:00",
-            'src/orphaned_path.php',
-            '',
+            ["KNOSSOS_COMMIT\x1fabc123\x1f2026-07-20T10:00:00+00:00", ['src/orphaned_path.php']],
         ]);
         $provider = new ProcessGitHistoryProvider(runner: $this->mockRunner($gitLog));
         $result = $provider->history($this->existingDir, 30, 10, 100);
@@ -526,7 +505,61 @@ final class ProcessGitProviderTest extends KnossosTestCase
         }
     }
 
+    // ── Paths git would quote ────────────────────────────────────────
+
+    /**
+     * Without -z git C-quoted a path holding '"', '\', a tab or a newline; the
+     * quoted form failed path validation and the file vanished from history.
+     * trim() also cut a real leading or trailing space. RelativePath still
+     * rejects tab and newline (control characters), and discovery skips such
+     * names, so the graph never holds them: those two are skipped whole, and
+     * never split into fragments credited to other files.
+     */
+    public function testHistoryKeepsPathsGitWouldQuote(): void
+    {
+        $header = "KNOSSOS_COMMIT\x1fabc\x1f2026-07-20T10:00:00+00:00\x1f1784541600\x1fa@test.dev";
+        $runner = $this->recordingRunner(static fn(array $command): string => self::logOutput([[$header, ['we"ird.ts', "tab\tname.ts", "new\nline.ts", ' spaced.ts ']]]));
+
+        $history = (new ProcessGitHistoryProvider(runner: $runner))->history($this->existingDir, 30, 10, 100);
+
+        assertSame([' spaced.ts ', 'we"ird.ts'], array_keys($history['files']));
+        assertSame([1, 1], array_column($history['files'], 'commit_count'));
+        assertSame(true, in_array('-z', $runner->commandsWith('log')[0], true));
+    }
+
+    public function testRealGitHistoryKeepsAQuotedPathAndSkipsATabbedOneWhole(): void
+    {
+        $repo = $this->gitRepository();
+        try {
+            $this->writeFiles($repo, ['we"ird.ts' => "w\n", "a\tb.ts" => "t\n", ' spaced.ts ' => "s\n"]);
+            $this->git($repo, ['add', '.']);
+            $this->git($repo, ['commit', '--quiet', '-m', 'odd names']);
+
+            $history = (new ProcessGitHistoryProvider())->history($repo, 30, 10, 5000);
+
+            assertSame([' spaced.ts ', 'we"ird.ts'], array_keys($history['files']));
+        } finally {
+            $this->removeTempTree($repo);
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
+
+    /**
+     * What `git log -z --name-only` prints for these commits: each header
+     * NUL-terminated, a newline, then each path NUL-terminated.
+     *
+     * @param list<array{0: string, 1: list<string>}> $commits
+     */
+    private static function logOutput(array $commits): string
+    {
+        $output = '';
+        foreach ($commits as [$header, $paths]) {
+            $output .= $header . "\0" . ($paths === [] ? '' : "\n" . implode("\0", $paths) . "\0");
+        }
+
+        return $output;
+    }
 
     /** A fresh, empty repository under the temporary directory; skips the test without git. */
     private function gitRepository(): string

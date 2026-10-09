@@ -89,13 +89,49 @@ final class PaneQueriesTest extends KnossosTestCase
                     if ($count === '--max-count=' . ChurnService::COMMITS) {
                         throw new RuntimeException('Git churn output exceeded its configured byte limit.');
                     }
-                    return "\x1e\nsrc/Core/Greeter.php\n\x1e\nsrc/Core/Greeter.php\n";
+                    return "KNOSSOS_CHURN\x1f\0\nsrc/Core/Greeter.php\0KNOSSOS_CHURN\x1f\0\nsrc/Core/Greeter.php\0";
                 }
             };
             $churn = (new ChurnService($pdo, $runner))->churn($root);
             assertSame(['ok', 2, true], [$churn['status'], $churn['commits'], $churn['truncated']]);
             assertSame('src/Core/Greeter.php', $churn['files'][0]['path']);
             assertSame(2, count($runner->asked));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Without -z git C-quoted a path holding a double quote, so its churn was
+     * counted under `"src/Core/we\"ird.php"`, a name the graph does not hold,
+     * and the file never ranked; trim() also cut a real edge space.
+     */
+    #[Group('query')]
+    public function testChurnCountsAPathGitWouldQuoteUnderItsRealName(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            file_put_contents($root . '/src/Core/we"ird.php', "<?php\n\ndeclare(strict_types=1);\n\nnamespace App\\Core;\n\nfinal class Weird\n{\n}\n");
+            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+            $runner = new class implements GitProcessRunnerInterface {
+                /** @var list<string> */
+                public array $log = [];
+
+                public function run(array $command, int $timeoutMs, string $operation): string
+                {
+                    if (in_array('rev-parse', $command, true)) {
+                        return str_repeat('a', 40) . "\n";
+                    }
+                    $this->log = $command;
+
+                    return "KNOSSOS_CHURN\x1f\0\nsrc/Core/we\"ird.php\0src/Core/Greeter.php\0KNOSSOS_CHURN\x1f\0\nsrc/Core/we\"ird.php\0";
+                }
+            };
+            $churn = (new ChurnService($pdo, $runner))->churn($root);
+            assertSame(['ok', 2], [$churn['status'], $churn['commits']]);
+            $commits = array_column($churn['files'], 'commits', 'path');
+            assertSame([2, 1], [$commits['src/Core/we"ird.php'] ?? null, $commits['src/Core/Greeter.php'] ?? null]);
+            assertSame(true, in_array('-z', $runner->log, true));
         } finally {
             $this->removeTempTree($root);
         }
