@@ -306,6 +306,69 @@ describe("TypeScriptScanner.scan packages below node_modules", () => {
     });
 });
 
+describe("TypeScriptScanner.scan specifiers nothing resolves", () => {
+    function packageTargets(source) {
+        const root = fixture({ "src/a.ts": source });
+        const contributions = [];
+        new TypeScriptScanner().scan({ root, files: ["src/a.ts"] }, (c) =>
+            contributions.push(c),
+        );
+        return {
+            targets: contributions
+                .flatMap((c) => c.edges)
+                .filter((e) => e.kind === "imports")
+                .map((e) => e.target)
+                .sort(),
+            nodes: contributions
+                .flatMap((c) => c.nodes)
+                .filter((n) => n.kind === "package")
+                .map((n) => n.canonical_name)
+                .sort(),
+        };
+    }
+
+    it("name a package only when the specifier can be an npm package", () => {
+        const { targets, nodes } = packageTargets(
+            [
+                'import a from "@/components";',
+                'import b from "~/stores/user";',
+                'import c from "@/";',
+                'import d from "Bad Name";',
+                'import e from "@scope/pkg/sub";',
+                'import f from "lodash/fp";',
+                'import g from "~";',
+                "export const all = [a, b, c, d, e, f, g];",
+                "",
+            ].join("\n"),
+        );
+
+        expect(targets).toEqual(["ts:package:@scope/pkg", "ts:package:lodash"]);
+        expect(nodes).toEqual(["@scope/pkg", "lodash"]);
+    });
+
+    it("name a Node built-in the same with or without its node: prefix", () => {
+        const { targets } = packageTargets(
+            [
+                'import { readFileSync } from "node:fs";',
+                'import { statSync } from "fs";',
+                'import { readFile } from "node:fs/promises";',
+                'import { join } from "node:path";',
+                // Only reachable under its prefix: without it, `test` names
+                // an npm package.
+                'import { it } from "node:test";',
+                "export const all = [readFileSync, statSync, readFile, join, it];",
+                "",
+            ].join("\n"),
+        );
+
+        expect(targets).toEqual([
+            "ts:package:fs",
+            "ts:package:node:test",
+            "ts:package:path",
+        ]);
+    });
+});
+
 // A code-split route hands the module object to React and never names the
 // component: `lazy(() => import('./pages/Admin'))`. The module gets its edge,
 // the component inside it gets nothing.

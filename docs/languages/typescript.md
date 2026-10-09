@@ -76,6 +76,16 @@ Repeated edges are collapsed to the persistence identity. Mixed type/value
 imports retain `type_only_variants` so deduplication does not erase that
 distinction.
 
+An import of something outside the project targets a `package` node named
+after the package: `lodash` for `lodash/fp`, `@scope/pkg` for
+`@scope/pkg/sub`. A Node built-in is one package with or without its `node:`
+prefix (`node:fs` and `fs` are both `fs`); one Node only offers under the
+prefix, such as `node:test`, keeps it. A specifier that resolves to nothing
+and could not be an npm package name, such as an alias your bundler maps but
+your tsconfig does not (`@/components`, `~/stores`), gets no edge: it names
+your own code, not a dependency, and in a file it type-checks the compiler
+reports it as a missing module.
+
 ## Declarations
 
 Besides classes, interfaces, enums, type aliases, namespaces, functions and

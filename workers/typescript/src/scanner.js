@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { isBuiltin } from "node:module";
 import path from "node:path";
 import ts from "typescript";
 import { FactAccumulator } from "./fact-accumulator.js";
@@ -5216,15 +5217,34 @@ function unalias(checker, symbol) {
         : symbol;
 }
 
+/**
+ * A name npm can publish: an optional scope and a name of letters, digits,
+ * `-`, `.` and `_`, neither starting with `.`, `_` or `-`. Capitals are
+ * allowed, as older packages have them.
+ */
+const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+
+/**
+ * The package a specifier names, or null when it names none.
+ *
+ * Only a name npm can publish is a package. A specifier nothing resolved
+ * that is not one (`@/components`, `~/stores/user`, `$lib/x`, a bundler's
+ * `virtual:` module) is a path under a name the project's bundler gives it,
+ * and no dependency. A Node built-in is named without its `node:` prefix, so
+ * `node:fs` and `fs` are one package; one only reachable under the prefix
+ * (`node:test`) keeps it.
+ */
 function externalPackageName(specifier) {
-    if (
-        specifier.startsWith(".") ||
-        specifier.startsWith("/") ||
-        specifier.startsWith("#")
-    )
-        return null;
+    if (specifier.startsWith("node:")) {
+        if (!isBuiltin(specifier)) return null;
+        const name = specifier.slice("node:".length).split("/")[0];
+        return isBuiltin(name) ? name : `node:${name}`;
+    }
     const parts = specifier.split("/");
-    return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+    const name = specifier.startsWith("@")
+        ? parts.slice(0, 2).join("/")
+        : parts[0];
+    return NPM_PACKAGE_NAME.test(name) ? name : null;
 }
 
 function evidence(sourceFile, relative, node) {
