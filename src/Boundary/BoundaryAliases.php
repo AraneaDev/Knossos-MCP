@@ -20,7 +20,8 @@ final class BoundaryAliases
 
     /**
      * A matcher with its aliases removed, and the aliases: what a stored
-     * matcher holds, read leniently, since an imported bundle writes it too.
+     * matcher holds, each name once, read leniently, since an imported bundle
+     * writes it too.
      *
      * @param array<string, mixed> $matcher
      * @return array{0: array<string, mixed>, 1: list<string>}
@@ -31,7 +32,7 @@ final class BoundaryAliases
         unset($matcher['aliases']);
         $aliases = [];
         foreach (is_array($stored) ? $stored : [] as $alias) {
-            if (is_string($alias) && $alias !== '') {
+            if (is_string($alias) && $alias !== '' && !in_array($alias, $aliases, true)) {
                 $aliases[] = $alias;
             }
         }

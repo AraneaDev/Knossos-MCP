@@ -117,4 +117,18 @@ final class BoundaryReferencesTest extends TestCase
         assertSame('b-x', $references->resolve('Y'));
         assertSame(null, $references->find(StableId::boundary(self::PROJECT, 'Y', 'inferred')));
     }
+
+    /** A former name stored twice is still one boundary's, and candidates are listed in id order whatever order the rows came in. */
+    public function testARepeatedAliasIsOneCandidateAndCandidatesAreSorted(): void
+    {
+        $row = static fn(string $id, string $name, array $aliases): array => [
+            'id' => $id, 'name' => $name, 'source' => 'inferred',
+            'matcher_json' => (string) json_encode(['type' => 'path_prefix', 'value' => '', 'aliases' => $aliases]),
+        ];
+        $references = BoundaryReferences::fromRows(self::PROJECT, [$row('b-2', 'two', ['x', 'x', 'y']), $row('b-1', 'one', ['y'])]);
+
+        assertSame('b-2', $references->resolve('x'));
+        $error = captureThrows(static fn() => $references->resolve('y'), InvalidArgumentException::class);
+        assertSame('Ambiguous policy boundary name; use its stable ID: y (candidates: b-1, b-2)', $error->getMessage());
+    }
 }

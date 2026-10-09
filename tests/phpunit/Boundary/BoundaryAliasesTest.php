@@ -35,7 +35,7 @@ final class BoundaryAliasesTest extends KnossosTestCase
         // A stored matcher is read from the database, which an imported bundle
         // also writes: anything but a list of non-empty strings is no alias.
         assertSame([$matcher, []], BoundaryAliases::split($matcher + ['aliases' => 'a']));
-        assertSame([$matcher, ['a']], BoundaryAliases::split($matcher + ['aliases' => ['a', 3, '', ['b']]]));
+        assertSame([$matcher, ['a']], BoundaryAliases::split($matcher + ['aliases' => ['a', 3, '', ['b'], 'a']]));
     }
 
     /** Stored through a real scan: the aliases ride along in matcher_json and membership is untouched. */

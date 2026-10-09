@@ -64,7 +64,7 @@ final readonly class BoundaryReferences
             }
         }
 
-        return new self($names, $byName, array_map(static fn(array $ids): array => array_values(array_unique($ids)), $byFormer));
+        return new self($names, $byName, $byFormer);
     }
 
     /**
