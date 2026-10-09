@@ -17,8 +17,12 @@ declare(strict_types=1);
  *       prints the per-file times of the given JUnit logs as a weights file,
  *       the shape of tests/phpunit-shard-weights.json.
  *
- * The files come from `vendor/bin/phpunit --list-test-files`, or from a list
- * file (one path per line) when one is given. Each weighs its measured time
+ * The files are those PHPUnit lists tests in (`--list-tests-xml`), or the
+ * lines of a list file when one is given. A `*Test.php` that holds no runnable
+ * test, such as an abstract base class, is not one of them: it never shows up
+ * in a JUnit log, so expecting it there would make the merge refuse a
+ * complete run. --config names another PHPUnit config to list and copy from
+ * than phpunit.xml. Each weighs its measured time
  * from the weights file (tests/phpunit-shard-weights.json unless --weights
  * names another); a file the weights do not know weighs their median. The
  * heaviest file goes first, each to the shard with the least weight so far,
@@ -53,11 +57,14 @@ $out = null;
 $filesFrom = null;
 $weightsFrom = $root . '/tests/phpunit-shard-weights.json';
 $weigh = null;
+$config = $root . '/phpunit.xml';
 foreach (array_slice($argv, 1) as $argument) {
     if ($weigh !== null) {
         $weigh[] = $argument;
     } elseif ($argument === '--weigh') {
         $weigh = [];
+    } elseif (str_starts_with($argument, '--config=') && strlen($argument) > 9) {
+        $config = substr($argument, 9);
     } elseif (str_starts_with($argument, '--weights=') && strlen($argument) > 10) {
         $weightsFrom = substr($argument, 10);
     } elseif (preg_match('/^--shard=(\d+)\/(\d+)$/', $argument, $match) === 1) {
@@ -117,7 +124,7 @@ if ($shard !== null && $out === null) {
  *
  * @return list<string>
  */
-function shardTestFiles(string $root, ?string $filesFrom): array
+function shardTestFiles(string $root, ?string $filesFrom, string $config): array
 {
     if ($filesFrom !== null) {
         $content = @file_get_contents($filesFrom);
@@ -126,17 +133,24 @@ function shardTestFiles(string $root, ?string $filesFrom): array
         }
         $lines = explode("\n", $content);
     } else {
+        $listing = tempnam(sys_get_temp_dir(), 'knossos-phpunit-tests-');
+        if ($listing === false) {
+            shardFail('cannot create a temporary file for the test listing');
+        }
         $output = [];
         $status = 0;
         exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root . '/vendor/bin/phpunit')
-            . ' -c ' . escapeshellarg($root . '/phpunit.xml') . ' --list-test-files', $output, $status);
-        if ($status !== 0) {
-            shardFail('vendor/bin/phpunit --list-test-files failed');
+            . ' -c ' . escapeshellarg($config) . ' --list-tests-xml ' . escapeshellarg($listing) . ' 2>&1', $output, $status);
+        $document = new DOMDocument();
+        $loaded = $status === 0 && @$document->load($listing);
+        @unlink($listing);
+        if (!$loaded) {
+            shardFail("vendor/bin/phpunit --list-tests-xml failed:\n" . implode("\n", $output));
         }
         $lines = [];
-        foreach ($output as $line) {
-            if (str_starts_with($line, ' - ')) {
-                $lines[] = substr($line, 3);
+        foreach ($document->getElementsByTagName('testClass') as $class) {
+            if ($class->getElementsByTagName('testMethod')->length > 0) {
+                $lines[] = $class->getAttribute('file');
             }
         }
     }
@@ -183,6 +197,14 @@ function shardAssign(array $files, ?string $weightsFrom, int $of): array
             $known[$file] = (int) round($seconds * 10);
         }
     }
+    // A weight for a file the suite no longer has (renamed or deleted since
+    // the weights were measured) is left out, so it neither fails the run nor
+    // moves the median the files it does not know are given.
+    $stale = array_diff_key($known, array_flip($files));
+    if ($stale !== []) {
+        fwrite(STDERR, sprintf("phpunit-shard: ignoring %d weight(s) for files the suite does not have; regenerate the weights with --weigh\n", count($stale)));
+    }
+    $known = array_intersect_key($known, array_flip($files));
     $sortedKnown = array_values($known);
     sort($sortedKnown);
     $median = $sortedKnown === [] ? 1 : $sortedKnown[intdiv(count($sortedKnown), 2)];
@@ -214,7 +236,7 @@ function shardAssign(array $files, ?string $weightsFrom, int $of): array
     return $ordered;
 }
 
-$files = shardTestFiles($root, $filesFrom);
+$files = shardTestFiles($root, $filesFrom, $config);
 $of = $list ?? $count;
 $assignment = shardAssign($files, $weightsFrom, $of);
 
@@ -227,13 +249,14 @@ if ($list !== null) {
 
 $selected = array_keys(array_filter($assignment, static fn(int $index): bool => $index === $shard));
 
-$absolute = static fn(string $path): string => str_starts_with($path, '/') ? $path : $root . '/' . $path;
+$base = dirname((string) realpath($config));
+$absolute = static fn(string $path): string => str_starts_with($path, '/') ? $path : $base . '/' . $path;
 
 $document = new DOMDocument();
 $document->preserveWhiteSpace = false;
 $document->formatOutput = true;
-if (!$document->load($root . '/phpunit.xml')) {
-    shardFail('cannot read phpunit.xml');
+if (!@$document->load($config)) {
+    shardFail("cannot read {$config}");
 }
 $phpunit = $document->documentElement;
 if (!$phpunit instanceof DOMElement) {

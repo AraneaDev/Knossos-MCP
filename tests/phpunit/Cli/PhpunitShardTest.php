@@ -37,10 +37,7 @@ final class PhpunitShardTest extends KnossosTestCase
     protected function tearDown(): void
     {
         if ($this->directory !== '' && is_dir($this->directory)) {
-            foreach (glob($this->directory . '/*') ?: [] as $file) {
-                unlink($file);
-            }
-            rmdir($this->directory);
+            $this->runFixtureCommand(['rm', '-rf', $this->directory]);
         }
     }
 
@@ -262,13 +259,45 @@ final class PhpunitShardTest extends KnossosTestCase
         assertSame(['tests/phpunit/A/ATest.php' => 0.1, 'tests/phpunit/B/BTest.php' => 2.3], json_decode($weights, true));
     }
 
-    /** The committed weights name only test files that exist, so a renamed file does not linger there. */
-    public function testCommittedWeightsNameExistingTestFiles(): void
+    /**
+     * A weight for a test file that was renamed or deleted since the weights
+     * were measured is ignored: it neither fails the run nor shifts the
+     * median the unknown files are given.
+     */
+    public function testStaleWeightsAreIgnored(): void
     {
-        $root = self::repositoryRoot();
-        $weights = json_decode((string) file_get_contents($root . '/tests/phpunit-shard-weights.json'), true, 512, JSON_THROW_ON_ERROR);
-        $stale = array_values(array_filter(array_keys($weights), static fn(string $file): bool => !is_file($root . '/' . $file)));
-        assertSame([], $stale, 'regenerate tests/phpunit-shard-weights.json with tools/phpunit-shard --weigh');
+        $list = $this->writeList(['a/HeavyTest.php', 'b/NewTest.php', 'c/OtherNewTest.php']);
+        $weights = $this->directory . '/weights.json';
+        file_put_contents($weights, json_encode(['a/HeavyTest.php' => 60, 'z/GoneTest.php' => 1, 'z/AlsoGoneTest.php' => 1]));
+
+        [$exit, $output, $errors] = $this->runFixtureCommandOutput([PHP_BINARY, self::repositoryRoot() . '/tools/phpunit-shard', '--list=2', '--files-from=' . $list, '--weights=' . $weights]);
+
+        assertSame(0, $exit, $errors);
+        assertStringContainsString('ignoring 2 weight(s)', $errors);
+        // Counting the stale entries, the median would be 1 and both new files
+        // would land in shard 2. Without them it is 60, so all three weigh the
+        // same: Heavy to 1, New to 2, and OtherNew to the lower of two equal
+        // shards, 1.
+        assertSame("a/HeavyTest.php\t1\nb/NewTest.php\t2\nc/OtherNewTest.php\t1\n", $output);
+    }
+
+    /**
+     * A *Test.php with no runnable test, such as an abstract base class, never
+     * appears in a JUnit log, so it must not be expected there: the selector
+     * lists only the files PHPUnit lists tests in.
+     */
+    public function testFilesWithoutRunnableTestsAreLeftOut(): void
+    {
+        $suite = $this->directory . '/suite';
+        mkdir($suite, 0o700);
+        file_put_contents($suite . '/BaseTest.php', "<?php\nnamespace KnossosShardFixture;\nabstract class BaseTest extends \\PHPUnit\\Framework\\TestCase\n{\n    public function testInherited(): void\n    {\n        \\PHPUnit\\Framework\\assertTrue(true);\n    }\n}\n");
+        file_put_contents($suite . '/RealTest.php', "<?php\nnamespace KnossosShardFixture;\nrequire_once __DIR__ . '/BaseTest.php';\nfinal class RealTest extends BaseTest\n{\n}\n");
+        file_put_contents($this->directory . '/phpunit.xml', '<?xml version="1.0"?><phpunit bootstrap="' . self::repositoryRoot() . '/vendor/autoload.php">'
+            . '<testsuites><testsuite name="fixture"><directory>suite</directory></testsuite></testsuites></phpunit>');
+
+        $listed = $this->shard(['--list=2', '--config=' . $this->directory . '/phpunit.xml']);
+
+        assertSame($suite . "/RealTest.php\t1\n", $listed);
     }
 
     /** @return list<string> */

@@ -28,10 +28,10 @@ machine.
 ## Profiles and lanes
 
 `fast` is what the commit hook runs. `full` is what the push hook and CI run. The
-script is one linear gate, and locally it runs as one. CI splits it into six
-lanes that run at the same time, the `coverage` lane itself split over several
-jobs (see [how CI runs it](#how-ci-runs-it)), because most of the work does not depend on the
-rest of it. Both commands take an optional second argument naming a lane, so a
+script is one linear gate, and locally it runs as one. CI runs it as jobs that
+run at the same time, because most of the work does not depend on the rest of
+it: five lanes in a matrix, and the `coverage` lane as several shards and a
+merge (see [how CI runs it](#how-ci-runs-it)). Both commands take an optional second argument naming a lane, so a
 lane that failed in CI can be reproduced here:
 
 ```sh

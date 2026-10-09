@@ -27,8 +27,14 @@ shard with the least measured time so far, by the times in
 `tests/phpunit-shard-weights.json`. The split depends only on the file names and
 that file, so every runner computes the same one. The merge refuses unless every shard of the same N finished, left PHP
 coverage data, and every test file ran in exactly one shard, the one it was
-assigned to. Splitting cannot change a figure: pcov's data merges by the highest
-hit count per line, and the JavaScript and Python data by union.
+assigned to. A `*Test.php` with no runnable test, such as an abstract
+base class, is not expected in any shard. The JavaScript and Python data merge by
+union, so splitting cannot change those figures. For PHP, which lines count as
+executable depends on load order: PHP folds a class constant into the code when
+its class is already loaded, leaving no executable line. The merge therefore
+counts a line only when every shard that loaded its file reports it, and as
+covered when any of them hit it, so a different split cannot add an uncovered
+line.
 
 ## Enforced floors
 
