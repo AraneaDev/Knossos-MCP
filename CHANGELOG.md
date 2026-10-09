@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/AraneaDev/knossos/compare/v0.21.0...v0.21.1) (2026-10-09)
+
+
+### Fixes
+
+* make the MCP transports and CLI keep their contracts ([#178](https://github.com/AraneaDev/knossos/issues/178)) ([20dc5e4](https://github.com/AraneaDev/knossos/commit/20dc5e4c3fa385b2191581a4c36870991f04c940))
+
 ## [0.21.0](https://github.com/AraneaDev/knossos/compare/v0.20.1...v0.21.0) (2026-10-09)
 
 
