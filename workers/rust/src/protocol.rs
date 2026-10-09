@@ -16,6 +16,12 @@ pub const PROTOCOL_VERSION: &str = "1.0";
 /// The output schema version this worker emits.
 pub const OUTPUT_SCHEMA_VERSION: &str = "1.0";
 
+/// The hash of the source this binary was built from, embedded by `build.rs`.
+///
+/// See [`crate::source_hash`] for the definition the core recomputes over its
+/// checkout to report a binary that is older than the source beside it.
+pub const SOURCE_HASH: &str = env!("KNOSSOS_SOURCE_HASH");
+
 /// The worker's identity, returned from `initialize`.
 #[derive(Debug, Serialize)]
 pub struct Manifest {
@@ -33,6 +39,8 @@ pub struct Manifest {
     pub file_extensions: Vec<&'static str>,
     /// Optional capabilities a consumer may require.
     pub capabilities: Vec<&'static str>,
+    /// Hash of the source this binary was built from.
+    pub source_hash: &'static str,
 }
 
 impl Manifest {
@@ -52,6 +60,7 @@ impl Manifest {
                 "input_hashes",
                 "read_attribution",
             ],
+            source_hash: SOURCE_HASH,
         }
     }
 }

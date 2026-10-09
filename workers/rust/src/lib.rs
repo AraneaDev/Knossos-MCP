@@ -12,4 +12,5 @@ pub mod layout;
 pub mod protocol;
 pub mod resolve;
 pub mod server;
+pub mod source_hash;
 pub mod visit;
