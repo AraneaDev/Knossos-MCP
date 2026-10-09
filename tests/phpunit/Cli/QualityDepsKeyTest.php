@@ -93,20 +93,7 @@ final class QualityDepsKeyTest extends KnossosTestCase
     #[Group('documentation')]
     public function testKeyFollowsItsInputsAndIgnoresBuildOutput(): void
     {
-        $sandbox = sys_get_temp_dir() . '/knossos-deps-key-' . bin2hex(random_bytes(6));
-        try {
-            $inputs = array_values(array_filter(explode("\n", $this->runKeyScript(self::repositoryRoot(), ['--inputs'])), static fn(string $line): bool => $line !== ''));
-            mkdir($sandbox . '/tools', 0o777, true);
-            copy(self::repositoryRoot() . '/tools/quality-deps-key', $sandbox . '/tools/quality-deps-key');
-            chmod($sandbox . '/tools/quality-deps-key', 0o755);
-            foreach ($inputs as $input) {
-                $path = $input === 'workers/rust' ? $sandbox . '/workers/rust/Cargo.toml' : $sandbox . '/' . $input;
-                if (!is_dir(dirname($path))) {
-                    mkdir(dirname($path), 0o777, true);
-                }
-                file_put_contents($path, $input . "\n");
-            }
-
+        $this->inSandbox(function (string $sandbox): void {
             $first = $this->runKeyScript($sandbox, []);
             assertMatchesRegularExpression('/^[0-9a-f]{16}\n$/', $first);
             assertSame($first, $this->runKeyScript($sandbox, []));
@@ -123,6 +110,88 @@ final class QualityDepsKeyTest extends KnossosTestCase
 
             file_put_contents($sandbox . '/composer.lock', "changed\n");
             assertNotSame($changedRust, $this->runKeyScript($sandbox, []), 'a lockfile change kept the key');
+        });
+    }
+
+    /**
+     * Every release pull request bumps the version LABEL, and comments change
+     * nothing a build produces, so neither may rebuild the dependency images.
+     * A parser directive changes how every stage is read, so it must.
+     */
+    #[Group('documentation')]
+    public function testKeyIgnoresDockerfileCommentsAndTheReleaseVersion(): void
+    {
+        $this->inSandbox(function (string $sandbox): void {
+            $dockerfile = static fn(string $directive, string $comment, string $version): string => implode("\n", [
+                '# syntax=' . $directive,
+                '',
+                'FROM php:8.5 AS runtime_deps',
+                '# ' . $comment,
+                'RUN true \\',
+                '    # ' . $comment,
+                '    && true',
+                '',
+                'FROM runtime_deps AS runtime',
+                '# x-release-please-start-version',
+                'LABEL org.opencontainers.image.version="' . $version . '"',
+                '# x-release-please-end',
+                '',
+            ]);
+            file_put_contents($sandbox . '/Dockerfile', $dockerfile('docker/dockerfile:1', 'why', '0.20.0'));
+            $first = $this->runKeyScript($sandbox, []);
+
+            file_put_contents($sandbox . '/Dockerfile', $dockerfile('docker/dockerfile:1', 'why', '0.21.0'));
+            assertSame($first, $this->runKeyScript($sandbox, []), 'a version bump changed the key');
+
+            file_put_contents($sandbox . '/Dockerfile', $dockerfile('docker/dockerfile:1', 'a reworded reason', '0.20.0'));
+            assertSame($first, $this->runKeyScript($sandbox, []), 'a comment-only edit changed the key');
+
+            file_put_contents($sandbox . '/Dockerfile', $dockerfile('docker/dockerfile:1.7', 'why', '0.20.0'));
+            assertNotSame($first, $this->runKeyScript($sandbox, []), 'a parser directive change kept the key');
+
+            file_put_contents($sandbox . '/Dockerfile', str_replace('RUN true', 'RUN false', $dockerfile('docker/dockerfile:1', 'why', '0.20.0')));
+            assertNotSame($first, $this->runKeyScript($sandbox, []), 'an instruction change kept the key');
+        });
+    }
+
+    /** The release version is a label of the source stages; in a dependency stage it would rebuild them on every release. */
+    #[Group('documentation')]
+    public function testNoDependencyStageCarriesTheReleaseVersion(): void
+    {
+        $stages = self::stages();
+        $labelled = [];
+        foreach (self::DEPENDENCY_STAGES as $name) {
+            foreach ($stages[$name] ?? [] as $instruction) {
+                if (preg_match('/^LABEL\s.*org\.opencontainers\.image\.version/i', $instruction) === 1) {
+                    $labelled[] = $name;
+                }
+            }
+        }
+        assertSame([], $labelled, 'the version LABEL sits in a dependency stage');
+    }
+
+    /**
+     * Run $test against a throwaway copy of the key script, with every input
+     * present as a small file, and remove the copy afterwards.
+     *
+     * @param callable(string): void $test
+     */
+    private function inSandbox(callable $test): void
+    {
+        $sandbox = sys_get_temp_dir() . '/knossos-deps-key-' . bin2hex(random_bytes(6));
+        try {
+            $inputs = array_values(array_filter(explode("\n", $this->runKeyScript(self::repositoryRoot(), ['--inputs'])), static fn(string $line): bool => $line !== ''));
+            mkdir($sandbox . '/tools', 0o777, true);
+            copy(self::repositoryRoot() . '/tools/quality-deps-key', $sandbox . '/tools/quality-deps-key');
+            chmod($sandbox . '/tools/quality-deps-key', 0o755);
+            foreach ($inputs as $input) {
+                $path = $input === 'workers/rust' ? $sandbox . '/workers/rust/Cargo.toml' : $sandbox . '/' . $input;
+                if (!is_dir(dirname($path))) {
+                    mkdir(dirname($path), 0o777, true);
+                }
+                file_put_contents($path, $input . "\n");
+            }
+            $test($sandbox);
         } finally {
             if (is_dir($sandbox)) {
                 $this->runCommand(['rm', '-rf', $sandbox], null);

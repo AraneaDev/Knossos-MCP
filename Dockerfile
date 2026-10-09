@@ -22,12 +22,6 @@ RUN cargo build --release --locked
 # each other.
 FROM php:8.5-cli-trixie@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS runtime_deps
 
-# x-release-please-start-version
-LABEL org.opencontainers.image.title="Knossos" \
-      org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
-      org.opencontainers.image.version="0.20.1"
-# x-release-please-end
-
 # The compiler toolchain the base image carries for `docker-php-ext-install` is
 # build-only, and it drags in `libc6-dev` -> `linux-libc-dev`. Kernel headers are
 # never executed in a container, but Trivy still reports every kernel CVE against
@@ -114,6 +108,16 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 # The shipped image: the dependencies above plus this commit's source. Nothing
 # here installs anything, so a source change rebuilds only these layers.
 FROM runtime_deps AS runtime
+
+# The labels carry the release version, which release-please bumps in every
+# release pull request. They sit in the two source stages, never in a
+# dependency stage, and tools/quality-deps-key leaves this block out of the
+# key, so a version bump rebuilds only the thin layers.
+# x-release-please-start-version
+LABEL org.opencontainers.image.title="Knossos" \
+      org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
+      org.opencontainers.image.version="0.20.1"
+# x-release-please-end
 
 COPY workers/php/src ./workers/php/src
 COPY workers/php/bin ./workers/php/bin
@@ -354,6 +358,12 @@ ENV DOCKER_API_VERSION=1.44
 # dependency key and builds this stage on top of it in each lane, which takes
 # seconds; nothing here installs anything or rewrites a whole tree.
 FROM quality_tools AS quality
+
+# x-release-please-start-version
+LABEL org.opencontainers.image.title="Knossos" \
+      org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
+      org.opencontainers.image.version="0.20.1"
+# x-release-please-end
 
 COPY --chown=knossos:knossos workers/php/src ./workers/php/src
 COPY --chown=knossos:knossos workers/php/bin ./workers/php/bin

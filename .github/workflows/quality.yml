@@ -14,6 +14,16 @@ on:
 permissions:
   contents: read
 
+# The route a run takes to its images. The registry route publishes and pulls
+# the dependency images, so it needs a GITHUB_TOKEN that can write packages:
+# pushes, scheduled runs, and pull requests from this repository. A fork's pull
+# request and a Dependabot pull request get a read-only token, so they take the
+# local route instead: a full build handed to the lanes as an artifact, with no
+# login and no push. 'true' or 'false'; every step that differs between the
+# routes tests it.
+env:
+  REGISTRY_ROUTE: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
+
 # One run per branch. A second push cancels the first, because whoever pushed
 # again has already answered the question the running job was asked. The runs
 # long enough to be overtaken are the expensive ones, so this is worth more
@@ -43,13 +53,11 @@ jobs:
     outputs:
       quality-deps: ${{ steps.key.outputs.quality }}
       runtime-deps: ${{ steps.key.outputs.runtime }}
-    # A pull request from a fork gets a read-only GITHUB_TOKEN, so a login and
-    # a push to the registry fail there and turn the required check red for
-    # every outside contributor. Such a run builds the full quality and
-    # runtime images, hands them to the lanes as a short-lived artifact, and
-    # never touches the registry. Every step that differs between the two
-    # routes carries the same expression: anything but a pull request, or a
-    # pull request whose head lives in this repository.
+    # On the local route (see REGISTRY_ROUTE) a login and a push to the
+    # registry would fail and turn the required check red for every outside
+    # contributor and every Dependabot update. Such a run builds the full
+    # quality and runtime images, hands them to the lanes as a short-lived
+    # artifact, and never touches the registry.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -67,7 +75,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           printf 'dependency key: %s\n' "$key"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ env.REGISTRY_ROUTE == 'true' }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -76,7 +84,7 @@ jobs:
       # "missing" is one rebuild, the cost of a wrong "present" is a red lane.
       - name: Check for the dependency images
         id: published
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ env.REGISTRY_ROUTE == 'true' }}
         env:
           QUALITY_DEPS: ${{ steps.key.outputs.quality }}
           RUNTIME_DEPS: ${{ steps.key.outputs.runtime }}
@@ -93,7 +101,9 @@ jobs:
         if: ${{ steps.published.outputs.build != 'false' }}
       # The Actions cache is written only here, on the rare run that builds the
       # dependency images, so a source-only push no longer pays to export every
-      # layer of every stage to it.
+      # layer of every stage to it. Two runs that find the same key missing
+      # both build and push it; the last push wins, and the images are
+      # equivalent because they come from the same inputs on the same day.
       - name: Build and push the runtime dependency image
         if: ${{ steps.published.outputs.build == 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -116,11 +126,11 @@ jobs:
           cache-to: type=gha,mode=max,scope=quality-deps
           build-args: APT_REFRESH=${{ steps.key.outputs.date }}
           push: true
-      # The fork route: the full quality and runtime images, written to
+      # The local route: the full quality and runtime images, written to
       # tarballs instead of the registry. It reads the dependency layers the
-      # same-repo route cached and writes nothing back.
+      # registry route cached and writes nothing back.
       - name: Build the quality image to a tarball
-        if: ${{ !(github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        if: ${{ env.REGISTRY_ROUTE != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -130,7 +140,7 @@ jobs:
           build-args: APT_REFRESH=${{ steps.key.outputs.date }}
           outputs: type=docker,dest=/tmp/quality.tar
       - name: Build the runtime image to a tarball
-        if: ${{ !(github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        if: ${{ env.REGISTRY_ROUTE != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -140,7 +150,7 @@ jobs:
           build-args: APT_REFRESH=${{ steps.key.outputs.date }}
           outputs: type=docker,dest=/tmp/runtime.tar
       - name: Hand the images to the lanes
-        if: ${{ !(github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        if: ${{ env.REGISTRY_ROUTE != 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: images
@@ -205,12 +215,12 @@ jobs:
         with:
           fetch-depth: ${{ matrix.lane == 'gate' && '0' || '1' }}
           persist-credentials: false
-      # Same-repo runs add this commit's source to the dependency images the
-      # image job published; a fork's run loads the tarballs the image job
-      # uploaded. Both routes end with the same local names, so every later
+      # On the registry route the lane adds this commit's source to the
+      # dependency images the image job published; on the local route it loads
+      # the tarballs the image job uploaded. Both routes end with the same local names, so every later
       # step is shared.
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ env.REGISTRY_ROUTE == 'true' }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -220,7 +230,7 @@ jobs:
           quality-deps: ${{ needs.image.outputs.quality-deps }}
           runtime-deps: ${{ needs.image.outputs.runtime-deps }}
           runtime: ${{ matrix.lane == 'release' }}
-          same-repo: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          registry: ${{ env.REGISTRY_ROUTE }}
       # Trivy downloads its vulnerability database on first use, and the lane
       # container is thrown away after every run, so it downloaded the whole
       # thing again each time. Cached on the host and mounted in.
