@@ -365,7 +365,7 @@ final class QueryCommand implements CliCommand
     {
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos test-impact <path|project-id> [files...] [options]'), $c);
         $queries = new ArchitectureQueryService($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
-        $result = $queries->testImpact($project, array_slice($p, 1), isset($o['working-tree']), $c->options->single($o, 'base-ref'), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
+        $result = $queries->testImpact($project, array_slice($p, 1), $c->options->flag($o, 'working-tree'), $c->options->single($o, 'base-ref'), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
         return $this->result($result, $o, $c);
     }
 
@@ -403,7 +403,7 @@ final class QueryCommand implements CliCommand
     private function architectureContext(array $p, array $o, CliCommandContext $c): int
     {
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-context <path|project-id> [files...] --task=TEXT [options]'), $c);
-        $result = $this->queries($c)->architectureContext($project, $c->options->single($o, 'task') ?? '', array_slice($p, 1), $c->options->integer($o, 'max-chars', 30_000, 4000, 100_000), $c->options->integer($o, 'timeout-ms', 1500, 1, 5000), isset($o['include-source']));
+        $result = $this->queries($c)->architectureContext($project, $c->options->single($o, 'task') ?? '', array_slice($p, 1), $c->options->integer($o, 'max-chars', 30_000, 4000, 100_000), $c->options->integer($o, 'timeout-ms', 1500, 1, 5000), $c->options->flag($o, 'include-source'));
         return $this->result($result, $o, $c);
     }
 
@@ -492,7 +492,7 @@ final class QueryCommand implements CliCommand
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos annotate-component <path|project-id> <component> <kind> [value] [--remove] [--execute] [--json]'), $c);
         $component = $p[1] ?? throw new InvalidArgumentException('A component is required.');
         $kind = $p[2] ?? throw new InvalidArgumentException('A kind is required.');
-        $result = $this->queries($c)->annotateComponent($project, $component, $kind, $p[3] ?? '', isset($o['remove']), isset($o['execute']));
+        $result = $this->queries($c)->annotateComponent($project, $component, $kind, $p[3] ?? '', $c->options->flag($o, 'remove'), $c->options->flag($o, 'execute'));
         return $this->result($result, $o, $c);
     }
 

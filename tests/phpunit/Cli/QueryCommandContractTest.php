@@ -187,6 +187,84 @@ final class QueryCommandContractTest extends KnossosTestCase
         }
     }
 
+    /** isset() saw the key, so --execute=false performed the write it was meant to refuse. */
+    #[Group('cli')]
+    public function testExecuteFalseOnlyPreviewsAnAnnotation(): void
+    {
+        $this->withScannedFixture(function (\Closure $run, string $project): void {
+            $preview = $run('annotate-component', [$project, 'Fixture\\CheckoutService', 'note', 'x'], ['execute' => ['false']]);
+
+            assertSame(false, $preview['data']['executed']);
+            assertSame([], $run('list-annotations', [$project], [])['data']['annotations'], 'Nothing was written.');
+        });
+    }
+
+    /** --remove=no removed the annotation; it is an upsert like any other write. */
+    #[Group('cli')]
+    public function testRemoveNoUpsertsInsteadOfRemoving(): void
+    {
+        $this->withScannedFixture(function (\Closure $run, string $project): void {
+            $run('annotate-component', [$project, 'Fixture\\CheckoutService', 'note', 'first'], ['execute' => ['']]);
+            $run('annotate-component', [$project, 'Fixture\\CheckoutService', 'note', 'second'], ['execute' => [''], 'remove' => ['no']]);
+
+            assertSame(['second'], array_column($run('list-annotations', [$project], [])['data']['annotations'], 'value'));
+        });
+    }
+
+    /** --working-tree=off read the working tree anyway, which with explicit files is refused. */
+    #[Group('cli')]
+    public function testWorkingTreeOffReadsTheGivenFiles(): void
+    {
+        $this->withScannedFixture(function (\Closure $run, string $project): void {
+            $result = $run('test-impact', [$project, 'src/CheckoutService.php'], ['working-tree' => ['off']]);
+
+            assertSame(['src/CheckoutService.php'], $result['data']['changed_files']);
+        });
+    }
+
+    /** --include-source=0 read source excerpts from the working tree anyway. */
+    #[Group('cli')]
+    public function testIncludeSourceZeroReadsNoSource(): void
+    {
+        $this->withScannedFixture(function (\Closure $run, string $project): void {
+            $result = $run('architecture-context', [$project], ['task' => ['checkout'], 'include-source' => ['0']]);
+
+            assertSame(['Context sections are bounded static evidence and may omit dynamic runtime behavior.'], $result['warnings']);
+        });
+    }
+
+    /**
+     * Run $test with a runner over the mixed fixture scanned into a temporary
+     * database: $run(command, positionals, options) returns the decoded --json output.
+     *
+     * @param \Closure(\Closure(string, list<string>, array<string, list<string>>): array<string, mixed>, string): void $test
+     */
+    private function withScannedFixture(\Closure $test): void
+    {
+        $base = sys_get_temp_dir() . '/knossos-stale-switches-' . bin2hex(random_bytes(6));
+        $root = $base . '/project';
+        $database = $base . '/data/knossos.sqlite';
+        try {
+            $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
+            $runtime = new RuntimeFactory(self::repositoryRoot());
+            $projectId = (new ProjectScanService($runtime->database($database), self::repositoryRoot(), [$root]))->scan($root)->projectId;
+            $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), $runtime, $database);
+            $run = static function (string $command, array $positionals, array $options) use ($context): array {
+                ob_start();
+                try {
+                    (new QueryCommand())->run($command, $positionals, ['json' => ['true']] + $options, $context);
+
+                    return json_decode((string) ob_get_contents(), true, 512, JSON_THROW_ON_ERROR);
+                } finally {
+                    ob_end_clean();
+                }
+            };
+            $test($run, $projectId);
+        } finally {
+            $this->removeTempTree($base);
+        }
+    }
+
     /** Write a JSON value to a temporary file and return its path. */
     private static function temporaryJson(mixed $value): string
     {
