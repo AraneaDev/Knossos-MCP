@@ -324,13 +324,10 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             <=> [$b['source']['boundary'], $b['target']['boundary'], $b['source']['canonical_name'], $b['target']['canonical_name']]);
 
         $cycles = [];
-        foreach ($after['sccs'] as $members) {
-            $old = array_unique(array_map(static fn(string $m): int => $was['cycle_of'][$now[$m]] ?? -1, $members));
-            if (count($members) > 1 && (count($old) > 1 || $old[array_key_first($old)] < 0)) {
-                $sorted = $members;
-                usort($sorted, static fn(string $a, string $b): int => [$nodes[$a]['canonical_name'], $now[$a]] <=> [$nodes[$b]['canonical_name'], $now[$b]]);
-                $cycles[] = ['size' => count($members), 'members' => array_map($item, array_slice($sorted, 0, $limit))];
-            }
+        foreach (self::newCycles($was['cycle_of'], $after['sccs'], $now) as $members) {
+            $sorted = $members;
+            usort($sorted, static fn(string $a, string $b): int => [$nodes[$a]['canonical_name'], $now[$a]] <=> [$nodes[$b]['canonical_name'], $now[$b]]);
+            $cycles[] = ['size' => count($members), 'members' => array_map($item, array_slice($sorted, 0, $limit))];
         }
         usort($cycles, static fn(array $a, array $b): int => [$b['size'], $a['members'][0]['canonical_name']] <=> [$a['size'], $b['members'][0]['canonical_name']]);
 
@@ -374,21 +371,64 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         $before = $this->snapshotAnalysis($facts);
         $names = self::identityKeys($facts);
         unset($facts);
+
+        return [
+            'edges' => self::edgePairs($before['adjacency'], $names),
+            'cycle_of' => self::cycleIndex($before['sccs'], $names),
+            'in' => self::inDegrees($before, $names),
+            'dead' => array_fill_keys(array_map(static fn(string $id): string => $names[$id], $before['unreferenced']), true),
+        ];
+    }
+
+    /**
+     * Which cycle each member of a cycle is in, by identity key.
+     *
+     * @param list<list<string>> $sccs
+     * @param array<string, string> $keys identity keys by id
+     * @return array<string, int>
+     */
+    private static function cycleIndex(array $sccs, array $keys): array
+    {
         $cycleOf = [];
-        foreach ($before['sccs'] as $index => $members) {
+        foreach ($sccs as $index => $members) {
             if (count($members) > 1) {
                 foreach ($members as $member) {
-                    $cycleOf[$names[$member]] = $index;
+                    $cycleOf[$keys[$member]] = $index;
                 }
             }
         }
 
-        return [
-            'edges' => self::edgePairs($before['adjacency'], $names),
-            'cycle_of' => $cycleOf,
-            'in' => self::inDegrees($before, $names),
-            'dead' => array_fill_keys(array_map(static fn(string $id): string => $names[$id], $before['unreferenced']), true),
-        ];
+        return $cycleOf;
+    }
+
+    /**
+     * The active graph's cycles that are new: a cycle is new unless all its
+     * members (by identity key) were in one baseline cycle.
+     *
+     * The quality gate counts these and the branch comparison lists them, so
+     * the two agree on what a new cycle is. A count difference, which the gate
+     * used before, read 0 when two cycles merged into one or when one cycle
+     * was broken while another was made.
+     *
+     * @param array<string, int> $baseCycleOf the baseline's cycle index ({@see self::cycleIndex()})
+     * @param list<list<string>> $afterSccs the active graph's strongly connected components
+     * @param array<string, string> $keysNow the active graph's identity keys by id
+     * @return list<list<string>> each new cycle's member ids
+     */
+    private static function newCycles(array $baseCycleOf, array $afterSccs, array $keysNow): array
+    {
+        $new = [];
+        foreach ($afterSccs as $members) {
+            if (count($members) < 2) {
+                continue;
+            }
+            $old = array_unique(array_map(static fn(string $member): int => $baseCycleOf[$keysNow[$member]] ?? -1, $members));
+            if (count($old) > 1 || $old[array_key_first($old)] < 0) {
+                $new[] = $members;
+            }
+        }
+
+        return $new;
     }
 
     /** The fewest components depending on one for it to count as a hub that grew. */
@@ -537,9 +577,9 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         // graph.
         $before = $this->gateFigures($this->readerFacts($projectId, $baseline));
         unset($baseline['archived']);
-        $after = $this->gateFigures($this->readerFacts($projectId, $current));
+        $after = $this->gateFigures($this->readerFacts($projectId, $current), $before['cycle_of']);
         $actual = [
-            'new_cycles' => max(0, $after['metrics']['cycles'] - $before['metrics']['cycles']),
+            'new_cycles' => $after['new_cycles'],
             'error_diagnostics' => $after['metrics']['error_diagnostics'],
             'warning_diagnostics' => $after['metrics']['warning_diagnostics'],
             'hub_degree_growth' => max(0, $after['metrics']['max_degree'] - $before['metrics']['max_degree']),
@@ -730,14 +770,24 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     }
 
     /**
-     * What the quality gate compares of one graph: its metrics and its public surface.
+     * What the quality gate compares of one graph: its metrics, its public
+     * surface, which cycle each cycle member is in (by identity key), and,
+     * given the baseline's, how many of its cycles are new.
      *
      * @param array<string, list<array<string, mixed>>> $facts
-     * @return array{metrics: array<string, int>, surface: array<string, true>}
+     * @param array<string, int>|null $baseCycleOf the baseline's cycle index, for the active graph
+     * @return array{metrics: array<string, int>, surface: array<string, true>, cycle_of: array<string, int>, new_cycles: int}
      */
-    private function gateFigures(array $facts): array
+    private function gateFigures(array $facts, ?array $baseCycleOf = null): array
     {
-        return ['metrics' => $this->snapshotQualityMetrics($facts), 'surface' => self::surfaceIds($facts)];
+        $analysis = $this->snapshotAnalysis($facts);
+        $keys = self::identityKeys($facts);
+
+        return [
+            'metrics' => self::qualityMetrics($analysis), 'surface' => self::surfaceIds($facts),
+            'cycle_of' => self::cycleIndex($analysis['sccs'], $keys),
+            'new_cycles' => $baseCycleOf === null ? 0 : count(self::newCycles($baseCycleOf, $analysis['sccs'], $keys)),
+        ];
     }
 
     /**
@@ -991,18 +1041,18 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
                 'roles' => count($facts['classifications'] ?? []), 'boundaries' => count($facts['boundaries'] ?? []),
                 'diagnostics' => count($facts['diagnostics'] ?? []),
             ],
-            'metrics' => $this->snapshotQualityMetrics($facts),
+            'metrics' => self::qualityMetrics($this->snapshotAnalysis($facts)),
         ];
     }
 
     /**
-     * The metrics the quality gate compares: cycles, violations, diagnostics, hub degree.
+     * The metrics a snapshot reports: cycles, diagnostics, hub degree, unreferenced candidates.
      *
-     * @param array<string, list<array<string, mixed>>> $facts @return array<string, int>
+     * @param array{reportable: array<string, true>, degree: array<string, int>, sccs: list<list<string>>, errors: int, warnings: int, unreferenced: list<string>} $analysis
+     * @return array<string, int>
      */
-    private function snapshotQualityMetrics(array $facts): array
+    private static function qualityMetrics(array $analysis): array
     {
-        $analysis = $this->snapshotAnalysis($facts);
         $cycles = count(array_filter($analysis['sccs'], static fn(array $component): bool => count($component) > 1));
         // Hub size is likewise a statement about the architecture, so a test-only
         // hub must not move it: otherwise every commit that adds tests spends
@@ -1042,6 +1092,10 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         // degree, but it is what says which type a method belongs to — needed
         // below to tell a contract member from an orphan.
         $members = $contracts = $inheritanceInDegree = [];
+        // Erased type-only imports, counted per pair: they stay in the
+        // adjacency (reachability, degrees, crossings) but not in the cycle
+        // search, as in dependency_cycles.
+        $erased = [];
         foreach ($facts['edges'] ?? [] as $edge) {
             if (!isset($nodes[$edge['source_id']], $nodes[$edge['target_id']])) {
                 continue;
@@ -1058,6 +1112,9 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             }
             $adjacency[$edge['source_id']][] = $edge['target_id'];
             $reverse[$edge['target_id']][] = $edge['source_id'];
+            if (ErasedTypeEdge::matches($edge)) {
+                $erased[$edge['source_id']][$edge['target_id']] = ($erased[$edge['source_id']][$edge['target_id']] ?? 0) + 1;
+            }
             // Only a relationship between two reportable components is part of
             // the architecture this degree describes. Excluding test and vendor
             // components from BEING hubs was not enough on its own: a test
@@ -1087,7 +1144,9 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         }
         // Self-loops are ordinary recursion, not architectural cycles;
         // dependency_cycles excludes them by default, so mirror that here.
-        $sccs = $this->stronglyConnectedComponents($adjacency, $reverse)['components'];
+        $sccs = $erased === []
+            ? $this->stronglyConnectedComponents($adjacency, $reverse)['components']
+            : $this->stronglyConnectedComponents(...self::withoutErased($adjacency, $erased))['components'];
         $errors = $warnings = 0;
         foreach ($facts['diagnostics'] ?? [] as $diagnostic) {
             $errors += $diagnostic['severity'] === 'error' ? 1 : 0;
@@ -1138,6 +1197,33 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         return ['reportable' => $reportable, 'degree' => $degree, 'adjacency' => $adjacency, 'reverse' => $reverse, 'sccs' => $sccs,
             'errors' => $errors, 'warnings' => $warnings, 'unreferenced' => $unreferenced];
     }
+    /**
+     * The impact graph without its erased type-only edges, both ways, for the cycle search.
+     *
+     * Built only when such edges exist, so a graph without them shares its
+     * adjacency with the analysis instead of holding a second copy.
+     *
+     * @param array<string, list<string>> $adjacency
+     * @param array<string, array<string, int>> $erased how many erased edges join each source and target
+     * @return array{0: array<string, list<string>>, 1: array<string, list<string>>}
+     */
+    private static function withoutErased(array $adjacency, array $erased): array
+    {
+        $forward = $reverse = array_fill_keys(array_keys($adjacency), []);
+        foreach ($adjacency as $source => $targets) {
+            foreach ($targets as $target) {
+                if (($erased[$source][$target] ?? 0) > 0) {
+                    --$erased[$source][$target];
+                    continue;
+                }
+                $forward[$source][] = $target;
+                $reverse[$target][] = $source;
+            }
+        }
+
+        return [$forward, $reverse];
+    }
+
     /**
      * The ids of a graph's public API surface, the components whose addition or removal is most likely to break a consumer.
      *

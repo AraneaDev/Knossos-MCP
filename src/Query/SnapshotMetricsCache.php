@@ -26,8 +26,11 @@ use ReflectionClass;
  */
 final readonly class SnapshotMetricsCache
 {
-    /** The classes whose code decides the stored figures: decoding the archive and computing the metrics. */
-    private const SOURCES = [ProjectCatalogQueryService::class, AbstractArchitectureQueryService::class, ReportableComponent::class, SnapshotPayload::class];
+    /** The classes whose code decides the stored figures: decoding and reading the archive, and computing the metrics. */
+    private const SOURCES = [
+        ProjectCatalogQueryService::class, AbstractArchitectureQueryService::class, ReportableComponent::class, SnapshotPayload::class,
+        SnapshotGraphReader::class, ErasedTypeEdge::class,
+    ];
 
     /** The code the stored figures must come from to answer. */
     private string $fingerprint;
