@@ -108,7 +108,7 @@ final class PhpunitShardTest extends KnossosTestCase
         }
     }
 
-    /** Neighbouring files land in different shards, so a directory of slow tests is spread out. */
+    /** Files the weights do not know weigh the same, and are then dealt out by name, neighbours apart. */
     public function testNeighbouringFilesAreSpreadAcrossShards(): void
     {
         $list = $this->writeList($this->fixtureFiles(8));
@@ -206,6 +206,69 @@ final class PhpunitShardTest extends KnossosTestCase
             }
         }
         assertSame($this->sorted($expected), $listed);
+    }
+
+    /**
+     * Measured weights balance the shards: the heaviest file first, each to
+     * the lightest shard, and a file the weights do not know weighs their
+     * median rather than nothing.
+     */
+    public function testWeightsBalanceTheShards(): void
+    {
+        $list = $this->writeList(['a/HeavyTest.php', 'b/MiddleTest.php', 'c/LightTest.php', 'd/LighterTest.php', 'e/NewTest.php']);
+        $weights = $this->directory . '/weights.json';
+        file_put_contents($weights, json_encode([
+            'a/HeavyTest.php' => 60,
+            'b/MiddleTest.php' => 30,
+            'c/LightTest.php' => 20,
+            'd/LighterTest.php' => 10.5,
+        ]));
+
+        // The upper median of 10.5, 20, 30 and 60 is 30, so NewTest weighs 30
+        // and goes after MiddleTest by name. Heavy to 1 (60 | 0), Middle to 2
+        // (60 | 30), New to 2 (60 | 60), Light to the lower of two equal
+        // shards, 1 (80 | 60), Lighter to 2 (80 | 70.5).
+        assertSame(
+            "a/HeavyTest.php\t1\nb/MiddleTest.php\t2\nc/LightTest.php\t1\nd/LighterTest.php\t2\ne/NewTest.php\t2\n",
+            $this->shard(['--list=2', '--files-from=' . $list, '--weights=' . $weights]),
+        );
+    }
+
+    /** A weights file that is not a map of file to seconds is refused rather than ignored. */
+    public function testRejectsAMalformedWeightsFile(): void
+    {
+        $list = $this->writeList($this->fixtureFiles(3));
+        foreach (['[1, 2]x', '{"a/Test.php": "slow"}', '{"a/Test.php": -1}'] as $content) {
+            file_put_contents($this->directory . '/weights.json', $content);
+            [$exit, , $errors] = $this->runFixtureCommandOutput([PHP_BINARY, self::repositoryRoot() . '/tools/phpunit-shard', '--list=2', '--files-from=' . $list, '--weights=' . $this->directory . '/weights.json']);
+            assertNotSame(0, $exit, $content . ' was accepted');
+            assertStringContainsString('weight', $errors);
+        }
+    }
+
+    /** `--weigh` turns JUnit logs into a weights file, counting a data provider's nested suites once. */
+    public function testWeighReadsPerFileTimesFromJunit(): void
+    {
+        $junit = $this->directory . '/junit.xml';
+        file_put_contents($junit, '<?xml version="1.0"?><testsuites><testsuite name="all" time="9">'
+            . '<testsuite name="B" file="/opt/knossos/tests/phpunit/B/BTest.php" time="2.26">'
+            . '<testsuite name="B::provided" file="/opt/knossos/tests/phpunit/B/BTest.php" time="2"/></testsuite>'
+            . '<testsuite name="A" file="/somewhere/else/tests/phpunit/A/ATest.php" time="0.01"/>'
+            . '</testsuite></testsuites>');
+
+        $weights = $this->shard(['--weigh', $junit]);
+
+        assertSame("{\n  \"tests/phpunit/A/ATest.php\": 0.1,\n  \"tests/phpunit/B/BTest.php\": 2.3\n}\n", $weights);
+        assertSame(['tests/phpunit/A/ATest.php' => 0.1, 'tests/phpunit/B/BTest.php' => 2.3], json_decode($weights, true));
+    }
+
+    /** The committed weights name only test files that exist, so a renamed file does not linger there. */
+    public function testCommittedWeightsNameExistingTestFiles(): void
+    {
+        $root = self::repositoryRoot();
+        $weights = json_decode((string) file_get_contents($root . '/tests/phpunit-shard-weights.json'), true, 512, JSON_THROW_ON_ERROR);
+        $stale = array_values(array_filter(array_keys($weights), static fn(string $file): bool => !is_file($root . '/' . $file)));
+        assertSame([], $stale, 'regenerate tests/phpunit-shard-weights.json with tools/phpunit-shard --weigh');
     }
 
     /** @return list<string> */

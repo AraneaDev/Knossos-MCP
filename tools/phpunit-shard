@@ -6,19 +6,30 @@ declare(strict_types=1);
 /*
  * Splits the PHPUnit suite into N shards for CI's coverage jobs.
  *
- *   tools/phpunit-shard --shard=I/N --out=PATH [--files-from=PATH]
+ *   tools/phpunit-shard --shard=I/N --out=PATH [--files-from=PATH] [--weights=PATH]
  *       writes a PHPUnit config that runs shard I of N: phpunit.xml with its
  *       test suite replaced by that shard's files.
- *   tools/phpunit-shard --list=N [--files-from=PATH]
+ *   tools/phpunit-shard --list=N [--files-from=PATH] [--weights=PATH]
  *       prints every test file with the shard it belongs to, `file<TAB>shard`,
  *       which is what tools/coverage-merge.php checks the shards' JUnit logs
  *       against.
+ *   tools/phpunit-shard --weigh JUNIT...
+ *       prints the per-file times of the given JUnit logs as a weights file,
+ *       the shape of tests/phpunit-shard-weights.json.
  *
  * The files come from `vendor/bin/phpunit --list-test-files`, or from a list
- * file (one path per line) when one is given. They are sorted by name and dealt
- * out round-robin, so the assignment depends on nothing but the file names, and
- * neighbouring files, which tend to be equally slow because they test the same
- * area, land in different shards.
+ * file (one path per line) when one is given. Each weighs its measured time
+ * from the weights file (tests/phpunit-shard-weights.json unless --weights
+ * names another); a file the weights do not know weighs their median. The
+ * heaviest file goes first, each to the shard with the least weight so far,
+ * ties broken by name and then by the lower shard. Dealt out by name alone,
+ * four shards were measured at 72, 78, 162 and 109 s: the TypeScript worker
+ * tests sit next to each other and dominate the suite, and round-robin put
+ * the largest of them in one shard. With every weight equal, as without a
+ * weights file, this is round-robin over the sorted names.
+ *
+ * The assignment depends only on the file names and the weights file, both
+ * part of the commit, so every runner computes the same one.
  *
  * Paths in the generated config are absolute, because PHPUnit resolves a
  * relative path against the directory the config file is in, and the config is
@@ -40,8 +51,16 @@ $count = null;
 $list = null;
 $out = null;
 $filesFrom = null;
+$weightsFrom = $root . '/tests/phpunit-shard-weights.json';
+$weigh = null;
 foreach (array_slice($argv, 1) as $argument) {
-    if (preg_match('/^--shard=(\d+)\/(\d+)$/', $argument, $match) === 1) {
+    if ($weigh !== null) {
+        $weigh[] = $argument;
+    } elseif ($argument === '--weigh') {
+        $weigh = [];
+    } elseif (str_starts_with($argument, '--weights=') && strlen($argument) > 10) {
+        $weightsFrom = substr($argument, 10);
+    } elseif (preg_match('/^--shard=(\d+)\/(\d+)$/', $argument, $match) === 1) {
         [$shard, $count] = [(int) $match[1], (int) $match[2]];
     } elseif (preg_match('/^--list=(\d+)$/', $argument, $match) === 1) {
         $list = (int) $match[1];
@@ -52,6 +71,33 @@ foreach (array_slice($argv, 1) as $argument) {
     } else {
         shardFail("unknown argument {$argument}");
     }
+}
+if ($weigh !== null) {
+    if ($weigh === [] || $shard !== null || $list !== null) {
+        shardFail('--weigh takes one or more JUnit logs and nothing else');
+    }
+    $times = [];
+    foreach ($weigh as $junit) {
+        $document = new DOMDocument();
+        if (!@$document->load($junit)) {
+            shardFail("cannot read {$junit}");
+        }
+        // Only the outermost suite of a file: a data provider nests suites
+        // carrying the same file, and counting those too would weigh it twice.
+        foreach ((new DOMXPath($document))->query('//testsuite[@file][not(ancestor::testsuite[@file])]') ?: [] as $suite) {
+            if ($suite instanceof DOMElement) {
+                $file = preg_replace('#^.*?/(tests/phpunit/)#', '$1', $suite->getAttribute('file'));
+                $times[$file] = ($times[$file] ?? 0.0) + (float) $suite->getAttribute('time');
+            }
+        }
+    }
+    uksort($times, strcmp(...));
+    $lines = [];
+    foreach ($times as $file => $seconds) {
+        $lines[] = sprintf('  %s: %.1f', json_encode($file, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), max(0.1, $seconds));
+    }
+    echo "{\n", implode(",\n", $lines), "\n}\n";
+    exit(0);
 }
 if (($shard === null) === ($list === null)) {
     shardFail('pass exactly one of --shard=I/N and --list=N');
@@ -112,22 +158,74 @@ function shardTestFiles(string $root, ?string $filesFrom): array
     return $files;
 }
 
+/**
+ * Each file's shard: heaviest first, each to the least loaded shard.
+ *
+ * Weights are compared as whole tenths of a second, so the result does not
+ * hinge on floating-point rounding.
+ *
+ * @param list<string> $files sorted by name
+ *
+ * @return array<string, int> file => shard, in the order of $files
+ */
+function shardAssign(array $files, ?string $weightsFrom, int $of): array
+{
+    $known = [];
+    if ($weightsFrom !== null && is_file($weightsFrom)) {
+        $decoded = json_decode((string) file_get_contents($weightsFrom), true);
+        if (!is_array($decoded)) {
+            shardFail("{$weightsFrom} is not a JSON object of file weights");
+        }
+        foreach ($decoded as $file => $seconds) {
+            if (!is_string($file) || (!is_int($seconds) && !is_float($seconds)) || $seconds < 0) {
+                shardFail("{$weightsFrom} has a weight that is not a number of seconds");
+            }
+            $known[$file] = (int) round($seconds * 10);
+        }
+    }
+    $sortedKnown = array_values($known);
+    sort($sortedKnown);
+    $median = $sortedKnown === [] ? 1 : $sortedKnown[intdiv(count($sortedKnown), 2)];
+
+    $weights = [];
+    foreach ($files as $file) {
+        $weights[$file] = $known[$file] ?? $median;
+    }
+    $order = $files;
+    usort($order, static fn(string $a, string $b): int => [$weights[$b], $a] <=> [$weights[$a], $b]);
+    $load = array_fill(1, $of, 0);
+    $assigned = [];
+    foreach ($order as $file) {
+        $target = 1;
+        foreach ($load as $index => $total) {
+            if ($total < $load[$target]) {
+                $target = $index;
+            }
+        }
+        $load[$target] += $weights[$file];
+        $assigned[$file] = $target;
+    }
+
+    $ordered = [];
+    foreach ($files as $file) {
+        $ordered[$file] = $assigned[$file];
+    }
+
+    return $ordered;
+}
+
 $files = shardTestFiles($root, $filesFrom);
 $of = $list ?? $count;
+$assignment = shardAssign($files, $weightsFrom, $of);
 
 if ($list !== null) {
-    foreach ($files as $index => $file) {
-        printf("%s\t%d\n", $file, $index % $of + 1);
+    foreach ($assignment as $file => $index) {
+        printf("%s\t%d\n", $file, $index);
     }
     exit(0);
 }
 
-$selected = [];
-foreach ($files as $index => $file) {
-    if ($index % $of + 1 === $shard) {
-        $selected[] = $file;
-    }
-}
+$selected = array_keys(array_filter($assignment, static fn(int $index): bool => $index === $shard));
 
 $absolute = static fn(string $path): string => str_starts_with($path, '/') ? $path : $root . '/' . $path;
 
