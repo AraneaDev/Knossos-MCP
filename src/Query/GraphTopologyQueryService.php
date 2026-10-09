@@ -209,6 +209,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $truncationReasons[] = 'time_limit';
             $cycleScanTruncated = true;
         }
+        if ($cycleScanTruncated) {
+            // Hotspots without their full cycle signal are a cut ranking too.
+            $truncated = true;
+            $truncationReasons[] = 'cycle_scan';
+        }
 
         $ranked = $this->rankNodes($slice, $metrics, $cycleMembers, $includeExternal, $includeTests, $limit);
         $excludedExternal = $ranked['excluded_external'];
@@ -623,6 +628,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * enough of those to fill the limit on their own, every test_only finding
      * sits past the cut and a tally taken from the slice reads as zero while
      * the full list still has some.
+     *
+     * `cycle_scan` among the reasons means the cycle check was cut short
+     * (by its own bounds or by the deadline), so a hotspot may be missing the
+     * cycle-participant bonus it would otherwise carry.
      *
      * The hub walk's truncation and the candidate search's are reported
      * apart: the node bound limits the ranking only, and a candidate search

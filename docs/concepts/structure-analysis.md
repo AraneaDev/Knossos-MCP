@@ -138,7 +138,9 @@ node window never hides a hub or the callers it counts. A hotspot adds
 twice its cross-boundary degree, plus three if it takes part in a cycle.
 The cycle check runs with the same `max_nodes` (default 50,000) and
 `max_edges` as the rest of the call, inside what is left of `timeout_ms`;
-when it is cut short, `bounds.cycle_scan_truncated` says so.
+when it is cut short, `bounds.cycle_scan_truncated` says so, `cycle_scan` is
+added to `bounds.truncation_reasons`, the result is `truncated` and the
+summary names it, because a hotspot may then be missing its cycle bonus.
 Hotspots are static structural signals and predict neither change frequency nor defects. For that, read [change review](change-review.md).
 
 The dead-code half of the result is the subtlest thing Knossos reports. It

@@ -222,7 +222,9 @@ final class HealthTest extends KnossosTestCase
 
         assertSame([], $bounded->data['hubs']);
         assertSame(true, str_starts_with($bounded->summary, 'Ranked 0 hubs, 0 static hotspots, and 0 unreferenced-code candidates, 0 of them reached only by tests.'));
-        assertSame(true, str_contains($bounded->summary, 'The ranking was truncated (time_limit)'));
+        // The expired deadline also skips the cycle check, named since a cut
+        // cycle scan marks the ranking truncated.
+        assertSame(true, str_contains($bounded->summary, 'The ranking was truncated (time_limit, cycle_scan)'));
         assertSame(false, $whole->truncated);
         assertSame('Ranked 2 hubs, 2 static hotspots, and 1 unreferenced-code candidates, 0 of them reached only by tests.', $whole->summary);
     }
@@ -312,5 +314,51 @@ final class HealthTest extends KnossosTestCase
         assertSame(6, $health->data['hubs'][0]['metrics']['in_degree'], 'Callers outside the window still count.');
         assertSame(true, in_array('node_limit', $health->data['bounds']['truncation_reasons'], true));
         assertSame(3, $health->data['bounds']['nodes_examined']);
+    }
+
+    /**
+     * A cycle scan cut short left hotspots without their cycle signal, but
+     * said so only in `bounds.cycle_scan_truncated`: the result read as
+     * complete. 101 two-node cycles are one more than the 100 the health
+     * check asks dependency_cycles for.
+     */
+    #[Group('health')]
+    public function testATruncatedCycleScanIsATruncatedRanking(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $nodes = [];
+        $edges = [];
+        for ($i = 0; $i < 101; $i++) {
+            $pair = [];
+            foreach (['A', 'B'] as $end) {
+                $name = sprintf('App\\C%03d%s', $i, $end);
+                $pair[] = $id = StableId::symbol($project, 'php', 'class', $name);
+                $nodes[] = [
+                    'id' => $id, 'language' => 'php', 'kind' => 'class', 'canonical_name' => $name, 'display_name' => substr($name, 4),
+                    'file_id' => $ids['file'], 'start_line' => 1, 'end_line' => 1, 'origin' => 'ast', 'confidence' => 'certain',
+                    'attributes' => [], 'owner_key' => 'php:file:src/Cycles.php',
+                ];
+            }
+            foreach ([[$pair[0], $pair[1]], [$pair[1], $pair[0]]] as [$source, $target]) {
+                $edges[] = [
+                    'id' => StableId::edge($project, 'calls', $source, $target, 'cycle'), 'kind' => 'calls', 'source_id' => $source, 'target_id' => $target,
+                    'file_id' => $ids['file'], 'start_line' => 1, 'end_line' => 1, 'origin' => 'ast', 'confidence' => 'certain',
+                    'attributes' => [], 'owner_key' => 'php:file:src/Cycles.php',
+                ];
+            }
+        }
+        $repository->bulkTransaction(static function ($repository) use ($nodes, $edges, $project, $ids): void {
+            $repository->saveNodes($nodes, $project, $ids['scan']);
+            $repository->saveEdges($edges, $project, $ids['scan']);
+        });
+        $repository->completeScan($project, $ids['scan']);
+
+        $health = (new ArchitectureQueryService($pdo))->architectureHealth($project);
+
+        assertSame(true, $health->data['bounds']['cycle_scan_truncated']);
+        assertSame(true, in_array('cycle_scan', $health->data['bounds']['truncation_reasons'], true));
+        assertSame(true, $health->truncated);
+        assertSame(true, str_contains($health->summary, 'cycle_scan'), $health->summary);
     }
 }
