@@ -69,6 +69,7 @@ other language.
 | `KNOSSOS_STORAGE_ERROR`         | SQLite is locked, full, unwritable, or corrupt.                       | Free capacity/release the lock, run integrity, and restore an atomic backup if required.                                           |
 | Worker diagnostic prefix        | A scanner crashed, timed out, or violated its protocol/output limits. | Inspect stderr diagnostics and the affected language file; other snapshots remain intact.                                          |
 | MCP `-32003`                    | The client sent a request before `notifications/initialized`.         | Fix client lifecycle framing; send `notifications/initialized` first.                                                              |
+| MCP `-32600`, `id: null`        | A request id was not an integer or a string (`null` included).        | Send integer or string ids; MCP requires one of the two.                                                                           |
 | Server drops when idle          | The host closed a stdio connection that sat silent between calls.     | None; `serve` pings every 25s. Ensure the client tolerates server `ping` requests.                                                 |
 
 ## Idle stdio connections

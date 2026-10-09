@@ -317,6 +317,23 @@ final class HttpTest extends KnossosTestCase
     }
 
     /** A modern-revision request body for one method. */
+    /** The 2026-07-28 path echoed any id into its errors; an id that is neither an integer nor a string is -32600 with id null. */
+    #[Group('http')]
+    public function testAModernRequestWhoseIdIsNotAnIntegerOrAStringIsInvalid(): void
+    {
+        [$endpoint, $headers] = $this->modernEndpoint();
+        foreach ([[1], 1.5] as $id) {
+            $body = json_encode(['jsonrpc' => '2.0', 'id' => $id, 'method' => 'tools/list', 'params' => ['_meta' => ['io.modelcontextprotocol/protocolVersion' => '2026-07-28']]], JSON_THROW_ON_ERROR);
+
+            $response = $endpoint->handle('POST', $headers + ['Mcp-Method' => 'tools/list'], $body);
+
+            assertSame(400, $response['status']);
+            $decoded = json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR);
+            assertSame(null, $decoded['id']);
+            assertSame(-32600, $decoded['error']['code']);
+        }
+    }
+
     private static function modernBody(string $method): string
     {
         return json_encode([

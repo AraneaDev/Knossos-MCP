@@ -29,6 +29,15 @@ final readonly class ServerEnvironment
     ) {}
 
     /**
+     * Whether this server may read a project root: true unless the root exists
+     * and lies outside the allowed roots, which are re-read on every call.
+     */
+    public function admitsRoot(string $root): bool
+    {
+        return !(new RootGuard($this->roots))->refuses($root);
+    }
+
+    /**
      * Everything an agent needs to know about this server's reach and identity.
      *
      * @return array<string, mixed>

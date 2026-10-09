@@ -13,6 +13,18 @@ namespace Knossos\Cli;
  */
 interface CliCommand
 {
+    /** The command did what it was asked and its answer is complete. */
+    public const EXIT_OK = 0;
+
+    /** A check or gate ran to the end and failed (quality-gate, check-architecture, doctor, maintain-database). */
+    public const EXIT_GATE_FAILED = 1;
+
+    /** The command could not run: bad arguments, a missing project, a storage or runtime failure. */
+    public const EXIT_ERROR = 2;
+
+    /** The command completed, but its list is incomplete: a bound or time limit cut it (dead-code, diagnostics). */
+    public const EXIT_INCOMPLETE = 3;
+
     /** Reports whether this handler owns the requested CLI command name. */
     public function supports(string $command): bool;
 

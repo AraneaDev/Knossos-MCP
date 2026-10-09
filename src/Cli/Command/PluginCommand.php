@@ -161,7 +161,7 @@ final class PluginCommand implements CliCommand
         $out = $context->options->single($options, 'out');
         if ($out !== null) {
             $this->emit($root, $out, $options, $context);
-            return 0;
+            return CliCommand::EXIT_OK;
         }
         $scope = $context->options->single($options, 'scope') ?? 'user';
         if (!in_array($scope, self::SCOPES, true)) {
@@ -195,7 +195,7 @@ final class PluginCommand implements CliCommand
                 . sprintf('The first command needs %s, which --execute writes before running it.', $pluginDirectory) . PHP_EOL
                 . 'Preview only. Re-run with --execute to apply.',
             );
-            return 0;
+            return CliCommand::EXIT_OK;
         }
         // Only here, never on the preview path: a preview writes nothing at
         // all. The marketplace this install registers does not exist until now,
@@ -243,7 +243,7 @@ final class PluginCommand implements CliCommand
             $json,
             sprintf('Installed the plugin from %s.', $pluginDirectory) . PHP_EOL . $this->dataDirectoryLine($dataDir),
         );
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**

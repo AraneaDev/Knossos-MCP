@@ -50,7 +50,7 @@ final class StdioServer
     /** @var list<string> */
     private array $pendingLines = [];
     private string $inputBuffer = '';
-    /** @var array<string, true> */
+    /** @var array<string, int|string> pending cancels: cancelKey() => the request id they name */
     private array $cancelledRequests = [];
 
     public function __construct(
@@ -81,26 +81,62 @@ final class StdioServer
                 $this->write($output, $this->error(null, -32700, 'Invalid or oversized JSON-RPC frame.'));
                 continue;
             }
+            // Only a frame that does not decode is a parse error with id null.
+            // Once the request decoded, every failure answers under its id:
+            // a JSON error while handling or encoding the answer is an internal
+            // error of this server, not something the client sent.
             try {
                 $message = json_decode(trim($line), true, 512, JSON_THROW_ON_ERROR);
                 if (!is_array($message) || array_is_list($message)) {
                     throw new JsonException('JSON-RPC message must be an object.');
                 }
-                $response = $this->handle($message);
-                if ($response !== null) {
-                    $this->write($output, $response);
-                }
             } catch (JsonException $error) {
                 fwrite($errors, $error->getMessage() . PHP_EOL);
                 $this->write($output, $this->error(null, -32700, 'Parse error'));
-            } catch (Throwable $error) {
-                fwrite($errors, $error->getMessage() . PHP_EOL);
-                $id = isset($message) && is_array($message) ? ($message['id'] ?? null) : null;
-                $this->write($output, $this->error($id, -32603, 'Internal error'));
+                continue;
             }
+            $this->answer($output, $errors, $message);
         }
         $this->input = null;
         return 0;
+    }
+
+    /**
+     * Handle one decoded request and write its answer, keeping the request's id on every failure.
+     *
+     * @param resource $output @param resource $errors @param array<string, mixed> $message
+     */
+    private function answer($output, $errors, array $message): void
+    {
+        // handle() answers an id that is neither an integer nor a string with
+        // -32600 and id null, so the id echoed here always encodes and this
+        // error cannot fail the way the answer it replaces did.
+        $id = JsonRpcId::reply($message['id'] ?? null);
+        try {
+            $response = $this->handle($message);
+            if ($response !== null) {
+                $this->write($output, $response);
+            }
+        } catch (Throwable $error) {
+            fwrite($errors, $error->getMessage() . PHP_EOL);
+            $this->write($output, $this->error($id, -32603, 'Internal error'));
+        }
+    }
+
+    /**
+     * Continue a session whose handshake happened on an earlier request.
+     *
+     * For a transport that keeps the handshake in its own session store and
+     * builds a fresh server per request: the server starts initialized and
+     * pinned to the revision the session negotiated, so a `_meta`-less request
+     * gets that revision's envelope and error codes, as it would over stdio.
+     *
+     * @throws UnsupportedProtocolVersionException when the revision is not on offer
+     */
+    public function resumeSession(string $protocolVersion): void
+    {
+        $this->negotiator->pin($protocolVersion);
+        $this->initialized = true;
     }
 
     /**
@@ -110,7 +146,7 @@ final class StdioServer
      */
     public function handle(array $message): ?array
     {
-        $id = $message['id'] ?? null;
+        $id = JsonRpcId::reply($message['id'] ?? null);
         if (($message['jsonrpc'] ?? null) !== '2.0') {
             return $this->error($id, -32600, 'Invalid Request');
         }
@@ -139,14 +175,21 @@ final class StdioServer
                 if (is_int($requestId) || is_string($requestId)) {
                     // A cancel whose request never arrives would otherwise linger
                     // forever; evict the oldest entry once the map is full so the
-                    // set of pending cancellations stays bounded.
+                    // set of pending cancellations stays bounded. Keys are
+                    // prefixed, never numeric, so array_shift keeps insertion
+                    // order instead of renumbering the remaining ids.
                     if (count($this->cancelledRequests) >= self::MAX_PENDING_LINES) {
                         array_shift($this->cancelledRequests);
                     }
-                    $this->cancelledRequests[(string) $requestId] = true;
+                    $this->cancelledRequests[self::cancelKey($requestId)] = $requestId;
                 }
             }
             return null;
+        }
+        if (JsonRpcId::isInvalid($message)) {
+            // The id is present but neither an integer nor a string, so it
+            // cannot be echoed: the request is invalid and answered with id null.
+            return $this->error(null, -32600, 'Invalid Request');
         }
         $params = $message['params'] ?? [];
         if (!is_array($params) || ($params !== [] && array_is_list($params))) {
@@ -161,7 +204,14 @@ final class StdioServer
         $this->profile = $profile;
         $this->noteProtocol($message, $profile);
 
-        $response = $this->dispatchMethod($method, $id, $params, $profile);
+        try {
+            $response = $this->dispatchMethod($method, $id, $params, $profile);
+        } finally {
+            // Whatever method answered it, the request is done: a cancel that
+            // named it must not outlive it and withdraw a later request that
+            // reuses the id.
+            unset($this->cancelledRequests[self::cancelKey($id)]);
+        }
         // Envelope rules are the one thing that varies per revision, so they are
         // applied once here rather than at every success() call site.
         if ($response !== null && isset($response['result']) && is_array($response['result'])) {
@@ -177,7 +227,7 @@ final class StdioServer
      * @param array<string, mixed> $params
      * @return array<string, mixed>|null
      */
-    private function dispatchMethod(string $method, mixed $id, array $params, ProtocolProfile $profile): ?array
+    private function dispatchMethod(string $method, int|string $id, array $params, ProtocolProfile $profile): ?array
     {
         if ($method === 'server/discover') {
             return $this->success($id, [
@@ -231,22 +281,28 @@ final class StdioServer
                 // params error, not a tool that ran and failed.
                 $response = $this->error($id, -32602, $invalid->getMessage());
             } catch (\Knossos\Scan\ScanCancelledException $cancelled) {
-                if (isset($this->cancelledRequests[(string) $id])) {
+                if (isset($this->cancelledRequests[self::cancelKey($id)])) {
                     // The client asked to cancel this request and is no longer
-                    // waiting; drop the entry and send nothing back.
-                    unset($this->cancelledRequests[(string) $id]);
+                    // waiting; send nothing back (handle() drops the entry).
                     return null;
                 }
                 $response = $this->toolError($id, 'KNOSSOS_SCAN_CANCELLED', $cancelled->getMessage());
             } catch (Throwable $error) {
                 $response = $this->toolError($id, ToolErrorMapper::code($error), ToolErrorMapper::publicMessage($error));
             }
-            unset($this->cancelledRequests[(string) $id]);
             return $response;
         }
 
         if ($this->resources !== null && $method === 'resources/list') {
-            return $this->success($id, ['resources' => $this->resources->list()]);
+            $cursor = $params['cursor'] ?? null;
+            if ($cursor !== null && !is_string($cursor)) {
+                return $this->error($id, -32602, 'Invalid cursor.');
+            }
+            try {
+                return $this->success($id, $this->resources->list($cursor));
+            } catch (\InvalidArgumentException) {
+                return $this->error($id, -32602, 'Invalid cursor.');
+            }
         }
         if ($this->resources !== null && $method === 'resources/read') {
             $uri = $params['uri'] ?? null;
@@ -414,6 +470,8 @@ final class StdioServer
      */
     private function write($output, array $message): void
     {
+        // ResultEnricher::WIRE_FLAGS measures max_chars with these same flags;
+        // a test pins the two equal, so change both together.
         $encoded = json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (strlen($encoded) > $this->maxResponseBytes) {
             $encoded = json_encode(
@@ -472,7 +530,11 @@ final class StdioServer
             if ($chunk !== '') {
                 $this->inputBuffer .= $chunk;
             }
-            if (strlen($this->inputBuffer) > $this->maxLineBytes) {
+            // The cap applies to one frame, never to bytes that follow its
+            // newline: once the buffer holds a newline, the loop's top returns
+            // that line and run() judges its length alone, so a valid frame
+            // pipelined with the next one in the same read is still answered.
+            if (!str_contains($this->inputBuffer, "\n") && strlen($this->inputBuffer) > $this->maxLineBytes) {
                 // Oversized frame: skip forward to the newline that ends it
                 // without accumulating the discarded bytes, so the buffer stays
                 // bounded no matter how long the bad line is.
@@ -529,11 +591,22 @@ final class StdioServer
             'method' => 'ping',
         ]);
     }
-    /** Check for a cancellation notification without blocking the running request. */
-
-    private function pollCancellation(mixed $requestId): bool
+    /**
+     * The key a request id is pending cancellation under: its type and its
+     * value (serialize(): "i:7;", "s:1:\"7\";"), so "7" and 7 stay apart and no
+     * key is numeric (PHP would store a numeric string key as an int and renumber it
+     * on array_shift).
+     */
+    private static function cancelKey(int|string $id): string
     {
-        if (isset($this->cancelledRequests[(string) $requestId])) {
+        return serialize($id);
+    }
+
+    /** Check for a cancellation notification without blocking the running request. */
+    private function pollCancellation(int|string $requestId): bool
+    {
+        $key = self::cancelKey($requestId);
+        if (isset($this->cancelledRequests[$key])) {
             return true;
         }
         if (!is_resource($this->input)) {
@@ -571,7 +644,7 @@ final class StdioServer
                     && (($message['params']['requestId'] ?? null) === $requestId)
                 ) {
                     $cancelled = true;
-                    $this->cancelledRequests[(string) $requestId] = true;
+                    $this->cancelledRequests[$key] = $requestId;
                     continue;
                 }
                 $this->rememberPendingLine($line);
@@ -579,7 +652,9 @@ final class StdioServer
         } finally {
             stream_set_blocking($this->input, true);
         }
-        return $cancelled || isset($this->cancelledRequests[(string) $requestId]);
+        // An entry set before this poll returned early above; one set during
+        // it set $cancelled as well.
+        return $cancelled;
     }
 
     /** Park a non-cancellation line for the main loop, capped so a flood cannot grow memory without bound. */

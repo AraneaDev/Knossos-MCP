@@ -139,6 +139,9 @@ final readonly class ToolService
         // so a malformed request cannot trigger a refresh it will never use.
         self::validateKeys($arguments, $schema);
         $this->assertWithinRoots($name, $arguments);
+        // Every value is validated here too, before the refresh below, so a
+        // call that is going to be refused costs no rescan.
+        $run = $this->prepare($name, $arguments, $cancellation);
 
         $refreshWarnings = [];
         $probed = null;
@@ -152,7 +155,7 @@ final readonly class ToolService
         if ($refreshRequested && in_array('refresh_if_stale', $declared, true)) {
             [$refreshWarnings, $probed] = $this->refreshIfStale($arguments, $cancellation);
         }
-        $envelope = $this->dispatch($name, $arguments, $cancellation);
+        $envelope = $run();
         if ($refreshWarnings !== []) {
             $envelope = $envelope->withWarnings($refreshWarnings);
         }
@@ -238,6 +241,15 @@ final readonly class ToolService
         if ($projectId === '') {
             return [[], null];
         }
+        // Outside the allowed roots the probe would read files and run git, so
+        // there is nothing to refresh from here. No warning: the enricher's
+        // confined probe attaches 'unverified' with guidance saying why.
+        if ($this->environment !== null) {
+            $root = $this->queries->projectRoot($projectId);
+            if ($root !== null && !$this->environment->admitsRoot($root)) {
+                return [[], null];
+            }
+        }
         // The snapshot comes from the probe rather than being assembled here,
         // so the verdict and the scan it describes cannot be read at two
         // different moments.
@@ -288,15 +300,20 @@ final readonly class ToolService
     }
 
     /**
-     * Route a validated call to its handler.
+     * Route a call to its handler, which validates every argument now and
+     * returns the work as a closure. Parsing eagerly is the point: call() runs
+     * this before refresh_if_stale, so a call that is going to be refused
+     * fails before any rescan. A handler's closure only calls the service.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function dispatch(string $name, array $arguments, ?CancellationToken $cancellation): ResultEnvelope
+    private function prepare(string $name, array $arguments, ?CancellationToken $cancellation): \Closure
     {
-        return match ($name) {
-            'server_info' => $this->serverInfo($arguments),
-            'diagnose_runtime' => $this->diagnoseRuntime($arguments),
+        $run = match ($name) {
+            // Nothing to parse: the whole handler is the work.
+            'server_info' => fn(): ResultEnvelope => $this->serverInfo($arguments),
+            'diagnose_runtime' => fn(): ResultEnvelope => $this->diagnoseRuntime($arguments),
             'list_projects' => $this->projects($arguments),
             'scan_project' => $this->scan($arguments, $cancellation),
             'list_snapshots' => $this->snapshots($arguments),
@@ -332,6 +349,11 @@ final readonly class ToolService
             'maintain_database' => $this->maintainDatabase($arguments),
             default => throw new InvalidArgumentException(sprintf('Unknown tool: %s', $name)),
         };
+        // Enums, policies and budgets: the rules the services apply, run now so
+        // a call that is going to be refused fails before any rescan.
+        ToolArgumentPreflight::check($name, $arguments);
+
+        return $run;
     }
 
     /**
@@ -405,109 +427,132 @@ final readonly class ToolService
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::annotateComponent()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function annotateComponent(array $arguments): ResultEnvelope
+    private function annotateComponent(array $arguments): \Closure
     {
-        return $this->queries->annotateComponent(
+        $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'component'),
             self::string($arguments, 'kind'),
-            array_key_exists('value', $arguments) && is_string($arguments['value']) ? $arguments['value'] : '',
+            // Stored as given: a note's whitespace is content.
+            self::text($arguments, 'value', 2000, allowEmpty: true, default: '', trim: false),
             self::boolean($arguments, 'remove', false),
             self::boolean($arguments, 'execute', false),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->annotateComponent(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see DatabaseMaintenanceService::removeProject()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function removeProject(array $arguments): ResultEnvelope
+    private function removeProject(array $arguments): \Closure
     {
-        return $this->maintenance->removeProject(
+        $args = [
             self::string($arguments, 'project_id'),
             self::boolean($arguments, 'execute', false),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->maintenance->removeProject(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see DatabaseMaintenanceService::cleanupStaleScans()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function cleanupStaleScans(array $arguments): ResultEnvelope
+    private function cleanupStaleScans(array $arguments): \Closure
     {
-        return $this->maintenance->cleanupStaleScans(
+        $args = [
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'older_than_hours', 24, 1, 8760),
             self::boolean($arguments, 'execute', false),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->maintenance->cleanupStaleScans(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see DatabaseMaintenanceService::maintain()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function maintainDatabase(array $arguments): ResultEnvelope
+    private function maintainDatabase(array $arguments): \Closure
     {
-        return $this->maintenance->maintain(
+        $args = [
             self::string($arguments, 'action'),
             self::boolean($arguments, 'execute', false),
-            array_key_exists('backup_name', $arguments) ? self::string($arguments, 'backup_name') : null,
-        );
+            array_key_exists('backup_name', $arguments) ? self::text($arguments, 'backup_name', 127) : null,
+        ];
+
+        return fn(): ResultEnvelope => $this->maintenance->maintain(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listProjects()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function projects(array $arguments): ResultEnvelope
+    private function projects(array $arguments): \Closure
     {
-        return $this->queries->listProjects(
+        $args = [
             self::integer($arguments, 'limit', 50, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
             self::boolean($arguments, 'include_roots', false),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->listProjects(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listSnapshots()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function snapshots(array $arguments): ResultEnvelope
+    private function snapshots(array $arguments): \Closure
     {
-        return $this->queries->listSnapshots(
+        $args = [
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'limit', 20, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->listSnapshots(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::snapshotDiff()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function snapshotDiff(array $arguments): ResultEnvelope
+    private function snapshotDiff(array $arguments): \Closure
     {
-        return $this->queries->snapshotDiff(
+        $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'from_snapshot'),
             array_key_exists('to_snapshot', $arguments) ? self::string($arguments, 'to_snapshot') : 'active',
             self::integer($arguments, 'max_changes', 25, 1, 1000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->snapshotDiff(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::qualityGate()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function qualityGate(array $arguments): ResultEnvelope
+    private function qualityGate(array $arguments): \Closure
     {
         $budgets = $arguments['budgets'];
         $policies = $arguments['policies'] ?? [];
@@ -516,43 +561,49 @@ final readonly class ToolService
         if (!is_array($budgets) || ($budgets !== [] && array_is_list($budgets)) || !is_array($policies) || !array_is_list($policies)) {
             throw new InvalidArgumentException('budgets must be an object and policies must be a list.');
         }
-        return $this->queries->qualityGate(
+        $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'baseline_snapshot'),
             $budgets,
             $policies,
             self::boolean($arguments, 'sarif', false),
             self::boolean($arguments, 'propose_baseline', false),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->qualityGate(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::architectureTrends()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function architectureTrends(array $arguments): ResultEnvelope
+    private function architectureTrends(array $arguments): \Closure
     {
-        return $this->queries->architectureTrends(
+        $args = [
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'limit', 10, 2, 20),
             array_key_exists('release_from', $arguments) ? self::string($arguments, 'release_from') : null,
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->architectureTrends(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ProjectScanService::scan()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function scan(array $arguments, ?CancellationToken $cancellation): ResultEnvelope
+    private function scan(array $arguments, ?CancellationToken $cancellation): \Closure
     {
         $path = self::string($arguments, 'path');
         $name = array_key_exists('name', $arguments) ? self::string($arguments, 'name') : null;
         $maxFiles = array_key_exists('max_files', $arguments) ? self::integer($arguments, 'max_files', 100_000, 1, 100_000) : null;
         $maxBytes = array_key_exists('max_file_bytes', $arguments) ? self::integer($arguments, 'max_file_bytes', 2_000_000, 1, 100_000_000) : null;
 
-        return $this->scanner->scan(
+        $args = [
             $path,
             $name,
             $maxFiles,
@@ -562,133 +613,160 @@ final readonly class ToolService
             $cancellation,
             array_key_exists('snapshot_retention', $arguments) ? self::integer($arguments, 'snapshot_retention', 5, 0, 20) : null,
             array_key_exists('worker_timeout_ms', $arguments) ? self::integer($arguments, 'worker_timeout_ms', 30_000, 1_000, 120_000) : null,
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->scanner->scan(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::findComponent()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function find(array $arguments): ResultEnvelope
+    private function find(array $arguments): \Closure
     {
-        return $this->queries->findComponent(
+        $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'name'),
             self::integer($arguments, 'limit', 20, 1, 100),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->findComponent(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::inspectComponent()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function inspect(array $arguments): ResultEnvelope
+    private function inspect(array $arguments): \Closure
     {
-        return $this->queries->inspectComponent(
+        $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'component'),
             self::integer($arguments, 'max_relationships', 25, 1, 100),
             self::integer($arguments, 'max_children', 25, 1, 100),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->inspectComponent(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listUsages()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function listUsages(array $arguments): ResultEnvelope
+    private function listUsages(array $arguments): \Closure
     {
-        return $this->queries->listUsages(
+        $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'symbol'),
             self::strings($arguments, 'edge_kinds'),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'limit', 100, 1, 500),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->listUsages(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::architectureSummary()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function summary(array $arguments): ResultEnvelope
+    private function summary(array $arguments): \Closure
     {
-        return $this->queries->architectureSummary(
+        $args = [
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'limit', 50, 1, 100),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->architectureSummary(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::exportAgentBrief()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function exportAgentBrief(array $arguments): ResultEnvelope
+    private function exportAgentBrief(array $arguments): \Closure
     {
-        return $this->queries->exportAgentBrief(
+        $args = [
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'max_chars', 4000, 1000, 20_000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->exportAgentBrief(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::fileMetrics()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function fileMetrics(array $arguments): ResultEnvelope
+    private function fileMetrics(array $arguments): \Closure
     {
-        return $this->queries->fileMetrics(
+        $args = [
             self::string($arguments, 'project_id'),
-            array_key_exists('path_contains', $arguments) ? self::string($arguments, 'path_contains') : null,
-            array_key_exists('language', $arguments) ? self::string($arguments, 'language') : null,
+            array_key_exists('path_contains', $arguments) ? self::text($arguments, 'path_contains', 1000) : null,
+            array_key_exists('language', $arguments) ? self::text($arguments, 'language', 100) : null,
             array_key_exists('sort_by', $arguments) ? self::string($arguments, 'sort_by') : 'line_count',
             array_key_exists('order', $arguments) ? self::string($arguments, 'order') : 'desc',
             self::integer($arguments, 'limit', 50, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->fileMetrics(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listDiagnostics()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function listDiagnostics(array $arguments): ResultEnvelope
+    private function listDiagnostics(array $arguments): \Closure
     {
-        return $this->queries->listDiagnostics(
+        $args = [
             self::string($arguments, 'project_id'),
             array_key_exists('severity', $arguments) ? self::string($arguments, 'severity') : null,
             array_key_exists('path_prefix', $arguments) ? self::string($arguments, 'path_prefix') : null,
             self::integer($arguments, 'limit', 100, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->listDiagnostics(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::fileContext()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function fileContext(array $arguments): ResultEnvelope
+    private function fileContext(array $arguments): \Closure
     {
-        return $this->queries->fileContext(self::string($arguments, 'project_id'), self::string($arguments, 'path'));
+        $args = [self::string($arguments, 'project_id'), self::string($arguments, 'path')];
+
+        return fn(): ResultEnvelope => $this->queries->fileContext(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::explainFlow()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function flow(array $arguments): ResultEnvelope
+    private function flow(array $arguments): \Closure
     {
-        return $this->queries->explainFlow(
+        $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'from'),
             self::string($arguments, 'to'),
@@ -697,17 +775,20 @@ final readonly class ToolService
             self::strings($arguments, 'edge_kinds'),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->explainFlow(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::impactAnalysis()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function impact(array $arguments): ResultEnvelope
+    private function impact(array $arguments): \Closure
     {
-        return $this->queries->impactAnalysis(
+        $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'symbol'),
             self::integer($arguments, 'max_depth', 4, 1, 8),
@@ -715,17 +796,20 @@ final readonly class ToolService
             self::strings($arguments, 'edge_kinds'),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->impactAnalysis(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::dependencyCycles()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function cycles(array $arguments): ResultEnvelope
+    private function cycles(array $arguments): \Closure
     {
-        return $this->queries->dependencyCycles(
+        $args = [
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'edge_kinds'),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
@@ -734,17 +818,20 @@ final readonly class ToolService
             self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
             self::boolean($arguments, 'include_self_loops', false),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->dependencyCycles(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::architectureHealth()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function health(array $arguments): ResultEnvelope
+    private function health(array $arguments): \Closure
     {
-        return $this->queries->architectureHealth(
+        $args = [
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'edge_kinds'),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
@@ -757,57 +844,66 @@ final readonly class ToolService
             array_key_exists('candidate_confidence', $arguments) ? self::string($arguments, 'candidate_confidence') : 'possible',
             self::integer($arguments, 'candidate_offset', 0, 0, 100_000),
             self::integer($arguments, 'candidate_timeout_ms', 5000, 1, 60_000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->architectureHealth(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::checkArchitecture()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function check(array $arguments): ResultEnvelope
+    private function check(array $arguments): \Closure
     {
         // Absent, the project's declared policies are checked.
         $policies = $arguments['policies'] ?? null;
         if ($policies !== null && (!is_array($policies) || !array_is_list($policies))) {
             throw new InvalidArgumentException('policies must be a list.');
         }
-        return $this->queries->checkArchitecture(
+        $args = [
             self::string($arguments, 'project_id'),
             $policies,
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'limit', 100, 1, 100),
             self::integer($arguments, 'max_edges', ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->checkArchitecture(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::suggestLocation()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function suggest(array $arguments): ResultEnvelope
+    private function suggest(array $arguments): \Closure
     {
-        return $this->queries->suggestLocation(
+        $args = [
             self::string($arguments, 'project_id'),
-            self::string($arguments, 'feature_description'),
+            self::text($arguments, 'feature_description', 2000),
             self::integer($arguments, 'limit', 5, 1, 20),
             self::integer($arguments, 'max_members', 20_000, 1, 50_000),
             self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
             array_key_exists('ranking_mode', $arguments) ? self::string($arguments, 'ranking_mode') : 'deterministic',
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->suggestLocation(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::changeImpact()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function changeImpact(array $arguments): ResultEnvelope
+    private function changeImpact(array $arguments): \Closure
     {
-        return $this->queries->changeImpact(
+        $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'symbol'),
             self::integer($arguments, 'since_days', 90, 1, 3650),
@@ -817,55 +913,64 @@ final readonly class ToolService
             self::strings($arguments, 'edge_kinds'),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->changeImpact(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::changedFilesImpact()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function changedFilesImpact(array $arguments): ResultEnvelope
+    private function changedFilesImpact(array $arguments): \Closure
     {
-        return $this->queries->changedFilesImpact(
+        $args = [
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'files', 50),
             self::boolean($arguments, 'working_tree', false),
-            array_key_exists('base_ref', $arguments) ? self::string($arguments, 'base_ref') : null,
+            array_key_exists('base_ref', $arguments) ? self::text($arguments, 'base_ref', 200) : null,
             self::integer($arguments, 'max_depth', 4, 1, 8),
             self::integer($arguments, 'limit', 100, 1, 100),
             self::strings($arguments, 'edge_kinds'),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->changedFilesImpact(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::testImpact()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function testImpact(array $arguments): ResultEnvelope
+    private function testImpact(array $arguments): \Closure
     {
-        return $this->queries->testImpact(
+        $args = [
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'files', 50),
             self::boolean($arguments, 'working_tree', false),
-            array_key_exists('base_ref', $arguments) ? self::string($arguments, 'base_ref') : null,
+            array_key_exists('base_ref', $arguments) ? self::text($arguments, 'base_ref', 200) : null,
             self::integer($arguments, 'max_depth', 4, 1, 8),
             self::integer($arguments, 'limit', 100, 1, 100),
             self::strings($arguments, 'edge_kinds'),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->testImpact(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::reviewDiff()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function reviewDiff(array $arguments): ResultEnvelope
+    private function reviewDiff(array $arguments): \Closure
     {
         $policies = $arguments['policies'] ?? null;
         if ($policies !== null && (!is_array($policies) || !array_is_list($policies))) {
@@ -875,9 +980,9 @@ final readonly class ToolService
         if ($budgets !== null && (!is_array($budgets) || array_is_list($budgets))) {
             throw new InvalidArgumentException('budgets must be an object.');
         }
-        return $this->queries->reviewDiff(
+        $args = [
             self::string($arguments, 'project_id'),
-            array_key_exists('base_ref', $arguments) ? self::string($arguments, 'base_ref') : null,
+            array_key_exists('base_ref', $arguments) ? self::text($arguments, 'base_ref', 200) : null,
             self::strings($arguments, 'files', 50),
             $policies,
             $budgets,
@@ -886,34 +991,40 @@ final readonly class ToolService
             self::integer($arguments, 'limit', 100, 1, 100),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->reviewDiff(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::architectureContext()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function architectureContext(array $arguments): ResultEnvelope
+    private function architectureContext(array $arguments): \Closure
     {
-        return $this->queries->architectureContext(
+        $args = [
             self::string($arguments, 'project_id'),
-            array_key_exists('task_description', $arguments) ? self::string($arguments, 'task_description') : '',
+            self::text($arguments, 'task_description', 2000, allowEmpty: true, default: ''),
             self::strings($arguments, 'files', 50),
             self::integer($arguments, 'max_chars', 30_000, 4000, 100_000),
             self::integer($arguments, 'timeout_ms', 1500, 1, 5000),
             self::boolean($arguments, 'include_source', false),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->architectureContext(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::exportDiagram()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function diagram(array $arguments): ResultEnvelope
+    private function diagram(array $arguments): \Closure
     {
-        return $this->queries->exportDiagram(
+        $args = [
             self::string($arguments, 'project_id'),
             array_key_exists('format', $arguments) ? self::string($arguments, 'format') : 'mermaid',
             array_key_exists('boundary', $arguments) ? self::string($arguments, 'boundary') : null,
@@ -922,32 +1033,38 @@ final readonly class ToolService
             array_key_exists('direction', $arguments) ? self::string($arguments, 'direction') : 'LR',
             self::integer($arguments, 'max_nodes', 200, 1, 400),
             self::integer($arguments, 'max_edges', 500, 1, 1000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->exportDiagram(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listBoundaries()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function boundaries(array $arguments): ResultEnvelope
+    private function boundaries(array $arguments): \Closure
     {
-        return $this->queries->listBoundaries(
+        $args = [
             self::string($arguments, 'project_id'),
             array_key_exists('source', $arguments) ? self::string($arguments, 'source') : null,
             self::integer($arguments, 'limit', 50, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->listBoundaries(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::searchArchitecture()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function search(array $arguments): ResultEnvelope
+    private function search(array $arguments): \Closure
     {
-        return $this->queries->searchArchitecture(
+        $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'query'),
             self::strings($arguments, 'kinds'),
@@ -956,23 +1073,28 @@ final readonly class ToolService
             self::strings($arguments, 'confidences'),
             self::integer($arguments, 'limit', 20, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->searchArchitecture(...$args);
     }
 
     /**
      * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listAnnotations()}.
      *
      * @param array<string, mixed> $arguments
+     * @return \Closure(): ResultEnvelope
      */
-    private function listAnnotations(array $arguments): ResultEnvelope
+    private function listAnnotations(array $arguments): \Closure
     {
-        return $this->queries->listAnnotations(
+        $args = [
             self::string($arguments, 'project_id'),
             array_key_exists('component', $arguments) ? self::string($arguments, 'component') : null,
             array_key_exists('kind', $arguments) ? self::string($arguments, 'kind') : null,
             self::integer($arguments, 'limit', 100, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
-        );
+        ];
+
+        return fn(): ResultEnvelope => $this->queries->listAnnotations(...$args);
     }
 
     /**
@@ -1008,6 +1130,31 @@ final readonly class ToolService
         if ($value === '') {
             throw new InvalidArgumentException(sprintf('%s must be a non-empty string.', $key));
         }
+        return $value;
+    }
+
+    /**
+     * A string argument with an advertised maxLength, counted in characters as
+     * JSON Schema counts them (the limit used to be checked in bytes, or not at
+     * all). Absent, it is $default when one is given. Trimmed like
+     * {@see string()} unless $trim is false, for a value whose whitespace is
+     * content.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    private static function text(array $arguments, string $key, int $maxLength, bool $allowEmpty = false, ?string $default = null, bool $trim = true): string
+    {
+        // array_key_exists, not ??: an explicit null is a value of the wrong
+        // type, not an absent key that takes the default.
+        $value = array_key_exists($key, $arguments) ? $arguments[$key] : $default;
+        if (!is_string($value) || mb_strlen($value) > $maxLength) {
+            throw new InvalidArgumentException(sprintf('%s must be a string of at most %d characters.', $key, $maxLength));
+        }
+        $value = $trim ? trim($value) : $value;
+        if (!$allowEmpty && $value === '') {
+            throw new InvalidArgumentException(sprintf('%s must be a non-empty string.', $key));
+        }
+
         return $value;
     }
 

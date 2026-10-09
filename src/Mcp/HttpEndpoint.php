@@ -127,6 +127,10 @@ final readonly class HttpEndpoint
         } catch (JsonException $error) {
             return $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32700, 'message' => 'Parse error']], $baseHeaders);
         }
+        // The same id rule as stdio, before anything echoes the id back.
+        if (JsonRpcId::isInvalid($message)) {
+            return $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32600, 'message' => 'Invalid Request']], $baseHeaders);
+        }
         $rpcMethod = $message['method'] ?? null;
         if ($modern) {
             return $this->handleModern($message, $headers, $baseHeaders);
@@ -201,9 +205,29 @@ final readonly class HttpEndpoint
             // cancellation notifications are accepted for protocol compatibility.
             return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
         }
+        return $this->serveSessionRequest($message, (string) $protocol, $headers, $baseHeaders);
+    }
+
+    /**
+     * Serve a request inside an initialized 2025-11-25 session, under the
+     * revision that session negotiated.
+     *
+     * @param array<string, mixed> $message a request: it carries an id
+     * @param array<string, string> $headers lower-cased request headers
+     * @param array<string, string> $baseHeaders
+     * @return array{status: int, headers: array<string, string>, body: string}
+     */
+    private function serveSessionRequest(array $message, string $protocol, array $headers, array $baseHeaders): array
+    {
+        // The session's revision is the header's: a body that declares another
+        // one is refused, as on the 2026-07-28 path, instead of silently winning.
+        $mismatch = $this->versionMismatch($message, $headers);
+        if ($mismatch !== null) {
+            return $this->json(400, ['jsonrpc' => '2.0', 'id' => $message['id'] ?? null, 'error' => ['code' => self::HEADER_MISMATCH, 'message' => $mismatch]], $baseHeaders);
+        }
         try {
             $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
-            $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
+            $server->resumeSession($protocol);
             $response = $server->handle($message);
         } catch (Throwable $error) {
             return $this->internalError($message['id'] ?? null, $error, $baseHeaders);
@@ -270,10 +294,9 @@ final readonly class HttpEndpoint
      */
     private function headerMismatch(array $message, string $rpcMethod, array $headers): ?string
     {
-        $declaredVersion = $headers['mcp-protocol-version'] ?? null;
-        $bodyVersion = ProtocolNegotiator::requestedVersion($message);
-        if ($bodyVersion !== null && $bodyVersion !== $declaredVersion) {
-            return sprintf('Header mismatch: MCP-Protocol-Version header value %s does not match body value %s', json_encode($declaredVersion), json_encode($bodyVersion));
+        $versionMismatch = $this->versionMismatch($message, $headers);
+        if ($versionMismatch !== null) {
+            return $versionMismatch;
         }
         $headerMethod = $headers['mcp-method'] ?? null;
         if ($headerMethod === null) {
@@ -302,6 +325,23 @@ final readonly class HttpEndpoint
         }
         if (!is_string($bodyName) || $decoded !== $bodyName) {
             return sprintf('Header mismatch: Mcp-Name header value %s does not match body value %s', json_encode($decoded), json_encode($bodyName));
+        }
+
+        return null;
+    }
+
+    /**
+     * Why the body's `_meta` revision contradicts the MCP-Protocol-Version header, or null when it agrees or declares none.
+     *
+     * @param array<string, mixed> $message
+     * @param array<string, string> $headers lower-cased request headers
+     */
+    private function versionMismatch(array $message, array $headers): ?string
+    {
+        $declaredVersion = $headers['mcp-protocol-version'] ?? null;
+        $bodyVersion = ProtocolNegotiator::requestedVersion($message);
+        if ($bodyVersion !== null && $bodyVersion !== $declaredVersion) {
+            return sprintf('Header mismatch: MCP-Protocol-Version header value %s does not match body value %s', json_encode($declaredVersion), json_encode($bodyVersion));
         }
 
         return null;

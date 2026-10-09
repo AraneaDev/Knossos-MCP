@@ -74,10 +74,10 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
     {
         // A length guard only. Whitespace-only input is left to the token check
         // below: trimming here reported "   " as needing "between 1 and 2000
-        // bytes", which it already has, where the token check says what is
-        // actually wrong with it.
-        if ($featureDescription === '' || strlen($featureDescription) > 2000) {
-            throw new InvalidArgumentException('feature_description must contain between 1 and 2000 bytes.');
+        // characters", which it already has, where the token check says what
+        // is actually wrong with it. Characters, as the schema counts them.
+        if ($featureDescription === '' || mb_strlen($featureDescription) > 2000) {
+            throw new InvalidArgumentException('feature_description must contain between 1 and 2000 characters.');
         }
         if ($limit < 1 || $limit > 20) {
             throw new InvalidArgumentException('limit must be between 1 and 20.');

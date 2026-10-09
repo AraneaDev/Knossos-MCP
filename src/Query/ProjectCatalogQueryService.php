@@ -115,6 +115,38 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         );
     }
 
+    /**
+     * One page of projects in creation order, starting after the given position.
+     *
+     * Ordered by (created_at, id), which a scan never changes: a rescan bumps
+     * updated_at, so paging over listProjects()' most-recently-updated order
+     * skipped or repeated projects whenever one was scanned between pages. The
+     * position is a keyset, not an offset, so adding or removing a project
+     * between pages cannot shift the rest either.
+     *
+     * No position (null) starts at the beginning: every created_at sorts after
+     * the empty string. $limit is the caller's page size, not client input.
+     *
+     * @return array{projects: list<array{id: string, name: string, created_at: string}>, more: bool}
+     */
+    public function projectsInCreationOrder(int $limit, ?string $afterCreatedAt, ?string $afterId): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT id, name, created_at FROM projects ' .
+            'WHERE created_at > :after_created OR (created_at = :same_created AND id > :after_id) ' .
+            'ORDER BY created_at ASC, id ASC LIMIT :limit',
+        );
+        $statement->bindValue(':after_created', (string) $afterCreatedAt);
+        $statement->bindValue(':same_created', (string) $afterCreatedAt);
+        $statement->bindValue(':after_id', (string) $afterId);
+        $statement->bindValue(':limit', $limit + 1, PDO::PARAM_INT);
+        $statement->execute();
+        /** @var list<array{id: string, name: string, created_at: string}> $rows */
+        $rows = $statement->fetchAll();
+
+        return ['projects' => array_slice($rows, 0, $limit), 'more' => count($rows) > $limit];
+    }
+
     /** Retained scan history, for choosing a baseline to diff or gate against. */
 
     public function listSnapshots(string $projectId, int $limit = 20, int $offset = 0): ResultEnvelope
@@ -547,13 +579,16 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     }
 
     /**
-     * Budget evaluation against a baseline, optionally as SARIF for CI annotation.
+     * The rules a budget set must meet, checked without the database.
      *
-     * @param array<string, mixed> $budgets @param list<array<string, mixed>> $policies
+     * Public so a caller can refuse a malformed set before doing any work (the
+     * MCP layer runs it before refresh_if_stale rescans); qualityGate() checks
+     * through this, so the rules exist once.
+     *
+     * @param array<mixed> $budgets @param array<mixed> $policies
      */
-    public function qualityGate(string $projectId, string $baselineSnapshot, array $budgets, array $policies = [], bool $sarif = false, bool $proposeBaseline = false): ResultEnvelope
+    public static function validateBudgets(array $budgets, array $policies): void
     {
-        $project = $this->project($projectId);
         $allowed = ['new_cycles', 'boundary_violations', 'error_diagnostics', 'warning_diagnostics', 'hub_degree_growth', 'unreferenced_candidates', 'public_surface_changes'];
         if ($budgets === [] || array_diff(array_keys($budgets), $allowed) !== []) {
             throw new InvalidArgumentException('budgets must contain one or more supported quality limits.');
@@ -566,6 +601,17 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         if (isset($budgets['boundary_violations']) && $policies === []) {
             throw new InvalidArgumentException('policies are required when boundary_violations is budgeted.');
         }
+    }
+
+    /**
+     * Budget evaluation against a baseline, optionally as SARIF for CI annotation.
+     *
+     * @param array<string, mixed> $budgets @param list<array<string, mixed>> $policies
+     */
+    public function qualityGate(string $projectId, string $baselineSnapshot, array $budgets, array $policies = [], bool $sarif = false, bool $proposeBaseline = false): ResultEnvelope
+    {
+        $project = $this->project($projectId);
+        self::validateBudgets($budgets, $policies);
         $activeScan = (string) ($project['active_scan_id'] ?? '');
         $baseline = $this->resolveSnapshot($projectId, $baselineSnapshot, $activeScan);
         $current = $this->resolveSnapshot($projectId, 'active', $activeScan);

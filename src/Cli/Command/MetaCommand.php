@@ -30,9 +30,9 @@ final readonly class MetaCommand implements CliCommand
     {
         if (in_array($command, ['help', '--help', '-h'], true)) {
             $this->help->render();
-            return 0;
+            return CliCommand::EXIT_OK;
         }
         $context->output(['name' => 'knossos', 'version' => $this->version], $context->options->flag($options, 'json'), sprintf('Knossos %s', $this->version));
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 }

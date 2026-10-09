@@ -229,6 +229,36 @@ final class ResultEnricherBudgetTest extends KnossosTestCase
     }
 
     /**
+     * json_encode returned false on invalid UTF-8, the size read as 0, and a
+     * 100 KB result went out untrimmed as truncated: false. The transport
+     * substitutes U+FFFD for the bad bytes, and the budget now measures that.
+     */
+    #[Group('mcp')]
+    public function testInvalidUtf8IsMeasuredAndTrimmed(): void
+    {
+        $enricher = new ResultEnricher(new StalenessProbe($this->freshTestDatabase()), new NextStepPlanner());
+        $rows = array_map(static fn(int $i): array => ['name' => "row{$i}\xff" . str_repeat('a', 500)], range(1, 200));
+        $envelope = new ResultEnvelope('catalog', '', 'rows', ['components' => $rows]);
+
+        $result = $enricher->enrich($envelope, 'search_architecture', 'compact', 4_000);
+        $wire = json_encode($result->jsonSerialize(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+
+        assertSame(true, $result->truncated);
+        assertSame(true, strlen($wire) <= 4_000, 'The result as the transport encodes it fits the budget.');
+        assertSame(strlen($wire), $result->meta['result_bytes'], 'result_bytes is the size the transport sends.');
+    }
+
+    /** The enricher measures with the flags the stdio transport encodes with; were they to differ, max_chars would measure something else. */
+    #[Group('mcp')]
+    public function testTheMeasuringFlagsAreTheTransportFlags(): void
+    {
+        $flags = 'JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE';
+
+        assertSame(JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE, ResultEnricher::WIRE_FLAGS);
+        assertSame(true, str_contains((string) file_get_contents(self::repositoryRoot() . '/src/Mcp/StdioServer.php'), 'json_encode($message, ' . $flags . ')'));
+    }
+
+    /**
      * $count distinct list items, each small enough that the staged measurer
      * rather than the real encoder decides the sizes.
      *

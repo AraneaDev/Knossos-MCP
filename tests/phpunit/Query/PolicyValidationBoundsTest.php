@@ -38,9 +38,13 @@ final class PolicyValidationBoundsTest extends KnossosTestCase
         assertThrows(fn() => self::check($pdo, $project, []), InvalidArgumentException::class);
     }
 
-    /** A policy id of exactly a hundred bytes is accepted; one more is refused. */
+    /**
+     * A policy id of exactly a hundred characters is accepted; one more is
+     * refused. The limit is counted in characters, as the schema's maxLength
+     * counts it; the message said "bytes" while it was counted in bytes.
+     */
     #[Group('query')]
-    public function testThePolicyIdLengthLimitIsAHundredBytes(): void
+    public function testThePolicyIdLengthLimitIsAHundredCharacters(): void
     {
         [$pdo, $project] = $this->fixture();
 
@@ -50,14 +54,46 @@ final class PolicyValidationBoundsTest extends KnossosTestCase
             fn() => self::check($pdo, $project, [self::policy(str_repeat('i', 101))]),
             InvalidArgumentException::class,
         );
-        assertSame('Policy id must be a non-empty string of at most 100 bytes.', $tooLong->getMessage());
+        assertSame('Policy id must be a non-empty string of at most 100 characters.', $tooLong->getMessage());
 
         // Whitespace is not an id, and is reported as the id being wrong.
         $blank = captureThrows(
             fn() => self::check($pdo, $project, [self::policy('   ')]),
             InvalidArgumentException::class,
         );
-        assertSame('Policy id must be a non-empty string of at most 100 bytes.', $blank->getMessage());
+        assertSame('Policy id must be a non-empty string of at most 100 characters.', $blank->getMessage());
+    }
+
+    /** A hundred CJK characters (300 bytes) is a hundred characters, within the id limit. */
+    #[Group('query')]
+    public function testAPolicyIdIsCountedInCharactersNotBytes(): void
+    {
+        [$pdo, $project] = $this->fixture();
+
+        assertSame(1, count(self::check($pdo, $project, [self::policy(str_repeat('界', 100))])->data['policies_evaluated']));
+    }
+
+    /** A target value is a non-empty string of at most 200 characters: whitespace and non-strings are refused, 200 CJK characters are not. */
+    #[Group('query')]
+    public function testATargetValueIsANonEmptyStringCountedInCharacters(): void
+    {
+        [$pdo, $project] = $this->fixture();
+        $message = 'Policy deny_targets values must be non-empty strings of at most 200 characters.';
+
+        foreach (['   ', 5] as $bad) {
+            $error = captureThrows(
+                fn() => self::check($pdo, $project, [['id' => 'p', 'from_boundary' => 'Core', 'deny_targets' => [$bad]]]),
+                InvalidArgumentException::class,
+            );
+            assertSame($message, $error->getMessage());
+        }
+        try {
+            self::check($pdo, $project, [['id' => 'p', 'from_boundary' => 'Core', 'deny_targets' => [str_repeat('界', 200)]]]);
+            $within = null;
+        } catch (InvalidArgumentException $error) {
+            $within = $error->getMessage();
+        }
+        assertSame(true, $within !== $message, '200 characters (600 bytes) is within the limit.');
     }
 
     /** A from_boundary of whitespace is refused as an empty boundary, not as an unknown one. */
@@ -74,9 +110,9 @@ final class PolicyValidationBoundsTest extends KnossosTestCase
         assertSame('Policy from_boundary must be a non-empty boundary ID or name.', $error->getMessage());
     }
 
-    /** A target of exactly two hundred bytes is accepted; one more is refused. */
+    /** A target of exactly two hundred characters is accepted; one more is refused (the message said "bytes" while bytes were counted). */
     #[Group('query')]
-    public function testTheTargetLengthLimitIsTwoHundredBytes(): void
+    public function testTheTargetLengthLimitIsTwoHundredCharacters(): void
     {
         [$pdo, $project] = $this->fixture();
         $longName = str_repeat('b', self::LONG_NAME_LENGTH);
@@ -88,7 +124,7 @@ final class PolicyValidationBoundsTest extends KnossosTestCase
             fn() => self::check($pdo, $project, [['id' => 'p', 'from_boundary' => 'Core', 'deny_targets' => [str_repeat('b', 201)]]]),
             InvalidArgumentException::class,
         );
-        assertSame('Policy deny_targets values must be non-empty strings of at most 200 bytes.', $error->getMessage());
+        assertSame('Policy deny_targets values must be non-empty strings of at most 200 characters.', $error->getMessage());
     }
 
     /** A target list of exactly fifty entries is accepted; fifty-one are refused. */

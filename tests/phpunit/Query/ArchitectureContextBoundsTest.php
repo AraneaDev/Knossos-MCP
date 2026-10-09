@@ -48,6 +48,10 @@ final class ArchitectureContextBoundsTest extends KnossosTestCase
         // A task description of exactly the ceiling is accepted.
         assertSame(true, is_array($queries->architectureContext($this->project, str_repeat('a', 2_000))->data));
         assertThrows(fn() => $queries->architectureContext($this->project, str_repeat('a', 2_001)), InvalidArgumentException::class);
+        // Counted in characters: 2,000 CJK characters are 6,000 bytes and still within it.
+        assertSame(true, is_array($queries->architectureContext($this->project, str_repeat('界', 2_000))->data));
+        $refused = captureThrows(fn() => $queries->architectureContext($this->project, str_repeat('界', 2_001)), InvalidArgumentException::class);
+        assertSame('task_description must not exceed 2000 characters.', $refused->getMessage());
 
         // Neither a task nor files is nothing to build a context from.
         assertThrows(fn() => $queries->architectureContext($this->project), InvalidArgumentException::class);

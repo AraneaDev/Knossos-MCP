@@ -14,14 +14,75 @@ use Knossos\Query\ArchitectureQueryService;
  */
 final readonly class ResourceService
 {
+    /** Projects per resources/list page; each contributes three resources. */
+    public const PAGE_SIZE = 100;
+
+    /** Prefix of the decoded cursor; what follows is the JSON pair [created_at, id] of the last listed project. */
+    private const CURSOR_PREFIX = 'after:';
+
     private const URI_PATTERN = '#^knossos://(project_[a-f0-9]{64})/(summary|boundaries|brief)$#';
 
     public function __construct(private ArchitectureQueryService $queries) {}
 
-    /** @return list<array<string, mixed>> */
-    public function list(): array
+    /**
+     * One page of resources, PAGE_SIZE projects at a time in creation order,
+     * with the cursor of the next page when there is one.
+     *
+     * The cursor names the last project listed (its created_at and id), not an
+     * offset, and the order is one a scan never changes, so a project rescanned,
+     * added or removed between pages neither repeats nor pushes another out.
+     *
+     * @return array{resources: list<array<string, mixed>>, nextCursor?: string}
+     * @throws InvalidArgumentException when the cursor is not one this server issued
+     */
+    public function list(?string $cursor = null): array
     {
-        $projects = $this->queries->listProjects(100)->data['projects'] ?? [];
+        [$afterCreatedAt, $afterId] = $cursor === null ? [null, null] : self::position($cursor);
+        $listing = $this->queries->projectsInCreationOrder(self::PAGE_SIZE, $afterCreatedAt, $afterId);
+        $page = ['resources' => $this->resources($listing['projects'])];
+        $last = $listing['projects'] === [] ? null : $listing['projects'][array_key_last($listing['projects'])];
+        if ($listing['more'] && $last !== null) {
+            $payload = self::CURSOR_PREFIX . json_encode([$last['created_at'], $last['id']], JSON_THROW_ON_ERROR);
+            $page['nextCursor'] = strtr(base64_encode($payload), '+/', '-_');
+        }
+
+        return $page;
+    }
+
+    /**
+     * The keyset position an opaque cursor encodes, refusing anything not of
+     * the shape this server issues.
+     *
+     * A well-formed position the server did not issue is accepted: it only
+     * chooses where a page starts, and the query binds it as a parameter, so it
+     * can neither read past the catalogue nor inject anything.
+     *
+     * @return array{string, string} [created_at, id] of the last project on the previous page
+     */
+    private static function position(string $cursor): array
+    {
+        $decoded = base64_decode(strtr($cursor, '-_', '+/'), true);
+        // Decoded without assoc, so a JSON object (even {"0": .., "1": ..})
+        // stays an object and only a JSON list becomes an array.
+        $pair = is_string($decoded) && str_starts_with($decoded, self::CURSOR_PREFIX)
+            ? json_decode(substr($decoded, strlen(self::CURSOR_PREFIX)))
+            : null;
+        // Exactly the list [string, string], both non-empty.
+        if (!is_array($pair) || array_map(get_debug_type(...), $pair) !== ['string', 'string'] || in_array('', $pair, true)) {
+            throw new InvalidArgumentException('Invalid cursor.');
+        }
+
+        return [$pair[0], $pair[1]];
+    }
+
+    /**
+     * The three resources of each listed project.
+     *
+     * @param list<array<string, mixed>> $projects
+     * @return list<array<string, mixed>>
+     */
+    private function resources(array $projects): array
+    {
         $resources = [];
         foreach ($projects as $project) {
             $id = $project['id'];
@@ -78,6 +139,6 @@ final readonly class ResourceService
      */
     private function json(array $value): string
     {
-        return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     }
 }

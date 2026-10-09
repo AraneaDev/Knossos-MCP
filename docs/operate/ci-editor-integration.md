@@ -8,14 +8,22 @@ scans run with networking disabled.
 
 CLI commands use the following automation contract:
 
-| Code | Meaning                                                                                                       |
-| ---: | ------------------------------------------------------------------------------------------------------------- |
-|  `0` | The command completed and every evaluated gate passed.                                                        |
-|  `1` | The command completed, but an evaluated health or quality gate failed (`quality-gate`, `check-architecture`). |
-|  `2` | Usage, configuration, validation, runtime, or infrastructure error.                                           |
+| Code | Meaning                                                                                                                                          |
+| ---: | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+|  `0` | The command completed and every evaluated gate passed.                                                                                           |
+|  `1` | The command completed, but an evaluated health or quality gate failed (`quality-gate`, `check-architecture`, `doctor`, `maintain-database`).     |
+|  `2` | The command could not run: usage, configuration, validation, runtime, or infrastructure error.                                                   |
+|  `3` | The command completed, but its list is incomplete: a bound or time limit cut it (`dead-code`, `diagnostics`). The output says `truncated: true`. |
 
 Do not treat code `2` as a quality finding. It means the result could not be
 evaluated reliably and the job should fail visibly.
+
+Treat code `3` as "rerun with a larger budget", not as a finding or an error.
+Everything listed is true, but the list stops short; raise `--candidate-timeout`
+for `dead-code`, or narrow `diagnostics` with `--severity` or `--path`. Before
+this code existed an incomplete list exited `2`, so a script that only tests for
+a non-zero status still fails the job, while one that compares with `2` needs to
+handle `3` as well.
 
 ## Machine-readable reports
 

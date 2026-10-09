@@ -24,7 +24,9 @@ use Knossos\Query\StalenessProbe;
 use Knossos\Query\StalenessSnapshot;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use Knossos\Tests\Phpunit\Support\CountingDriftOracle;
 use PDO;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 final class RefreshIfStaleTest extends KnossosTestCase
@@ -76,6 +78,63 @@ final class RefreshIfStaleTest extends KnossosTestCase
             $result = $tools->call('architecture_summary', ['project_id' => $projectId, 'refresh_if_stale' => true]);
 
             assertSame('fresh', $result->staleness['state']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Only keys were validated before the refresh, so a bad value cost a full
+     * rescan, holding the scan lock, before the call failed anyway.
+     *
+     * @return iterable<string, array{string, array<string, mixed>, string}>
+     */
+    public static function callsRefusedOnAValue(): iterable
+    {
+        yield 'an integer out of bounds' => ['find_component', ['name' => 'Checkout', 'limit' => 0], 'limit must be an integer between 1 and 100.'];
+        yield 'a blank string' => ['find_component', ['name' => '  '], 'name must be a non-empty string.'];
+        yield 'a nested shape' => ['quality_gate', ['baseline_snapshot' => 'active', 'budgets' => [1, 2]], 'budgets must be an object and policies must be a list.'];
+        // Enums, one per family, checked from the schema before the rescan
+        // with the message the service itself gives.
+        yield 'min_confidence' => ['inspect_component', ['component' => 'Checkout', 'min_confidence' => 'bogus'], 'min_confidence must be possible, probable, or certain.'];
+        yield 'candidate_confidence' => ['architecture_health', ['candidate_confidence' => 'bogus'], 'candidate_confidence must be probable or possible.'];
+        yield 'severity' => ['list_diagnostics', ['severity' => 'bogus'], 'severity must be one of: error, warning, info.'];
+        yield 'sort_by' => ['file_metrics', ['sort_by' => 'bogus'], 'sort_by must be path or line_count.'];
+        yield 'order' => ['file_metrics', ['order' => 'bogus'], 'order must be asc or desc.'];
+        yield 'ranking_mode' => ['suggest_location', ['feature_description' => 'checkout', 'ranking_mode' => 'bogus'], 'ranking_mode must be deterministic or semantic_if_available.'];
+        yield 'diagram format' => ['export_diagram', ['format' => 'bogus'], 'format must be mermaid or plantuml.'];
+        yield 'diagram direction' => ['export_diagram', ['direction' => 'bogus'], 'direction must be LR or TB.'];
+        yield 'boundary source' => ['list_boundaries', ['source' => 'bogus'], 'source must be explicit or inferred.'];
+        yield 'annotation kind' => ['list_annotations', ['kind' => 'bogus'], 'kind must be one of: intended_boundary, confirmed_dead, false_positive, intentional, note.'];
+        yield 'confidence filter items' => ['search_architecture', ['query' => 'checkout', 'confidences' => ['bogus']], 'confidence filter is invalid.'];
+        // Policy and budget contents, by the validators the services use.
+        yield 'a policy id' => ['check_architecture', ['policies' => [['id' => '', 'from_boundary' => 'core', 'deny_targets' => ['tests']]]], 'Policy id must be a non-empty string of at most 100 characters.'];
+        yield 'a budget name' => ['quality_gate', ['baseline_snapshot' => 'active', 'budgets' => ['bogus' => 1]], 'budgets must contain one or more supported quality limits.'];
+        yield 'a gate policy' => ['quality_gate', ['baseline_snapshot' => 'active', 'budgets' => ['boundary_violations' => 0], 'policies' => [['id' => '']]], 'Policy id must be a non-empty string of at most 100 characters.'];
+        yield 'an empty policy list' => ['check_architecture', ['policies' => []], 'policies must contain between 1 and 50 declarations.'];
+    }
+
+    #[Group('mcp')]
+    #[DataProvider('callsRefusedOnAValue')]
+    public function testAnInvalidValueFailsBeforeAnyRescan(string $tool, array $arguments, string $message): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $file = $root . '/src/CheckoutService.php';
+            file_put_contents($file, "\n// drift\n", FILE_APPEND);
+            touch($file, filemtime($file) + 60);
+            $scans = static fn(): int => (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn();
+            $before = $scans();
+
+            $error = null;
+            try {
+                $tools->call($tool, ['project_id' => $projectId, ...$arguments, 'refresh_if_stale' => true]);
+            } catch (InvalidArgumentException $refused) {
+                $error = $refused->getMessage();
+            }
+
+            assertSame($message, $error);
+            assertSame($before, $scans(), 'No rescan may run for a call that is going to be refused.');
         } finally {
             $this->removeTempTree($root);
         }
@@ -268,7 +327,7 @@ final class RefreshIfStaleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
         try {
-            $oracle = $this->countingOracle(new WalkDriftOracle($pdo));
+            $oracle = new CountingDriftOracle(new WalkDriftOracle($pdo));
             $tools = new ToolService(
                 new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
                 new ArchitectureQueryService($pdo, driftOracle: $oracle),
@@ -402,24 +461,6 @@ final class RefreshIfStaleTest extends KnossosTestCase
                 $this->removeTempTree($root);
             }
         }
-    }
-
-    /** An oracle that counts how often it was consulted and otherwise answers exactly as the one it wraps. */
-    private function countingOracle(DriftOracle $inner)
-    {
-        return new class ($inner) implements DriftOracle {
-            public int $calls = 0;
-
-            public function __construct(private readonly DriftOracle $inner) {}
-
-            /** Counts the probe, then defers to the wrapped oracle. */
-            public function drift(string $projectId, string $activeScanId, string $root, ?string $finishedAt): ?DriftCounts
-            {
-                ++$this->calls;
-
-                return $this->inner->drift($projectId, $activeScanId, $root, $finishedAt);
-            }
-        };
     }
 
     /**

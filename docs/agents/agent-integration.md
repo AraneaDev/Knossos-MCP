@@ -21,7 +21,10 @@ skill that decides which questions reach these tools at all
 The server also exposes two MCP surfaces with no CLI equivalent: per-project
 resources at `knossos://<project_id>/summary`, `/boundaries` and `/brief` (the
 first two JSON, the last the markdown `export_agent_brief` renders), and the
-`orient` and `review_diff` prompts. Every field of every tool is in
+`orient` and `review_diff` prompts. `resources/list` returns 100 projects per
+page, oldest first; pass its `nextCursor` back as `cursor` to read the next
+page. A project scanned, added or removed between pages does not shift the
+others. Every field of every tool is in
 [the MCP tool reference](../reference/mcp-tools.md).
 
 ## Refreshing a stale graph
@@ -122,7 +125,7 @@ call. It assembles a deterministic, bounded bundle of the project summary,
 likely location, explicit changed-file impact and a few component dossiers,
 without executing target-project code.
 
-Supply a task description (up to 2000 bytes), up to 50 changed files, or
+Supply a task description (up to 2000 characters), up to 50 changed files, or
 both:
 
 ```json
@@ -232,10 +235,11 @@ rescan keeps them. Removing the project cascades the cleanup.
 `remove: true` deletes the `(component, kind)` pair. Writing the same pair
 again is an upsert: the value and `updated_at` change, `created_at` stays. The
 response's `previous` field holds the annotation as it stood before the write,
-or `null`, so a caller can tell an upsert from a fresh insert. A `value` is at
-most 2000 bytes, like `task_description` on `architecture_context`. Both
-limits count bytes, so text with accents or CJK characters, which take two to
-four bytes each, hits them sooner than a character count suggests.
+or `null`, so a caller can tell an upsert from a fresh insert. A `value` is a
+string of at most 2000 characters, like `task_description` on
+`architecture_context`. Both limits count characters, as the schema's
+`maxLength` does, so accented or CJK text gets the same room as ASCII. A
+`value` is stored as given, surrounding whitespace included.
 
 `component` resolves like in other tools: an exact canonical or display name,
 or a unique name prefix. An ambiguous prefix is rejected with the candidates.

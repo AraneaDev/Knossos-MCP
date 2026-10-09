@@ -24,7 +24,11 @@ final readonly class StalenessProbe
 
     private DriftOracle $oracle;
 
-    public function __construct(private PDO $pdo, ?Closure $wallClock = null, ?DriftOracle $oracle = null)
+    /**
+     * @param Closure(string): bool|null $rootAdmitted whether a project root may be read; null (the
+     *        CLI, the dashboard, the session brief: the user's own process) admits every root
+     */
+    public function __construct(private PDO $pdo, ?Closure $wallClock = null, ?DriftOracle $oracle = null, private ?Closure $rootAdmitted = null)
     {
         $this->wallClock = $wallClock ?? static fn(): int => time();
         $this->oracle = $oracle ?? new FirstAnsweringDriftOracle(new GitDriftOracle($pdo), new WalkDriftOracle($pdo));
@@ -72,7 +76,13 @@ final readonly class StalenessProbe
         $finishedAt = $this->activeFinishedAt($activeScanId);
         $ageSeconds = $this->age($finishedAt);
         $newerAttempt = $this->hasNewerAttempt($projectId, $activeScanId);
-        $drift = $this->oracle->drift($projectId, $activeScanId, (string) $project['root_realpath'], $finishedAt);
+        $root = $project['root_realpath'];
+        if ($this->rootAdmitted !== null && !($this->rootAdmitted)($root)) {
+            // Outside the server's allowed roots no file is read and no git
+            // runs. A newer scan attempt is a database fact and still counts.
+            return new StalenessSnapshot($projectId, $this->outsideRoots($newerAttempt, $finishedAt, $ageSeconds), $activeScanId);
+        }
+        $drift = $this->oracle->drift($projectId, $activeScanId, $root, $finishedAt);
         $drifted = $drift?->total();
 
         // 'unverified' when no newer scan attempt exists but content-change
@@ -107,6 +117,25 @@ final readonly class StalenessProbe
         }
 
         return new StalenessSnapshot($projectId, $result, $activeScanId, $drift);
+    }
+
+    /**
+     * The verdict for a project whose root lies outside the allowed roots, measured without reading it.
+     *
+     * @return array<string, mixed>
+     */
+    private function outsideRoots(bool $newerAttempt, ?string $finishedAt, ?int $ageSeconds): array
+    {
+        return [
+            'state' => $newerAttempt ? 'stale' : 'unverified',
+            'scanned_at' => $finishedAt,
+            'age_seconds' => $ageSeconds,
+            // scan_project refuses a root outside the allowed roots, so the
+            // usual "rescan" advice could not be followed here.
+            'guidance' => $newerAttempt
+                ? "Graph may be stale, and this project's root is outside this server's allowed roots, so it cannot be rescanned here; add the root to the allowed roots to rescan or verify it."
+                : "Change detection runs only inside this server's allowed roots, and this project's root is outside them; freshness is unconfirmed.",
+        ];
     }
 
     /**

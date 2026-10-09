@@ -58,8 +58,9 @@ final class ProjectListCommandTest extends KnossosTestCase
     }
 
     /**
-     * A search cut short by its time budget says so and exits 2: a partial
+     * A search cut short by its time budget says so and exits 3: a partial
      * list printed as the whole one would read as "nothing else is dead".
+     * (It exited 2, which is reserved for errors.)
      */
     public function testDeadCodeSaysWhenItsTimeBudgetCutTheListShort(): void
     {
@@ -77,8 +78,37 @@ final class ProjectListCommandTest extends KnossosTestCase
         } finally {
             $text = (string) ob_get_clean();
         }
-        self::assertSame(2, $exit);
+        self::assertSame(3, $exit);
         self::assertStringContainsString('Incomplete: the search ran out of its 1 ms', $text);
+    }
+
+    /** Exit 2 meant both "the list was cut" and "the command failed", so a script could not tell them apart. */
+    #[Group('cli')]
+    public function testAnIncompleteListExitsThreeAndAnErrorExitsTwo(): void
+    {
+        [, $repository, $ids] = $this->storeFixture(null, $this->pdo());
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $time = 0;
+        $clock = static function () use (&$time): int {
+            $time += 2_000_000;
+            return $time;
+        };
+        $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $this->database);
+        ob_start();
+        try {
+            $status = (new ProjectListCommand($clock))->run('dead-code', [$ids['project']], ['candidate-timeout' => ['1'], 'json' => ['']], $context);
+        } finally {
+            $json = json_decode((string) ob_get_clean(), true, 512, JSON_THROW_ON_ERROR);
+        }
+        self::assertSame(3, $status);
+        self::assertTrue($json['truncated']);
+
+        $errors = fopen('php://memory', 'w+');
+        self::assertIsResource($errors);
+        $failed = (new \Knossos\Application($errors))->run(['diagnostics', 'project_missing', '--db=' . $this->database]);
+        rewind($errors);
+        self::assertSame(2, $failed);
+        self::assertStringStartsWith('KNOSSOS_INVALID_ARGUMENT:', (string) stream_get_contents($errors));
     }
 
     public function testDiagnosticsAreListedWholeAndFilteredBySeverity(): void
@@ -169,7 +199,8 @@ final class ProjectListCommandTest extends KnossosTestCase
         } finally {
             $text = (string) ob_get_clean();
         }
-        self::assertSame(2, $exit);
+        // 3, not 2: exit 2 is reserved for errors.
+        self::assertSame(3, $exit);
         self::assertStringContainsString('Incomplete: listed the first 10000 of 10050', $text);
         self::assertLessThan(32 * 1024 * 1024, memory_get_peak_usage() - $before);
     }

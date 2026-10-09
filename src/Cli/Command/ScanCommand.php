@@ -37,7 +37,7 @@ final class ScanCommand implements CliCommand
             $context->options->single($options, 'name'),
             isset($options['max-files']) ? $context->options->integer($options, 'max-files', 100_000, 1, 100_000) : null,
             isset($options['max-file-bytes']) ? $context->options->integer($options, 'max-file-bytes', 2_000_000, 1, 100_000_000) : null,
-            isset($options['boundary']) ? $context->options->boundaries($options['boundary']) : null,
+            isset($options['boundary']) ? $context->options->boundaries($context->options->values($options, 'boundary')) : null,
             $context->options->single($options, 'mode'),
             $context->cancellationToken(),
             isset($options['snapshot-retention']) ? $context->options->integer($options, 'snapshot-retention', 5, 0, 20) : null,
@@ -45,6 +45,6 @@ final class ScanCommand implements CliCommand
             isset($options['worker-memory-mb']) ? $context->options->integer($options, 'worker-memory-mb', 1024, 64, 65536) : null,
         );
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary . "\nProject: " . $result->projectId . "\nSnapshot: " . $result->snapshotId);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 }

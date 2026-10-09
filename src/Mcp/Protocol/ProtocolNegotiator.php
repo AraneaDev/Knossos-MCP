@@ -77,6 +77,21 @@ final class ProtocolNegotiator
     }
 
     /**
+     * Pin the connection to a revision negotiated elsewhere, so later requests
+     * without a `_meta` version run under it rather than as stateless callers.
+     *
+     * @throws UnsupportedProtocolVersionException when the revision is not on offer
+     */
+    public function pin(string $version): void
+    {
+        $this->pinned = match (true) {
+            !in_array($version, self::supported(), true) => throw new UnsupportedProtocolVersionException($version, self::supported()),
+            $version === Profile20251125::VERSION => new Profile20251125(),
+            default => new Profile20260728(),
+        };
+    }
+
+    /**
      * The revision a message declares in `_meta`, or null when it declares none.
      *
      * @param array<string, mixed> $message

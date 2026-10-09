@@ -102,7 +102,7 @@ final class ProjectListCommand implements CliCommand
             implode("\n", $lines),
         );
 
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
@@ -135,7 +135,7 @@ final class ProjectListCommand implements CliCommand
         }
         $context->output(['project_id' => $projectId, 'total' => $total, 'truncated' => $incomplete, 'diagnostics' => $items], $context->options->flag($options, 'json'), implode("\n", $lines));
 
-        return $incomplete ? 2 : 0;
+        return $incomplete ? CliCommand::EXIT_INCOMPLETE : CliCommand::EXIT_OK;
     }
 
     /**
@@ -203,8 +203,8 @@ final class ProjectListCommand implements CliCommand
             implode("\n", $lines),
         );
 
-        // 2: the list could not be evaluated whole, as a gate that could not run reports it.
-        return $incomplete ? 2 : 0;
+        // Incomplete, not an error: the list it printed is true as far as it goes.
+        return $incomplete ? CliCommand::EXIT_INCOMPLETE : CliCommand::EXIT_OK;
     }
 
     /** Nanoseconds on the injected clock, else the monotonic one. */

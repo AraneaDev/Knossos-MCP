@@ -36,7 +36,7 @@ final class SessionDiffCommand implements CliCommand
         if ($json || $result['status'] !== 'error') {
             $context->output($result, $json, (string) $result['status']);
         }
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
