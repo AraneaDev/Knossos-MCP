@@ -64,15 +64,25 @@ cannot re-include them:
   next to a same-named `.ts`.
 
 Build output, `build`, `dist`, `coverage` and `site`, is skipped only directly
-under the project root or directly under a manifest root: a directory holding
-`composer.json`, `package.json`, `pyproject.toml`, `Cargo.toml`,
-`requirements*.txt` or `tsconfig*.json`. A directory of that name anywhere else,
-such as `src/build` or `apps/site` when `apps` holds no manifest, is scanned.
-Each skipped directory is reported as an `info` diagnostic,
-`DISCOVERY_BUILD_OUTPUT_SKIPPED`, unless your own patterns or a `.gitignore`
-already leave it out. Your patterns decide after this rule, so a `!` pattern
-re-includes build output: `"!dist"` scans every anchored `dist`, and
-`"!packages/a/dist/**"` scans that one.
+under the project root or directly under a manifest root. A manifest root is a
+directory holding one of these files, matched by name without regard to case:
+
+- `composer.json`
+- `package.json`
+- `pyproject.toml`
+- `Cargo.toml`
+- `requirements.txt`, or `requirements-` followed by any name and `.txt`, such
+  as `requirements-dev.txt`
+- `tsconfig.json`, or `tsconfig.` followed by any name and `.json`, such as
+  `tsconfig.app.json`
+
+A directory of that name anywhere else, such as `src/build` or `apps/site` when
+`apps` holds no manifest, is scanned. Each skipped directory is reported as an
+`info` diagnostic, `DISCOVERY_BUILD_OUTPUT_SKIPPED`, unless your own patterns
+or a `.gitignore` already leave it out. The diagnostic names the pattern that
+re-includes only that directory, such as `"!/packages/a/dist"`. Your patterns
+decide after this rule, so a `!` pattern re-includes build output: `"!/dist"`
+scans the one at the root, and `"!dist"` scans every anchored `dist`.
 
 The configuration file itself cannot be ignored. It is part of the scanner
 configuration fingerprint, so changing it invalidates the cached contributions.

@@ -321,7 +321,9 @@ final readonly class ProjectDiscoverer
         $diagnostics[] = new DiscoveryDiagnostic(
             'info',
             'DISCOVERY_BUILD_OUTPUT_SKIPPED',
-            sprintf('Skipped build output directory %s/; add "!%s" to ignores to scan it.', $relative, $relative),
+            // Root-anchored, so the suggested pattern re-includes this
+            // directory only: `!dist` would re-include every anchored `dist`.
+            sprintf('Skipped build output directory %s/; add "!/%s" to ignores to scan it.', $relative, $relative),
             $relative,
         );
     }

@@ -65,7 +65,10 @@ stable ID that name had, still resolves. A name or alias that two boundaries
 share, such as `node:loc` above or a name both an explicit and an inferred
 boundary carry, is rejected with the candidates' stable IDs; use one of those.
 `file_context`, the session brief, the dashboard and `export_diagram` read a
-policy's boundaries the same way.
+policy's boundaries the same way. A policy whose source boundary reference is
+ambiguous or names no boundary is therefore not listed by `file_context` for
+any file, `check_architecture` and `quality_gate` refuse it, and the session
+brief shows the reference as written.
 
 Findings include the policy ID, the violating relationship (with its kind,
 confidence and origin), both components, the boundary memberships on each side,

@@ -550,7 +550,9 @@ final class ProjectDiscovererTest extends KnossosTestCase
             static fn($diagnostic): bool => $diagnostic->relativePath === 'packages/a/dist',
         ))[0];
         assertSame('info', $diagnostic->severity);
-        assertSame('Skipped build output directory packages/a/dist/; add "!packages/a/dist" to ignores to scan it.', $diagnostic->message);
+        assertSame('Skipped build output directory packages/a/dist/; add "!/packages/a/dist" to ignores to scan it.', $diagnostic->message);
+        $root = array_values(array_filter($result->diagnostics, static fn($diagnostic): bool => $diagnostic->relativePath === 'dist'))[0];
+        assertSame('Skipped build output directory dist/; add "!/dist" to ignores to scan it.', $root->message);
     }
 
     /** The root is a manifest root when it holds a manifest; a file or link named like build output is no directory to report. */
@@ -589,6 +591,24 @@ final class ProjectDiscovererTest extends KnossosTestCase
         $paths = array_map(static fn(DiscoveredFile $file): string => $file->relativePath, $result->files);
         assertSame(['packages/a/dist/d.ts'], $paths);
         assertSame(['dist'], $this->buildOutputDiagnostics($result));
+    }
+
+    /** The pattern each diagnostic suggests re-includes that directory and no other. */
+    public function testTheSuggestedPatternReincludesOnlyItsDirectory(): void
+    {
+        $this->writeTree([
+            'dist/a.ts' => 'export const a = 1;',
+            'packages/a/package.json' => '{"name":"a"}',
+            'packages/a/dist/d.ts' => 'export const d = 1;',
+        ]);
+
+        $paths = fn(array $ignores): array => array_map(
+            static fn(DiscoveredFile $file): string => $file->relativePath,
+            (new ProjectDiscoverer(new DiscoveryConfig([$this->root], ignorePatterns: $ignores)))->discover($this->root)->files,
+        );
+
+        assertSame(['dist/a.ts'], $paths(['!/dist']));
+        assertSame(['packages/a/dist/d.ts'], $paths(['!/packages/a/dist']));
     }
 
     /** Dependency directories stay excluded at any depth, whatever a pattern says. */
