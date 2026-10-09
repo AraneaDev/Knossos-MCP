@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.0](https://github.com/AraneaDev/knossos/compare/v0.20.1...v0.21.0) (2026-10-09)
+
+
+### Features
+
+* warn in doctor when the Rust worker binary is stale ([#175](https://github.com/AraneaDev/knossos/issues/175)) ([4191dae](https://github.com/AraneaDev/knossos/commit/4191daec95da9b5c8a8e84e1620926b94ef2c465))
+
+
+### Fixes
+
+* make every read tool answer what its summary claims ([#177](https://github.com/AraneaDev/knossos/issues/177)) ([066eb32](https://github.com/AraneaDev/knossos/commit/066eb32789776910a3d80eea7ab3c34d9e814db6))
+
 ## [0.20.1](https://github.com/AraneaDev/knossos/compare/v0.20.0...v0.20.1) (2026-10-09)
 
 
