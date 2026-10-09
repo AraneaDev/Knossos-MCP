@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Bundle;
 
 use InvalidArgumentException;
+use stdClass;
 
 /**
  * Decodes and validates a graph bundle before anything is imported.
@@ -148,6 +149,17 @@ final class GraphBundleDecoder
 
     private static function canonical(mixed $value): mixed
     {
+        if ($value instanceof stdClass) {
+            // An object decoded as one (a redacted attribute document) keeps
+            // its object shape, with its keys sorted like an array's.
+            $properties = get_object_vars($value);
+            ksort($properties, SORT_STRING);
+            $sorted = new stdClass();
+            foreach ($properties as $name => $item) {
+                $sorted->{$name} = self::canonical($item);
+            }
+            return $sorted;
+        }
         if (!is_array($value)) {
             return $value;
         }

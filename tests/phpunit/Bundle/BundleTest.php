@@ -42,8 +42,18 @@ final class BundleTest extends KnossosTestCase
             assertSame(false, array_key_exists('root_realpath', $decoded['payload']));
             assertSame('sha256:' . hash('sha256', json_encode(canonicalJsonValue($decoded['payload']), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)), $decoded['manifest']['checksum']);
 
-            $paths = json_decode((string) gzdecode($service->export($scan->projectId, 'paths')), true, 128, JSON_THROW_ON_ERROR);
+            // Redacted exports were byte-identical too, because the path hash
+            // was unsalted. Each export now draws its own salt: two `paths`
+            // exports of one snapshot differ, and both still import whole.
+            $pathsBytes = $service->export($scan->projectId, 'paths');
+            $pathsAgain = $service->export($scan->projectId, 'paths');
+            assertSame(false, $pathsBytes === $pathsAgain);
+            $paths = json_decode((string) gzdecode($pathsBytes), true, 128, JSON_THROW_ON_ERROR);
             assertSame(true, str_starts_with($paths['payload']['files'][0]['relative_path'], 'redacted/'));
+            $pathsFacts = $paths['manifest']['fact_count'];
+            assertSame($pathsFacts, $service->import($pathsBytes)->data['fact_count']);
+            assertSame($pathsFacts, $service->import($pathsAgain)->data['fact_count']);
+            assertSame($decoded['manifest']['fact_count'], $pathsFacts);
             $strict = json_decode((string) gzdecode($service->export($scan->projectId, 'strict')), true, 128, JSON_THROW_ON_ERROR);
             assertSame('{}', $strict['payload']['nodes'][0]['attributes_json']);
 
@@ -74,6 +84,58 @@ final class BundleTest extends KnossosTestCase
             assertSame($projectsBefore, (int) $pdo->query('SELECT COUNT(*) FROM projects')->fetchColumn());
             assertThrows(fn() => $service->import('not-gzip'), InvalidArgumentException::class);
             assertThrows(fn() => $service->export($scan->projectId, 'unknown'), InvalidArgumentException::class);
+        } finally {
+            unset($service, $pdo);
+            foreach ([$database, $database . '-shm', $database . '-wal'] as $candidate) {
+                @unlink($candidate);
+            }
+        }
+    }
+
+    /**
+     * Redaction now re-keys every id and rewrites names in every column; an
+     * import must still see the same graph: the same number of every fact and
+     * the same edges between the same (redacted) names.
+     */
+    #[Group('bundle')]
+    public function testARedactedBundleImportsAsTheSameGraph(): void
+    {
+        $root = self::repositoryRoot() . '/tests/Fixtures/configured';
+        $database = tempnam(sys_get_temp_dir(), 'knossos-bundle-');
+        if ($database === false) {
+            throw new RuntimeException('Unable to allocate bundle database.');
+        }
+        try {
+            $pdo = SqliteConnection::open($database);
+            (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+            $source = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, 'Bundle Source')->projectId;
+            $service = new GraphBundleService($pdo);
+            $count = static function (string $table, string $project) use ($pdo): int {
+                $statement = $pdo->prepare('SELECT COUNT(*) FROM ' . $table . ' WHERE project_id = :project');
+                $statement->execute(['project' => $project]);
+                return (int) $statement->fetchColumn();
+            };
+            $edges = static function (string $project) use ($pdo): array {
+                $statement = $pdo->prepare('SELECT e.kind, s.canonical_name, t.canonical_name FROM edges e JOIN nodes s ON s.id = e.source_id JOIN nodes t ON t.id = e.target_id WHERE e.project_id = :project');
+                $statement->execute(['project' => $project]);
+                $rows = array_map(static fn(array $row): string => implode("\0", $row), $statement->fetchAll(\PDO::FETCH_NUM));
+                sort($rows, SORT_STRING);
+                return $rows;
+            };
+            foreach (['paths', 'strict'] as $mode) {
+                $bytes = $service->export($source, $mode);
+                $payload = json_decode((string) gzdecode($bytes), true, 128, JSON_THROW_ON_ERROR)['payload'];
+                $imported = $service->import($bytes)->projectId;
+                foreach (['files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics'] as $table) {
+                    assertSame($count($table, $source), $count($table, $imported), $mode . ' ' . $table);
+                }
+                assertSame(true, $count('boundary_memberships', $source) > 0);
+                $names = array_column($payload['nodes'], 'canonical_name', 'id');
+                $expected = array_map(static fn(array $edge): string => implode("\0", [$edge['kind'], $names[$edge['source_id']], $names[$edge['target_id']]]), $payload['edges']);
+                sort($expected, SORT_STRING);
+                assertSame($expected, $edges($imported), $mode);
+                assertSame(count($edges($source)), count($expected));
+            }
         } finally {
             unset($service, $pdo);
             foreach ([$database, $database . '-shm', $database . '-wal'] as $candidate) {
