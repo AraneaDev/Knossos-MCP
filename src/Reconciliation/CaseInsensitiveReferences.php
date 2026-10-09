@@ -74,8 +74,8 @@ final readonly class CaseInsensitiveReferences
             }
             $key = self::fold($reference);
             // Two declarations spelled apart are one symbol to the language;
-            // the lower id is the one kept, whatever order they arrive in.
-            $folded[$key] = isset($folded[$key]) ? min($folded[$key], $id) : $id;
+            // the first id in byte order is kept, whatever order they arrive in.
+            $folded[$key] = isset($folded[$key]) && strcmp($folded[$key], $id) <= 0 ? $folded[$key] : $id;
             [, $kind, $canonical] = explode(':', $reference, 3);
             self::keepFirst($declared, self::typeKey($kind, $canonical), explode('::', $canonical)[0]);
         }

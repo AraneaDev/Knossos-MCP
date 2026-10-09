@@ -52,6 +52,13 @@ final class CaseInsensitiveReferencesTest extends KnossosTestCase
         self::assertSame(['php:class:app\\child' => ['php:class:app\\foo', 'php:trait:app\\logs']], $references->inheritanceSources());
     }
 
+    public function testComparesIdsAsStringsNeverAsNumbers(): void
+    {
+        $references = new CaseInsensitiveReferences(['php:class:App\\Foo' => '999', 'php:class:App\\FOO' => '1e3'], [], [], []);
+
+        self::assertSame(['php:class:app\\foo' => '1e3'], $references->nodeMap(), 'byte order, though 1e3 is the larger number');
+    }
+
     public function testNamesAnExternalByOneSpelling(): void
     {
         $contributions = [
