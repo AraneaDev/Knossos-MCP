@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Watch;
 
+use Knossos\Discovery\AllowedRoots;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanner;
@@ -37,15 +38,15 @@ final readonly class WatchService
      */
     public const MAX_CONSECUTIVE_TIMEOUTS = 3;
 
-    private \Knossos\Discovery\AllowedRoots $roots;
+    private AllowedRoots $roots;
 
     /**
      * @param ProjectScanner|\Closure(string, ?string, CancellationToken): ResultEnvelope $scanner a scanner, or a closure taking the root, mode and cancellation
-     * @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots
+     * @param AllowedRoots|list<string> $allowedRoots
      */
-    public function __construct(private ProjectScanner|\Closure $scanner, \Knossos\Discovery\AllowedRoots|array $allowedRoots)
+    public function __construct(private ProjectScanner|\Closure $scanner, AllowedRoots|array $allowedRoots)
     {
-        $this->roots = \Knossos\Discovery\AllowedRoots::of($allowedRoots);
+        $this->roots = AllowedRoots::of($allowedRoots);
     }
 
     /**

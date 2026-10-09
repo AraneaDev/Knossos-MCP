@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Configuration;
 
+use Knossos\Discovery\AllowedRoots;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\JsonConfig;
@@ -43,7 +44,7 @@ final class ProjectConfigurationLoader
      *
      * @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots
      */
-    public static function load(string $requestedRoot, \Knossos\Discovery\AllowedRoots|array $allowedRoots): ProjectConfiguration
+    public static function load(string $requestedRoot, AllowedRoots|array $allowedRoots): ProjectConfiguration
     {
         $root = (new RootGuard($allowedRoots))->resolve($requestedRoot);
         $json = $root . '/knossos.json';
