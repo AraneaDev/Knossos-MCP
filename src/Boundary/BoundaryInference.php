@@ -92,6 +92,8 @@ final class BoundaryInference
                     $configPath = substr($key, strpos($key, ':') + 1);
                     $directory = dirname(str_replace('\\', '/', $configPath));
                     $rules[$key]['display'] = $rule['display'] . ' (' . ($directory === '.' ? 'root' : $directory) . ')';
+                    // The name it had while it was the only one, which a policy may still use.
+                    $rules[$key]['aliases'] = [$rule['display']];
                 }
             }
         }
@@ -160,6 +162,15 @@ final class BoundaryInference
                     $byMatcher[$key] = $name;
                 } else {
                     $rules[$byMatcher[$key]]['merged_names'][] = $rule['display'] ?? $name;
+                    // A merged-in rule's names (its own, the ones it had before,
+                    // and the identity its stable id was derived from) stop
+                    // naming a boundary of their own.
+                    $rules[$byMatcher[$key]]['aliases'] = [
+                        ...$rules[$byMatcher[$key]]['aliases'] ?? [],
+                        ...$rule['aliases'] ?? [],
+                        $rule['display'] ?? $name,
+                        ...isset($rule['identity']) ? [$rule['identity']] : [],
+                    ];
                     unset($rules[$name]);
                 }
             }
@@ -193,8 +204,11 @@ final class BoundaryInference
                 if ($identityName === null) {
                     $identityName = $baseName;
                 }
+                $rule['aliases'][] = $baseName;
             }
-            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], $members, $identityName);
+            $aliases = array_values(array_unique(array_diff($rule['aliases'] ?? [], [$displayName])));
+            sort($aliases, SORT_STRING);
+            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], $members, $identityName, $aliases);
         }
         return $facts;
     }

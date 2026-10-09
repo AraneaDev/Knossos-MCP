@@ -426,6 +426,61 @@ final class BoundaryInferenceTest extends TestCase
         assertSame('python-package:shop', $facts[0]->identityName);
     }
 
+    /**
+     * A policy names a boundary by its name, and adding a manifest renamed it:
+     * the merge suffix and the directory suffix each changed the name. Each
+     * boundary records the names it was known by, so they still resolve.
+     */
+    public function testABoundaryRecordsTheNamesItWasKnownBy(): void
+    {
+        $alone = (new BoundaryInference())->infer([$this->makeUnit('node', 'package.json', ['name' => 'web'])], [], []);
+        assertSame(['node:web', []], [$alone[0]->name, $alone[0]->aliases]);
+
+        $merged = (new BoundaryInference())->infer([
+            $this->makeUnit('node', 'package.json', ['name' => 'web']),
+            $this->makeUnit('composer', 'composer.json', ['name' => 'acme/lib']),
+        ], [], []);
+        assertSame('composer:acme/lib (+node:web)', $merged[0]->name);
+        assertSame(['composer:acme/lib', 'node:web'], $merged[0]->aliases);
+
+        $twins = (new BoundaryInference())->infer([
+            $this->makeUnit('node', 'a/package.json', ['name' => 'loc']),
+            $this->makeUnit('node', 'b/package.json', ['name' => 'loc']),
+        ], [], []);
+        assertSame(['node:loc (a)', 'node:loc (b)'], array_map(static fn(BoundaryFact $fact): string => $fact->name, $twins));
+        assertSame([['node:loc'], ['node:loc']], array_map(static fn(BoundaryFact $fact): array => $fact->aliases, $twins));
+    }
+
+    /**
+     * A merged-in twin is known by its suffixed name, the name it had before
+     * that, and the identity its old stable id was derived from; a merged
+     * language rule by its base name.
+     * Explicit boundaries are never renamed and have none.
+     */
+    public function testAMergedInRuleLeavesItsNameAndItsIdentity(): void
+    {
+        $facts = (new BoundaryInference())->infer([
+            $this->makeUnit('node', 'a/package.json', ['name' => 'loc']),
+            $this->makeUnit('composer', 'a/composer.json', ['name' => 'acme/a']),
+            $this->makeUnit('node', 'b/package.json', ['name' => 'loc']),
+        ], [], [['name' => 'core', 'path_prefix' => 'a']]);
+
+        $byName = [];
+        foreach ($facts as $fact) {
+            $byName[$fact->name] = $fact->aliases;
+        }
+        assertSame([
+            'composer:acme/a (+node:loc (a))' => ['composer:acme/a', 'node:loc', 'node:loc (a)', 'path:node:a/package.json'],
+            'core' => [],
+            'node:loc (b)' => ['node:loc'],
+        ], $byName);
+
+        $unit = $this->makeUnit('python', 'shop/pyproject.toml', ['name' => 'acme/shop']);
+        $node = $this->makeNode('py:class:shop/api.py#Order', 'shop/api.py#Order', 'shop/api.py');
+        $merged = (new BoundaryInference())->infer([$unit], [$this->makeContribution([$node])], []);
+        assertSame(['python-package:shop', 'python:acme/shop'], $merged[0]->aliases);
+    }
+
     public function testInferOrdersBoundariesByRuleKeyNotDisplayName(): void
     {
         // Behavioural note (found during review): the original version of this test —
