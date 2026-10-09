@@ -132,9 +132,13 @@ paths are returned explicitly, and truncation means the reported set may be inco
 
 ## Test impact
 
-`test_impact` projects a changed-files blast radius (the same analysis behind
-`changed_files_impact`) onto the test files that statically reach the changed
-code, ranked by distance. Use it to run the relevant tests first in an
+`test_impact` finds the test files that statically reach the changed code,
+ranked by distance. It maps the changed files to their components the way
+`changed_files_impact` does, then runs a search of its own: a reverse
+breadth-first walk over every dependant, production and test alike, that keeps
+only the components classified `quality.test_module`. Production dependants
+cost a visit but never a place in the answer, so a test behind a hub with
+hundreds of callers is still found. Use it to run the relevant tests first in an
 edit-test loop; it is a lower bound, so keep running the full suite:
 data-driven tests, fixtures, and glob-only discovery are invisible to the
 graph.
@@ -156,10 +160,25 @@ path:
 - `via` names up to three of the test components (classes/functions) in that
   file responsible for the reachability, sorted and de-duplicated.
 
-`changed_files`, `unresolved_files`, and `bounds` mirror
-`changed_files_impact`'s fields, with `bounds.impacted_scan_limit` added to
-record the per-component dependant scan cap. A warning is always attached
-reminding callers this is a lower bound.
+`changed_files` and `unresolved_files` mirror `changed_files_impact`'s
+fields. `bounds` reports the limits and what the search did:
+
+- `max_files`, `max_direct_components`, `limit` and `max_depth`: the change
+  set and answer limits, as in `changed_files_impact`.
+- `max_visited` (50,000 components) and `max_edges` (100,000 relationships):
+  the search's own bounds. `timeout_ms` bounds the whole request.
+- `visited_nodes` and `edges_examined`: how far the search went.
+- `test_files_found`: how many test files the search reached before `limit`
+  cut the list.
+- `truncation_reasons`: every bound that cut the answer, in the order met:
+  `changed_file_limit`, `direct_component_limit`, `visit_limit`,
+  `edge_limit`, `time_limit` or `result_limit`.
+
+When the search was cut, the summary says so and names the reasons, because
+test files beyond that bound are not listed. When only `limit` cut the list,
+the summary says how many of how many test files you are seeing. Reaching
+`max_depth` is the horizon you asked for, not a cut. A warning is always
+attached reminding you this is a lower bound.
 
 ## Git change signals and time-aware impact
 

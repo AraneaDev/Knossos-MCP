@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Query;
 
 use Knossos\Query\ArchitectureQueryService;
+use Knossos\Store\GraphRepository;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
@@ -90,9 +91,11 @@ final class TestImpactTest extends KnossosTestCase
 
         assertSame(['tests/ZebraTest.php'], array_column($result->data['test_files'], 'path'));
         // The search bound is reported separately, so a caller can tell a genuine
-        // "nothing found" from a bounded one.
+        // "nothing found" from a bounded one. It was `impacted_scan_limit` (100
+        // dependants per changed component); the test search now has bounds of
+        // its own, so the visit bound is what shows the search stayed wide.
         assertSame(2, $result->data['bounds']['limit']);
-        assertSame(true, $result->data['bounds']['impacted_scan_limit'] > 2);
+        assertSame(50_000, $result->data['bounds']['max_visited']);
     }
 
     #[Group('query')]
@@ -130,5 +133,135 @@ final class TestImpactTest extends KnossosTestCase
         );
         $result = $tools->call('test_impact', ['project_id' => $ids['project'], 'files' => ['src/Checkout.php']]);
         assertSame(true, array_key_exists('test_files', $result->data));
+    }
+
+    /**
+     * A hub's production dependants used to fill the whole search window, so a
+     * test two hops away was never met and the answer read "0 test files".
+     */
+    #[Group('query')]
+    public function testATestBehindAHubsProductionDependantsIsFound(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $this->hubWithATestBehindIt($repository, $ids);
+
+        $result = (new ArchitectureQueryService($pdo))->testImpact($ids['project'], files: ['src/Checkout.php']);
+
+        self::assertSame([['path' => 'tests/HubTest.php', 'distance' => 2, 'via' => ['HubTest']]], $result->data['test_files']);
+        self::assertFalse($result->truncated);
+        self::assertSame('1 test file statically exercise the change.', $result->summary);
+        self::assertSame([], $result->data['bounds']['truncation_reasons']);
+        self::assertGreaterThanOrEqual(152, $result->data['bounds']['visited_nodes']);
+        self::assertSame(1, $result->data['bounds']['test_files_found']);
+        self::assertArrayNotHasKey('impacted_scan_limit', $result->data['bounds']);
+        self::assertSame(
+            ['max_files', 'max_direct_components', 'limit', 'max_depth', 'max_visited', 'max_edges', 'visited_nodes', 'edges_examined', 'test_files_found', 'truncation_reasons'],
+            array_keys($result->data['bounds']),
+        );
+        self::assertStringContainsString('the test search is bounded; see bounds.truncation_reasons', implode(' ', $result->warnings));
+    }
+
+    #[Group('query')]
+    public function testASearchCutByItsDeadlineSaysTruncatedInTheSummary(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $this->hubWithATestBehindIt($repository, $ids);
+        $ticks = 0;
+        $clock = static function () use (&$ticks): int {
+            return ++$ticks * 2_000_000;
+        };
+
+        $result = (new ArchitectureQueryService($pdo, $clock))->testImpact($ids['project'], files: ['src/Checkout.php'], timeoutMs: 1);
+
+        self::assertTrue($result->truncated);
+        self::assertContains('time_limit', $result->data['bounds']['truncation_reasons']);
+        self::assertStringContainsString('The search was truncated (time_limit), so test files beyond that bound are not listed.', $result->summary);
+    }
+
+    #[Group('query')]
+    public function testAResultLimitSaysHowManyWereFound(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        foreach (['Alpha', 'Beta', 'Gamma'] as $name) {
+            $test = $this->component($repository, $ids, sprintf('tests/%sTest.php', $name), sprintf('Tests\\%sTest', $name), test: true);
+            $this->calls($repository, $ids, $test, $ids['checkout']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->testImpact($ids['project'], files: ['src/Checkout.php'], limit: 2);
+
+        self::assertCount(2, $result->data['test_files']);
+        self::assertSame(3, $result->data['bounds']['test_files_found']);
+        self::assertSame(['result_limit'], $result->data['bounds']['truncation_reasons']);
+        self::assertSame('2 test files statically exercise the change. The list was truncated to the first 2 of 3 test files.', $result->summary);
+    }
+
+    /**
+     * Arguments are validated by test_impact itself now that it no longer
+     * hands them to impact analysis.
+     */
+    #[Group('query')]
+    public function testItRejectsArgumentsOutsideTheirRanges(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+        $cases = [
+            'max_depth must be between 1 and 8.' => static fn() => $queries->testImpact($ids['project'], files: ['src/Checkout.php'], maxDepth: 9),
+            'Limit must be between 1 and 100.' => static fn() => $queries->testImpact($ids['project'], files: ['src/Checkout.php'], limit: 0),
+            'timeout_ms must be between 1 and 5000.' => static fn() => $queries->testImpact($ids['project'], files: ['src/Checkout.php'], timeoutMs: 0),
+            'min_confidence must be possible, probable, or certain.' => static fn() => $queries->testImpact($ids['project'], files: ['src/Checkout.php'], minConfidence: 'sure'),
+            'edge_kinds contains an unsupported impact relationship.' => static fn() => $queries->testImpact($ids['project'], files: ['src/Checkout.php'], edgeKinds: ['contains']),
+        ];
+        foreach ($cases as $message => $call) {
+            try {
+                $call();
+                self::fail('Expected rejection: ' . $message);
+            } catch (\InvalidArgumentException $error) {
+                self::assertSame($message, $error->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Checkout with 150 production callers and one test behind the last.
+     *
+     * @param array<string, string> $ids
+     */
+    private function hubWithATestBehindIt(GraphRepository $repository, array $ids): void
+    {
+        $callers = [];
+        foreach (range(1, 150) as $index) {
+            $callers[] = $caller = $this->component($repository, $ids, sprintf('src/Caller%03d.php', $index), sprintf('App\\Caller%03d', $index));
+            $this->calls($repository, $ids, $caller, $ids['checkout']);
+        }
+        $test = $this->component($repository, $ids, 'tests/HubTest.php', 'Tests\\HubTest', test: true);
+        $this->calls($repository, $ids, $test, $callers[149]);
+        $repository->completeScan($ids['project'], $ids['scan']);
+    }
+
+    /**
+     * A file holding one class, classified as test code when asked.
+     *
+     * @param array<string, string> $ids
+     */
+    private function component(GraphRepository $repository, array $ids, string $path, string $class, bool $test = false): string
+    {
+        $project = $ids['project'];
+        $file = StableId::file($project, $path);
+        $repository->saveFile($file, $project, $path, hash('sha256', $path), 40, 1, 'php', '0.1.0', $ids['scan']);
+        $id = StableId::symbol($project, 'php', 'class', $class);
+        $short = substr($class, (int) strrpos($class, '\\') + 1);
+        $repository->saveNode($id, $project, 'php', 'class', $class, $short, null, $file, 5, 30, 'ast', 'certain', [], 'php:file:' . $path, $ids['scan']);
+        if ($test) {
+            $repository->saveClassification(StableId::classification($project, $id, 'quality.test_module', 'core.test.modules.v1'), $project, $id, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $file, 5, 30, [], $ids['scan']);
+        }
+        return $id;
+    }
+
+    /** @param array<string, string> $ids */
+    private function calls(GraphRepository $repository, array $ids, string $source, string $target): void
+    {
+        $repository->saveEdge(StableId::edge($ids['project'], 'calls', $source, $target, 'impact'), $ids['project'], 'calls', $source, $target, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
     }
 }

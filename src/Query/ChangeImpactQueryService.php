@@ -22,16 +22,6 @@ use Throwable;
  */
 final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryService
 {
-    /**
-     * How wide test_impact's underlying blast-radius scan runs, independent of
-     * the result cap the caller asks for. Test files are filtered out of the
-     * impacted set by role, so the search has to be wide enough that production
-     * dependants sorting ahead of them cannot crowd them out. Pinned to the
-     * per-query maximum the topology service accepts, so narrowing the answer
-     * never narrows the search.
-     */
-    private const TEST_IMPACT_SCAN_LIMIT = 100;
-
     /** Most changed files one request may name, and most a working tree may contribute. */
     public const MAX_FILES = 50;
 
@@ -201,55 +191,89 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
     }
 
     /**
-     * Project the changed-files blast radius onto test files: which tests
-     * (statically) reach the changed code. A lower bound, never a guarantee —
-     * data-driven tests and glob-only discovery are invisible to the graph.
+     * Which test files statically reach a changed file set: a lower bound,
+     * never a guarantee. Data-driven tests and glob-only discovery are
+     * invisible to the graph.
+     *
+     * The search is {@see TestReachSearch}, with bounds of its own. It used to
+     * be an impact analysis capped at 100 dependants per changed component,
+     * with test roles filtered out afterwards, so a hub's production callers
+     * filled the window before any test was met and the answer read "0 test
+     * files". Every bound that cuts the search or the list is named in
+     * `bounds.truncation_reasons` and in the summary.
      *
      * @param list<string> $files @param list<string> $edgeKinds
      */
     public function testImpact(string $projectId, array $files = [], bool $workingTree = false, ?string $baseRef = null, int $maxDepth = 4, int $limit = 100, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000): ResultEnvelope
     {
-        // The caller's limit caps the answer, not the search. Handing it to the
-        // blast-radius scan let production dependants that sort ahead of a test
-        // file consume the whole window, so narrowing the result set turned a
-        // truncation into "0 test files statically exercise the change" — a false
-        // negative for the one tool whose output decides which tests get run.
-        $impact = $this->changedFilesImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, self::TEST_IMPACT_SCAN_LIMIT, $edgeKinds, $minConfidence, $timeoutMs);
-        $distances = [];
-        foreach ($impact->data['direct_components'] as $component) {
-            $distances[$component['id']] = 0;
+        if ($maxDepth < 1 || $maxDepth > 8) {
+            throw new InvalidArgumentException('max_depth must be between 1 and 8.');
         }
-        foreach ($impact->data['impacted_components'] as $record) {
-            $id = $record['node']['id'];
-            $distances[$id] = min($distances[$id] ?? PHP_INT_MAX, $record['distance']);
+        self::assertLimit($limit);
+        $minimumRank = $this->confidenceThreshold($timeoutMs, $minConfidence)[$minConfidence];
+        $edgeKinds = $edgeKinds === [] ? self::IMPACT_EDGE_KINDS : array_values(array_unique($edgeKinds));
+        if (count($edgeKinds) > 20 || array_diff($edgeKinds, self::IMPACT_EDGE_KINDS) !== []) {
+            throw new InvalidArgumentException('edge_kinds contains an unsupported impact relationship.');
         }
-        $displayNames = [];
-        foreach ($impact->data['direct_components'] as $component) {
-            $displayNames[$component['id']] = $component['display_name'];
+        // One deadline for the whole request, Git included.
+        $deadline = $this->now() + ($timeoutMs * 1_000_000);
+        $changeSet = $this->changeSet($projectId, $files, $workingTree, $baseRef, $timeoutMs);
+        $search = (new TestReachSearch($this->pdo, $this->clock))
+            ->search($projectId, array_column($changeSet['direct'], 'id'), $maxDepth, $edgeKinds, $minimumRank, $deadline);
+        $testFiles = $this->testFiles($search['tests']);
+        $found = count($testFiles);
+        $reasons = [...$changeSet['truncation_reasons'], ...$search['truncation_reasons']];
+        $summary = sprintf('%d test file%s statically exercise the change.', min($found, $limit), min($found, $limit) === 1 ? '' : 's');
+        if ($reasons !== []) {
+            $summary .= sprintf(' The search was truncated (%s), so test files beyond that bound are not listed.', implode(', ', $reasons));
         }
-        foreach ($impact->data['impacted_components'] as $record) {
-            $displayNames[$record['node']['id']] ??= $record['node']['display_name'];
+        if ($found > $limit) {
+            $reasons[] = 'result_limit';
+            $summary .= sprintf(' The list was truncated to the first %d of %d test files.', $limit, $found);
+            $testFiles = array_slice($testFiles, 0, $limit);
         }
-        $roles = $this->roles(array_keys($distances));
-        $testNodeIds = [];
-        foreach ($distances as $id => $distance) {
-            foreach ($roles[$id] ?? [] as $role) {
-                if ($role['role'] === 'quality.test_module') {
-                    $testNodeIds[] = $id;
-                    break;
-                }
-            }
-        }
-        $paths = $this->nodePaths($testNodeIds);
+
+        return new ResultEnvelope(
+            $projectId,
+            $changeSet['project']['active_scan_id'],
+            $summary,
+            [
+                'changed_files' => $changeSet['files'],
+                'unresolved_files' => $changeSet['unresolved'],
+                'test_files' => $testFiles,
+                'bounds' => [
+                    'max_files' => self::MAX_FILES, 'max_direct_components' => self::MAX_DIRECT_COMPONENTS, 'limit' => $limit, 'max_depth' => $maxDepth,
+                    'max_visited' => TestReachSearch::MAX_VISITED, 'max_edges' => TestReachSearch::MAX_EDGES,
+                    'visited_nodes' => $search['visited'], 'edges_examined' => $search['edges_examined'],
+                    'test_files_found' => $found, 'truncation_reasons' => $reasons,
+                ],
+            ],
+            array_slice(array_map(static fn(array $entry): array => ['path' => $entry['path'], 'start_line' => null, 'end_line' => null], $testFiles), 0, self::MAX_EVIDENCE),
+            ['Test impact is a static lower bound: run these first, not only these. Data-driven tests, fixtures, and glob-only discovery are not visible to the graph, and the test search is bounded; see bounds.truncation_reasons.'],
+            $reasons !== [],
+        );
+    }
+
+    /**
+     * Group test components by file: nearest distance first, then path, with up to three class names each.
+     *
+     * @param array<string, int> $tests test node id => shortest distance
+     * @return list<array{path: string, distance: int, via: list<string>}>
+     */
+    private function testFiles(array $tests): array
+    {
+        $ids = array_map('strval', array_keys($tests));
+        $paths = $this->nodePaths($ids);
+        $names = $this->displayNames($ids);
         $byPath = [];
-        foreach ($testNodeIds as $id) {
+        foreach ($tests as $id => $distance) {
             $path = $paths[$id] ?? null;
             if ($path === null) {
                 continue;
             }
             $byPath[$path] ??= ['path' => $path, 'distance' => PHP_INT_MAX, 'via' => []];
-            $byPath[$path]['distance'] = min($byPath[$path]['distance'], $distances[$id]);
-            $byPath[$path]['via'][] = (string) $displayNames[$id];
+            $byPath[$path]['distance'] = min($byPath[$path]['distance'], $distance);
+            $byPath[$path]['via'][] = $names[$id] ?? '';
         }
         $testFiles = [];
         foreach ($byPath as $entry) {
@@ -258,33 +282,25 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
             $testFiles[] = $entry;
         }
         usort($testFiles, static fn(array $a, array $b): int => ($a['distance'] <=> $b['distance']) ?: ($a['path'] <=> $b['path']));
-        $truncated = $impact->truncated || count($testFiles) > $limit;
-        $testFiles = array_slice($testFiles, 0, $limit);
-        $warnings = [
-            ...$impact->warnings,
-            'Test impact is a static lower bound: run these first, not only these. Data-driven tests, fixtures, and glob-only discovery are not visible to the graph, and the per-component dependant scan is bounded.',
-        ];
+        return $testFiles;
+    }
 
-        return new ResultEnvelope(
-            $projectId,
-            $impact->snapshotId,
-            sprintf('%d test file%s statically exercise the change.', count($testFiles), count($testFiles) === 1 ? '' : 's'),
-            [
-                'changed_files' => $impact->data['changed_files'],
-                'unresolved_files' => $impact->data['unresolved_files'],
-                'test_files' => $testFiles,
-                // `limit` is what the caller asked for; `impacted_scan_limit` is
-                // how wide the search actually ran, so a caller can tell a genuine
-                // "nothing found" from a bounded one.
-                'bounds' => array_merge($impact->data['bounds'], [
-                    'limit' => $limit,
-                    'impacted_scan_limit' => self::TEST_IMPACT_SCAN_LIMIT,
-                ]),
-            ],
-            array_slice(array_map(static fn(array $entry): array => ['path' => $entry['path'], 'start_line' => null, 'end_line' => null], $testFiles), 0, self::MAX_EVIDENCE),
-            array_values(array_unique($warnings)),
-            $truncated,
-        );
+    /**
+     * Display names for a node set, one query per 500 ids.
+     *
+     * @param list<string> $nodeIds @return array<string, string>
+     */
+    private function displayNames(array $nodeIds): array
+    {
+        $names = [];
+        foreach (array_chunk($nodeIds, 500) as $chunk) {
+            $statement = $this->pdo->prepare(sprintf('SELECT id, display_name FROM nodes WHERE id IN (%s)', implode(',', array_fill(0, count($chunk), '?'))));
+            $statement->execute($chunk);
+            while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+                $names[(string) $row['id']] = (string) $row['display_name'];
+            }
+        }
+        return $names;
     }
 
     /**
