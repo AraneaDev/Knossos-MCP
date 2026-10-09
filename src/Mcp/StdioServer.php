@@ -612,12 +612,13 @@ final class StdioServer
     }
     /**
      * The key a request id is pending cancellation under: its type and its
-     * value, so "7" and 7 stay apart and no key is numeric (PHP would store a
-     * numeric string key as an int and renumber it on array_shift).
+     * value ("int:7", "string:7"), so "7" and 7 stay apart and no key is
+     * numeric (PHP would store a numeric string key as an int and renumber it
+     * on array_shift).
      */
     private static function cancelKey(int|string $id): string
     {
-        return (is_int($id) ? 'i:' : 's:') . $id;
+        return get_debug_type($id) . ':' . $id;
     }
 
     /** Check for a cancellation notification without blocking the running request. */
@@ -670,7 +671,9 @@ final class StdioServer
         } finally {
             stream_set_blocking($this->input, true);
         }
-        return $cancelled || isset($this->cancelledRequests[$key]);
+        // An entry set before this poll returned early above; one set during
+        // it set $cancelled as well.
+        return $cancelled;
     }
 
     /** Park a non-cancellation line for the main loop, capped so a flood cannot grow memory without bound. */

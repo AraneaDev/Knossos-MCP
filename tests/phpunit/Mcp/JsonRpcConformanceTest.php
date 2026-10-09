@@ -141,6 +141,22 @@ final class JsonRpcConformanceTest extends KnossosTestCase
         assertSame('a', $frames[0]['id']);
     }
 
+    /** A frame longer than one 8 KB read, but within the cap, is assembled from several reads and answered. */
+    #[Group('mcp')]
+    public function testAFrameSpanningSeveralReadsIsAnswered(): void
+    {
+        $initialize = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
+            'protocolVersion' => StdioServer::PROTOCOL_VERSION,
+            'clientInfo' => ['name' => str_repeat('c', 20_000), 'version' => '1'],
+        ]], JSON_THROW_ON_ERROR);
+
+        $frames = $this->frames([$initialize . "\n"]);
+
+        assertSame(1, count($frames));
+        assertSame(1, $frames[0]['id']);
+        assertSame(true, isset($frames[0]['result']));
+    }
+
     /** The cap counts the newline: a line exactly maxLineBytes long is accepted, one byte more is refused. */
     #[Group('mcp')]
     public function testALineExactlyAtTheCapIsAcceptedAndOneByteMoreIsRefused(): void

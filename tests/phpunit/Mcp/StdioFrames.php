@@ -13,6 +13,9 @@ use RuntimeException;
  */
 trait StdioFrames
 {
+    /** What the last runFrames() call wrote to the server's diagnostics stream. */
+    private string $stdioErrors = '';
+
     /**
      * Feed lines through the server's stdio loop and decode each response frame.
      *
@@ -30,6 +33,8 @@ trait StdioFrames
         fwrite($input, implode('', $lines));
         rewind($input);
         $server->run($input, $output, $errors);
+        rewind($errors);
+        $this->stdioErrors = (string) stream_get_contents($errors);
         rewind($output);
         $frames = [];
         foreach (explode("\n", trim((string) stream_get_contents($output))) as $line) {

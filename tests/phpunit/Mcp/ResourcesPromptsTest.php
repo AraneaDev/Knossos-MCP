@@ -62,7 +62,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
             $pdo->prepare('UPDATE projects SET name = :name WHERE id = :project')
-                ->execute(['name' => "shop\xff", 'project' => $projectId]);
+                ->execute(['name' => "shop/\xff", 'project' => $projectId]);
             $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
 
             $read = $this->runFrames($server, $this->readSession("knossos://{$projectId}/summary"))[1];
@@ -70,8 +70,9 @@ final class ResourcesPromptsTest extends KnossosTestCase
             assertSame(7, $read['id']);
             assertSame(true, isset($read['result']), 'The resource must be answered, not replaced by an error.');
             $summary = json_decode($read['result']['contents'][0]['text'], true, 512, JSON_THROW_ON_ERROR);
-            $readable = json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
-            assertSame(true, str_contains($readable, "shop\u{FFFD}"), 'The invalid byte becomes U+FFFD.');
+            $readable = json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            assertSame(true, str_contains($readable, "shop/\u{FFFD}"), 'The invalid byte becomes U+FFFD.');
+            assertSame(true, str_contains($read['result']['contents'][0]['text'], 'shop/\ufffd'), 'Encoded as the wire encoders do: slashes unescaped, U+FFFD substituted.');
         } finally {
             $this->removeTempTree($root);
         }
@@ -90,6 +91,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
 
             assertSame(7, $read['id']);
             assertSame(-32603, $read['error']['code']);
+            assertSame(1, preg_match('/(^|\n)SQLSTATE[^\n]*no such table: projects\n$/', $this->stdioErrors), 'The failure is logged as one line on the diagnostics stream.');
         } finally {
             $this->removeTempTree($root);
         }
@@ -102,7 +104,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
         $this->withHundredExtraProjects(function (StdioServer $server): void {
             $first = $this->listPage($server, null);
             assertSame(300, count($first['resources']));
-            assertSame(true, is_string($first['nextCursor']));
+            assertSame(1, preg_match('/^[A-Za-z0-9_-]+$/', $first['nextCursor']), 'The cursor is URL-safe and unpadded.');
             $second = $this->listPage($server, $first['nextCursor']);
 
             assertSame(3, count($second['resources']));
@@ -168,6 +170,8 @@ final class ResourcesPromptsTest extends KnossosTestCase
     {
         $cursor = static fn(string $payload): string => rtrim(strtr(base64_encode($payload), '+/', '-_'), '=');
         yield 'not a cursor' => ['not-a-cursor'];
+        yield 'not base64' => ['!!!'];
+        yield 'a scalar' => [$cursor('after:5')];
         yield 'not a string' => [42];
         yield 'empty' => [''];
         yield 'an offset, not a position' => [$cursor('offset:100')];

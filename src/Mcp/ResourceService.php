@@ -42,7 +42,7 @@ final readonly class ResourceService
         $page = ['resources' => $this->resources($listing['projects'])];
         $last = $listing['projects'] === [] ? null : $listing['projects'][array_key_last($listing['projects'])];
         if ($listing['more'] && $last !== null) {
-            $payload = self::CURSOR_PREFIX . json_encode([$last['created_at'], $last['id']], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            $payload = self::CURSOR_PREFIX . json_encode([$last['created_at'], $last['id']], JSON_THROW_ON_ERROR);
             $page['nextCursor'] = rtrim(strtr(base64_encode($payload), '+/', '-_'), '=');
         }
 
@@ -60,10 +60,9 @@ final readonly class ResourceService
         $pair = is_string($decoded) && str_starts_with($decoded, self::CURSOR_PREFIX)
             ? json_decode(substr($decoded, strlen(self::CURSOR_PREFIX)), true)
             : null;
-        if (
-            !is_array($pair) || !array_is_list($pair) || count($pair) !== 2
-            || !is_string($pair[0]) || !is_string($pair[1]) || $pair[0] === '' || $pair[1] === ''
-        ) {
+        // Exactly [string, string], both non-empty: array_map keeps the keys,
+        // so an object, a longer list or a non-string entry all differ.
+        if (!is_array($pair) || array_map(get_debug_type(...), $pair) !== ['string', 'string'] || in_array('', $pair, true)) {
             throw new InvalidArgumentException('Invalid cursor.');
         }
 

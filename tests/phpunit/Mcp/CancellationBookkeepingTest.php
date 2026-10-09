@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Mcp;
 
+use Knossos\Mcp\ResourceService;
 use Knossos\Mcp\StdioServer;
+use Knossos\Query\ArchitectureQueryService;
+use Knossos\Store\SqliteConnection;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
@@ -79,6 +82,29 @@ final class CancellationBookkeepingTest extends KnossosTestCase
 
         assertSame(true, $response !== null, 'The cancel for request 4 left with the ping that answered it.');
         assertSame(false, $response['result']['isError']);
+    }
+
+    /** The entry left with its request even when answering it threw. */
+    #[Group('mcp')]
+    public function testAnEntryIsClearedWhenAnsweringItsRequestThrows(): void
+    {
+        [$tools] = $this->toolServiceWithScannedFixture();
+        // Resources over an unmigrated database: reading one throws.
+        $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService(SqliteConnection::open(':memory:'))));
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
+        $this->cancel($server, 4);
+        $threw = false;
+        try {
+            $server->handle(['jsonrpc' => '2.0', 'id' => 4, 'method' => 'resources/read', 'params' => ['uri' => 'knossos://project_' . str_repeat('0', 64) . '/summary']]);
+        } catch (\Throwable) {
+            $threw = true;
+        }
+        assertSame(true, $threw, 'The read must fail for this test to mean anything.');
+
+        $response = $this->scan($server, 4);
+
+        assertSame(true, $response !== null, 'The cancel for request 4 left with it, though answering it threw.');
     }
 
     private function initializedServer(): StdioServer

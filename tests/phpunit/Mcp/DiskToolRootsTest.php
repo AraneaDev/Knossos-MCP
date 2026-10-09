@@ -12,6 +12,8 @@ use Knossos\Mcp\NextStepPlanner;
 use Knossos\Mcp\ResultEnricher;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
+use Knossos\Query\Drift\DriftCounts;
+use Knossos\Query\Drift\DriftOracle;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
 use Knossos\Runtime\ServerEnvironment;
@@ -103,6 +105,47 @@ final class DiskToolRootsTest extends KnossosTestCase
         assertSame('fresh', $result->staleness['state']);
     }
 
+    /** Confinement skips only projects outside the roots: a stale project inside them is still refreshed. */
+    #[Group('mcp')]
+    public function testAStaleProjectInsideTheRootsIsStillRefreshed(): void
+    {
+        $oneChanged = new class implements DriftOracle {
+            /** Reports one changed file, whatever is asked. */
+            public function drift(string $projectId, string $activeScanId, string $root, ?string $finishedAt): ?DriftCounts
+            {
+                return new DriftCounts(1, 0, 0);
+            }
+        };
+
+        [$inside] = $this->findComponentProbed(static fn(string $root): array => [$root], $oneChanged);
+        [$outside] = $this->findComponentProbed(static fn(string $root): array => ['/nonexistent-allowed-root'], $oneChanged);
+
+        // refresh_if_stale probes once and rescans; the rescanned graph is no
+        // longer the one it probed, so the enricher probes again: two calls.
+        // Skipping the refresh would leave only the enricher's one.
+        assertSame(2, $inside, 'The stale project inside the roots is refreshed before answering.');
+        assertSame(0, $outside);
+    }
+
+    /** A project the database does not know is the tool's own error, not a crash in the root check. */
+    #[Group('mcp')]
+    public function testAnUnknownProjectIsNotJudgedByTheRootCheck(): void
+    {
+        $pdo = $this->freshTestDatabase();
+        $environment = new ServerEnvironment(new AllowedRoots(['/nonexistent-allowed-root']), ':memory:', self::repositoryRoot(), $pdo);
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), ['/nonexistent-allowed-root']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new ResultEnricher(new StalenessProbe($pdo, rootAdmitted: $environment->admitsRoot(...)), new NextStepPlanner()),
+            $environment,
+        );
+
+        $error = captureThrows(fn() => $tools->call('find_component', ['project_id' => 'project_missing', 'name' => 'Checkout']), \InvalidArgumentException::class);
+
+        assertSame(true, str_contains($error->getMessage(), 'project_missing'), $error->getMessage());
+    }
+
     /** The server the transports actually run is wired with the confined probe. */
     #[Group('mcp')]
     public function testTheAssembledServerReportsAProjectOutsideTheRootsAsUnverified(): void
@@ -129,16 +172,17 @@ final class DiskToolRootsTest extends KnossosTestCase
      * one counting oracle behind both probe entry points.
      *
      * @param \Closure(string): list<string> $allowedRoots
+     * @param DriftOracle|null $drift what the counting oracle reports; null reports no drift
      * @return array{int, ResultEnvelope} the oracle's call count and the result
      */
-    private function findComponentProbed(\Closure $allowedRoots): array
+    private function findComponentProbed(\Closure $allowedRoots, ?DriftOracle $drift = null): array
     {
         $root = sys_get_temp_dir() . '/knossos-stale-probe-roots-' . bin2hex(random_bytes(6));
         $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
         try {
             $pdo = $this->freshTestDatabase();
             $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root)->projectId;
-            $counting = new CountingDriftOracle();
+            $counting = new CountingDriftOracle($drift);
             $environment = new ServerEnvironment(new AllowedRoots($allowedRoots($root)), ':memory:', self::repositoryRoot(), $pdo);
             $tools = new ToolService(
                 new ProjectScanService($pdo, self::repositoryRoot(), $allowedRoots($root)),
@@ -147,7 +191,7 @@ final class DiskToolRootsTest extends KnossosTestCase
                 new ResultEnricher(new StalenessProbe($pdo, oracle: $counting, rootAdmitted: $environment->admitsRoot(...)), new NextStepPlanner()),
                 $environment,
             );
-            $result = $tools->call('find_component', ['project_id' => $projectId, 'name' => 'Checkout']);
+            $result = $tools->call('find_component', ['project_id' => $projectId, 'name' => 'Checkout', 'refresh_if_stale' => true]);
 
             return [$counting->calls, $result];
         } finally {

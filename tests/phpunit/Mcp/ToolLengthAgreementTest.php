@@ -80,4 +80,26 @@ final class ToolLengthAgreementTest extends KnossosTestCase
         assertSame("  padded\n", $tools->call('list_annotations', ['project_id' => $project])->data['annotations'][0]['value']);
         assertSame('language must be a non-empty string.', self::errorFrom($tools, 'file_metrics', ['project_id' => $project, 'language' => '   ']));
     }
+
+    /** A note's value is optional: removing an annotation needs none, and an empty one is allowed. */
+    #[Group('mcp')]
+    public function testANoteValueMayBeOmittedOrEmpty(): void
+    {
+        [$tools, $project] = $this->tools();
+        $arguments = ['project_id' => $project, 'component' => 'App\\Checkout', 'kind' => 'note'];
+
+        assertSame(null, self::errorFrom($tools, 'annotate_component', $arguments));
+        assertSame(null, self::errorFrom($tools, 'annotate_component', [...$arguments, 'value' => '']));
+    }
+
+    /** The bounded filters reach the query: a path_contains and a language within their limits select the fixture's file. */
+    #[Group('mcp')]
+    public function testFileMetricsFiltersReachTheQuery(): void
+    {
+        [$tools, $project] = $this->tools();
+
+        $files = $tools->call('file_metrics', ['project_id' => $project, 'path_contains' => 'Checkout', 'language' => 'php'])->data['files'];
+
+        assertSame(['src/Checkout.php'], array_column($files, 'path'));
+    }
 }

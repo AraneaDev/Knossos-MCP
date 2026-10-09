@@ -76,7 +76,7 @@ final readonly class StalenessProbe
         $finishedAt = $this->activeFinishedAt($activeScanId);
         $ageSeconds = $this->age($finishedAt);
         $newerAttempt = $this->hasNewerAttempt($projectId, $activeScanId);
-        $root = (string) $project['root_realpath'];
+        $root = $project['root_realpath'];
         if ($this->rootAdmitted !== null && !($this->rootAdmitted)($root)) {
             // Outside the server's allowed roots no file is read and no git
             // runs. A newer scan attempt is a database fact and still counts.

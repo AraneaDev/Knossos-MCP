@@ -87,6 +87,7 @@ final class HttpLegacySessionTest extends KnossosTestCase
 
         assertSame(400, $response['status']);
         $body = json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR);
+        assertSame('2.0', $body['jsonrpc']);
         assertSame(4, $body['id']);
         assertSame(-32020, $body['error']['code']);
         assertSame(true, str_starts_with($body['error']['message'], 'Header mismatch: MCP-Protocol-Version'));
@@ -131,7 +132,8 @@ final class HttpLegacySessionTest extends KnossosTestCase
 
         assertSame(400, $refused['status']);
         $body = json_decode($refused['body'], true, 512, JSON_THROW_ON_ERROR);
-        assertSame(null, $body['id']);
+        assertSame('2.0', $body['jsonrpc']);
+        assertSame(true, array_key_exists('id', $body) && $body['id'] === null);
         assertSame(-32600, $body['error']['code']);
         assertSame(200, $served['status'], 'A normal request in the same session is still served.');
     }
