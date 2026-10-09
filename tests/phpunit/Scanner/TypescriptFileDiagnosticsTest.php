@@ -11,11 +11,12 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * The worker reports what names no file (an option error, a global type the
- * checker cannot find when it starts) once per program, on the program's
- * carrier, and leaves out what depends on the checker's own state. After an edit the
- * incremental graph equals a full scan of the same bytes, through the real
- * worker.
+ * The worker checks each program whole before collecting facts, reports
+ * what names no file (an option error, a global type the checker cannot find
+ * when it starts) once per program, on the program's carrier, and leaves out
+ * a global type the checker only looks for while checking one file. After an
+ * edit the incremental graph equals a full scan of the same bytes, through
+ * the real worker.
  */
 #[Group('typescript-scanner')]
 final class TypescriptFileDiagnosticsTest extends KnossosTestCase

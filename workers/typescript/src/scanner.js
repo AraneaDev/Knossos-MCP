@@ -1364,6 +1364,13 @@ function collectFile(
                 probes.push(fileName);
                 return inRootFile(root, fileName);
             },
+            // Whether the compiler resolved an import's specifier to any
+            // file, a dependency's included. An internal compiler method.
+            resolved: (specifier) =>
+                program.getResolvedModuleFromModuleSpecifier(
+                    specifier,
+                    sourceFile,
+                )?.resolvedModule !== undefined,
         });
         collector.collect();
         return {
@@ -2762,15 +2769,12 @@ class TypeScriptLanguageFactCollector {
     moduleTarget(specifier, location) {
         const internal = this.internalModuleTarget(location);
         if (internal !== null) return internal;
-        // A tsconfig `paths` key (bundler aliases are folded into them) names
-        // the project's own code, which an import it did not resolve is
-        // missing, not a dependency: `@app/missing` under `@app/*`.
-        if (
-            this.aliasPatterns().some(
-                (patterns) =>
-                    ts.matchPatternOrExact(patterns, specifier) !== undefined,
-            )
-        )
+        // An import nothing resolved under a tsconfig `paths` key (bundler
+        // aliases are folded into them) names the project's own code that is
+        // missing, not a dependency: `@app/missing` under `@app/*`. One that
+        // resolved into a dependency (`vue` aliased to a file of the `vue`
+        // package) is that package.
+        if (!this.resolvedImport(location) && this.underAlias(specifier))
             return null;
 
         const packageName = externalPackageName(specifier);
@@ -2782,6 +2786,31 @@ class TypeScriptLanguageFactCollector {
             return id;
         }
         return null;
+    }
+
+    /** Whether the compiler resolved an import's specifier to any file. */
+    resolvedImport(location) {
+        if (this.checker.getSymbolAtLocation(location) !== undefined)
+            return true;
+        return (
+            ts.isStringLiteralLike(location) &&
+            this.project.resolved?.(location) === true
+        );
+    }
+
+    /**
+     * Whether a `paths` key covers a specifier, as the compiler matches them.
+     *
+     * `ts.tryParsePatterns` and `ts.matchPatternOrExact` are the compiler's
+     * internal helpers, not its public API, and their shape changed in
+     * TypeScript 5.6; the package-name tests import `@app/missing` under
+     * `@app/*`, so a TypeScript release that changes them again fails there.
+     */
+    underAlias(specifier) {
+        return this.aliasPatterns().some(
+            (patterns) =>
+                ts.matchPatternOrExact(patterns, specifier) !== undefined,
+        );
     }
 
     /**
@@ -5302,6 +5331,10 @@ const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
  */
 function externalPackageName(specifier) {
     if (specifier.startsWith("node:")) return nodeBuiltinPackage(specifier);
+    // A built-in Node also offers bare, `_http_agent` included, which npm's
+    // grammar would refuse for its leading underscore.
+    const builtin = nodeBuiltinPackage(`node:${specifier}`);
+    if (builtin !== null && !builtin.startsWith("node:")) return builtin;
     const parts = specifier.split("/");
     const name = specifier.startsWith("@")
         ? parts.slice(0, 2).join("/")

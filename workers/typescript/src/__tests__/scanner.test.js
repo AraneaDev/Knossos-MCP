@@ -381,6 +381,79 @@ describe("TypeScriptScanner.scan specifiers that look like packages", () => {
                 .sort(),
         ).toEqual(["ts:module:src/util.ts", "ts:package:@scope/real"]);
     });
+});
+
+/** The import targets of `src/a.ts` in a fixture with a tsconfig. */
+function importTargets(files) {
+    const root = fixture(files);
+    const contributions = [];
+    new TypeScriptScanner().scan(
+        { root, files: ["src/a.ts"], config_files: ["tsconfig.json"] },
+        (c) => contributions.push(c),
+    );
+    return contributions
+        .flatMap((c) => c.edges)
+        .filter((e) => e.kind === "imports")
+        .map((e) => e.target)
+        .sort();
+}
+
+const lodash = {
+    "node_modules/lodash/package.json":
+        '{"name":"lodash","types":"index.d.ts"}',
+    "node_modules/lodash/index.d.ts": "export declare const x: number;\n",
+    "src/a.ts": 'import { x } from "lodash";\nexport const a = x;\n',
+};
+
+describe("TypeScriptScanner.scan imports a dependency or Node provides", () => {
+    it("keep a package a paths key maps into node_modules", () => {
+        expect(
+            importTargets({
+                ...lodash,
+                "tsconfig.json": JSON.stringify({
+                    compilerOptions: {
+                        paths: { lodash: ["./node_modules/lodash"] },
+                    },
+                    include: ["src"],
+                }),
+            }),
+        ).toEqual(["ts:package:lodash"]);
+    });
+
+    it("keep a package a bundler alias maps to one of its own files", () => {
+        expect(
+            importTargets({
+                "tsconfig.json": JSON.stringify({
+                    compilerOptions: {
+                        module: "esnext",
+                        moduleResolution: "bundler",
+                    },
+                    include: ["src"],
+                }),
+                "vite.config.js":
+                    "export default { resolve: { alias: { vue: 'vue/dist/vue.esm-bundler.js' } } };\n",
+                "node_modules/vue/package.json":
+                    '{"name":"vue","types":"index.d.ts"}',
+                "node_modules/vue/index.d.ts":
+                    "export declare function ref<T>(value: T): { value: T };\n",
+                "src/a.ts":
+                    'import { ref } from "vue";\nexport const a = ref(1);\n',
+            }),
+        ).toEqual(["ts:package:vue"]);
+    });
+
+    it("name an underscored built-in bare as with its node: prefix", () => {
+        const { targets } = packageTargets(
+            [
+                'import a from "_http_agent";',
+                'import c from "fs/promises";',
+                "export const all = [a, c];",
+                "",
+            ].join("\n"),
+        );
+
+        expect(targets).toEqual(["ts:package:_http_agent", "ts:package:fs"]);
+    });
 
     it("name a built-in from a fixed list, whatever Node runs the worker", () => {
         const { targets } = packageTargets(

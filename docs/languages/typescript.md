@@ -76,18 +76,19 @@ Repeated edges are collapsed to the persistence identity. Mixed type/value
 imports retain `type_only_variants` so deduplication does not erase that
 distinction.
 
-An import of something outside the project targets a `package` node named
-after the package: `lodash` for `lodash/fp`, `@scope/pkg` for
-`@scope/pkg/sub`. A Node built-in is one package with or without its `node:`
-prefix (`node:fs` and `fs` are both `fs`); one Node only offers under the
-prefix, such as `node:test`, keeps it. Which names are built-ins is Node 24's
-list, whatever Node runs the scan. A specifier that resolves to nothing gets no
-edge when a tsconfig `paths` key or a bundler alias covers it (`@app/missing`
-under `@app/*`; a catch-all `"*"` key does not count, since it covers every
-name), or when it could not be an npm package name, such as an alias
-your tsconfig does not know (`@/components`, `~/stores`): it names your own
-code, not a dependency, and in a file it type-checks the compiler reports it as
-a missing module.
+An import of something outside the project targets a `package` node named after
+the package: `lodash` for `lodash/fp`, `@scope/pkg` for `@scope/pkg/sub`. A Node
+built-in is one package with or without its `node:` prefix (`node:fs` and `fs`
+are both `fs`, and `_http_agent` too, though npm would not publish that name);
+one Node only offers under the prefix, such as `node:test`, keeps it. Which
+names are built-ins is Node 24's list, whatever Node runs the scan. A specifier
+that resolves to nothing gets no edge when a tsconfig `paths` key or a bundler
+alias covers it (`@app/missing` under `@app/*`; a catch-all `"*"` key does not
+count, since it covers every name; an alias that resolves into a dependency,
+such as `vue` aliased to `vue/dist/vue.esm-bundler.js`, is still that package),
+or when it could not be an npm package name, such as an alias your tsconfig does
+not know (`@/components`, `~/stores`): it names your own code, not a dependency,
+and in a file it type-checks the compiler reports it as a missing module.
 
 ## Declarations
 
@@ -191,8 +192,9 @@ than a guessed one.
 
 Compiler errors that name a file are attached to that file. A scan builds only
 the programs whose files it reads, and type-checks each of them whole, in
-program order, before reading any facts, so a file's facts and diagnostics are
-the same whether a scan reads it alone or with the rest of its program. An
+program order, before reading any facts, so for the same bytes a file's facts
+and diagnostics are the same whether a scan reads it alone or with the rest of
+its program. An
 option error that names no file, such as a deprecated
 `moduleResolution` value, or a global type your `lib` lacks, appears once per
 program, on the program's first file in path order, and its message says it
@@ -203,7 +205,15 @@ with `"ignoreDeprecations"` in your `tsconfig.json`. A global type the compiler 
 looks for while checking one file's code (`IterableIterator` for a generator
 under an ES5 `lib`) is not reported: an edit to that file would not rebuild
 the file the diagnostic sits on. A compiler budget running out (TS2589,
-TS2590, TS2321, TS7056) is reported where the whole program's check runs out,
-which is the same file in every scan. A program the compiler
+TS2590, TS2321, TS7056) is reported where the whole program's check runs out.
+
+One limit follows from the compiler's instantiation cache, which the whole
+program shares: an edit to one file can change whether a budget runs out in a
+file that does not import it. Removing an instantiation from `a.ts` that warmed
+the cache can make `b.ts` report TS2589 and resolve a type differently (a
+`references` edge to `Array`, say). An incremental scan rescans `a.ts` but not
+`b.ts`, so `b.ts` keeps its earlier facts and diagnostics until a full scan
+(`--mode=full`) settles them. Rescanning every file on every edit would be a
+full rebuild. A program the compiler
 cannot build or check at all reports `TS_PROGRAM_FAILED` for its files and costs
 no other program's facts.
