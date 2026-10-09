@@ -92,4 +92,40 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
         $this->expectExceptionMessage('Snapshot archive payload is invalid: scan_x');
         (new SnapshotGraphReader(new PDO('sqlite::memory:')))->archived(SnapshotPayload::encode('{"schema":1}'), 'scan_x');
     }
+
+    /**
+     * The gate, the trends and the identity of a component across two graphs
+     * need a node's language, the boundaries, and an import's attributes (they
+     * say whether it is erased at runtime); every other edge's attributes stay
+     * behind, active and archived alike.
+     */
+    #[Group('query')]
+    public function testItKeepsLanguageBoundariesAndOnlyAnImportsAttributes(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $module = \Knossos\Store\StableId::symbol($project, 'ts', 'module', 'web#types');
+        $repository->saveNode($module, $project, 'ts', 'module', 'web#types', 'types', null, $ids['file'], 1, 1, 'ast', 'certain', [], 'ts:file:types.ts', $ids['scan']);
+        $repository->saveEdge(\Knossos\Store\StableId::edge($project, 'imports', $ids['checkout'], $module, 'type'), $project, 'imports', $ids['checkout'], $module, $ids['file'], 2, 2, 'ast', 'certain', ['type_only' => true], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->saveEdge(\Knossos\Store\StableId::edge($project, 'calls', $ids['checkout'], $module, 'call'), $project, 'calls', $ids['checkout'], $module, $ids['file'], 3, 3, 'ast', 'certain', ['note' => 'kept nowhere'], 'php:file:src/Checkout.php', $ids['scan']);
+        $boundary = \Knossos\Store\StableId::boundary($project, 'Web', 'explicit');
+        $repository->saveBoundary($boundary, $project, 'Web', ['path_prefix' => 'web'], 'explicit', $ids['scan']);
+        $repository->completeScan($project, $ids['scan']);
+        $repository->archiveActiveSnapshot($project, hash('sha256', '{}'), 5);
+        $stored = (string) $pdo->query('SELECT payload_json FROM scan_snapshots ORDER BY rowid DESC LIMIT 1')->fetchColumn();
+        $reader = new SnapshotGraphReader($pdo);
+
+        foreach (['active' => $reader->active($project, $ids['scan']), 'archived' => $reader->archived($stored, $ids['scan'])] as $how => $facts) {
+            $languages = array_column($facts['nodes'], 'language', 'id');
+            assertSame('ts', $languages[$module], $how);
+            assertSame('php', $languages[$ids['checkout']], $how);
+            assertSame([['id' => $boundary]], $facts['boundaries'], $how);
+            $attributes = [];
+            foreach ($facts['edges'] as $edge) {
+                $attributes[$edge['kind'] . ($edge['target_id'] === $module ? ':module' : '')] = $edge['attributes_json'];
+            }
+            assertSame(null, $attributes['calls:module'], $how . ': a call keeps no attributes.');
+            assertSame(['type_only' => true], json_decode((string) $attributes['imports:module'], true), $how . ': an import keeps them.');
+        }
+    }
 }

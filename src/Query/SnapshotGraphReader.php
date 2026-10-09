@@ -10,10 +10,16 @@ use PDO;
 
 /**
  * One snapshot's graph, read with only the columns a comparison of two
- * graphs uses: which component is which (id, kind, names, origin, file and
- * line, and the attributes that excuse it from the dead-code count), which
- * impact edges join them, their roles, the diagnostics' severities and the
- * files' paths.
+ * graphs uses: which component is which (id, language, kind, names, origin,
+ * file and line, and the attributes that excuse it from the dead-code count),
+ * which edges join them (with the attributes of an import, which say whether
+ * it is erased at runtime), their roles, the diagnostics' severities, the
+ * boundaries and the files' paths.
+ *
+ * Its readers are the branch comparison, the quality gate and the trend
+ * report ({@see ProjectCatalogQueryService::branchComparison()},
+ * {@see ProjectCatalogQueryService::qualityGate()},
+ * {@see ProjectCatalogQueryService::architectureTrends()}).
  *
  * A stored row carries far more (owners, hashes, the scan it came from),
  * and a snapshot holds tens of thousands of rows: reading every column of
@@ -24,14 +30,18 @@ use PDO;
  */
 final readonly class SnapshotGraphReader
 {
-    /** The columns kept, per table: everything {@see ProjectCatalogQueryService::branchComparison()} reads. */
+    /** The columns kept, per table: everything the comparisons, the gate and the trends read. */
     public const COLUMNS = [
         'files' => ['id', 'relative_path'],
         // `attributes_json`: the dead-code count leaves out what the attributes say is reached another way (an override, a runtime-invoked member, a script, a type).
-        'nodes' => ['id', 'kind', 'canonical_name', 'display_name', 'origin', 'file_id', 'start_line', 'attributes_json'],
-        'edges' => ['kind', 'source_id', 'target_id'],
+        // `language`: a component is identified across two graphs by language, kind and name; a name alone is not unique.
+        'nodes' => ['id', 'language', 'kind', 'canonical_name', 'display_name', 'origin', 'file_id', 'start_line', 'attributes_json'],
+        // `attributes_json` only for the kinds {@see ErasedTypeEdge} reads, null for every other edge: a cycle over a type-only import is not one.
+        'edges' => ['kind', 'source_id', 'target_id', 'attributes_json'],
         'classifications' => ['node_id', 'role'],
         'diagnostics' => ['severity'],
+        // Counted by the trend report.
+        'boundaries' => ['id'],
     ];
 
     /** The most rows one table of the active graph may hold, as the snapshot diff bounds it. */
@@ -50,7 +60,10 @@ final readonly class SnapshotGraphReader
         $facts = [];
         foreach (self::COLUMNS as $table => $columns) {
             // `+id`: ordered by the id index, SQLite would walk every project's rows; this way it finds the project's and sorts them.
-            $statement = $this->pdo->prepare(sprintf('SELECT %s FROM %s WHERE project_id = :project ORDER BY +id LIMIT %d', implode(', ', $columns), $table, self::ROW_LIMIT + 1));
+            $select = array_map(static fn(string $column): string => $table === 'edges' && $column === 'attributes_json'
+                ? sprintf("CASE WHEN kind IN ('%s') THEN attributes_json END AS attributes_json", implode("', '", ErasedTypeEdge::KINDS))
+                : $column, $columns);
+            $statement = $this->pdo->prepare(sprintf('SELECT %s FROM %s WHERE project_id = :project ORDER BY +id LIMIT %d', implode(', ', $select), $table, self::ROW_LIMIT + 1));
             $statement->execute(['project' => $projectId]);
             $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
             if (count($rows) > self::ROW_LIMIT) {
@@ -162,7 +175,7 @@ final readonly class SnapshotGraphReader
                         if (!is_array($row)) {
                             return false;
                         }
-                        $facts[$state['table']][] = array_intersect_key($row, array_flip($columns));
+                        $facts[$state['table']][] = self::kept($state['table'], $row, $columns);
                     }
                 } else {
                     break;
@@ -175,6 +188,25 @@ final readonly class SnapshotGraphReader
 
         // A row is never longer than this: a buffer that grew past it without a match is not a payload this reads.
         return strlen($state['buffer']) < 16 * self::SLICE;
+    }
+
+    /**
+     * One archived row cut to the columns kept, with an edge's attributes
+     * dropped unless its kind is one {@see ErasedTypeEdge} reads, exactly as
+     * the active graph's query reads them.
+     *
+     * @param array<string, mixed> $row
+     * @param list<string> $columns
+     * @return array<string, mixed>
+     */
+    private static function kept(string $table, array $row, array $columns): array
+    {
+        $row = array_intersect_key($row, array_flip($columns));
+        if ($table === 'edges' && array_key_exists('attributes_json', $row) && !in_array($row['kind'] ?? null, ErasedTypeEdge::KINDS, true)) {
+            $row['attributes_json'] = null;
+        }
+
+        return $row;
     }
 
     /**
@@ -191,8 +223,7 @@ final readonly class SnapshotGraphReader
         }
         $facts = [];
         foreach (self::COLUMNS as $table => $columns) {
-            $keep = array_flip($columns);
-            $facts[$table] = array_map(static fn(array $row): array => array_intersect_key($row, $keep), $tables[$table] ?? []);
+            $facts[$table] = array_map(static fn(array $row): array => self::kept($table, $row, $columns), $tables[$table] ?? []);
         }
 
         return $facts;

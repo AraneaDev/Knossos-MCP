@@ -516,21 +516,29 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         if (isset($budgets['boundary_violations']) && $policies === []) {
             throw new InvalidArgumentException('policies are required when boundary_violations is budgeted.');
         }
-        $baseline = $this->snapshotFacts($projectId, $baselineSnapshot, $project['active_scan_id'] ?? '');
-        $current = $this->snapshotFacts($projectId, 'active', $project['active_scan_id'] ?? '');
-        if ($baseline['metadata']['scan_id'] === $current['metadata']['scan_id']) {
+        $activeScan = (string) ($project['active_scan_id'] ?? '');
+        $baseline = $this->resolveSnapshot($projectId, $baselineSnapshot, $activeScan);
+        $current = $this->resolveSnapshot($projectId, 'active', $activeScan);
+        if ($baseline['scan_id'] === $current['scan_id']) {
             throw new InvalidArgumentException('baseline_snapshot must differ from the active snapshot.');
         }
-        $before = $this->snapshotQualityMetrics($baseline['facts']);
-        $after = $this->snapshotQualityMetrics($current['facts']);
+        // One graph at a time, through the reader's column list: the baseline
+        // is reduced to what the gate compares and let go before the active
+        // graph is read. Reading both whole (`SELECT *` with attributes and
+        // owners) and holding them to the end cost about 78 MB on a 20,001-edge
+        // graph.
+        $before = $this->gateFigures($this->readerFacts($projectId, $baseline));
+        unset($baseline['archived']);
+        $after = $this->gateFigures($this->readerFacts($projectId, $current));
         $actual = [
-            'new_cycles' => max(0, $after['cycles'] - $before['cycles']),
-            'error_diagnostics' => $after['error_diagnostics'],
-            'warning_diagnostics' => $after['warning_diagnostics'],
-            'hub_degree_growth' => max(0, $after['max_degree'] - $before['max_degree']),
-            'unreferenced_candidates' => $after['unreferenced_candidates'],
-            'public_surface_changes' => $this->publicSurfaceChanges($baseline['facts'], $current['facts']),
+            'new_cycles' => max(0, $after['metrics']['cycles'] - $before['metrics']['cycles']),
+            'error_diagnostics' => $after['metrics']['error_diagnostics'],
+            'warning_diagnostics' => $after['metrics']['warning_diagnostics'],
+            'hub_degree_growth' => max(0, $after['metrics']['max_degree'] - $before['metrics']['max_degree']),
+            'unreferenced_candidates' => $after['metrics']['unreferenced_candidates'],
+            'public_surface_changes' => count(array_diff_key($before['surface'], $after['surface'])) + count(array_diff_key($after['surface'], $before['surface'])),
         ];
+        unset($before, $after);
         $policyResult = null;
         $boundaryIndeterminate = false;
         if ($policies !== []) {
@@ -564,7 +572,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             $checks[] = $check;
             $passed = $passed && $checkPassed;
         }
-        $data = ['passed' => $passed, 'baseline_snapshot' => $baseline['metadata']['scan_id'], 'active_snapshot' => $current['metadata']['scan_id'],
+        $data = ['passed' => $passed, 'baseline_snapshot' => $baseline['scan_id'], 'active_snapshot' => $current['scan_id'],
             'checks' => $checks, 'metrics' => $actual];
         if ($proposeBaseline) {
             $data['proposed_baseline'] = ['budgets' => $actual, 'requires_review' => true, 'applied' => false];
@@ -576,15 +584,14 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
                 $results[] = ['ruleId' => 'knossos.boundary', 'level' => 'error', 'message' => ['text' => 'Architecture boundary policy violation.'],
                     'locations' => [['physicalLocation' => ['artifactLocation' => ['uri' => $evidence['path']], 'region' => ['startLine' => $evidence['start_line'] ?? 1]]]]];
             }
-            foreach ($current['facts']['diagnostics'] ?? [] as $diagnostic) {
-                if (!in_array($diagnostic['severity'], ['warning', 'error'], true)) {
-                    continue;
-                }
+            // Read for SARIF alone, and only as many as the 200 results allow.
+            $diagnostics = $this->pdo->prepare("SELECT severity, code, message FROM diagnostics WHERE project_id = ? AND severity IN ('error', 'warning') ORDER BY +id LIMIT ?");
+            $diagnostics->bindValue(1, $projectId);
+            $diagnostics->bindValue(2, max(0, 200 - count($results)), PDO::PARAM_INT);
+            $diagnostics->execute();
+            while (($diagnostic = $diagnostics->fetch(PDO::FETCH_ASSOC)) !== false) {
                 $results[] = ['ruleId' => 'knossos.' . $diagnostic['code'], 'level' => $diagnostic['severity'],
                     'message' => ['text' => $diagnostic['message']]];
-                if (count($results) >= 200) {
-                    break;
-                }
             }
             $data['sarif'] = ['$schema' => 'https://json.schemastore.org/sarif-2.1.0.json', 'version' => '2.1.0',
                 'runs' => [['tool' => ['driver' => ['name' => 'Knossos', 'informationUri' => 'https://github.com/']], 'results' => $results]]];
@@ -619,7 +626,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             $archived = !$snapshot['active'] && $snapshot['complete_archive'] === true;
             $figures = $archived ? $cache->get($snapshot['scan_id'], (string) $snapshot['captured_at'], (int) $snapshot['byte_size']) : null;
             if ($figures === null) {
-                $figures = $this->snapshotFigures($this->snapshotFacts($projectId, $snapshot['scan_id'], $project['active_scan_id'] ?? '')['facts']);
+                $figures = $this->snapshotFigures($this->readerFacts($projectId, $this->resolveSnapshot($projectId, $snapshot['scan_id'], $project['active_scan_id'] ?? '')));
                 if ($archived) {
                     $cache->put($snapshot['scan_id'], (string) $snapshot['captured_at'], (int) $snapshot['byte_size'], $figures);
                 }
@@ -700,27 +707,29 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     }
 
     /**
-     * The stored fact set for a snapshot, decoded for comparison.
+     * A resolved snapshot's graph through {@see SnapshotGraphReader}: the active tables by column list, or the archive read as it inflates.
      *
-     * @return array{metadata: array<string, mixed>, facts: array<string, list<array<string, mixed>>>}
+     * @param array{scan_id: string, is_active: bool, archived: array<string, mixed>|null} $resolved
+     * @return array<string, list<array<string, mixed>>>
      */
-    private function snapshotFacts(string $projectId, string $identifier, string $activeScanId): array
+    private function readerFacts(string $projectId, array $resolved): array
     {
-        $resolved = $this->resolveSnapshot($projectId, $identifier, $activeScanId);
-        $scanId = $resolved['scan_id'];
-        if (!$resolved['is_active']) {
-            $payload = json_decode(SnapshotPayload::decode((string) $resolved['archived']['payload_json']), true, 512, JSON_THROW_ON_ERROR);
-            $facts = $payload['facts'] ?? null;
-            if (!is_array($facts)) {
-                throw new InvalidArgumentException(sprintf('Snapshot archive payload is invalid: %s', $scanId));
-            }
-        } else {
-            $facts = [];
-            foreach (['files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics'] as $table) {
-                $facts[$table] = $this->activeSnapshotRows($projectId, $scanId, $table);
-            }
-        }
-        return ['metadata' => $resolved['metadata'], 'facts' => $facts];
+        $reader = new SnapshotGraphReader($this->pdo);
+
+        return $resolved['is_active']
+            ? $reader->active($projectId, $resolved['scan_id'])
+            : $reader->archived((string) ($resolved['archived']['payload_json'] ?? ''), $resolved['scan_id']);
+    }
+
+    /**
+     * What the quality gate compares of one graph: its metrics and its public surface.
+     *
+     * @param array<string, list<array<string, mixed>>> $facts
+     * @return array{metrics: array<string, int>, surface: array<string, true>}
+     */
+    private function gateFigures(array $facts): array
+    {
+        return ['metrics' => $this->snapshotQualityMetrics($facts), 'surface' => self::surfaceIds($facts)];
     }
 
     /**
@@ -1122,28 +1131,25 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             'errors' => $errors, 'warnings' => $warnings, 'unreferenced' => $unreferenced];
     }
     /**
-     * Additions and removals in the public API surface, the changes most likely to break a consumer.
+     * The ids of a graph's public API surface, the components whose addition or removal is most likely to break a consumer.
      *
-     * @param array<string, list<array<string, mixed>>> $before @param array<string, list<array<string, mixed>>> $after
+     * @param array<string, list<array<string, mixed>>> $facts
+     * @return array<string, true>
      */
-    private function publicSurfaceChanges(array $before, array $after): int
+    private static function surfaceIds(array $facts): array
     {
-        $surface = static function (array $facts): array {
-            $ids = [];
-            foreach ($facts['nodes'] ?? [] as $node) {
-                if (in_array($node['kind'], ['route', 'command', 'endpoint', 'export'], true)) {
-                    $ids[$node['id']] = true;
-                }
+        $ids = [];
+        foreach ($facts['nodes'] ?? [] as $node) {
+            if (in_array($node['kind'], ['route', 'command', 'endpoint', 'export'], true)) {
+                $ids[(string) $node['id']] = true;
             }
-            foreach ($facts['classifications'] ?? [] as $role) {
-                if (str_contains($role['role'], 'entry_point') || str_contains($role['role'], 'public')) {
-                    $ids[$role['node_id']] = true;
-                }
+        }
+        foreach ($facts['classifications'] ?? [] as $role) {
+            if (str_contains($role['role'], 'entry_point') || str_contains($role['role'], 'public')) {
+                $ids[(string) $role['node_id']] = true;
             }
-            return $ids;
-        };
-        $beforeIds = $surface($before);
-        $afterIds = $surface($after);
-        return count(array_diff_key($beforeIds, $afterIds)) + count(array_diff_key($afterIds, $beforeIds));
+        }
+
+        return $ids;
     }
 }
