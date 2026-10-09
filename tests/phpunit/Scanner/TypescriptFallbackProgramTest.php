@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scanner;
 
+use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
@@ -125,6 +126,10 @@ final class TypescriptFallbackProgramTest extends KnossosTestCase
     }
 
     /**
+     * Scanned with the exclusions a scan sends: `web` holds a manifest, so its
+     * `dist` is build output. Without them the worker anchors build output at
+     * the project root only, and `web/dist` would be read as source.
+     *
      * @param list<string> $configs
      * @return list<string> `source -> target` of every imports edge
      */
@@ -136,6 +141,7 @@ final class TypescriptFallbackProgramTest extends KnossosTestCase
                 'root' => self::repositoryRoot() . '/tests/Fixtures/fallback-options',
                 'files' => ['shared/greet.ts', 'web/src/util.ts', 'web/tests/util.test.ts'],
                 'config_files' => $configs,
+                'exclusions' => (new IgnoreMatcher([]))->workerRules(['web']),
             ]), false);
         } finally {
             $client->shutdown();
