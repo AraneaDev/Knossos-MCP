@@ -197,39 +197,22 @@ jobs:
         with:
           fetch-depth: ${{ matrix.lane == 'gate' && '0' || '1' }}
           persist-credentials: false
-      # Same-repo runs pull the commit's images from the registry; a fork's
-      # run loads the tarballs the image job uploaded. Both routes end with
-      # the same local names, so every later step is shared.
+      # Same-repo runs add this commit's source to the dependency images the
+      # image job published; a fork's run loads the tarballs the image job
+      # uploaded. Both routes end with the same local names, so every later
+      # step is shared.
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Pull the pinned quality image
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-        run: |
-          docker pull --quiet "$QUALITY_IMAGE"
-          docker tag "$QUALITY_IMAGE" knossos:quality
-      - name: Pull the runtime image
-        if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && matrix.lane == 'release' }}
-        run: |
-          docker pull --quiet "$RUNTIME_IMAGE"
-          docker tag "$RUNTIME_IMAGE" knossos:quality-runtime
-      - name: Download the images built for this commit
-        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./.github/actions/quality-image
         with:
-          name: images
-          path: ${{ runner.temp }}/images
-      - name: Load the images built for this commit
-        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        run: |
-          docker load --quiet -i "$RUNNER_TEMP/images/quality.tar"
-          docker load --quiet -i "$RUNNER_TEMP/images/runtime.tar"
-          docker tag "$QUALITY_IMAGE" knossos:quality
-          docker tag "$RUNTIME_IMAGE" knossos:quality-runtime
-          rm -rf "$RUNNER_TEMP/images"
+          quality-deps: ${{ needs.image.outputs.quality-deps }}
+          runtime-deps: ${{ needs.image.outputs.runtime-deps }}
+          runtime: ${{ matrix.lane == 'release' }}
+          same-repo: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       # Trivy downloads its vulnerability database on first use, and the lane
       # container is thrown away after every run, so it downloaded the whole
       # thing again each time. Cached on the host and mounted in.

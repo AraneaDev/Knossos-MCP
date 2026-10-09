@@ -1,0 +1,71 @@
+name: Quality image
+description: >-
+  Puts knossos:quality (and, for the release lane, knossos:quality-runtime)
+  built from this commit's source into the runner's Docker daemon.
+inputs:
+  quality-deps:
+    description: Registry reference of the quality_tools dependency image (same-repo route).
+    required: false
+    default: ''
+  runtime-deps:
+    description: Registry reference of the runtime_deps dependency image (same-repo route).
+    required: false
+    default: ''
+  runtime:
+    description: "'true' to build knossos:quality-runtime as well; only the release lane needs it."
+    required: false
+    default: 'false'
+  same-repo:
+    description: "'true' when the run may read the registry; 'false' for a fork's pull request."
+    required: true
+runs:
+  using: composite
+  steps:
+    # A pull from a registry in the same datacentre moves bytes instead of
+    # reconstructing an image from cached layers, which is why the dependency
+    # images live in the registry rather than the Actions cache. The source
+    # goes on top in a thin build: the named context replaces the
+    # quality_tools stage with the pulled image, so only the COPY layers of the
+    # quality stage run, in seconds.
+    - name: Build the quality image on its dependency image
+      if: ${{ inputs.same-repo == 'true' }}
+      shell: bash
+      env:
+        QUALITY_DEPS: ${{ inputs.quality-deps }}
+      run: |
+        set -euo pipefail
+        docker pull --quiet "$QUALITY_DEPS"
+        docker build --progress=plain --target quality \
+          --build-context quality_tools=docker-image://"$QUALITY_DEPS" \
+          -t knossos:quality .
+    # tools/quality only builds knossos:quality-runtime when it is absent, from
+    # inside the quality container against the host daemon. Building it here
+    # from this commit's source keeps that check honest and that build off the
+    # lane.
+    - name: Build the runtime image on its dependency image
+      if: ${{ inputs.same-repo == 'true' && inputs.runtime == 'true' }}
+      shell: bash
+      env:
+        RUNTIME_DEPS: ${{ inputs.runtime-deps }}
+      run: |
+        set -euo pipefail
+        docker pull --quiet "$RUNTIME_DEPS"
+        docker build --progress=plain --target runtime \
+          --build-context runtime_deps=docker-image://"$RUNTIME_DEPS" \
+          -t knossos:quality-runtime .
+    # A fork's run loads the tarballs the image job uploaded. Both routes end
+    # with the same local names, so every later step is shared.
+    - name: Download the images built for this commit
+      if: ${{ inputs.same-repo != 'true' }}
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: images
+        path: ${{ runner.temp }}/images
+    - name: Load the images built for this commit
+      if: ${{ inputs.same-repo != 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        docker load --quiet -i "$RUNNER_TEMP/images/quality.tar"
+        docker load --quiet -i "$RUNNER_TEMP/images/runtime.tar"
+        rm -rf "$RUNNER_TEMP/images"
