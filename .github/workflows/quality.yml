@@ -4,6 +4,12 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The dependency images are keyed by date as well as by their inputs, so the
+  # first run of each UTC day rebuilds them to pick up Debian's fixes. This
+  # run does that shortly after midnight, so the day's first push finds them
+  # published. It runs the image job only.
+  schedule:
+    - cron: "17 0 * * *"
 
 permissions:
   contents: read
@@ -11,9 +17,10 @@ permissions:
 # One run per branch. A second push cancels the first, because whoever pushed
 # again has already answered the question the running job was asked. The runs
 # long enough to be overtaken are the expensive ones, so this is worth more
-# than the share of runs it cancels suggests.
+# than the share of runs it cancels suggests. A scheduled run has a group of
+# its own, so it can never replace a pending push run on main.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'schedule' || github.head_ref || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
 
 jobs:
@@ -145,6 +152,7 @@ jobs:
 
   lane:
     needs: image
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -294,7 +302,7 @@ jobs:
   # lane ran and passed.
   quality:
     needs: lane
-    if: always()
+    if: always() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

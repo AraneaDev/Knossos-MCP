@@ -6,15 +6,15 @@ inputs:
   quality-deps:
     description: Registry reference of the quality_tools dependency image (same-repo route).
     required: false
-    default: ''
+    default: ""
   runtime-deps:
     description: Registry reference of the runtime_deps dependency image (same-repo route).
     required: false
-    default: ''
+    default: ""
   runtime:
     description: "'true' to build knossos:quality-runtime as well; only the release lane needs it."
     required: false
-    default: 'false'
+    default: "false"
   same-repo:
     description: "'true' when the run may read the registry; 'false' for a fork's pull request."
     required: true
