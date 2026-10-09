@@ -133,22 +133,31 @@ final class GraphBundleServiceTest extends TestCase
 
     // ----- export(): redaction = 'paths' -----
 
-    public function testExportPathsRedactionKeepsNodeOwnerKeyUntouched(): void
+    /**
+     * Was "keeps node owner key untouched": `paths` mode used to redact
+     * files.relative_path alone, so an owner key (`scanner:file:<path>`)
+     * still carried the path. It keeps its scanner prefix and loses the path.
+     */
+    public function testExportPathsRedactionKeepsTheOwnerKeyPrefixAndDropsThePath(): void
     {
-        // 'paths' mode redacts file relative_paths; node/edge data stays raw.
         $this->seedProjectAndScan('proj-1', 'scan-1');
         $this->seedFile('f1', 'proj-1', 'secret/path.php', 'php');
-        $this->seedNode('n1', 'proj-1', ['owner_key' => 'owner-secret']);
+        $this->seedNode('n1', 'proj-1', ['file_id' => 'f1', 'owner_key' => 'knossos.php:file:secret/path.php']);
+        $this->seedEdge('e1', 'proj-1', 'n1', 'n1', ['owner_key' => 'knossos.php:file:secret/path.php']);
 
         $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'paths'));
 
-        // Node owner_key is untouched (node data isn't part of paths-redaction).
-        assertSame('owner-secret', $bundle['payload']['nodes'][0]['owner_key']);
-        // File path IS redacted — original is gone, replaced with 'redacted/<hash><ext>'.
-        $this->assertStringStartsWith('redacted/', $bundle['payload']['files'][0]['relative_path']);
-        $this->assertStringNotContainsString('secret/path.php', $bundle['payload']['files'][0]['relative_path']);
+        $redactedPath = $bundle['payload']['files'][0]['relative_path'];
+        $this->assertStringStartsWith('redacted/', $redactedPath);
+        assertSame('knossos.php:file:' . $redactedPath, $bundle['payload']['nodes'][0]['owner_key']);
+        assertSame('knossos.php:file:' . $redactedPath, $bundle['payload']['edges'][0]['owner_key']);
     }
 
+    /**
+     * Was the first 24 hex of an unsalted sha256 of the path: anyone who can
+     * guess a path (`src/Kernel.php`) could confirm it. The token is now a
+     * salted HMAC with a salt that lives only for the one export.
+     */
     public function testExportPathsRedactionHashesFilePathAndPreservesExtension(): void
     {
         $this->seedProjectAndScan('proj-1', 'scan-1');
@@ -157,11 +166,10 @@ final class GraphBundleServiceTest extends TestCase
         $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'paths'));
 
         $redacted = $bundle['payload']['files'][0]['relative_path'];
-        $this->assertStringStartsWith('redacted/', $redacted);
-        $this->assertStringEndsWith('.php', $redacted);
-        // The hashed portion is the first 24 sha256 chars of the original path.
-        $expectedHash = substr(hash('sha256', 'src/SecretClass.php'), 0, 24);
-        assertSame('redacted/' . $expectedHash . '.php', $redacted);
+        assertSame(1, preg_match('#^redacted/[0-9a-f]{24}\.php$#D', $redacted));
+        assertSame(false, str_contains($redacted, substr(hash('sha256', 'src/SecretClass.php'), 0, 24)));
+        $again = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'paths'));
+        $this->assertNotSame($redacted, $again['payload']['files'][0]['relative_path'], 'A fresh salt per export.');
     }
 
     public function testExportPathsRedactionLowercasesExtension(): void
@@ -186,6 +194,137 @@ final class GraphBundleServiceTest extends TestCase
         $this->assertStringNotContainsString('.', substr($redacted, strlen('redacted/')));
     }
 
+    public function testExportPathsRedactionRewritesNamesAttributesMessagesAndBoundaries(): void
+    {
+        $this->seedProjectAndScan('proj-1', 'scan-1', name: 'Kept In Paths Mode');
+        $this->seedFile('f1', 'proj-1', 'src/secret/a.ts', 'ts');
+        $this->seedNode('n1', 'proj-1', [
+            'file_id' => 'f1',
+            'kind' => 'module',
+            'canonical_name' => 'src/secret/a.ts',
+            'display_name' => 'a.ts',
+            'attributes_json' => '{"scanner_local_id":"ts:module:src/secret/a.ts","src/secret/a.ts":["src/secret"],"lines":3}',
+        ]);
+        $this->seedNode('n2', 'proj-1', ['file_id' => 'f1', 'kind' => 'function', 'canonical_name' => 'src/secret/a.ts#hidden', 'display_name' => 'hidden']);
+        $this->seedDiagnostic('d1', 'proj-1', 'scan-1', 'f1', 'Could not resolve from src/secret/a.ts.');
+        $this->pdo->prepare('INSERT INTO boundaries (id, project_id, name, matcher_json, source) VALUES (:id, :project, :name, :matcher, :source)')->execute([
+            'id' => 'b1',
+            'project' => 'proj-1',
+            'name' => 'node:loc (src/secret)',
+            'matcher' => '{"type":"path_prefix","value":"src/secret/"}',
+            'source' => 'inferred',
+        ]);
+
+        $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'paths'));
+
+        $payload = $bundle['payload'];
+        $file = $payload['files'][0]['relative_path'];
+        $nodes = array_column($payload['nodes'], null, 'display_name');
+        $module = $nodes[basename($file)];
+        assertSame($file, $module['canonical_name']);
+        assertSame($file . '#hidden', $nodes['hidden']['canonical_name']);
+        $attributes = json_decode($module['attributes_json'], true, 8, JSON_THROW_ON_ERROR);
+        assertSame('ts:module:' . $file, $attributes['scanner_local_id']);
+        assertSame(3, $attributes['lines']);
+        $directory = $attributes[$file][0];
+        assertSame(1, preg_match('#^redacted-dir/[0-9a-f]{24}$#D', $directory));
+        assertSame('Could not resolve from ' . $file . '.', $payload['diagnostics'][0]['message']);
+        assertSame('node:loc (' . $directory . ')', $payload['boundaries'][0]['name']);
+        assertSame('{"type":"path_prefix","value":"' . $directory . '/"}', $payload['boundaries'][0]['matcher_json']);
+        assertSame('Kept In Paths Mode', $payload['project_name']);
+        assertSame('h', $payload['files'][0]['content_hash'], 'Content hashes are salted in strict mode only.');
+    }
+
+    public function testExportPathsRedactionLeavesAttributesWithNoPathByteForByte(): void
+    {
+        $this->seedProjectAndScan('proj-1', 'scan-1');
+        $this->seedFile('f1', 'proj-1', 'src/a.php', 'php');
+        $this->seedNode('n1', 'proj-1', ['file_id' => 'f1', 'attributes_json' => '{"z":1, "a":{}}']);
+        $this->seedEdge('e1', 'proj-1', 'n1', 'n1', ['attributes_json' => '[]']);
+
+        $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'paths'));
+
+        assertSame('{"z":1, "a":{}}', $bundle['payload']['nodes'][0]['attributes_json']);
+        assertSame('[]', $bundle['payload']['edges'][0]['attributes_json']);
+    }
+
+    public function testExportPathsRedactionNamesAPythonPackageByItsModuleToken(): void
+    {
+        $this->seedProjectAndScan('proj-1', 'scan-1');
+        $this->seedFile('f1', 'proj-1', 'pkg/secret/__init__.py', 'py');
+        $this->seedNode('n1', 'proj-1', ['file_id' => 'f1', 'kind' => 'module', 'canonical_name' => 'pkg.secret', 'display_name' => 'pkg.secret']);
+        $this->seedNode('n2', 'proj-1', ['file_id' => 'f1', 'kind' => 'package', 'canonical_name' => 'pkg.secret', 'display_name' => 'secret']);
+        $this->seedNode('n3', 'proj-1', ['file_id' => 'f1', 'kind' => 'class', 'canonical_name' => 'pkg.secret.Ledger', 'display_name' => 'Ledger']);
+        $this->seedNode('n4', 'proj-1', ['file_id' => 'f1', 'kind' => 'class', 'canonical_name' => 'App\\Other', 'display_name' => 'Other']);
+        $this->pdo->exec("UPDATE nodes SET language = 'py' WHERE id IN ('n1', 'n2', 'n3')");
+
+        $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'paths'));
+
+        $byKind = array_column($bundle['payload']['nodes'], null, 'kind');
+        $token = $byKind['module']['canonical_name'];
+        assertSame(1, preg_match('/^redacted_[0-9a-f]{24}$/D', $token));
+        assertSame($token, $byKind['module']['display_name']);
+        assertSame($token, $byKind['package']['canonical_name']);
+        assertSame($token, $byKind['package']['display_name'], 'A package is named after its directory.');
+        $classes = array_column(array_values(array_filter($bundle['payload']['nodes'], static fn(array $node): bool => $node['kind'] === 'class')), 'display_name', 'canonical_name');
+        $this->assertEquals(['App\\Other' => 'Other', $token . '.Ledger' => 'Ledger'], $classes, 'Declared names stay.');
+    }
+
+    public function testExportRedactionRekeysEveryIdAndKeepsEveryReference(): void
+    {
+        $this->seedProjectAndScan('proj-1', 'scan-1');
+        $this->seedFile('file_1', 'proj-1', 'src/a.php', 'php');
+        $this->seedNode('symbol_1', 'proj-1', ['file_id' => 'file_1']);
+        $this->seedNode('symbol_2', 'proj-1', ['file_id' => 'file_1', 'parent_id' => 'symbol_1']);
+        $this->seedEdge('edge_1', 'proj-1', 'symbol_1', 'symbol_2', ['file_id' => 'file_1']);
+        $this->seedClassification('classification_1', 'proj-1', 'symbol_2', 'file_1');
+        $this->seedDiagnostic('edge_2', 'proj-1', 'scan-1', 'file_1', 'm');
+        $this->pdo->exec("INSERT INTO boundaries (id, project_id, name, matcher_json, source) VALUES ('boundary_1', 'proj-1', 'B', '{}', 'explicit')");
+        $this->pdo->exec("INSERT INTO boundary_memberships (boundary_id, project_id, node_id) VALUES ('boundary_1', 'proj-1', 'symbol_1'), ('boundary_1', 'proj-1', 'symbol_2')");
+
+        foreach (['paths', 'strict'] as $mode) {
+            $payload = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', $mode))['payload'];
+
+            $file = $payload['files'][0]['id'];
+            $nodes = array_column($payload['nodes'], 'id');
+            $this->assertMatchesRegularExpression('/^file_[0-9a-f]{48}$/D', $file);
+            assertSame(2, count($nodes));
+            foreach ($nodes as $node) {
+                $this->assertMatchesRegularExpression('/^symbol_[0-9a-f]{48}$/D', $node);
+            }
+            $sorted = $nodes;
+            sort($sorted, SORT_STRING);
+            assertSame($sorted, $nodes, 'Rows are ordered by their new id.');
+            $child = array_values(array_filter($payload['nodes'], static fn(array $node): bool => $node['parent_id'] !== null))[0];
+            $parent = array_values(array_filter($payload['nodes'], static fn(array $node): bool => $node['parent_id'] === null))[0];
+            assertSame($parent['id'], $child['parent_id']);
+            assertSame([$file, $file], array_column($payload['nodes'], 'file_id'));
+            assertSame([$parent['id'], $child['id'], $file], [$payload['edges'][0]['source_id'], $payload['edges'][0]['target_id'], $payload['edges'][0]['file_id']]);
+            $this->assertMatchesRegularExpression('/^edge_[0-9a-f]{48}$/D', $payload['edges'][0]['id']);
+            $this->assertMatchesRegularExpression('/^classification_[0-9a-f]{48}$/D', $payload['classifications'][0]['id']);
+            assertSame([$child['id'], $file], [$payload['classifications'][0]['node_id'], $payload['classifications'][0]['file_id']]);
+            assertSame($file, $payload['diagnostics'][0]['file_id']);
+            $boundary = $payload['boundaries'][0]['id'];
+            $this->assertMatchesRegularExpression('/^boundary_[0-9a-f]{48}$/D', $boundary);
+            $members = $payload['memberships'];
+            assertSame([$boundary, $boundary], array_column($members, 'boundary_id'));
+            $memberNodes = array_column($members, 'node_id');
+            assertSame($sorted, $memberNodes, 'Memberships are ordered by their new ids.');
+        }
+    }
+
+    public function testExportWithoutRedactionKeepsEveryIdAndName(): void
+    {
+        $this->seedProjectAndScan('proj-1', 'scan-1');
+        $this->seedFile('file_1', 'proj-1', 'src/a.php', 'php');
+        $this->seedNode('symbol_1', 'proj-1', ['file_id' => 'file_1', 'canonical_name' => 'src/a.php', 'owner_key' => 'knossos.php:file:src/a.php']);
+
+        $payload = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'none'))['payload'];
+
+        assertSame('file_1', $payload['files'][0]['id']);
+        assertSame(['symbol_1', 'file_1', 'src/a.php', 'knossos.php:file:src/a.php'], [$payload['nodes'][0]['id'], $payload['nodes'][0]['file_id'], $payload['nodes'][0]['canonical_name'], $payload['nodes'][0]['owner_key']]);
+    }
+
     // ----- export(): redaction = 'strict' -----
 
     public function testExportStrictRedactionReplacesAttributesJsonWithEmptyObject(): void
@@ -198,59 +337,69 @@ final class GraphBundleServiceTest extends TestCase
         assertSame('{}', $bundle['payload']['nodes'][0]['attributes_json']);
     }
 
-    public function testExportStrictRedactionReplacesOwnerKeyWithRedactedPrefix(): void
+    /**
+     * Was `redacted:` plus an unsalted sha256 prefix of the whole key: the
+     * scanner prefix was lost and the hash of a guessable key named it. An
+     * owner key is redacted as in `paths` mode: prefix kept, path replaced.
+     */
+    public function testExportStrictRedactionKeepsTheOwnerKeyPrefixAndDropsThePath(): void
     {
         $this->seedProjectAndScan('proj-1', 'scan-1');
-        $this->seedNode('n1', 'proj-1', ['owner_key' => 'secret-owner-key']);
+        $this->seedFile('f1', 'proj-1', 'src/A.php', 'php');
+        $this->seedNode('n1', 'proj-1', ['file_id' => 'f1', 'owner_key' => 'knossos.php:file:src/A.php']);
 
         $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'strict'));
 
-        $redacted = $bundle['payload']['nodes'][0]['owner_key'];
-        // Stated exactly, the way the file-path redaction above it is. A prefix
-        // check alone leaves the hash length free to move, and that length is
-        // precisely how much of the original a redacted bundle still carries.
-        assertSame('redacted:' . substr(hash('sha256', 'secret-owner-key'), 0, 24), $redacted);
-        $this->assertStringNotContainsString('secret-owner-key', $redacted);
+        assertSame('knossos.php:file:' . $bundle['payload']['files'][0]['relative_path'], $bundle['payload']['nodes'][0]['owner_key']);
+        $this->assertStringNotContainsString('src/A.php', $bundle['payload']['nodes'][0]['owner_key']);
     }
 
+    /** Was an unsalted hash of the owner key; it is now redacted like any other owner key. */
     public function testExportStrictRedactionRewritesDiagnosticMessageAndOwnerKey(): void
     {
         $this->seedProjectAndScan('proj-1', 'scan-1');
         $this->seedFile('f1', 'proj-1', 'src/A.php', 'php');
         $this->seedDiagnostic('d1', 'proj-1', 'scan-1', 'f1', 'a message naming a customer');
-        $this->pdo->exec("UPDATE diagnostics SET owner_key = 'secret-owner-key' WHERE id = 'd1'");
+        $this->pdo->exec("UPDATE diagnostics SET owner_key = 'knossos.php:file:src/A.php' WHERE id = 'd1'");
 
         $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'strict'));
 
         $diagnostic = $bundle['payload']['diagnostics'][0];
         assertSame('[redacted]', $diagnostic['message'], 'A diagnostic message is free text and goes entirely.');
-        assertSame('redacted:' . substr(hash('sha256', 'secret-owner-key'), 0, 24), $diagnostic['owner_key']);
+        assertSame('knossos.php:file:' . $bundle['payload']['files'][0]['relative_path'], $diagnostic['owner_key']);
     }
 
     public function testExportStrictRedactionLeavesNullOwnerKeyAsNull(): void
     {
         $this->seedProjectAndScan('proj-1', 'scan-1');
         $this->seedNode('n1', 'proj-1', ['owner_key' => null]);
+        $this->seedFile('f1', 'proj-1', 'src/A.php', 'php');
+        $this->seedDiagnostic('d1', 'proj-1', 'scan-1', 'f1', 'm');
 
         $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'strict'));
 
         assertSame(null, $bundle['payload']['nodes'][0]['owner_key']);
+        assertSame(null, $bundle['payload']['diagnostics'][0]['owner_key']);
+        assertSame(null, $bundle['payload']['nodes'][0]['file_id']);
     }
 
     public function testExportStrictRedactionAppliesToNodesEdgesAndClassifications(): void
     {
         $this->seedProjectAndScan('proj-1', 'scan-1');
         $this->seedFile('f1', 'proj-1', 'src/A.php', 'php');
-        $this->seedNode('n1', 'proj-1', ['owner_key' => 'secret']);
-        $this->seedEdge('e1', 'proj-1', 'n1', 'n1', ['owner_key' => 'secret']);
-        // classifications table has no owner_key column; redacted attributes_json is
-        // the only redaction-target the source applies for this table.
+        $this->seedNode('n1', 'proj-1', ['owner_key' => 'knossos.php:file:src/A.php', 'attributes_json' => '{"secret":true}']);
+        $this->seedEdge('e1', 'proj-1', 'n1', 'n1', ['owner_key' => 'knossos.php:file:src/A.php', 'attributes_json' => '{"secret":true}']);
+        // The classifications table has no owner_key column; its attributes
+        // are the redaction target there.
         $this->seedClassification('c1', 'proj-1', 'n1', 'f1', ['attributes_json' => '{"secret":true}']);
 
         $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'strict'));
 
-        $this->assertStringStartsWith('redacted:', $bundle['payload']['nodes'][0]['owner_key']);
-        $this->assertStringStartsWith('redacted:', $bundle['payload']['edges'][0]['owner_key']);
+        $owner = 'knossos.php:file:' . $bundle['payload']['files'][0]['relative_path'];
+        assertSame($owner, $bundle['payload']['nodes'][0]['owner_key']);
+        assertSame($owner, $bundle['payload']['edges'][0]['owner_key']);
+        assertSame('{}', $bundle['payload']['nodes'][0]['attributes_json']);
+        assertSame('{}', $bundle['payload']['edges'][0]['attributes_json']);
         assertSame('{}', $bundle['payload']['classifications'][0]['attributes_json']);
     }
 
@@ -263,26 +412,43 @@ final class GraphBundleServiceTest extends TestCase
         $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'strict'));
 
         assertSame('[redacted]', $bundle['payload']['diagnostics'][0]['message']);
-        $this->assertStringStartsWith('redacted:', $bundle['payload']['diagnostics'][0]['owner_key']);
     }
 
-    public function testExportStrictRedactionDoesNotTouchBoundaries(): void
+    public function testExportStrictRedactionSaltsContentHashesAndDropsTheProjectName(): void
+    {
+        $this->seedProjectAndScan('proj-1', 'scan-1', name: 'Acme Payroll');
+        $this->seedFile('f1', 'proj-1', 'src/A.php', 'php');
+        $this->seedFile('f2', 'proj-1', 'src/B.php', 'php');
+
+        $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'strict'));
+
+        assertSame('redacted', $bundle['payload']['project_name']);
+        $hashes = array_column($bundle['payload']['files'], 'content_hash');
+        assertSame(2, count($hashes));
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/D', $hashes[0]);
+        assertSame($hashes[0], $hashes[1], 'Equal contents keep equal hashes within one bundle.');
+        $this->assertNotSame('h', $hashes[0]);
+    }
+
+    /**
+     * Was "does not touch boundaries": a boundary's matcher kept the
+     * directory it names. A name that is not a path stays; the directory goes.
+     */
+    public function testExportStrictRedactionKeepsABoundaryNameAndRedactsItsDirectory(): void
     {
         $this->seedProjectAndScan('proj-1', 'scan-1');
         $this->pdo->prepare('INSERT INTO boundaries (id, project_id, name, matcher_json, source) VALUES (:id, :project, :name, :matcher, :source)')->execute([
             'id' => 'b1',
             'project' => 'proj-1',
             'name' => 'Core',
-            'matcher' => '{"type":"path","prefix":"src/Domain"}',
+            'matcher' => '{"type":"path_prefix","value":"src/Domain/"}',
             'source' => 'explicit',
         ]);
 
         $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'strict'));
 
-        // Boundaries have no owner_key/attributes_json, so strict redaction is a
-        // no-op for them. Their shape must be unchanged.
         assertSame('Core', $bundle['payload']['boundaries'][0]['name']);
-        assertSame('{"type":"path","prefix":"src/Domain"}', $bundle['payload']['boundaries'][0]['matcher_json']);
+        $this->assertMatchesRegularExpression('#^\{"type":"path_prefix","value":"redacted-dir/[0-9a-f]{24}/"\}$#D', $bundle['payload']['boundaries'][0]['matcher_json']);
         assertSame('explicit', $bundle['payload']['boundaries'][0]['source']);
     }
 

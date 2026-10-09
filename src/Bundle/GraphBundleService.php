@@ -73,31 +73,13 @@ final readonly class GraphBundleService
         if ($factCount > GraphBundleDecoder::MAX_FACTS) {
             throw new InvalidArgumentException('Bundle fact limit exceeded.');
         }
-        foreach ($tables['files'] as &$file) {
-            $original = $file['relative_path'];
-            if ($redaction !== 'none' && is_string($original)) {
-                $extension = pathinfo($original, PATHINFO_EXTENSION);
-                $file['relative_path'] = 'redacted/' . substr(hash('sha256', $original), 0, 24) . ($extension === '' ? '' : '.' . strtolower($extension));
-            }
+        if ($redaction !== 'none') {
+            // A fresh salt per export, never written anywhere: with it a token
+            // could be reversed by hashing guessed paths, and a fixed one would
+            // let two bundles be correlated token by token.
+            $tables = BundleRedactor::redact($tables, $redaction === 'strict', random_bytes(32));
         }
-        unset($file);
-        if ($redaction === 'strict') {
-            foreach (['nodes', 'edges', 'classifications'] as $table) {
-                foreach ($tables[$table] as &$row) {
-                    if (isset($row['attributes_json'])) {
-                        $row['attributes_json'] = '{}';
-                    }
-                    $row['owner_key'] = isset($row['owner_key']) ? 'redacted:' . substr(hash('sha256', (string) $row['owner_key']), 0, 24) : null;
-                }
-                unset($row);
-            }
-            foreach ($tables['diagnostics'] as &$diagnostic) {
-                $diagnostic['message'] = '[redacted]';
-                $diagnostic['owner_key'] = 'redacted:' . substr(hash('sha256', (string) $diagnostic['owner_key']), 0, 24);
-            }
-            unset($diagnostic);
-        }
-        $payload = ['project_name' => $project['name'], 'scan' => ['scanner_set_hash' => $scan['scanner_set_hash'], 'finished_at' => $scan['finished_at']], ...$tables];
+        $payload = ['project_name' => $redaction === 'strict' ? 'redacted' : $project['name'], 'scan' => ['scanner_set_hash' => $scan['scanner_set_hash'], 'finished_at' => $scan['finished_at']], ...$tables];
         $payloadJson = GraphBundleDecoder::encodeCanonical($payload);
         $manifest = [
             'format' => GraphBundleDecoder::FORMAT,
