@@ -257,10 +257,9 @@ jobs:
         env:
           LANE: ${{ matrix.lane }}
           EXTERNAL_LINKS: ${{ github.event_name == 'pull_request' && '0' || '1' }}
-          # A pull request runs PHPUnit once, in the coverage shards. A push
-          # to main runs it here as well, without pcov, as the backstop for a
-          # defect that only shows when pcov is not loaded.
-          PHPUNIT_IN_COVERAGE: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          # PHPUnit runs once, in the coverage shards. Running it here as well
+          # doubled the slowest work of a run on main for no new verdict.
+          PHPUNIT_IN_COVERAGE: "1"
         run: |
           mkdir -p "$RUNNER_TEMP/trivy-cache"
           docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
