@@ -47,6 +47,10 @@ export class FactAccumulator {
         };
     }
 
+    /**
+     * Add a node unless one has its id; false when it is a declaration past
+     * the file's own text, which is no fact.
+     */
     addNode(
         id,
         kind,
@@ -56,7 +60,7 @@ export class FactAccumulator {
         attributes = {},
         origin = "ast",
     ) {
-        if (this.nodesById.has(id)) return;
+        if (this.nodesById.has(id)) return true;
         // The module itself starts past its own text when that text is blank.
         if (
             this.ownEnd !== Infinity &&
@@ -64,7 +68,7 @@ export class FactAccumulator {
             node.getStart(this.sourceFile) >= this.ownEnd
         ) {
             this.appended.add(id);
-            return;
+            return false;
         }
         this.nodesById.set(id, {
             local_id: id,
@@ -76,6 +80,7 @@ export class FactAccumulator {
             evidence: this.located(node),
             attributes,
         });
+        return true;
     }
 
     addEdge(kind, source, target, node, attributes = {}, origin = "ast") {

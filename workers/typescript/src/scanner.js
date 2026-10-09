@@ -1890,7 +1890,9 @@ class TypeScriptLanguageFactCollector {
             : `${this.relative}#${this.container.length > 0 ? `${this.container.map((item) => item.name).join(".")}.` : ""}${descriptor.name}`;
         const id = reference(descriptor.kind, canonical);
         this.declaredIds.set(node, id);
-        this.addNode(
+        // False for a declaration a component's framework implies, which is
+        // no node, so it takes no roles or attributes either.
+        const kept = this.addNode(
             id,
             descriptor.kind,
             canonical,
@@ -1906,17 +1908,16 @@ class TypeScriptLanguageFactCollector {
                 : ambientAttributes(node, descriptor.attributes),
         );
         this.addEdge("contains", parent.id, id, node);
-        if (this.overridesSupertypeMember(node)) {
+        if (kept && this.overridesSupertypeMember(node)) {
             const fact = this.accumulator.nodesById.get(id);
             fact.attributes = { ...fact.attributes, overrides: true };
         }
-        const nest = this.nest.declaration(node, id, canonical);
-        const applicationRoles = this.application.declaration(
-            node,
-            id,
-            canonical,
-            descriptor.name,
-        );
+        const nest = kept
+            ? this.nest.declaration(node, id, canonical)
+            : { roles: [], controllerPrefix: null };
+        const applicationRoles = kept
+            ? this.application.declaration(node, id, canonical, descriptor.name)
+            : [];
         if (applicationRoles.length > 0) {
             const fact = this.accumulator.nodesById.get(id);
             fact.attributes = {
@@ -2883,6 +2884,7 @@ class TypeScriptLanguageFactCollector {
         return this.container.at(-1)?.id ?? this.moduleId;
     }
 
+    /** Add a node; false when it is a declaration past the file's own text. */
     addNode(
         id,
         kind,
@@ -2892,7 +2894,7 @@ class TypeScriptLanguageFactCollector {
         attributes = {},
         origin = "ast",
     ) {
-        this.accumulator.addNode(
+        return this.accumulator.addNode(
             id,
             kind,
             canonicalName,
