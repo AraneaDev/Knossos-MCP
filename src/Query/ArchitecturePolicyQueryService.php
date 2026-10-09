@@ -41,14 +41,20 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
      * the edge and time limits (and `truncated`) speak for that scope rather
      * than for the whole project. Empty checks every edge.
      *
+     * `$touchingIds` (at most 2,000; internal, no tool exposes it) narrows the
+     * check the same way to the edges with either end among those components,
+     * so a review can count the violations touching a change exactly rather
+     * than filter the first page of the whole project's.
+     *
      * Null `$policies` checks the ones the project declares in its
      * `knossos.json`, read live; a project that declares none, or whose file
      * cannot be read, is refused rather than reported as having no violations.
      *
      * @param list<array<string, mixed>>|null $policies
      * @param list<string> $sourceFiles
+     * @param list<string> $touchingIds
      */
-    public function checkArchitecture(string $projectId, ?array $policies, string $minConfidence = 'possible', int $limit = 100, int $maxEdges = self::DEFAULT_MAX_EDGES, int $timeoutMs = 1000, array $sourceFiles = []): ResultEnvelope
+    public function checkArchitecture(string $projectId, ?array $policies, string $minConfidence = 'possible', int $limit = 100, int $maxEdges = self::DEFAULT_MAX_EDGES, int $timeoutMs = 1000, array $sourceFiles = [], array $touchingIds = []): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
@@ -109,7 +115,7 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         sort($allKinds, SORT_STRING);
 
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
-        $statement = $this->policyEdges($projectId, $allKinds, $confidenceRank[$minConfidence], $maxEdges, $sourceFiles);
+        $statement = $this->policyEdges($projectId, $allKinds, $confidenceRank[$minConfidence], $maxEdges, $sourceFiles, $touchingIds);
         // Streamed rather than collected: a gate asks for the largest bound the
         // checker accepts, and holding that many joined rows exhausted a 128 MB
         // limit. Memory is now the boundary map plus the violations kept, both
@@ -243,11 +249,15 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
      *
      * @param list<string> $kinds
      * @param list<string> $sourceFiles empty for every edge, else only edges whose source is declared in one of them
+     * @param list<string> $touchingIds empty for every edge, else only edges with either end among these components
      */
-    private function policyEdges(string $projectId, array $kinds, int $confidenceRank, int $maxEdges, array $sourceFiles): \PDOStatement
+    private function policyEdges(string $projectId, array $kinds, int $confidenceRank, int $maxEdges, array $sourceFiles, array $touchingIds = []): \PDOStatement
     {
         if (count($sourceFiles) > 500) {
             throw new InvalidArgumentException('source_files must name at most 500 files.');
+        }
+        if (count($touchingIds) > 2000) {
+            throw new InvalidArgumentException('touching_ids must name at most 2000 components.');
         }
         $placeholders = static fn(array $values): string => implode(',', array_fill(0, count($values), '?'));
         // Only the columns the evaluation and the violation record read. `e.*`
@@ -265,9 +275,16 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
                 'AND source.file_id IN (SELECT id FROM files WHERE project_id = ? AND relative_path IN (%s)) ',
                 $placeholders($sourceFiles),
             )) .
+            // One JSON parameter however many ids: a list of 2,000 bound twice
+            // would pass SQLite's 999-variable floor.
+            ($touchingIds === [] ? '' : 'AND (e.source_id IN (SELECT value FROM json_each(?)) OR e.target_id IN (SELECT value FROM json_each(?))) ') .
             'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
         );
         $scope = $sourceFiles === [] ? [] : [$projectId, ...$sourceFiles];
+        if ($touchingIds !== []) {
+            $touching = json_encode(array_values($touchingIds), JSON_THROW_ON_ERROR);
+            $scope = [...$scope, $touching, $touching];
+        }
         // bindValue keeps the integers integers; execute([...]) would send them as text.
         foreach ([$projectId, ...$kinds, $confidenceRank, ...$scope, $maxEdges + 1] as $index => $value) {
             $statement->bindValue($index + 1, $value, is_int($value) ? \PDO::PARAM_INT : \PDO::PARAM_STR);

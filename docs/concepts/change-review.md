@@ -63,24 +63,29 @@ instead of failing the whole call:
 
 - `change`: the `changed_files_impact` result: `changed_files`,
   `unresolved_files`, `direct_components`, `impacted_components`, `git`.
-- `policy_check`: `policies_evaluated`, `total_violations`, and
-  `violations_touching_change` (the subset of `check_architecture`'s
+- `policy_check`: `policies_evaluated`; `total_violations`, the whole
+  project's violation count; `touching_violation_count`, the exact number of
   violations whose source or target is a direct or impacted component of the
-  change). `not_evaluated` when no policies are declared or supplied.
+  change; and `violations_touching_change`, the first 100 of those. The touching
+  ones come from a check scoped to the change's components, not from the first
+  page of the whole project's. `not_evaluated` when no policies are declared or
+  supplied.
 - `quality_gate`: `passed`, `checks`, `baseline_snapshot`, computed against
   the most recently retained non-active snapshot unless `baseline_snapshot` is
   given explicitly. `not_evaluated` when no budgets are declared or supplied,
   or when no retained baseline snapshot exists yet.
 - `cycles_touching_change`: the subset of `dependency_cycles`'s cycles with
-  at least one member among the change's direct or impacted components.
+  at least one member among the change's direct or impacted components,
+  matched on every member (`member_ids`), not only the first 100 listed.
   `not_evaluated` (with a reason) if the cycle scan itself fails.
 
 `bounds` mirrors `changed_files_impact`'s bounds with `cycle_scan_limit`
 added. The envelope's evidence, warnings, and truncation flag are the union of
 the underlying calls': evidence from `change`, the policy check (when
-evaluated), the quality gate (when evaluated), and the cycle scan (when
-evaluated), capped at the first 100 rows; a section that degrades to
-`not_evaluated` contributes no evidence.
+evaluated, the scoped check's evidence for the violations touching the change),
+the quality gate (when evaluated), and the cycle scan (when evaluated), capped
+at the first 100 rows; a section that degrades to `not_evaluated` contributes
+no evidence.
 
 Results are static and conservative, subject to the same caveats as the
 underlying tools: impact is a blast-radius estimate that guarantees nothing; change
