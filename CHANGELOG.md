@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.20.1](https://github.com/AraneaDev/knossos/compare/v0.20.0...v0.20.1) (2026-10-09)
+
+
+### Fixes
+
+* follow PHP closure scopes, route groups and case-insensitive names ([#169](https://github.com/AraneaDev/knossos/issues/169)) ([caf94f9](https://github.com/AraneaDev/knossos/commit/caf94f9e37287de1bbad1ca12415bcfe2ba82e90))
+* give Rust modules and calls the ids the code means ([#167](https://github.com/AraneaDev/knossos/issues/167)) ([c5ee5ac](https://github.com/AraneaDev/knossos/commit/c5ee5ac7c822d5eee470c0bc1e72730efd25545a))
+* name Python modules by the file an import finds ([#168](https://github.com/AraneaDev/knossos/issues/168)) ([dd1fb5b](https://github.com/AraneaDev/knossos/commit/dd1fb5b0e8e07e981019ee92492938c59cf06a69))
+* report TypeScript facts the code actually declares ([#170](https://github.com/AraneaDev/knossos/issues/170)) ([70e1675](https://github.com/AraneaDev/knossos/commit/70e167504564a2a5028547e99242b1577d12f59c))
+* stop tracking a node_modules symlink and ignore it in any form ([#165](https://github.com/AraneaDev/knossos/issues/165)) ([833161b](https://github.com/AraneaDev/knossos/commit/833161b0e54b0f970393c64a216da1a439e5657a))
+
 ## [0.20.0](https://github.com/AraneaDev/knossos/compare/v0.19.2...v0.20.0) (2026-10-08)
 
 
