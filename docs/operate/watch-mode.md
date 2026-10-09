@@ -67,23 +67,27 @@ A shared watcher's scan that runs past its time limit (see
 `error` is not retryable and `stopped` follows with reason `error`. A scan that
 succeeds resets the count.
 
-The plain watcher exits with `2` when it stopped with reason `error`, and with
-`0` otherwise.
+The plain watcher exits with `2` when it stopped with reason `error`: a
+terminal failure, in the initial scan or a later one. It exits with `0` when it
+was interrupted. An initial scan that keeps failing transiently, a write lease
+that never frees for example, does not end the watcher: it retries with the
+backoff above, up to 30 seconds apart, until you interrupt it. Earlier versions
+exited with `2` at the first failure of the initial scan.
 
 ## Events and the result
 
 Lifecycle events are one JSON object per line on standard error, and the final
 result is on standard output.
 
-| event            | when                                                                 |
-| ---------------- | -------------------------------------------------------------------- |
-| `ready`          | the initial scan is done, or found the graph already current         |
-| `changes`        | a poll found changes and nothing was pending                         |
-| `overflow`       | the queue passed `--max-queue`; the next scan is full                |
-| `scan_started`   | a scan begins, with its mode and the number of changes               |
-| `scan_completed` | a scan ended, with its snapshot and the files it parsed              |
-| `error`          | a scan or a poll failed; `retryable` says whether it will be retried |
-| `stopped`        | always last, with the reason: `cancelled`, `poll_limit` or `error`   |
+| event            | when                                                                                                                                                    |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`          | the initial scan is done, or found the graph already current                                                                                            |
+| `changes`        | a poll found changes and nothing was pending                                                                                                            |
+| `overflow`       | the queue passed `--max-queue`; the next scan is full                                                                                                   |
+| `scan_started`   | a scan begins, with its mode and the number of changes                                                                                                  |
+| `scan_completed` | a scan ended, with its snapshot and the files it parsed                                                                                                 |
+| `error`          | a scan or a poll failed; `retryable` says whether it will be retried, and `code` is `scan_timeout` when a shared watcher's scan ran past its time limit |
+| `stopped`        | always last, with the reason: `cancelled`, `poll_limit` or `error`                                                                                      |
 
 The result reports the poll and scan counts, incremental and full scans,
 coalesced changes, queue overflows, `scan_errors`, pending work, the

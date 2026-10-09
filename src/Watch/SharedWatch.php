@@ -47,11 +47,13 @@ final readonly class SharedWatch
      * @param PDO $pdo an existing, migrated graph database
      * @param string $databasePath where $pdo lives: locates `roots.json` and the lock directory beside it
      * @param string $installationRoot where the scanner workers live
+     * @param (Closure(string): int)|null $scanLimit how long a scan of the given project root may run, asked before each scan; {@see self::scanTimeoutMs()} when null
      */
     public function __construct(
         private PDO $pdo,
         private string $databasePath,
         private string $installationRoot,
+        private ?Closure $scanLimit = null,
     ) {}
 
     /**
@@ -133,7 +135,8 @@ final readonly class SharedWatch
         // Bounded in time, stopped with the watcher, and still beating while it runs: a follower sees a leader that
         // scans, and only one that stopped answering reads as stuck.
         // The limit is read for each scan, so an edit to `limits.watch_scan_timeout_ms` holds from the next one.
-        $scanner = fn(string $root, ?string $mode, CancellationToken $cancellation): ResultEnvelope => (new ProcessScanner($this->installationRoot, $this->databasePath, self::scanTimeoutMs($root, $allowed), $alive, static fn() => $beat(null, 'scanning'), self::HEARTBEAT_MS))->scan($root, $mode, $cancellation);
+        $limit = $this->scanLimit ?? static fn(string $root): int => self::scanTimeoutMs($root, $allowed);
+        $scanner = fn(string $root, ?string $mode, CancellationToken $cancellation): ResultEnvelope => (new ProcessScanner($this->installationRoot, $this->databasePath, $limit($root), $alive, static fn() => $beat(null, 'scanning'), self::HEARTBEAT_MS))->scan($root, $mode, $cancellation);
         $observer = static function (array $event) use ($emit, $say): void {
             $phase = ['ready' => 'idle', 'scan_started' => 'scanning', 'scan_completed' => 'idle', 'absorbed' => 'idle'][$event['event']] ?? null;
             if ($phase !== null) {

@@ -20,6 +20,7 @@ use function PHPUnit\Framework\assertContains;
 use function PHPUnit\Framework\assertNotNull;
 use function PHPUnit\Framework\assertNull;
 use function PHPUnit\Framework\assertSame;
+use function PHPUnit\Framework\assertStringContainsString;
 
 /**
  * The live watcher the Claude Code mod starts: only an existing project in
@@ -295,35 +296,38 @@ final class SharedWatchTest extends KnossosTestCase
     }
 
     /**
-     * The leader's scan limit was fixed at 300 s; a project's
-     * `limits.watch_scan_timeout_ms` now sets it, and a scan past it is
-     * reported as a timeout.
+     * The leader's scan limit was fixed at 300 s. It is now asked for before
+     * each scan (the project's `limits.watch_scan_timeout_ms` by default, see
+     * the next test), and a scan past it is reported as a timeout.
      */
     #[Group('watch')]
-    public function testTheLeadersScanLimitComesFromTheProjectConfiguration(): void
+    public function testTheLeaderAsksForItsScanLimitBeforeEachScan(): void
     {
         [$pdo, $database, $root] = $this->project();
+        $asked = [];
+        $limit = static function (string $root) use (&$asked): int {
+            $asked[] = $root;
+
+            return 200;
+        };
         $cancellation = new CancellationToken();
         $events = [];
         $emit = static function (array $event) use (&$events, $cancellation, $root): void {
             $events[] = $event;
             if ($event['event'] === 'ready') {
-                // Edited while the watcher runs: a configuration change is due a scan, read with the limit it sets,
-                // and the scan the slow installation runs outlives it.
-                file_put_contents($root . '/knossos.json', '{"version":1,"limits":{"watch_scan_timeout_ms":10000}}');
+                // An edit while the watcher runs: a scan is due, and the scan the slow installation runs outlives its limit.
+                file_put_contents($root . '/src/Core/Greeter.php', "\n// touched\n", FILE_APPEND);
             }
-            if ($event['event'] === 'error') {
+            if (count(array_filter($events, static fn(array $e): bool => $e['event'] === 'error')) === 2) {
                 $cancellation->cancel();
             }
         };
-        $started = hrtime(true);
-        (new SharedWatch($pdo, $database, self::repositoryRoot() . '/tests/Fixtures/slow-scan'))->run($root, 1, 0, $cancellation, $emit, null, 20_000);
+        (new SharedWatch($pdo, $database, self::repositoryRoot() . '/tests/Fixtures/slow-scan', $limit))->run($root, 1, 0, $cancellation, $emit, null, 20_000);
 
         $errors = array_values(array_filter($events, static fn(array $e): bool => $e['event'] === 'error'));
-        assertSame(1, count($errors));
-        assertSame(['scan_timeout', true], [$errors[0]['code'], $errors[0]['retryable']]);
-        assertSame('The scan ran past its 10 s limit and was stopped.', $errors[0]['message']);
-        assertSame(true, intdiv(hrtime(true) - $started, 1_000_000) < 60_000);
+        assertSame([['scan_timeout', true], ['scan_timeout', true]], array_map(static fn(array $e): array => [$e['code'], $e['retryable']], $errors));
+        assertStringContainsString('ran past its', (string) $errors[0]['message']);
+        assertSame([$root, $root], $asked);
     }
 
     /** The limit a project sets, else the default: also when the configuration cannot be read, since the scan reports that itself. */
