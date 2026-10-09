@@ -104,7 +104,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
         $this->withHundredExtraProjects(function (StdioServer $server): void {
             $first = $this->listPage($server, null);
             assertSame(300, count($first['resources']));
-            assertSame(1, preg_match('/^[A-Za-z0-9_-]+$/', $first['nextCursor']), 'The cursor is URL-safe and unpadded.');
+            assertSame(1, preg_match('/^[A-Za-z0-9_=-]+$/', $first['nextCursor']), 'The cursor is URL-safe base64.');
             $second = $this->listPage($server, $first['nextCursor']);
 
             assertSame(3, count($second['resources']));
@@ -157,6 +157,20 @@ final class ResourcesPromptsTest extends KnossosTestCase
             assertSame([], array_values(array_intersect($firstUris, $secondUris)), 'Nothing on page one comes back on page two.');
             assertSame(6, count($secondUris), 'Page two holds the project that was already there and the one added.');
             assertSame(true, in_array('knossos://project_' . str_repeat('f', 64) . '/summary', $secondUris, true));
+        });
+    }
+
+    /** Exactly one page of projects has no next page. */
+    #[Group('mcp')]
+    public function testExactlyAPageOfProjectsHasNoNextCursor(): void
+    {
+        $this->withHundredExtraProjects(function (StdioServer $server, \PDO $pdo): void {
+            $pdo->exec("DELETE FROM projects WHERE name = 'extra-1'");
+
+            $page = $this->listPage($server, null);
+
+            assertSame(300, count($page['resources']));
+            assertSame(false, array_key_exists('nextCursor', $page));
         });
     }
 

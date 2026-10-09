@@ -73,6 +73,29 @@ final class PolicyValidationBoundsTest extends KnossosTestCase
         assertSame(1, count(self::check($pdo, $project, [self::policy(str_repeat('界', 100))])->data['policies_evaluated']));
     }
 
+    /** A target value is a non-empty string of at most 200 characters: whitespace and non-strings are refused, 200 CJK characters are not. */
+    #[Group('query')]
+    public function testATargetValueIsANonEmptyStringCountedInCharacters(): void
+    {
+        [$pdo, $project] = $this->fixture();
+        $message = 'Policy deny_targets values must be non-empty strings of at most 200 characters.';
+
+        foreach (['   ', 5] as $bad) {
+            $error = captureThrows(
+                fn() => self::check($pdo, $project, [['id' => 'p', 'from_boundary' => 'Core', 'deny_targets' => [$bad]]]),
+                InvalidArgumentException::class,
+            );
+            assertSame($message, $error->getMessage());
+        }
+        try {
+            self::check($pdo, $project, [['id' => 'p', 'from_boundary' => 'Core', 'deny_targets' => [str_repeat('界', 200)]]]);
+            $within = null;
+        } catch (InvalidArgumentException $error) {
+            $within = $error->getMessage();
+        }
+        assertSame(true, $within !== $message, '200 characters (600 bytes) is within the limit.');
+    }
+
     /** A from_boundary of whitespace is refused as an empty boundary, not as an unknown one. */
     #[Group('query')]
     public function testAWhitespaceFromBoundaryIsRefusedAsEmpty(): void

@@ -19,6 +19,17 @@ use PHPUnit\Framework\Attributes\Group;
  */
 final class SuggestionArgumentsTest extends KnossosTestCase
 {
+    /** Counted in characters: 2,000 CJK characters (6,000 bytes) are within the limit, 2,001 are not. */
+    #[Group('query')]
+    public function testTheFeatureDescriptionIsCountedInCharacters(): void
+    {
+        [$queries, $project] = $this->queries();
+
+        $queries->suggestLocation($project, 'checkout ' . str_repeat('界', 1991));
+        $refused = captureThrows(static fn() => $queries->suggestLocation($project, 'checkout ' . str_repeat('界', 1992)), InvalidArgumentException::class);
+        assertSame('feature_description must contain between 1 and 2000 characters.', $refused->getMessage());
+    }
+
     #[Group('query')]
     public function testTheFeatureDescriptionIsBoundedAtTwoThousandBytes(): void
     {
