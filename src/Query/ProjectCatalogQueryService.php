@@ -298,7 +298,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         // so the two graphs are never held at once.
         $resolved = $this->resolveSnapshot($projectId, $baseSnapshot, $active);
         $reader = new SnapshotGraphReader($this->pdo);
-        $was = $this->baseFigures($resolved['is_active'] ? $reader->active($projectId, $active) : $reader->archived((string) $resolved['archived']['payload_json'], $resolved['scan_id']));
+        $was = $this->baseFigures($resolved['is_active'] ? $reader->active($projectId, $active) : $reader->archivedById($resolved['scan_id']));
         unset($resolved['archived']);
         $facts = $reader->active($projectId, $active);
         $after = $this->snapshotAnalysis($facts);
@@ -732,7 +732,8 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         if (!is_array($metadata)) {
             throw new InvalidArgumentException(sprintf('Unknown complete snapshot: %s', $scanId));
         }
-        $archive = $this->pdo->prepare('SELECT * FROM scan_snapshots WHERE scan_id = :scan AND project_id = :project');
+        // Never the payload: the reader fetches or streams it when it is read.
+        $archive = $this->pdo->prepare('SELECT scan_id, project_id, scanner_set_hash, config_hash, complete, fact_count, byte_size, captured_at FROM scan_snapshots WHERE scan_id = :scan AND project_id = :project');
         $archive->execute(['scan' => $scanId, 'project' => $projectId]);
         $archived = $archive->fetch();
         $isActive = $scanId === $activeScanId;
@@ -768,7 +769,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
 
         return $resolved['is_active']
             ? $reader->active($projectId, $resolved['scan_id'])
-            : $reader->archived((string) ($resolved['archived']['payload_json'] ?? ''), $resolved['scan_id']);
+            : $reader->archivedById($resolved['scan_id']);
     }
 
     /**
@@ -805,10 +806,16 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         if (!$resolved['is_active']) {
             // One table per read, inflated a few kilobytes at a time: decoding
             // the payload whole once and handing out slices held its JSON and
-            // every table's rows beside the rows being compared.
-            $payload = (string) $resolved['archived']['payload_json'];
+            // every table's rows beside the rows being compared. A payload
+            // that can only be decoded whole (plain JSON from an earlier
+            // version) is decoded once for every table, not once per table.
             $reader = new SnapshotGraphReader($this->pdo);
-            $load = static fn(string $table): array => $reader->archivedTable($payload, $table, $scanId);
+            if ($reader->isStreamable($scanId)) {
+                $load = static fn(string $table): array => $reader->archivedTablesById($scanId, [$table])[$table];
+            } else {
+                $all = $reader->archivedTablesById($scanId, ['files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics']);
+                $load = static fn(string $table): array => $all[$table] ?? [];
+            }
         } else {
             $load = fn(string $table): array => $this->activeSnapshotRows($projectId, $scanId, $table);
         }

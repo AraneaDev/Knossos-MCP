@@ -19,14 +19,17 @@ use PDO;
  * Its readers are the branch comparison, the quality gate and the trend
  * report ({@see ProjectCatalogQueryService::branchComparison()},
  * {@see ProjectCatalogQueryService::qualityGate()},
- * {@see ProjectCatalogQueryService::architectureTrends()}).
+ * {@see ProjectCatalogQueryService::architectureTrends()}), and snapshot_diff
+ * for whole archived tables ({@see self::archivedTablesById()}).
  *
  * A stored row carries far more (owners, hashes, the scan it came from),
  * and a snapshot holds tens of thousands of rows: reading every column of
  * two whole graphs cost a branch comparison about 425 MB. The
  * active graph is read with a column list; an archived one is inflated and
  * read a row at a time, so its JSON and its decoded rows are never held
- * whole.
+ * whole. Its stored text is read from SQLite a piece at a time where the
+ * runtime offers an incremental blob reader (PHP 8.4 and later); on PHP 8.3
+ * it is fetched as one string, at its compressed size.
  */
 final readonly class SnapshotGraphReader
 {
@@ -82,12 +85,11 @@ final readonly class SnapshotGraphReader
      * and its rows are taken off the front as they arrive, each decoded on its
      * own and cut to its columns: neither the payload's JSON, nor its binary
      * form, nor its decoded arrays are ever held whole, and no step's output
-     * depends on how well the payload compresses. The stored base64 string
-     * itself is held, at its compressed size: PDO's SQLite driver on PHP 8.3
-     * has no incremental blob reads (a PARAM_LOB column is the whole value
-     * behind a stream), so there is nothing smaller to read it as. A payload this reading does not recognise (plain JSON from
-     * an earlier version, laid out another way) is decoded whole instead,
-     * which gives the same rows.
+     * depends on how well the payload compresses. Here the stored text is
+     * the caller's string; {@see self::archivedById()} reads it from the store
+     * instead, a piece at a time where the runtime allows. A payload this
+     * reading does not recognise (plain JSON from an earlier version, laid out
+     * another way) is decoded whole instead, which gives the same rows.
      *
      * @return array<string, list<array<string, mixed>>>
      */
@@ -97,17 +99,40 @@ final readonly class SnapshotGraphReader
     }
 
     /**
-     * One table of an archived snapshot, every column of every row, in the payload's order.
+     * An archived snapshot's rows, as {@see self::archived()} reads them, with the payload read from the store.
      *
-     * For snapshot_diff, which compares whole rows a table at a time: read
-     * this way, the working set is the table's rows alone, never the payload
-     * decoded whole beside them.
-     *
-     * @return list<array<string, mixed>>
+     * @return array<string, list<array<string, mixed>>>
      */
-    public function archivedTable(string $storedPayload, string $table, string $scanId): array
+    public function archivedById(string $scanId): array
     {
-        return $this->read($storedPayload, $scanId, [$table => null])[$table];
+        return $this->readStored($scanId, self::COLUMNS);
+    }
+
+    /**
+     * Whole tables of an archived snapshot, every column, with the payload read from the store.
+     *
+     * One table per call keeps the working set to that table's rows; several
+     * in one call read the payload once for all of them, which is what a
+     * payload that can only be decoded whole (see {@see self::isStreamable()})
+     * wants.
+     *
+     * @param list<string> $tables
+     * @return array<string, list<array<string, mixed>>>
+     */
+    public function archivedTablesById(string $scanId, array $tables): array
+    {
+        return $this->readStored($scanId, array_fill_keys($tables, null));
+    }
+
+    /** Whether the stored payload is one the bounded read takes apart, rather than one decoded whole. */
+    public function isStreamable(string $scanId): bool
+    {
+        $statement = $this->pdo->prepare('SELECT substr(payload_json, 1, :length) FROM scan_snapshots WHERE scan_id = :scan');
+        $statement->bindValue(':length', strlen(self::PREFIX), PDO::PARAM_INT);
+        $statement->bindValue(':scan', $scanId);
+        $statement->execute();
+
+        return $statement->fetchColumn() === self::PREFIX;
     }
 
     /**
@@ -119,9 +144,101 @@ final readonly class SnapshotGraphReader
      */
     private function read(string $storedPayload, string $scanId, array $columns): array
     {
-        $facts = str_starts_with($storedPayload, self::PREFIX) ? $this->streamed($storedPayload, $columns) : null;
+        $facts = str_starts_with($storedPayload, self::PREFIX) ? $this->streamed(self::slices($storedPayload), $columns) : null;
 
         return $facts ?? $this->decodedWhole($storedPayload, $scanId, $columns);
+    }
+
+    /**
+     * The tables named in `$columns` from the payload stored for `$scanId`.
+     *
+     * Where SQLite's incremental blob reader is available (`Pdo\Sqlite::openBlob()`,
+     * PHP 8.4 and later, on a connection {@see \Knossos\Store\SqliteConnection}
+     * opens as `Pdo\Sqlite`), the payload is read through it a piece at a
+     * time and never held whole, compressed or not. On PHP 8.3 there is no
+     * such reader: a `PDO::PARAM_LOB` column there is the whole value behind a
+     * stream. The payload is then fetched as one string, at its compressed
+     * size, and decoded exactly the same way. Only the byte source differs.
+     *
+     * @param array<string, list<string>|null> $columns
+     * @return array<string, list<array<string, mixed>>>
+     */
+    private function readStored(string $scanId, array $columns): array
+    {
+        $blob = $this->payloadBlob($scanId);
+        if ($blob !== null) {
+            try {
+                $facts = fread($blob, strlen(self::PREFIX)) === self::PREFIX ? $this->streamed(self::pieces($blob), $columns) : null;
+            } finally {
+                fclose($blob);
+            }
+            if ($facts !== null) {
+                return $facts;
+            }
+        }
+        $statement = $this->pdo->prepare('SELECT payload_json FROM scan_snapshots WHERE scan_id = :scan');
+        $statement->execute(['scan' => $scanId]);
+        $stored = $statement->fetchColumn();
+        if (!is_string($stored)) {
+            throw new InvalidArgumentException(sprintf('Snapshot facts are not retained: %s', $scanId));
+        }
+
+        return $this->read($stored, $scanId, $columns);
+    }
+
+    /**
+     * A read-only stream over the stored payload, or null where the connection cannot open one.
+     *
+     * Feature-detected rather than version-checked: `openBlob` exists only on
+     * a `Pdo\Sqlite` connection (PHP 8.4 and later), and is called through a
+     * callable so the code also analyses and runs on 8.3, where it is absent.
+     *
+     * @return resource|null
+     */
+    private function payloadBlob(string $scanId)
+    {
+        $open = [$this->pdo, 'openBlob'];
+        if (!is_callable($open)) {
+            return null;
+        }
+        $statement = $this->pdo->prepare('SELECT rowid FROM scan_snapshots WHERE scan_id = :scan');
+        $statement->execute(['scan' => $scanId]);
+        $rowid = $statement->fetchColumn();
+        if ($rowid === false) {
+            return null;
+        }
+        $blob = $open('scan_snapshots', 'payload_json', (int) $rowid);
+
+        return is_resource($blob) ? $blob : null;
+    }
+
+    /**
+     * A stored payload string after its prefix, a slice at a time.
+     *
+     * @return \Generator<int, string>
+     */
+    private static function slices(string $storedPayload): \Generator
+    {
+        for ($at = strlen(self::PREFIX), $length = strlen($storedPayload); $at < $length; $at += self::SLICE) {
+            yield substr($storedPayload, $at, self::SLICE);
+        }
+    }
+
+    /**
+     * A payload stream after its prefix, a slice at a time.
+     *
+     * @param resource $blob
+     * @return \Generator<int, string>
+     */
+    private static function pieces($blob): \Generator
+    {
+        while (!feof($blob)) {
+            $piece = fread($blob, self::SLICE);
+            if ($piece === false || $piece === '') {
+                return;
+            }
+            yield $piece;
+        }
     }
 
     /** Marks a compressed payload, as {@see SnapshotPayload} writes it. */
@@ -153,10 +270,15 @@ final readonly class SnapshotGraphReader
      * not laid out as the archive writes it (or cannot be inflated), so the
      * caller decodes it whole.
      *
+     * The base64 text arrives in pieces of any length (a stream need not
+     * return whole slices); each step decodes the longest run of whole
+     * four-character groups it has and carries the rest to the next.
+     *
+     * @param iterable<string> $pieces the stored text after its prefix
      * @param array<string, list<string>|null> $columns
      * @return array<string, list<array<string, mixed>>>|null
      */
-    private function streamed(string $storedPayload, array $columns): ?array
+    private function streamed(iterable $pieces, array $columns): ?array
     {
         $inflate = @inflate_init(ZLIB_ENCODING_GZIP);
         if ($inflate === false) {
@@ -164,13 +286,20 @@ final readonly class SnapshotGraphReader
         }
         $facts = array_fill_keys(array_keys($columns), []);
         $state = ['phase' => 'head', 'table' => null, 'buffer' => ''];
-        $length = strlen($storedPayload);
-        for ($at = strlen(self::PREFIX); $at < $length; $at += self::SLICE) {
-            $compressed = base64_decode(substr($storedPayload, $at, self::SLICE), true);
-            $chunk = $compressed === false ? false : @inflate_add($inflate, $compressed, $at + self::SLICE >= $length ? ZLIB_FINISH : ZLIB_SYNC_FLUSH);
+        $carry = '';
+        foreach ($pieces as $piece) {
+            $text = $carry . $piece;
+            $whole = strlen($text) - strlen($text) % 4;
+            $carry = substr($text, $whole);
+            $compressed = base64_decode(substr($text, 0, $whole), true);
+            $chunk = $compressed === false ? false : @inflate_add($inflate, $compressed, ZLIB_SYNC_FLUSH);
             if ($chunk === false || !$this->take($state, $chunk, $facts, $columns)) {
                 return null;
             }
+        }
+        $chunk = $carry === '' ? @inflate_add($inflate, '', ZLIB_FINISH) : false;
+        if ($chunk === false || !$this->take($state, $chunk, $facts, $columns)) {
+            return null;
         }
 
         return $state['phase'] === 'done' && trim($state['buffer']) === '' ? $facts : null;
