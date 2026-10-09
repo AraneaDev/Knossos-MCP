@@ -15,6 +15,10 @@ final readonly class DiscoveryResult
      *        hashed but could not parse into a unit, keyed by project-relative path. They
      *        carry no metadata, yet a worker may still read them (a malformed
      *        package.json during module resolution), so they are verified like a unit.
+     * @param list<string> $manifestRoots the directories the walk found a package or
+     *        build manifest in, project-relative and sorted, `''` for the root. Build
+     *        output directly below one of them is excluded, and a worker is told
+     *        which they are so it excludes the same paths.
      */
     public function __construct(
         public string $rootRealpath,
@@ -24,6 +28,7 @@ final readonly class DiscoveryResult
         public string $inputHash,
         public string $configurationHash,
         public array $unparsedManifestHashes = [],
+        public array $manifestRoots = [],
     ) {}
 
     /**

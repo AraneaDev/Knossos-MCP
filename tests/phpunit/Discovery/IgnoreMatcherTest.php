@@ -143,9 +143,9 @@ final class IgnoreMatcherTest extends TestCase
      * removed or altered. IgnoreMatcher decides what gets scanned at all, so a
      * silent change here distorts every graph the project produces.
      *
-     * Note the directory names: `dist` and `build` are built-in exclusions and
-     * cannot be negated, so user-pattern behaviour has to be exercised through
-     * names the built-in list does not already cover.
+     * Note the directory names: `dist` and `build` are built-in exclusions at
+     * the root, so user-pattern behaviour has to be exercised through names the
+     * built-in list does not already cover.
      */
     public function testSurroundingWhitespaceInAPatternIsIgnored(): void
     {
@@ -530,6 +530,78 @@ final class IgnoreMatcherTest extends TestCase
         $matcher = new IgnoreMatcher([]);
 
         assertSame(true, $matcher->matches('dist/bundle.js'));
+    }
+
+    /**
+     * build, dist, site and coverage were excluded at any depth, so a source
+     * directory of that name anywhere in the tree (src/build, apps/site)
+     * vanished. Without a predicate only the project root anchors them.
+     */
+    public function testBuildOutputNamesAreExcludedOnlyDirectlyUnderTheRoot(): void
+    {
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('dist'));
+        assertSame(true, $matcher->matches('dist/bundle.js'));
+        assertSame(true, $matcher->matches('build/output.bin'));
+        assertSame(true, $matcher->matches('coverage/clover.xml'));
+        assertSame(true, $matcher->matches('site/assets/chunks/app.js'));
+        assertSame(false, $matcher->matches('src/build/x.ts'));
+        assertSame(false, $matcher->matches('apps/site/c.ts'));
+        assertSame(false, $matcher->matches('src/coverage'));
+        assertSame(false, $matcher->matches('distribution/x.ts'));
+    }
+
+    /** A manifest root anchors the build-output names directly below it, and only there. */
+    public function testAManifestRootAnchorsBuildOutputBelowIt(): void
+    {
+        $asked = [];
+        $matcher = new IgnoreMatcher([], static function (string $directory) use (&$asked): bool {
+            $asked[] = $directory;
+
+            return $directory === 'packages/a';
+        });
+
+        assertSame(true, $matcher->matches('packages/a/dist/x.js'));
+        assertSame(true, $matcher->matches('packages/a/dist'));
+        assertSame(false, $matcher->matches('packages/b/dist/x.js'));
+        assertSame(false, $matcher->matches('packages/a/src/dist/x.js'));
+        assertSame(false, $matcher->matches('packages/a/x.js'));
+        assertSame(true, $matcher->matches('dist/x.js'));
+        assertSame(true, $matcher->matches('public/build/app.js'));
+        // The predicate is asked about the directory holding the segment, never the root.
+        $this->assertNotContains('', $asked);
+        $this->assertContains('packages/a/src', $asked);
+    }
+
+    /** A user pattern decides after an anchored built-in, so a `!` pattern re-includes build output. */
+    public function testANegatedPatternReincludesAnchoredBuildOutput(): void
+    {
+        $matcher = new IgnoreMatcher(['!packages/a/dist/**', '!dist'], static fn(string $directory): bool => $directory === 'packages/a');
+
+        assertSame(false, $matcher->matches('packages/a/dist/x.js'));
+        assertSame(false, $matcher->matches('dist/x.js'));
+        assertSame(true, (new IgnoreMatcher(['!dist', 'dist']))->matches('dist/x.js'));
+        assertSame(true, (new IgnoreMatcher(['!node_modules/**']))->matches('node_modules/x/index.js'));
+    }
+
+    /**
+     * Only the anchored rule's own exclusions are build output to report: a
+     * directory a user pattern ignores was asked for, one a `!` pattern
+     * re-includes is not skipped, and an absolute built-in is not build output.
+     */
+    public function testAnchoredBuiltInIsTrueOnlyWhenTheAnchoredRuleAloneExcludes(): void
+    {
+        $manifestRoot = static fn(string $directory): bool => $directory === 'packages/a';
+
+        assertSame(true, (new IgnoreMatcher([]))->anchoredBuiltIn('dist'));
+        assertSame(true, (new IgnoreMatcher(['*.log'], $manifestRoot))->anchoredBuiltIn('packages/a/coverage'));
+        assertSame(false, (new IgnoreMatcher([]))->anchoredBuiltIn('src/build'));
+        assertSame(false, (new IgnoreMatcher(['dist']))->anchoredBuiltIn('dist'));
+        assertSame(false, (new IgnoreMatcher(['!dist']))->anchoredBuiltIn('dist'));
+        assertSame(false, (new IgnoreMatcher([]))->anchoredBuiltIn('node_modules'));
+        assertSame(false, (new IgnoreMatcher([]))->anchoredBuiltIn('node_modules/dist'));
+        assertSame(false, (new IgnoreMatcher([]))->anchoredBuiltIn('src'));
     }
 
     public function testMatchesPathInsideStrykerTmpSegment(): void

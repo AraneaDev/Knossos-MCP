@@ -7,6 +7,7 @@ namespace Knossos\Tests\Phpunit\Discovery;
 use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\DiscoveryConfig;
 use Knossos\Discovery\DiscoveryException;
+use Knossos\Discovery\DiscoveryResult;
 use Knossos\Discovery\ProjectDiscoverer;
 use Knossos\Discovery\ProjectUnit;
 use Knossos\Scan\CancellationToken;
@@ -519,6 +520,87 @@ final class ProjectDiscovererTest extends KnossosTestCase
             }
         }
         assertSame('knip.jsonc', $entryPoints['src/cli.ts'] ?? null);
+    }
+
+    /**
+     * build, dist, site and coverage were excluded at any depth with no override
+     * and no diagnostic, so apps/site, packages/build and src/build vanished.
+     */
+    public function testBuildOutputIsSkippedOnlyUnderTheRootOrAManifestRoot(): void
+    {
+        $this->writeTree([
+            'dist/a.ts' => 'export const a = 1;',
+            'src/build/b.ts' => 'export const b = 1;',
+            'apps/site/c.ts' => 'export const c = 1;',
+            'packages/a/package.json' => '{"name":"a"}',
+            'packages/a/dist/d.ts' => 'export const d = 1;',
+            'packages/a/src/coverage/e.ts' => 'export const e = 1;',
+            'crates/x/Cargo.toml' => "[package]\nname = \"x\"\n",
+            'crates/x/build/f.rs' => 'fn main() {}',
+        ]);
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $paths = array_map(static fn(DiscoveredFile $file): string => $file->relativePath, $result->files);
+        assertSame(['apps/site/c.ts', 'packages/a/src/coverage/e.ts', 'src/build/b.ts'], $paths);
+        assertSame(['crates/x/build', 'dist', 'packages/a/dist'], $this->buildOutputDiagnostics($result));
+        assertSame(['crates/x', 'packages/a'], $result->manifestRoots);
+        $diagnostic = array_values(array_filter(
+            $result->diagnostics,
+            static fn($diagnostic): bool => $diagnostic->relativePath === 'packages/a/dist',
+        ))[0];
+        assertSame('info', $diagnostic->severity);
+        assertSame('Skipped build output directory packages/a/dist/; add "!packages/a/dist" to ignores to scan it.', $diagnostic->message);
+    }
+
+    /** The root is a manifest root when it holds a manifest; a file or link named like build output is no directory to report. */
+    public function testTheRootIsAManifestRootAndAFileNamedDistIsNotReported(): void
+    {
+        $this->writeTree([
+            'package.json' => '{"name":"web"}',
+            'dist' => 'not a directory',
+            'site/x.ts' => 'export const x = 1;',
+        ]);
+        symlink($this->root . '/site', $this->root . '/coverage');
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        assertSame([''], $result->manifestRoots);
+        assertSame(['site'], $this->buildOutputDiagnostics($result));
+    }
+
+    /** A negated pattern re-includes build output, and a directory the project ignores itself is not reported. */
+    public function testANegatedPatternReincludesAnchoredBuildOutput(): void
+    {
+        $this->writeTree([
+            'dist/a.ts' => 'export const a = 1;',
+            'coverage/x.ts' => 'export const x = 1;',
+            'site/y.ts' => 'export const y = 1;',
+            '.gitignore' => "site/\n",
+            'packages/a/package.json' => '{"name":"a"}',
+            'packages/a/dist/d.ts' => 'export const d = 1;',
+        ]);
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig(
+            [$this->root],
+            ignorePatterns: ['!packages/a/dist/**', 'coverage'],
+        )))->discover($this->root);
+
+        $paths = array_map(static fn(DiscoveredFile $file): string => $file->relativePath, $result->files);
+        assertSame(['packages/a/dist/d.ts'], $paths);
+        assertSame(['dist'], $this->buildOutputDiagnostics($result));
+    }
+
+    /** Dependency directories stay excluded at any depth, whatever a pattern says. */
+    public function testAbsoluteBuiltInsStayNonNegatable(): void
+    {
+        $this->writeTree(['node_modules/x/index.js' => 'module.exports = 1;', 'src/a.ts' => 'export const a = 1;']);
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root], ignorePatterns: ['!node_modules/**'])))->discover($this->root);
+
+        $paths = array_map(static fn(DiscoveredFile $file): string => $file->relativePath, $result->files);
+        assertSame(['src/a.ts'], $paths);
+        assertSame([], $this->buildOutputDiagnostics($result));
     }
 
     /**
@@ -2422,6 +2504,32 @@ TOML);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
+
+    /** @param array<string, string> $files contents keyed by project-relative path */
+    private function writeTree(array $files): void
+    {
+        foreach ($files as $path => $contents) {
+            $absolute = $this->root . '/' . $path;
+            if (!is_dir(dirname($absolute))) {
+                mkdir(dirname($absolute), 0700, true);
+            }
+            file_put_contents($absolute, $contents);
+        }
+    }
+
+    /** @return list<string> the paths of the build-output diagnostics, sorted */
+    private function buildOutputDiagnostics(DiscoveryResult $result): array
+    {
+        $paths = [];
+        foreach ($result->diagnostics as $diagnostic) {
+            if ($diagnostic->code === 'DISCOVERY_BUILD_OUTPUT_SKIPPED') {
+                $paths[] = (string) $diagnostic->relativePath;
+            }
+        }
+        sort($paths);
+
+        return $paths;
+    }
 
     private function rmrf(string $path): void
     {

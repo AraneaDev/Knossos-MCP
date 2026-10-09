@@ -8,6 +8,7 @@ use DirectoryIterator;
 use Knossos\Classification\ToolConfigModuleRule;
 use Knossos\Scan\CancellationToken;
 use RuntimeException;
+use SplFileInfo;
 
 /**
  * Walks a project tree and selects the files worth analysing.
@@ -20,8 +21,16 @@ final readonly class ProjectDiscoverer
 {
     /** Bytes read when probing an extensionless file's shebang; one short line is enough. */
     private const SHEBANG_PROBE_BYTES = 256;
+
+    /**
+     * The unit kinds that make their directory a manifest root: each declares a
+     * package or a build, which is what puts build output (`dist`, `coverage`)
+     * beside it. Entry-point configs (YAML, HTML, agent and tool configs) name
+     * files to run, not a build root, so they are not on the list.
+     */
+    public const MANIFEST_UNIT_KINDS = ['cargo', 'composer', 'node', 'python', 'requirements', 'typescript'];
+
     private RootGuard $rootGuard;
-    private IgnoreMatcher $ignoreMatcher;
     private FileContentReader $contents;
 
     /**
@@ -34,7 +43,6 @@ final readonly class ProjectDiscoverer
     public function __construct(private DiscoveryConfig $config, ?FileContentReader $contents = null)
     {
         $this->rootGuard = new RootGuard($config->allowedRoots);
-        $this->ignoreMatcher = new IgnoreMatcher($config->ignorePatterns);
         $this->contents = $contents ?? new FilesystemContentReader();
     }
     /** Walk the tree and select the files worth analysing, within the configured caps. */
@@ -53,34 +61,23 @@ final readonly class ProjectDiscoverer
         /** @var array<string, FileContent> $gitIgnoreReads each `.gitignore` read, kept to hash as its unit */
         $gitIgnoreReads = [];
 
+        /** @var array<string, true> $manifestRoots directories whose listing holds a manifest */
+        $manifestRoots = [];
+        // Asked only about directories already listed: a path is matched while
+        // its parent is walked, after every ancestor's listing was recorded.
+        $ignoreMatcher = new IgnoreMatcher(
+            $this->config->ignorePatterns,
+            static function (string $directory) use (&$manifestRoots): bool {
+                return isset($manifestRoots[$directory]);
+            },
+        );
+
         while ($stack !== []) {
             $directory = array_pop($stack);
             $this->readGitIgnore($root, $directory, $gitIgnore, $gitIgnoreReads);
-            try {
-                // UnexpectedValueException, which is a RuntimeException, is what
-                // DirectoryIterator throws for a directory it cannot open. Caught
-                // by that name rather than as Throwable so a programming error in
-                // the walk is not filed as an unreadable directory.
-                $entries = new DirectoryIterator($directory);
-            } catch (RuntimeException $error) {
-                $directoryPath = $this->relative($root, $directory);
-                // The iterator's own message quotes the raw path, so an
-                // unsupported name must not reach it either.
-                $supported = self::isSupportedPath($directoryPath);
-                $diagnostics[] = new DiscoveryDiagnostic(
-                    'warning',
-                    'DISCOVERY_DIRECTORY_UNREADABLE',
-                    $supported ? $error->getMessage() : 'Could not open a directory whose name is not supported: ' . bin2hex($directoryPath),
-                    $supported ? $directoryPath : null,
-                );
-                continue;
-            }
+            $names = $this->listDirectory($root, $directory, $diagnostics, $manifestRoots);
 
-            foreach ($entries as $entry) {
-                if ($entry->isDot()) {
-                    continue;
-                }
-
+            foreach ($names ?? [] as $name) {
                 // Discovery walks and hashes up to maxFiles entries — the longest
                 // non-worker stage. Poll cancellation periodically so a client's
                 // notifications/cancelled is observable here, not just around RPCs.
@@ -88,7 +85,8 @@ final readonly class ProjectDiscoverer
                     $cancellation->throwIfCancelled();
                 }
 
-                $absolute = str_replace('\\', '/', $entry->getPathname());
+                $absolute = str_replace('\\', '/', $directory . '/' . $name);
+                $entry = new SplFileInfo($absolute);
                 $relative = $this->relative($root, $absolute);
                 // First, before the entry is classified or a directory is queued:
                 // a name that is not valid UTF-8 cannot be encoded into a stable
@@ -102,7 +100,8 @@ final readonly class ProjectDiscoverer
                     );
                     continue;
                 }
-                if (!self::isConfigurationFile($relative) && $this->ignoreMatcher->matches($relative)) {
+                if (!self::isConfigurationFile($relative) && $ignoreMatcher->matches($relative)) {
+                    self::reportBuildOutput($ignoreMatcher, $gitIgnore, $entry, $relative, $diagnostics);
                     continue;
                 }
 
@@ -235,7 +234,96 @@ final readonly class ProjectDiscoverer
             }
         }
 
-        return self::result($root, $files, $units, $diagnostics, $unparsedManifestHashes);
+        $manifestRoots = array_map('strval', array_keys($manifestRoots));
+        sort($manifestRoots);
+
+        return self::result($root, $files, $units, $diagnostics, $unparsedManifestHashes, $manifestRoots);
+    }
+
+    /**
+     * The names in one directory, read whole before any is matched, recording
+     * the directory as a manifest root when one of them is a manifest.
+     *
+     * Read whole because whether `dist` beside `package.json` is build output
+     * depends on a sibling the iterator may reach later. Presence is decided by
+     * name, before any ignore rule, so a `.gitignore` cannot change what counts
+     * as a root. Null, with a diagnostic, when the directory cannot be opened.
+     *
+     * @param list<DiscoveryDiagnostic> $diagnostics
+     * @param array<string, true> $manifestRoots
+     * @return ?list<string>
+     */
+    private function listDirectory(string $root, string $directory, array &$diagnostics, array &$manifestRoots): ?array
+    {
+        try {
+            // UnexpectedValueException, which is a RuntimeException, is what
+            // DirectoryIterator throws for a directory it cannot open. Caught
+            // by that name rather than as Throwable so a programming error in
+            // the walk is not filed as an unreadable directory.
+            $entries = new DirectoryIterator($directory);
+        } catch (RuntimeException $error) {
+            $directoryPath = $this->relative($root, $directory);
+            // The iterator's own message quotes the raw path, so an
+            // unsupported name must not reach it either.
+            $supported = self::isSupportedPath($directoryPath);
+            $diagnostics[] = new DiscoveryDiagnostic(
+                'warning',
+                'DISCOVERY_DIRECTORY_UNREADABLE',
+                $supported ? $error->getMessage() : 'Could not open a directory whose name is not supported: ' . bin2hex($directoryPath),
+                $supported ? $directoryPath : null,
+            );
+            return null;
+        }
+
+        $names = [];
+        foreach ($entries as $entry) {
+            if ($entry->isDot()) {
+                continue;
+            }
+            $names[] = $entry->getFilename();
+            if (self::isManifest($entry->getFilename())) {
+                $manifestRoots[$this->relative($root, $directory)] = true;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Say that a declined directory was build output, when it was.
+     *
+     * Build output is skipped by a rule the user did not write, so it is
+     * reported, once per directory; what the user's own patterns or a
+     * `.gitignore` skip is what they asked for, and a file named `dist` is no
+     * directory.
+     *
+     * @param list<DiscoveryDiagnostic> $diagnostics
+     */
+    private static function reportBuildOutput(
+        IgnoreMatcher $ignoreMatcher,
+        GitIgnoreRules $gitIgnore,
+        SplFileInfo $entry,
+        string $relative,
+        array &$diagnostics,
+    ): void {
+        if (!$ignoreMatcher->anchoredBuiltIn($relative)
+            || $entry->isLink()
+            || !$entry->isDir()
+            || $gitIgnore->ignores($relative, true)) {
+            return;
+        }
+        $diagnostics[] = new DiscoveryDiagnostic(
+            'info',
+            'DISCOVERY_BUILD_OUTPUT_SKIPPED',
+            sprintf('Skipped build output directory %s/; add "!%s" to ignores to scan it.', $relative, $relative),
+            $relative,
+        );
+    }
+
+    /** Whether a path names a package or build manifest, which makes its directory a manifest root. */
+    public static function isManifest(string $relativePath): bool
+    {
+        return in_array(self::unitKindFor($relativePath), self::MANIFEST_UNIT_KINDS, true);
     }
 
     /**
@@ -270,8 +358,16 @@ final readonly class ProjectDiscoverer
      * @param list<ProjectUnit> $units
      * @param list<DiscoveryDiagnostic> $diagnostics
      * @param array<string, string> $unparsedManifestHashes
+     * @param list<string> $manifestRoots
      */
-    private static function result(string $root, array $files, array $units, array $diagnostics, array $unparsedManifestHashes): DiscoveryResult
+    private static function result(
+        string $root,
+        array $files,
+        array $units,
+        array $diagnostics,
+        array $unparsedManifestHashes,
+        array $manifestRoots,
+    ): DiscoveryResult
     {
         $files = self::withoutCompiledSiblings($files);
         usort($files, static fn(DiscoveredFile $left, DiscoveredFile $right): int =>
@@ -300,6 +396,7 @@ final readonly class ProjectDiscoverer
             hash('sha256', implode("\n", $inputParts)),
             hash('sha256', implode("\n", $configParts)),
             $unparsedManifestHashes,
+            $manifestRoots,
         );
     }
 

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Discovery;
 
+use Closure;
+
 /**
  * Decides which paths discovery skips.
  *
@@ -19,7 +21,6 @@ final readonly class IgnoreMatcher
         '.knossos',
         'vendor',
         'node_modules',
-        'coverage',
         '.next',
         '.nuxt',
         '.venv',
@@ -41,10 +42,18 @@ final readonly class IgnoreMatcher
         // Package-manager stores: dependency code, like node_modules.
         '.pnpm-store',
         '.yarn',
-        'build',
-        'dist',
-        'site',
     ];
+
+    /**
+     * Build output names, excluded only directly under the project root or
+     * under a manifest root (a directory holding a package or build manifest).
+     *
+     * Excluded at any depth they took real source with them: `src/build`,
+     * `apps/site`. Where a build tool writes is beside the manifest that
+     * configures it, so that is the only place they are taken as output, and a
+     * `!` pattern re-includes them there.
+     */
+    public const ANCHORED_SEGMENTS = ['build', 'coverage', 'dist', 'site'];
 
     /**
      * Segment prefixes, for directories this tool and its wrappers own the
@@ -121,9 +130,12 @@ final readonly class IgnoreMatcher
 
     /**
      * @param list<string> $patterns
+     * @param ?Closure(string): bool $isManifestRoot whether a project-relative
+     *        directory is a manifest root, so build output directly below it is
+     *        excluded; null means only the project root anchors build output
      * @throws DiscoveryException when a pattern does not compile to a valid regex
      */
-    public function __construct(array $patterns)
+    public function __construct(array $patterns, private ?Closure $isManifestRoot = null)
     {
         $compiled = [];
         foreach ($patterns as $pattern) {
@@ -171,7 +183,7 @@ final readonly class IgnoreMatcher
     public function workerRules(): array
     {
         return [
-            'segments' => self::EXCLUDED_SEGMENTS,
+            'segments' => [...self::EXCLUDED_SEGMENTS, ...self::ANCHORED_SEGMENTS],
             'prefixes' => self::EXCLUDED_SEGMENT_PREFIXES,
             'sequences' => self::EXCLUDED_SEGMENT_SEQUENCES,
             'suffixes' => self::EXCLUDED_FILE_SUFFIXES,
@@ -190,8 +202,46 @@ final readonly class IgnoreMatcher
     /** Whether a path is ignored, applying built-in exclusions then the user patterns. */
     public function matches(string $relativePath): bool
     {
+        $segments = self::segments($relativePath);
+        if (self::absoluteBuiltIn($segments)) {
+            return true;
+        }
+
+        return $this->userDecision($segments) ?? $this->anchored($segments);
+    }
+
+    /**
+     * Whether the anchored build-output rule, and nothing else, is what
+     * excludes this path: no absolute built-in covers it and no user pattern
+     * matches it, either to ignore it (the user asked for that) or to re-include
+     * it. Discovery reports exactly these directories as skipped build output.
+     */
+    public function anchoredBuiltIn(string $relativePath): bool
+    {
+        $segments = self::segments($relativePath);
+
+        return !self::absoluteBuiltIn($segments)
+            && $this->userDecision($segments) === null
+            && $this->anchored($segments);
+    }
+
+    /** @return list<string> */
+    private static function segments(string $relativePath): array
+    {
         $path = trim(str_replace('\\', '/', $relativePath), '/');
-        $segments = $path === '' ? [] : explode('/', $path);
+
+        return $path === '' ? [] : explode('/', $path);
+    }
+
+    /**
+     * The built-ins no pattern overrides: dependency and tool directories at
+     * any depth, fixed path prefixes, minified bundles, segment pairs.
+     *
+     * @param list<string> $segments
+     */
+    private static function absoluteBuiltIn(array $segments): bool
+    {
+        $path = implode('/', $segments);
         foreach ($segments as $segment) {
             if (in_array($segment, self::EXCLUDED_SEGMENTS, true)) {
                 return true;
@@ -222,11 +272,47 @@ final readonly class IgnoreMatcher
             }
         }
 
-        // User patterns follow gitignore semantics: last matching pattern wins, a
-        // leading '!' re-includes, a slash-free pattern matches a basename at any
-        // depth, and '**' spans directory segments. Built-in excludes above are
-        // absolute and cannot be negated.
-        $ignored = false;
+        return false;
+    }
+
+    /**
+     * Whether a build-output segment sits directly under the project root or a
+     * manifest root.
+     *
+     * @param list<string> $segments
+     */
+    private function anchored(array $segments): bool
+    {
+        foreach ($segments as $index => $segment) {
+            if (!in_array($segment, self::ANCHORED_SEGMENTS, true)) {
+                continue;
+            }
+            if ($index === 0) {
+                return true;
+            }
+            if ($this->isManifestRoot !== null && ($this->isManifestRoot)(implode('/', array_slice($segments, 0, $index)))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The verdict of the last user pattern that matches, or null when none does.
+     *
+     * User patterns follow gitignore semantics: last matching pattern wins, a
+     * leading '!' re-includes, a slash-free pattern matches a basename at any
+     * depth, and '**' spans directory segments. They decide after the anchored
+     * build-output rule, so a '!' pattern re-includes build output; the
+     * absolute built-ins are decided before them and cannot be negated.
+     *
+     * @param list<string> $segments
+     */
+    private function userDecision(array $segments): ?bool
+    {
+        $path = implode('/', $segments);
+        $ignored = null;
         foreach ($this->compiled as [, $anchored, $regex, $negated]) {
             if (self::patternMatches($regex, $anchored, $path, $segments)) {
                 $ignored = !$negated;
