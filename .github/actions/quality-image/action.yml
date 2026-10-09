@@ -27,6 +27,13 @@ runs:
     # goes on top in a thin build: the named context replaces the
     # quality_tools stage with the pulled image, so only the COPY layers of the
     # quality stage run, in seconds.
+    #
+    # BuildKit still looks up the base image of every stage the dependency
+    # stages copy from (node_runtime, composer_runtime, rust_builder), even
+    # though their output is never used once the dependency stage is replaced.
+    # Nine lanes doing that at once exceed Docker Hub's anonymous rate limit
+    # (429). Pointing those stages at the image already pulled keeps every
+    # lane off Docker Hub; the built layers are identical.
     - name: Build the quality image on its dependency image
       if: ${{ inputs.registry == 'true' }}
       shell: bash
@@ -37,6 +44,9 @@ runs:
         docker pull --quiet "$QUALITY_DEPS"
         docker build --progress=plain --target quality \
           --build-context quality_tools=docker-image://"$QUALITY_DEPS" \
+          --build-context node_runtime=docker-image://"$QUALITY_DEPS" \
+          --build-context composer_runtime=docker-image://"$QUALITY_DEPS" \
+          --build-context rust_builder=docker-image://"$QUALITY_DEPS" \
           -t knossos:quality .
     # tools/quality only builds knossos:quality-runtime when it is absent, from
     # inside the quality container against the host daemon. Building it here
@@ -52,6 +62,9 @@ runs:
         docker pull --quiet "$RUNTIME_DEPS"
         docker build --progress=plain --target runtime \
           --build-context runtime_deps=docker-image://"$RUNTIME_DEPS" \
+          --build-context node_runtime=docker-image://"$RUNTIME_DEPS" \
+          --build-context composer_runtime=docker-image://"$RUNTIME_DEPS" \
+          --build-context rust_builder=docker-image://"$RUNTIME_DEPS" \
           -t knossos:quality-runtime .
     # The local route loads the tarballs the image job uploaded. Both routes end
     # with the same local names, so every later step is shared.
