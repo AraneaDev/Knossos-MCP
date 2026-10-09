@@ -821,15 +821,14 @@ final class FactCollector extends NodeVisitorAbstract
         $variables = $node instanceof Expr\ArrowFunction ? $outer : [];
         $byReference = [];
         foreach ($node instanceof Expr\Closure ? $node->uses : [] as $use) {
-            if (!is_string($use->var->name)) {
-                continue;
-            }
-            $binding = $outer[$use->var->name] ?? null;
+            // The grammar allows only a plain `$name` in a `use` list.
+            $name = (string) $use->var->name;
+            $binding = $outer[$name] ?? null;
             if ($binding !== null) {
-                $variables[$use->var->name] = $binding;
+                $variables[$name] = $binding;
             }
             if ($use->byRef) {
-                $byReference[$use->var->name] = $binding;
+                $byReference[$name] = $binding;
             }
         }
         $this->scopeVariables[] = ['variables' => $variables, 'by_reference' => $byReference];
