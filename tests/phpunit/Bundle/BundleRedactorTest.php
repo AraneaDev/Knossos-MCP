@@ -6,6 +6,7 @@ namespace Knossos\Tests\Phpunit\Bundle;
 
 use JsonException;
 use Knossos\Bundle\BundleRedactor;
+use Knossos\Bundle\RedactionMap;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -33,5 +34,68 @@ final class BundleRedactorTest extends TestCase
                 ini_set('zend.exception_ignore_args', $previous);
             }
         }
+    }
+
+    /**
+     * Rows are re-sorted by their new ids, so the order of a redacted table
+     * says nothing about the ids it had; memberships by boundary, then node.
+     */
+    public function testRowsAreOrderedByTheirNewIds(): void
+    {
+        $salt = str_repeat('k', 32);
+        $nodes = array_map(static fn(int $index): array => ['id' => 'symbol_' . $index], range(0, 7));
+        $memberships = [];
+        foreach (['boundary_a', 'boundary_b'] as $boundary) {
+            foreach (range(0, 3) as $index) {
+                $memberships[] = ['boundary_id' => $boundary, 'node_id' => 'symbol_' . $index];
+            }
+        }
+        $map = RedactionMap::fromPayload(['files' => [], 'nodes' => [], 'boundaries' => []], $salt);
+
+        $tables = BundleRedactor::redact(['nodes' => $nodes, 'memberships' => $memberships], false, $salt);
+
+        $inInputOrder = array_map(static fn(array $node): string => $map->id($node['id']), $nodes);
+        $sorted = $inInputOrder;
+        sort($sorted, SORT_STRING);
+        self::assertNotSame($sorted, $inInputOrder, 'The input must not already be in the output order.');
+        self::assertSame($sorted, array_column($tables['nodes'], 'id'));
+        $expected = array_map(static fn(array $row): array => ['boundary_id' => $map->id($row['boundary_id']), 'node_id' => $map->id($row['node_id'])], $memberships);
+        usort($expected, static fn(array $left, array $right): int => [$left['boundary_id'], $left['node_id']] <=> [$right['boundary_id'], $right['node_id']]);
+        self::assertNotSame($expected, array_map(static fn(array $row): array => ['boundary_id' => $map->id($row['boundary_id']), 'node_id' => $map->id($row['node_id'])], $memberships));
+        self::assertSame($expected, $tables['memberships']);
+    }
+
+    /**
+     * A display name is replaced by its token's last segment only when it is
+     * a whole last segment of the redacted canonical name, never a suffix
+     * that happens to end it.
+     */
+    public function testADisplayNameIsReplacedOnlyWhenItIsAWholeLastSegment(): void
+    {
+        $salt = str_repeat('k', 32);
+        $tables = [
+            'files' => [['id' => 'file_1', 'relative_path' => 'src/data.ts']],
+            'nodes' => [
+                ['id' => 'symbol_1', 'language' => 'ts', 'kind' => 'module', 'canonical_name' => 'src/data.ts', 'display_name' => 'data.ts', 'file_id' => 'file_1'],
+                ['id' => 'symbol_2', 'language' => 'ts', 'kind' => 'module', 'canonical_name' => 'src/data.ts', 'display_name' => 'a.ts', 'file_id' => 'file_1'],
+                ['id' => 'symbol_3', 'language' => 'ts', 'kind' => 'module', 'canonical_name' => 'src/data.ts', 'display_name' => 'Other', 'file_id' => 'file_1'],
+                ['id' => 'symbol_4', 'language' => 'py', 'kind' => 'module', 'canonical_name' => 'pkg.secret', 'display_name' => 'pkg.secret', 'file_id' => 'file_1'],
+                ['id' => 'symbol_5', 'language' => 'py', 'kind' => 'package', 'canonical_name' => 'pkg.secret', 'display_name' => 'secret', 'file_id' => 'file_1'],
+                ['id' => 'symbol_6', 'language' => 'py', 'kind' => 'package', 'canonical_name' => 'pkg.secret', 'display_name' => 'ecret', 'file_id' => 'file_1'],
+                ['id' => 'symbol_7', 'language' => 'ts', 'kind' => 'module', 'canonical_name' => null, 'display_name' => 'data.ts', 'file_id' => 'file_1'],
+            ],
+        ];
+        $map = RedactionMap::fromPayload($tables, $salt);
+
+        $redacted = BundleRedactor::redact($tables, false, $salt)['nodes'];
+
+        $byId = array_column($redacted, 'display_name', 'id');
+        self::assertSame(basename((string) $map->token('src/data.ts')), $byId[$map->id('symbol_1')]);
+        self::assertSame('a.ts', $byId[$map->id('symbol_2')]);
+        self::assertSame('Other', $byId[$map->id('symbol_3')]);
+        self::assertSame($map->token('pkg.secret'), $byId[$map->id('symbol_4')]);
+        self::assertSame($map->token('pkg.secret'), $byId[$map->id('symbol_5')]);
+        self::assertSame('ecret', $byId[$map->id('symbol_6')]);
+        self::assertSame('data.ts', $byId[$map->id('symbol_7')]);
     }
 }

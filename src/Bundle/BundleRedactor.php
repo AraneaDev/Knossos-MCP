@@ -56,7 +56,7 @@ final readonly class BundleRedactor
      */
     private static function sortKey(array $row): string
     {
-        return (string) ($row['id'] ?? $row['boundary_id'] . "\0" . $row['node_id']);
+        return (string) ($row['id'] ?? $row['boundary_id'] . $row['node_id']);
     }
 
     /**
@@ -109,7 +109,7 @@ final readonly class BundleRedactor
      */
     private function json(string $json): string
     {
-        $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        $decoded = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
         $scrubbed = $this->scrubValue($decoded);
         return $scrubbed === $decoded ? $json : GraphBundleDecoder::encodeCanonical($scrubbed);
     }

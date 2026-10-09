@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Bundle;
 
+use InvalidArgumentException;
 use SensitiveParameter;
 
 /**
@@ -22,6 +23,9 @@ use SensitiveParameter;
  */
 final readonly class RedactionMap
 {
+    /** The shortest salt accepted: anything less is guessable. */
+    public const MIN_SALT_BYTES = 32;
+
     /** A key may start at the start of a string or after one of these. */
     private const BEFORE = '/["\':#(=,\s]/';
 
@@ -42,6 +46,9 @@ final readonly class RedactionMap
      */
     public static function fromPayload(array $tables, #[SensitiveParameter] string $salt): self
     {
+        if (strlen($salt) < self::MIN_SALT_BYTES) {
+            throw new InvalidArgumentException('A redaction salt must be at least 32 bytes.');
+        }
         $replacements = [];
         $directories = [];
         foreach ($tables['files'] ?? [] as $file) {
@@ -50,14 +57,9 @@ final readonly class RedactionMap
                 continue;
             }
             $extension = pathinfo($path, PATHINFO_EXTENSION);
-            $replacements[$path] ??= 'redacted/' . self::digest($path, $salt, 24) . ($extension === '' ? '' : '.' . strtolower($extension));
-            $directory = $path;
-            while (($slash = strrpos($directory, '/')) !== false) {
-                $directory = substr($directory, 0, $slash);
-                if (!str_contains($directory, '/')) {
-                    break;
-                }
-                $directories[$directory] = true;
+            $replacements[$path] = 'redacted/' . self::digest($path, $salt, 24) . ($extension === '' ? '' : '.' . strtolower($extension));
+            for ($directory = dirname($path); str_contains($directory, '/'); $directory = dirname($directory)) {
+                $directories[$directory] = $directory;
             }
         }
         foreach ($tables['nodes'] ?? [] as $node) {
@@ -69,17 +71,13 @@ final readonly class RedactionMap
         foreach ($tables['boundaries'] ?? [] as $boundary) {
             $directory = self::namedDirectory($boundary['matcher_json'] ?? null);
             if ($directory !== null) {
-                $directories[$directory] = true;
+                $directories[$directory] = $directory;
             }
         }
-        foreach (array_keys($directories) as $directory) {
-            $directory = (string) $directory;
+        foreach ($directories as $directory) {
             $replacements[$directory] ??= 'redacted-dir/' . self::digest($directory, $salt, 24);
         }
-        $longest = 0;
-        foreach (array_keys($replacements) as $key) {
-            $longest = max($longest, strlen((string) $key));
-        }
+        $longest = max([0, ...array_map(strlen(...), array_map('strval', array_keys($replacements)))]);
         return new self($salt, $replacements, $longest);
     }
 

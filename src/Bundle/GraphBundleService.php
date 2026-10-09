@@ -77,7 +77,7 @@ final readonly class GraphBundleService
             // A fresh salt per export, never written anywhere: with it a token
             // could be reversed by hashing guessed paths, and a fixed one would
             // let two bundles be correlated token by token.
-            $tables = BundleRedactor::redact($tables, $redaction === 'strict', random_bytes(32));
+            $tables = BundleRedactor::redact($tables, $redaction === 'strict', random_bytes(RedactionMap::MIN_SALT_BYTES));
         }
         $payload = ['project_name' => $redaction === 'strict' ? 'redacted' : $project['name'], 'scan' => ['scanner_set_hash' => $scan['scanner_set_hash'], 'finished_at' => $scan['finished_at']], ...$tables];
         $payloadJson = GraphBundleDecoder::encodeCanonical($payload);

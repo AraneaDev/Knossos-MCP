@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Bundle;
 
+use InvalidArgumentException;
 use Knossos\Bundle\RedactionMap;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
@@ -158,7 +159,7 @@ final class RedactionMapTest extends TestCase
     {
         $first = $this->map(['src/a.ts']);
         $again = $this->map(['src/a.ts']);
-        $other = RedactionMap::fromPayload(['files' => [['relative_path' => 'src/a.ts']], 'nodes' => [], 'boundaries' => []], 'another-salt');
+        $other = RedactionMap::fromPayload(['files' => [['relative_path' => 'src/a.ts']], 'nodes' => [], 'boundaries' => []], 'another-salt-of-thirty-two-bytes');
 
         self::assertSame($first->scrub('src/a.ts#X'), $again->scrub('src/a.ts#X'));
         self::assertNotSame($first->token('src/a.ts'), $other->token('src/a.ts'));
@@ -173,6 +174,7 @@ final class RedactionMapTest extends TestCase
         self::assertSame('symbol_' . substr(hash_hmac('sha256', 'symbol_abc', self::SALT), 0, 48), $map->id('symbol_abc'));
         self::assertSame('id_' . substr(hash_hmac('sha256', 'f1', self::SALT), 0, 48), $map->id('f1'));
         self::assertSame('id_' . substr(hash_hmac('sha256', '_x', self::SALT), 0, 48), $map->id('_x'));
+        self::assertSame('id_' . substr(hash_hmac('sha256', 'x.y_z', self::SALT), 0, 48), $map->id('x.y_z'));
     }
 
     public function testAContentHashIsSaltedToAFullLengthDigest(): void
@@ -180,6 +182,41 @@ final class RedactionMapTest extends TestCase
         $hash = hash('sha256', 'contents');
 
         self::assertSame(hash_hmac('sha256', $hash, self::SALT), $this->map([])->hashContent($hash));
+    }
+
+    public function testASaltShorterThanThirtyTwoBytesIsRefused(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        RedactionMap::fromPayload(['files' => [], 'nodes' => [], 'boundaries' => []], str_repeat('s', 31));
+    }
+
+    public function testRowsWithoutAUsablePathOrNameAddNoKey(): void
+    {
+        $map = RedactionMap::fromPayload([
+            'files' => [['relative_path' => null], ['relative_path' => ''], []],
+            'nodes' => [['language' => 'py', 'kind' => 'module', 'canonical_name' => null, 'file_id' => 'f1'], ['language' => 'py', 'kind' => 'module', 'canonical_name' => '', 'file_id' => 'f1']],
+            'boundaries' => [],
+        ], self::SALT);
+
+        self::assertNull($map->token(''));
+        self::assertSame('anything', $map->scrub('anything'));
+    }
+
+    public function testAPathLongerThanItsTokenIsStillFound(): void
+    {
+        $path = 'src/a/rather/deeply/nested/directory/tree/with/a/long/file/name.ts';
+        $map = $this->map([$path]);
+
+        self::assertGreaterThan(strlen((string) $map->token($path)), strlen($path));
+        self::assertSame($map->token($path) . '#X', $map->scrub($path . '#X'));
+    }
+
+    public function testAKeyHoldingASeparatorDoesNotHideTheKeyAfterIt(): void
+    {
+        $map = $this->map(['my docs/a=b.md', 'src/b.ts']);
+
+        self::assertSame($map->token('my docs/a=b.md') . ' ' . $map->token('src/b.ts'), $map->scrub('my docs/a=b.md src/b.ts'));
     }
 
     /**
