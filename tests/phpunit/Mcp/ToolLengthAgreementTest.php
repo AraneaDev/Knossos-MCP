@@ -55,17 +55,18 @@ final class ToolLengthAgreementTest extends KnossosTestCase
         assertSame(true, $checked >= 8, sprintf('Expected to check at least 8 bounded strings, checked %d.', $checked));
     }
 
-    /** A note that was not a string was stored as an empty note. */
+    /** A note that was not a string (a number, or an explicit null) was stored as an empty note. */
     #[Group('mcp')]
     public function testANonStringNoteIsRefusedNotStoredEmpty(): void
     {
         [$tools, $project] = $this->tools();
 
-        $error = self::errorFrom($tools, 'annotate_component', [
-            'project_id' => $project, 'component' => 'App\\Checkout', 'kind' => 'note', 'value' => 42, 'execute' => true,
-        ]);
-
-        assertSame('value must be a string of at most 2000 characters.', $error);
+        foreach ([42, null] as $value) {
+            $error = self::errorFrom($tools, 'annotate_component', [
+                'project_id' => $project, 'component' => 'App\\Checkout', 'kind' => 'note', 'value' => $value, 'execute' => true,
+            ]);
+            assertSame('value must be a string of at most 2000 characters.', $error, var_export($value, true));
+        }
         assertSame([], $tools->call('list_annotations', ['project_id' => $project])->data['annotations'], 'Nothing was written.');
     }
 

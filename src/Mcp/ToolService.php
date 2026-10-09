@@ -1194,7 +1194,9 @@ final readonly class ToolService
      */
     private static function text(array $arguments, string $key, int $maxLength, bool $allowEmpty = false, ?string $default = null, bool $trim = true): string
     {
-        $value = $arguments[$key] ?? $default;
+        // array_key_exists, not ??: an explicit null is a value of the wrong
+        // type, not an absent key that takes the default.
+        $value = array_key_exists($key, $arguments) ? $arguments[$key] : $default;
         if (!is_string($value) || mb_strlen($value) > $maxLength) {
             throw new InvalidArgumentException(sprintf('%s must be a string of at most %d characters.', $key, $maxLength));
         }
