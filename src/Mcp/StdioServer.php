@@ -81,26 +81,52 @@ final class StdioServer
                 $this->write($output, $this->error(null, -32700, 'Invalid or oversized JSON-RPC frame.'));
                 continue;
             }
+            // Only a frame that does not decode is a parse error with id null.
+            // Once the request decoded, every failure answers under its id:
+            // a JSON error while handling or encoding the answer is an internal
+            // error of this server, not something the client sent.
             try {
                 $message = json_decode(trim($line), true, 512, JSON_THROW_ON_ERROR);
                 if (!is_array($message) || array_is_list($message)) {
                     throw new JsonException('JSON-RPC message must be an object.');
                 }
-                $response = $this->handle($message);
-                if ($response !== null) {
-                    $this->write($output, $response);
-                }
             } catch (JsonException $error) {
                 fwrite($errors, $error->getMessage() . PHP_EOL);
                 $this->write($output, $this->error(null, -32700, 'Parse error'));
-            } catch (Throwable $error) {
-                fwrite($errors, $error->getMessage() . PHP_EOL);
-                $id = isset($message) && is_array($message) ? ($message['id'] ?? null) : null;
-                $this->write($output, $this->error($id, -32603, 'Internal error'));
+                continue;
             }
+            $this->answer($output, $errors, $message);
         }
         $this->input = null;
         return 0;
+    }
+
+    /**
+     * Handle one decoded request and write its answer, keeping the request's id on every failure.
+     *
+     * @param resource $output @param resource $errors @param array<string, mixed> $message
+     */
+    private function answer($output, $errors, array $message): void
+    {
+        $id = $message['id'] ?? null;
+        try {
+            $response = $this->handle($message);
+        } catch (Throwable $error) {
+            fwrite($errors, $error->getMessage() . PHP_EOL);
+            $response = $this->error($id, -32603, 'Internal error');
+        }
+        if ($response === null) {
+            return;
+        }
+        try {
+            $this->write($output, $response);
+        } catch (Throwable $error) {
+            fwrite($errors, $error->getMessage() . PHP_EOL);
+            // An id JSON cannot encode (a number past the float range decodes
+            // to INF) would make this error fail as well; JSON-RPC answers
+            // with id null when the id cannot be determined.
+            $this->write($output, $this->error(is_float($id) && !is_finite($id) ? null : $id, -32603, 'Internal error'));
+        }
     }
 
     /**

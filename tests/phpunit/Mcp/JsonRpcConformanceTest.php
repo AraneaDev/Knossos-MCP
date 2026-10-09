@@ -14,7 +14,6 @@ use Knossos\Query\StalenessProbe;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
-use RuntimeException;
 use stdClass;
 
 /**
@@ -28,6 +27,8 @@ use stdClass;
  */
 final class JsonRpcConformanceTest extends KnossosTestCase
 {
+    use StdioFrames;
+
     #[Group('mcp')]
     public function testAFrameThatIsNotJsonIsAParseError(): void
     {
@@ -98,6 +99,22 @@ final class JsonRpcConformanceTest extends KnossosTestCase
         assertSame(null, $frames[0]['id']);
         assertSame(2, $frames[1]['id']);
         assertSame(true, isset($frames[1]['result']));
+    }
+
+    /**
+     * An answer that cannot be encoded used to surface as a parse error. It is
+     * an internal error; an id JSON cannot encode (a number past the float
+     * range) is answered with id null, because the error must still be written.
+     */
+    #[Group('mcp')]
+    public function testAnAnswerThatCannotBeEncodedIsAnInternalError(): void
+    {
+        $frames = $this->frames(['{"jsonrpc":"2.0","id":1e999,"method":"ping"}' . "\n", '{"jsonrpc":"2.0","id":2,"method":"ping"}' . "\n"]);
+
+        assertSame(2, count($frames));
+        assertSame(-32603, $frames[0]['error']['code']);
+        assertSame(null, $frames[0]['id']);
+        assertSame(2, $frames[1]['id'], 'The session carries on after the failed answer.');
     }
 
     #[Group('mcp')]
@@ -172,27 +189,7 @@ final class JsonRpcConformanceTest extends KnossosTestCase
      */
     private function frames(array $lines, int $maxLineBytes = 1_048_576, int $maxResponseBytes = 16_000_000): array
     {
-        $input = fopen('php://temp', 'w+');
-        $output = fopen('php://temp', 'w+');
-        $errors = fopen('php://temp', 'w+');
-        if (!is_resource($input) || !is_resource($output) || !is_resource($errors)) {
-            throw new RuntimeException('Unable to allocate stdio test streams.');
-        }
-        fwrite($input, implode('', $lines));
-        rewind($input);
-        (new StdioServer($this->tools(), maxLineBytes: $maxLineBytes, maxResponseBytes: $maxResponseBytes))->run($input, $output, $errors);
-        rewind($output);
-        $frames = [];
-        foreach (explode("\n", trim((string) stream_get_contents($output))) as $line) {
-            if ($line !== '') {
-                $frames[] = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
-            }
-        }
-        foreach ([$input, $output, $errors] as $stream) {
-            fclose($stream);
-        }
-
-        return $frames;
+        return $this->runFrames(new StdioServer($this->tools(), maxLineBytes: $maxLineBytes, maxResponseBytes: $maxResponseBytes), $lines);
     }
 
     /**

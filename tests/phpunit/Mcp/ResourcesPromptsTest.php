@@ -12,6 +12,8 @@ use PHPUnit\Framework\Attributes\Group;
 
 final class ResourcesPromptsTest extends KnossosTestCase
 {
+    use StdioFrames;
+
     // Uses the Task 1 Fixtures-trait shape:
     // buildToolServiceWithScan returns [$tools, $projectId, $root, $pdo].
 
@@ -41,6 +43,51 @@ final class ResourcesPromptsTest extends KnossosTestCase
 
             $missing = $server->handle(['jsonrpc' => '2.0', 'id' => 5, 'method' => 'resources/read', 'params' => ['uri' => 'knossos://project_' . str_repeat('0', 64) . '/summary']]);
             assertSame(-32002, $missing['error']['code']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A JSON error raised while answering a request was reported as a parse
+     * error with id null, so the client waited forever for its answer. A
+     * project name holding invalid UTF-8 is such an error: the resource
+     * encoder now substitutes U+FFFD, and the request keeps its id.
+     */
+    #[Group('mcp')]
+    public function testAResourceWithInvalidUtf8IsAnsweredUnderItsRequestId(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $pdo->prepare('UPDATE projects SET name = :name WHERE id = :project')
+                ->execute(['name' => "shop\xff", 'project' => $projectId]);
+            $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
+
+            $read = $this->runFrames($server, $this->readSession("knossos://{$projectId}/summary"))[1];
+
+            assertSame(7, $read['id']);
+            assertSame(true, isset($read['result']), 'The resource must be answered, not replaced by an error.');
+            $summary = json_decode($read['result']['contents'][0]['text'], true, 512, JSON_THROW_ON_ERROR);
+            $readable = json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            assertSame(true, str_contains($readable, "shop\u{FFFD}"), 'The invalid byte becomes U+FFFD.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A failure while handling a decoded request is an internal error answered under that request's id. */
+    #[Group('mcp')]
+    public function testAFailureWhileReadingAResourceKeepsTheRequestId(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $pdo->exec('ALTER TABLE projects RENAME TO projects_unreadable');
+            $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
+
+            $read = $this->runFrames($server, $this->readSession("knossos://{$projectId}/summary"))[1];
+
+            assertSame(7, $read['id']);
+            assertSame(-32603, $read['error']['code']);
         } finally {
             $this->removeTempTree($root);
         }
@@ -131,5 +178,22 @@ final class ResourcesPromptsTest extends KnossosTestCase
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    /**
+     * The stdio lines of a session that initializes and then reads one resource as request 7.
+     *
+     * @return list<string>
+     */
+    private function readSession(string $uri): array
+    {
+        return array_map(
+            static fn (array $message): string => json_encode($message, JSON_THROW_ON_ERROR) . "\n",
+            [
+                ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]],
+                ['jsonrpc' => '2.0', 'method' => 'notifications/initialized'],
+                ['jsonrpc' => '2.0', 'id' => 7, 'method' => 'resources/read', 'params' => ['uri' => $uri]],
+            ],
+        );
     }
 }
