@@ -33,6 +33,11 @@
           "type": "integer",
           "minimum": 64,
           "maximum": 65536
+        },
+        "watch_scan_timeout_ms": {
+          "type": "integer",
+          "minimum": 10000,
+          "maximum": 3600000
         }
       }
     },

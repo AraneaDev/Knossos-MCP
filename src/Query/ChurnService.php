@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
-use Knossos\Git\{GitProcessRunner, GitProcessRunnerInterface};
+use Knossos\Git\{GitLogRecords, GitProcessRunner, GitProcessRunnerInterface};
 use PDO;
 use Throwable;
 
@@ -41,6 +41,12 @@ final readonly class ChurnService
 
     /** Files listed, the highest score first. */
     public const LIMIT = 40;
+
+    /** What starts each commit in the log; read NUL-separated so a path git would quote keeps its real name. */
+    private const MARKER = "KNOSSOS_CHURN\x1f";
+
+    /** {@see self::MARKER} as `git log --format` writes it, after a NUL so no file name can forge it. */
+    private const MARKER_FORMAT = '%x00KNOSSOS_CHURN%x1f';
 
     /** How long git may take. */
     private const GIT_TIMEOUT_MS = 3000;
@@ -127,7 +133,7 @@ final readonly class ChurnService
         $out = null;
         foreach ([self::COMMITS, self::FEWER] as $count) {
             try {
-                $out = $runner->run([...$git, 'log', '--since=' . self::DAYS . '.days.ago', '--max-count=' . $count, '--no-merges', '--no-renames', '--format=%x1e', '--name-only', '--relative', '--', '.'], self::GIT_TIMEOUT_MS, 'churn');
+                $out = $runner->run([...$git, 'log', '--since=' . self::DAYS . '.days.ago', '--max-count=' . $count, '--no-merges', '--no-renames', '-z', '--format=' . self::MARKER_FORMAT, '--name-only', '--relative', '--', '.'], self::GIT_TIMEOUT_MS, 'churn');
                 break;
             } catch (Throwable) {
                 continue;
@@ -138,17 +144,13 @@ final readonly class ChurnService
         }
         $cut = $count !== self::COMMITS;
         $counts = [];
-        $commits = 0;
-        foreach (explode("\x1E", $out) as $index => $record) {
-            if ($index === 0) {
-                continue;
-            }
-            ++$commits;
-            $changed = array_unique(array_filter(array_map('trim', explode("\n", $record)), static fn(string $line): bool => $line !== ''));
-            foreach ($changed as $file) {
+        $records = GitLogRecords::parse($out, self::MARKER);
+        foreach ($records as $record) {
+            foreach (array_unique($record['paths']) as $file) {
                 $counts[$file] = ($counts[$file] ?? 0) + 1;
             }
         }
+        $commits = count($records);
 
         return [$head, $commits, $counts, $cut];
     }

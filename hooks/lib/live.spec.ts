@@ -35,6 +35,11 @@ describe('the watcher phase', () => {
     expect(phaseAfter({ event: 'error', retryable: true }, 'scanning')).toBe('live')
     expect(phaseAfter({ event: 'error', retryable: false }, 'scanning')).toBe('scanning')
   })
+  it('stays starting through a retried initial scan, and goes live at ready', () => {
+    const failed = phaseAfter({ event: 'error', retryable: true, code: 'scan_timeout' }, 'starting')
+    expect(failed).toBe('starting')
+    expect(phaseAfter({ event: 'ready' }, failed)).toBe('live')
+  })
   it("calls following this process's own earlier watcher live, not another session", () => {
     expect(phaseAfter({ event: 'following', same_process: true }, 'starting')).toBe('live')
   })

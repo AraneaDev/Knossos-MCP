@@ -614,6 +614,8 @@ export type WatchEvent = {
   status?: string
   snapshot_id?: string | null
   retryable?: boolean
+  /** On `error`: `scan_timeout` when a scan ran past its time limit (the watcher stops after 3 in a row). */
+  code?: string
   reason?: string
   /** The watcher's own process id (on `ready`, `leading`, `following`): what a session end signals. */
   pid?: number

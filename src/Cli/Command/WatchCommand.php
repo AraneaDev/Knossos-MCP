@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\ProjectDatabaseLocator;
+use Knossos\Query\ResultEnvelope;
 use Knossos\Runtime\RuntimeFactory;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Watch\SharedWatch;
@@ -23,6 +24,10 @@ use Throwable;
  * on stdout, and it stops on its own once the process that started it is
  * gone. Like the mod's other commands it always exits 0 and never creates a
  * database.
+ *
+ * Without `--shared` the events go to stderr, the result to stdout, and the
+ * exit code is 2 when the watch stopped on a failure no retry could fix
+ * (`stopped_reason: error`), 0 otherwise.
  */
 final class WatchCommand implements CliCommand
 {
@@ -58,7 +63,17 @@ final class WatchCommand implements CliCommand
             $observer,
         );
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
-        return CliCommand::EXIT_OK;
+        return self::exitCode($result);
+    }
+
+    /**
+     * The exit code of a watch that ended with `$result`: an error when it
+     * stopped on a failure no retry could fix (its `stopped_reason` is
+     * `error`), success when it was cancelled, orphaned or ran its polls.
+     */
+    public static function exitCode(ResultEnvelope $result): int
+    {
+        return ($result->data['stopped_reason'] ?? null) === 'error' ? CliCommand::EXIT_ERROR : CliCommand::EXIT_OK;
     }
 
     /**

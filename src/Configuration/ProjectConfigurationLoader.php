@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Configuration;
 
+use Knossos\Discovery\AllowedRoots;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\JsonConfig;
@@ -32,7 +33,7 @@ final class ProjectConfigurationLoader
      * raises a worker's heap as invalid. Nothing compared the two.
      * {@see \Knossos\Tests\Phpunit\Configuration\ProjectConfigurationSchemaAgreementTest} now does.
      */
-    public const LIMIT_KEYS = ['max_files', 'max_file_bytes', 'worker_timeout_ms', 'worker_memory_mb'];
+    public const LIMIT_KEYS = ['max_files', 'max_file_bytes', 'worker_timeout_ms', 'worker_memory_mb', 'watch_scan_timeout_ms'];
     public const BOUNDARY_KEYS = ['name', 'path_prefix', 'namespace_prefix'];
     public const POLICY_KEYS = ['id', 'from_boundary', 'allow_targets', 'deny_targets', 'edge_kinds'];
 
@@ -43,7 +44,7 @@ final class ProjectConfigurationLoader
      *
      * @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots
      */
-    public static function load(string $requestedRoot, \Knossos\Discovery\AllowedRoots|array $allowedRoots): ProjectConfiguration
+    public static function load(string $requestedRoot, AllowedRoots|array $allowedRoots): ProjectConfiguration
     {
         $root = (new RootGuard($allowedRoots))->resolve($requestedRoot);
         $json = $root . '/knossos.json';
@@ -97,6 +98,8 @@ final class ProjectConfigurationLoader
             64,
             65536,
         );
+        // How long one scan of the shared watcher may run: a project key, because the plugin's hooks start that watcher.
+        $watchScanTimeoutMs = self::optionalInteger($limits, 'watch_scan_timeout_ms', 10_000, 3_600_000);
         $retention = self::optionalInteger($data, 'snapshot_retention', 0, 20);
         $frameworks = self::stringList($data['frameworks'] ?? [], 'frameworks', 20);
         foreach ($frameworks as $framework) {
@@ -154,7 +157,7 @@ final class ProjectConfigurationLoader
             $typedBudgets[$key] = $value;
         }
         $suppressions = self::stringList($data['dead_code_suppressions'] ?? [], 'dead_code_suppressions', 200);
-        return new ProjectConfiguration(basename($path), $ignores, $maxFiles, $maxBytes, $workerTimeoutMs, $workerMemoryMb, $boundaries, array_values(array_unique($frameworks)), $retention, $policies, $typedBudgets, $suppressions);
+        return new ProjectConfiguration(basename($path), $ignores, $maxFiles, $maxBytes, $workerTimeoutMs, $workerMemoryMb, $boundaries, array_values(array_unique($frameworks)), $retention, $policies, $typedBudgets, $suppressions, $watchScanTimeoutMs);
     }
 
     /**

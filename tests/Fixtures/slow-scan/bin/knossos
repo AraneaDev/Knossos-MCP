@@ -1,0 +1,8 @@
+<?php
+
+declare(strict_types=1);
+
+// A `knossos scan` that takes longer than any watch scan limit: it sleeps,
+// and stops at once when asked (SIGINT's default action), so a test of the
+// limit waits for the limit alone.
+sleep(60);

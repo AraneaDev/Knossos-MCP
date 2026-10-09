@@ -57,24 +57,41 @@ seconds, so the failed batch is scanned again once the fault clears.
 Only an engine-level fault, a defect that would recur identically, is terminal:
 it emits a non-retryable `error` and then `stopped` with reason `error`.
 
+The initial scan follows the same rules. A transient failure there is retried
+the same way, and `ready` follows the first scan that succeeds; a terminal one
+emits `error` and `stopped` without a `ready`.
+
+A shared watcher's scan that runs past its time limit (see
+[shared mode](#shared-mode)) is retried too, and its `error` event carries
+`code: "scan_timeout"`. After 3 timeouts in a row the watcher stops: the third
+`error` is not retryable and `stopped` follows with reason `error`. A scan that
+succeeds resets the count.
+
+The plain watcher exits with `2` when it stopped with reason `error`: a
+terminal failure, in the initial scan or a later one. It exits with `0` when it
+was interrupted. An initial scan that keeps failing transiently, a write lease
+that never frees for example, does not end the watcher: it retries with the
+backoff above, up to 30 seconds apart, until you interrupt it. Earlier versions
+exited with `2` at the first failure of the initial scan.
+
 ## Events and the result
 
 Lifecycle events are one JSON object per line on standard error, and the final
 result is on standard output.
 
-| event            | when                                                                 |
-| ---------------- | -------------------------------------------------------------------- |
-| `ready`          | the initial scan is done, or found the graph already current         |
-| `changes`        | a poll found changes and nothing was pending                         |
-| `overflow`       | the queue passed `--max-queue`; the next scan is full                |
-| `scan_started`   | a scan begins, with its mode and the number of changes               |
-| `scan_completed` | a scan ended, with its snapshot and the files it parsed              |
-| `error`          | a scan or a poll failed; `retryable` says whether it will be retried |
-| `stopped`        | always last, with the reason: `cancelled`, `poll_limit` or `error`   |
+| event            | when                                                                                                                                                    |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`          | the initial scan is done, or found the graph already current                                                                                            |
+| `changes`        | a poll found changes and nothing was pending                                                                                                            |
+| `overflow`       | the queue passed `--max-queue`; the next scan is full                                                                                                   |
+| `scan_started`   | a scan begins, with its mode and the number of changes                                                                                                  |
+| `scan_completed` | a scan ended, with its snapshot and the files it parsed                                                                                                 |
+| `error`          | a scan or a poll failed; `retryable` says whether it will be retried, and `code` is `scan_timeout` when a shared watcher's scan ran past its time limit |
+| `stopped`        | always last, with the reason: `cancelled`, `poll_limit` or `error`                                                                                      |
 
 The result reports the poll and scan counts, incremental and full scans,
-coalesced changes, queue overflows, `scan_errors`, pending work, and up to 200
-of the events.
+coalesced changes, queue overflows, `scan_errors`, pending work, the
+`stopped_reason` the `stopped` event carried, and up to 200 of the events.
 
 ## Shared mode
 
@@ -91,7 +108,10 @@ you rarely run it by hand. It differs from the plain watcher in a few ways:
   snapshot, which is one row and never a scan, and reports it with `following`.
   It takes over with `leading` when the leader is gone. The kernel releases the
   lock when the process ends, so a crashed watcher leaves nothing to clean up.
-- The leader runs each scan in a process of its own and records it in the scan
+- The leader runs each scan in a process of its own, for at most
+  `limits.watch_scan_timeout_ms` (default 300,000 milliseconds, see
+  [project configuration](../get-started/project-configuration.md#limits)).
+- The leader records each scan in the scan
   ledger, so a turn brief that finds its edits already scanned can still say
   what they changed. A change another writer already scanned is taken in with
   `absorbed` and no scan, and another writer's snapshot is announced as
