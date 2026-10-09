@@ -52,8 +52,13 @@ is, not inside a longer name: in file paths, component names
 scanner-local IDs (the `<scanner>:<kind>:` prefix stays), attributes,
 diagnostic messages, boundary names and boundary matchers. A path inside an
 absolute or `./` path, or between brackets, quotes or other punctuation, is
-replaced too. Attribute keys lose file and directory paths, but not module names,
-so a key such as `main` stays. A file becomes `redacted/<token>.<ext>` with its
+replaced too, and so is a path written with `\` separators or with
+JSON-escaped `\/` slashes. The project's absolute root, as stored and as it
+resolves, becomes `redacted-root` wherever it occurs, `file://` URLs included.
+Attribute keys lose file and directory paths, but not module names, so a key
+such as `main` stays, and the `scanner` attribute keeps its value. Redaction
+matches paths as they are stored, case-sensitively: a percent-encoded path, or
+a path split across a line break, is not recognised. A file becomes `redacted/<token>.<ext>` with its
 lower-cased extension kept, a directory `redacted-dir/<token>`, and a Python
 module `redacted_<token>`. Every ID and every reference to one is re-keyed as
 well, because a stable ID is derived from the path.

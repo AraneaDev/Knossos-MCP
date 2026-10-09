@@ -36,11 +36,12 @@ final readonly class BundleRedactor
     /**
      * Redact every table of one export with a salt used for nothing else.
      *
-     * @param array<string, list<array<string, mixed>>> $tables @return array<string, list<array<string, mixed>>>
+     * @param array<string, list<array<string, mixed>>> $tables @param list<string> $roots the project's absolute roots
+     * @return array<string, list<array<string, mixed>>>
      */
-    public static function redact(array $tables, bool $strict, #[SensitiveParameter] string $salt): array
+    public static function redact(array $tables, bool $strict, #[SensitiveParameter] string $salt, array $roots = []): array
     {
-        $redactor = new self(RedactionMap::fromPayload($tables, $salt), $strict);
+        $redactor = new self(RedactionMap::fromPayload($tables, $salt, $roots), $strict);
         foreach ($tables as $table => $rows) {
             $rows = array_map($redactor->row(...), $rows);
             usort($rows, static fn(array $left, array $right): int => strcmp(self::sortKey($left), self::sortKey($right)));
@@ -120,13 +121,19 @@ final readonly class BundleRedactor
 
     /**
      * Every string in a decoded JSON value redacted. Object keys lose file and
-     * directory paths only, and a scanner-local id is redacted past its
-     * `<scanner>:<kind>:` prefix.
+     * directory paths only, a scanner-local id is redacted past its
+     * `<scanner>:<kind>:` prefix, and the `scanner` name is kept.
      */
     private function scrubValue(mixed $value, int|string|null $key): mixed
     {
         if (is_string($value)) {
-            return $key === 'scanner_local_id' ? $this->map->scrubQualified($value) : $this->map->scrub($value);
+            // The scanner's own name is no path, and a top-level module that
+            // shares it (`knossos`) must not rename it.
+            return match ($key) {
+                'scanner' => $value,
+                'scanner_local_id' => $this->map->scrubQualified($value),
+                default => $this->map->scrub($value),
+            };
         }
         if (is_array($value)) {
             return array_map(fn(mixed $item): mixed => $this->scrubValue($item, null), $value);

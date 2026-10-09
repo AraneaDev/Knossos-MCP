@@ -98,4 +98,22 @@ final class BundleRedactorTest extends TestCase
         self::assertSame('ecret', $byId[$map->id('symbol_6')]);
         self::assertSame('data.ts', $byId[$map->id('symbol_7')]);
     }
+
+    /**
+     * A scanner-local id is redacted past its `<scanner>:<kind>:` prefix only:
+     * a module named like the scanner (`py`) must not rename the prefix.
+     */
+    public function testAScannerLocalIdKeepsItsPrefixAndTheScannerItsName(): void
+    {
+        $salt = str_repeat('k', 32);
+        $tables = [
+            'files' => [['id' => 'file_1', 'relative_path' => 'py.py']],
+            'nodes' => [['id' => 'symbol_1', 'language' => 'py', 'kind' => 'module', 'canonical_name' => 'py', 'file_id' => 'file_1', 'attributes_json' => '{"scanner":"py","scanner_local_id":"py:module:py"}']],
+        ];
+        $map = RedactionMap::fromPayload($tables, $salt);
+
+        $attributes = json_decode(BundleRedactor::redact($tables, false, $salt)['nodes'][0]['attributes_json'], true, 8, JSON_THROW_ON_ERROR);
+
+        self::assertSame(['scanner' => 'py', 'scanner_local_id' => 'py:module:' . $map->token('py')], $attributes);
+    }
 }

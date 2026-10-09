@@ -51,7 +51,7 @@ final readonly class GraphBundleService
 
     private function readAndEncode(string $projectId, string $redaction): string
     {
-        $project = $this->one('SELECT id, name, active_scan_id FROM projects WHERE id = :id', ['id' => $projectId]);
+        $project = $this->one('SELECT id, name, active_scan_id, root_realpath FROM projects WHERE id = :id', ['id' => $projectId]);
         if ($project === null || !is_string($project['active_scan_id'])) {
             throw new InvalidArgumentException('Project has no active snapshot to export.');
         }
@@ -77,7 +77,11 @@ final readonly class GraphBundleService
             // A fresh salt per export, never written anywhere: with it a token
             // could be reversed by hashing guessed paths, and a fixed one would
             // let two bundles be correlated token by token.
-            $tables = BundleRedactor::redact($tables, $redaction === 'strict', random_bytes(RedactionMap::MIN_SALT_BYTES));
+            // The root as stored and as it resolves: a linked root is
+            // reported by its real path in some messages.
+            $root = (string) $project['root_realpath'];
+            $roots = $root === '' ? [] : [$root, (string) realpath($root)];
+            $tables = BundleRedactor::redact($tables, $redaction === 'strict', random_bytes(RedactionMap::MIN_SALT_BYTES), $roots);
         }
         $payload = ['project_name' => $redaction === 'strict' ? 'redacted' : $project['name'], 'scan' => ['scanner_set_hash' => $scan['scanner_set_hash'], 'finished_at' => $scan['finished_at']], ...$tables];
         $payloadJson = GraphBundleDecoder::encodeCanonical($payload);

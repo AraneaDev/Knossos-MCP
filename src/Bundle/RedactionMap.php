@@ -28,6 +28,9 @@ final readonly class RedactionMap
     /** The shortest salt accepted: anything less is guessable. */
     public const MIN_SALT_BYTES = 32;
 
+    /** What the project's absolute root becomes wherever a value spells it. */
+    public const ROOT = 'redacted-root';
+
     /**
      * A key may start at the start of a string or after any character that
      * cannot continue a name: `/` counts, so a key is found inside an
@@ -44,15 +47,21 @@ final readonly class RedactionMap
      *
      * @param array<string, string> $replacements key to token
      * @param array<string, string> $paths the keys that are file or directory paths, not dotted names
+     * @param ?string $roots a pattern matching the project's absolute roots, or null when there are none
      */
-    private function __construct(#[SensitiveParameter] private string $salt, private array $replacements, private array $paths, private int $longest) {}
+    private function __construct(#[SensitiveParameter] private string $salt, private array $replacements, private array $paths, private int $longest, private ?string $roots) {}
 
     /**
      * Build the map from a bundle's files, nodes and boundaries, in that order of precedence.
      *
-     * @param array<string, list<array<string, mixed>>> $tables
+     * Every path key is also known by its spelling with Windows separators
+     * and with JSON-escaped slashes, so a path a scanner wrote either way is
+     * still found. The roots are the project's absolute root as stored and
+     * as it resolves; each is replaced by {@see self::ROOT} wherever it occurs.
+     *
+     * @param array<string, list<array<string, mixed>>> $tables @param list<string> $roots
      */
-    public static function fromPayload(array $tables, #[SensitiveParameter] string $salt): self
+    public static function fromPayload(array $tables, #[SensitiveParameter] string $salt, array $roots = []): self
     {
         if (strlen($salt) < self::MIN_SALT_BYTES) {
             throw new InvalidArgumentException('A redaction salt must be at least 32 bytes.');
@@ -103,8 +112,20 @@ final readonly class RedactionMap
             $dotted = str_replace('/', '.', $directory);
             $replacements[$dotted] ??= 'redacted_' . self::digest($dotted, $salt, 24);
         }
+        foreach ($replacements as $key => $replacement) {
+            foreach (['\\', '\\/'] as $separator) {
+                $spelled = str_replace('/', $separator, (string) $key);
+                // A key without a slash spells itself, and is already set.
+                if (!isset($replacements[$spelled])) {
+                    $replacements[$spelled] = str_replace('/', $separator, $replacement);
+                    if (isset($paths[$key])) {
+                        $paths[$spelled] = $spelled;
+                    }
+                }
+            }
+        }
         $longest = max([0, ...array_map(strlen(...), array_keys($replacements))]);
-        return new self($salt, $replacements, $paths, $longest);
+        return new self($salt, $replacements, $paths, $longest, self::rootPattern($roots));
     }
 
     /** The token for a key, or null when it is not a discovered path. */
@@ -150,6 +171,9 @@ final readonly class RedactionMap
      */
     private function scan(string $text, bool $pathsOnly): string
     {
+        if ($this->roots !== null) {
+            $text = (string) preg_replace($this->roots, self::ROOT, $text);
+        }
         $length = strlen($text);
         preg_match_all(self::BEFORE, $text, $before, PREG_OFFSET_CAPTURE);
         preg_match_all(self::AFTER, $text, $after, PREG_OFFSET_CAPTURE);
@@ -192,6 +216,20 @@ final readonly class RedactionMap
     public function hashContent(string $hash): string
     {
         return hash_hmac('sha256', $hash, $this->salt);
+    }
+
+    /**
+     * One pattern for every absolute root, longest first, that matches a root
+     * only where the name ends (`/home/u/proj`, never inside `/home/u/proj2`).
+     * A root that is empty or `/` names nothing and is left out.
+     *
+     * @param list<string> $roots
+     */
+    private static function rootPattern(array $roots): ?string
+    {
+        $roots = array_filter(array_map(static fn(string $root): string => rtrim($root, '/'), $roots), static fn(string $root): bool => $root !== '');
+        usort($roots, static fn(string $left, string $right): int => strlen($right) <=> strlen($left));
+        return $roots === [] ? null : '#(?:' . implode('|', array_map(static fn(string $root): string => preg_quote($root, '#'), $roots)) . ')(?![A-Za-z0-9_.\-])#';
     }
 
     /** The directory a path boundary's matcher names, without its trailing slash. */

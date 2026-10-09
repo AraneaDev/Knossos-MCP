@@ -300,6 +300,45 @@ final class RedactionMapTest extends TestCase
         self::assertNotSame('main', $map->scrub('main'));
     }
 
+    /** A path written with Windows separators or JSON-escaped slashes kept its spelling. */
+    public function testAPathIsFoundWithBackslashOrEscapedSlashSeparators(): void
+    {
+        $map = $this->map(['src/secret/a.ts']);
+        $file = (string) $map->token('src/secret/a.ts');
+        $directory = (string) $map->token('src/secret');
+
+        self::assertSame('at ' . str_replace('/', '\\', $file) . ':3', $map->scrub('at src\secret\a.ts:3'));
+        self::assertSame('"' . str_replace('/', '\/', $file) . '"', $map->scrub('"src\/secret\/a.ts"'));
+        self::assertSame(str_replace('/', '\\', $directory) . '\b.ts', $map->scrub('src\secret\b.ts'));
+        self::assertSame(str_replace('/', '\\', $directory), $map->scrubPaths('src\secret'));
+    }
+
+    /** The project's absolute root used to survive wherever a message or attribute spelled it. */
+    public function testTheProjectRootIsReplacedWhereverItAppears(): void
+    {
+        $map = RedactionMap::fromPayload(['files' => [['relative_path' => 'src/a.ts']], 'nodes' => [], 'boundaries' => []], self::SALT, ['/home/u/proj', '/srv/real/proj/', '', '/']);
+        $token = (string) $map->token('src/a.ts');
+
+        self::assertSame('file://' . RedactionMap::ROOT . '/' . $token . ':3', $map->scrub('file:///home/u/proj/src/a.ts:3'));
+        self::assertSame('cannot read ' . RedactionMap::ROOT . '/notes.txt', $map->scrub('cannot read /srv/real/proj/notes.txt'));
+        self::assertSame('in ' . RedactionMap::ROOT, $map->scrub('in /home/u/proj'));
+        self::assertSame('/home/u/proj2/x and /home/u/project', $map->scrub('/home/u/proj2/x and /home/u/project'));
+        self::assertSame('/usr/lib', $map->scrub('/usr/lib'), 'A root of / names nothing.');
+    }
+
+    /**
+     * A root inside another root is tried after it, so the longer one is never
+     * cut short; a root is matched literally, whatever characters it holds.
+     */
+    public function testTheLongestRootWinsAndARootIsMatchedLiterally(): void
+    {
+        $map = RedactionMap::fromPayload(['files' => [], 'nodes' => [], 'boundaries' => []], self::SALT, ['/srv/proj', '/srv/proj/real', '/tmp/a+b (1)#x']);
+
+        self::assertSame(RedactionMap::ROOT . '/notes', $map->scrub('/srv/proj/real/notes'));
+        self::assertSame(RedactionMap::ROOT . '/notes', $map->scrub('/tmp/a+b (1)#x/notes'));
+        self::assertSame('/tmp/aab (1)#x/notes', $map->scrub('/tmp/aab (1)#x/notes'));
+    }
+
     /**
      * A key index that is scanned per key, or a regex alternation over every
      * key, turns the export of a large project quadratic; this bounds it.

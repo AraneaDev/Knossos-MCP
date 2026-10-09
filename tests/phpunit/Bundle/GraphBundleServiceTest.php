@@ -7,6 +7,7 @@ namespace Knossos\Tests\Phpunit\Bundle;
 use InvalidArgumentException;
 use Knossos\Bundle\GraphBundleDecoder;
 use Knossos\Bundle\GraphBundleService;
+use Knossos\Bundle\RedactionMap;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Store\SqliteConnection;
 use PDO;
@@ -283,6 +284,50 @@ final class GraphBundleServiceTest extends TestCase
         assertSame('py:module:' . $node['canonical_name'], $attributes['scanner_local_id']);
         $this->assertStringStartsWith('redacted_', $node['canonical_name']);
         assertSame('kept', $attributes['main']);
+    }
+
+    /**
+     * The scanner name in a node's attributes went through the full scrub, so
+     * a top-level module `knossos` rewrote every `"scanner":"knossos.php"`.
+     */
+    public function testExportPathsRedactionKeepsTheScannerAttributeVerbatim(): void
+    {
+        $this->seedProjectAndScan('proj-1', 'scan-1');
+        $this->seedFile('f1', 'proj-1', 'knossos.py', 'py');
+        $this->seedNode('n1', 'proj-1', ['file_id' => 'f1', 'kind' => 'module', 'canonical_name' => 'knossos', 'display_name' => 'knossos']);
+        $this->seedNode('n2', 'proj-1', ['file_id' => 'f1', 'attributes_json' => '{"scanner":"knossos.php","other":"knossos.php"}']);
+        $this->pdo->exec("UPDATE nodes SET language = 'py' WHERE id = 'n1'");
+
+        $payload = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'paths'))['payload'];
+
+        $attributes = array_values(array_filter(array_map(static fn(array $node): array => json_decode($node['attributes_json'], true, 8, JSON_THROW_ON_ERROR), $payload['nodes']), static fn(array $item): bool => isset($item['scanner'])))[0];
+        assertSame('knossos.php', $attributes['scanner']);
+        $this->assertStringStartsWith('redacted_', $attributes['other'], 'Any other value is scrubbed as before.');
+    }
+
+    /** A message naming the absolute root, or the real path behind a linked root, kept it. */
+    public function testExportRedactionReplacesTheProjectRootAndItsRealPath(): void
+    {
+        $real = sys_get_temp_dir() . '/knossos-root-real-' . bin2hex(random_bytes(6));
+        $link = $real . '-link';
+        mkdir($real);
+        symlink($real, $link);
+        try {
+            $this->seedProjectAndScan('proj-1', 'scan-1');
+            $this->pdo->prepare('UPDATE projects SET root_realpath = :root')->execute(['root' => $link]);
+            $this->seedFile('f1', 'proj-1', 'src/a.php', 'php');
+            $this->seedDiagnostic('d1', 'proj-1', 'scan-1', 'f1', 'Read ' . $link . '/src/a.php, then file://' . $real . '/vendor/x.php');
+
+            $payload = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'paths'))['payload'];
+
+            $message = $payload['diagnostics'][0]['message'];
+            assertSame('Read ' . RedactionMap::ROOT . '/' . $payload['files'][0]['relative_path'] . ', then file://' . RedactionMap::ROOT . '/vendor/x.php', $message);
+            $none = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'none'))['payload'];
+            $this->assertStringContainsString($link, $none['diagnostics'][0]['message'], 'An unredacted export keeps what was stored.');
+        } finally {
+            unlink($link);
+            rmdir($real);
+        }
     }
 
     public function testExportPathsRedactionLeavesAttributesWithNoPathByteForByte(): void

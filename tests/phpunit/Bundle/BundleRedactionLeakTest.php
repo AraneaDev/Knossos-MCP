@@ -95,6 +95,8 @@ final class BundleRedactionLeakTest extends KnossosTestCase
         // with one and two levels of escaping removed as well.
         $json = $bundle . "\n" . stripslashes($bundle) . "\n" . stripslashes(stripslashes($bundle));
 
+        self::assertFalse(str_contains($json, $this->root), 'The absolute root');
+        self::assertFalse(str_contains($json, (string) realpath($this->root)), 'The resolved absolute root');
         $paths = $this->column($pdo, 'SELECT relative_path FROM files WHERE project_id = :project', $projectId);
         self::assertNotSame([], $paths);
         foreach ($paths as $path) {
