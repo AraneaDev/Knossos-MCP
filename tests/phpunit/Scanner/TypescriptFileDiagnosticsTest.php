@@ -7,12 +7,13 @@ namespace Knossos\Tests\Phpunit\Scanner;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * The worker type-checks only the files a request names, and reports what
- * names no file (an option error, a global type the checker cannot find when
- * it starts) once per program, on the program's carrier. After an edit the
+ * The worker reports what names no file (an option error, a global type the
+ * checker cannot find when it starts) once per program, on the program's
+ * carrier, and leaves out what depends on the checker's own state. After an edit the
  * incremental graph equals a full scan of the same bytes, through the real
  * worker.
  */
@@ -85,6 +86,53 @@ final class TypescriptFileDiagnosticsTest extends KnossosTestCase
         foreach (['p1', 'p2', 'p3'] as $package) {
             self::assertSame(['TS5101'], $this->codes($pdo, "packages/{$package}/src/a.ts"), $package);
         }
+    }
+
+    /**
+     * The checker's budgets (instantiation depth, union size) count across
+     * every file it checked before, so checking one file alone could run
+     * out where the whole program did not (TS2589 on the touched file, and
+     * facts that differed). The whole program is checked before facts are
+     * collected, and a budget diagnostic, which describes the checker's
+     * counters rather than the code, is not reported.
+     *
+     * @param array<string, string> $files the tree before `src/b.ts` is touched
+     */
+    #[DataProvider('budgets')]
+    public function testACheckerBudgetIsNotReportedAndAnEditMatchesAFullScan(array $files): void
+    {
+        $this->write('tsconfig.json', '{"compilerOptions": {"strict": true, "lib": ["es2020"]}, "include": ["src"]}');
+        foreach ($files as $relative => $contents) {
+            $this->write($relative, $contents);
+        }
+        $pdo = $this->freshTestDatabase();
+        $this->scan($pdo);
+        $this->write('src/b.ts', $files['src/b.ts'] . "// touched\n");
+
+        $incremental = $this->scan($pdo);
+        $full = $this->freshTestDatabase();
+        $this->scan($full);
+
+        self::assertSame('incremental', $incremental->data['mode']);
+        foreach ([$pdo, $full] as $graph) {
+            self::assertSame([], $graph->query("SELECT code FROM diagnostics WHERE code IN ('TS2589', 'TS2590', 'TS2321', 'TS7056')")->fetchAll(PDO::FETCH_COLUMN));
+        }
+        self::assertSame($this->graphSignature($full), $this->graphSignature($pdo));
+    }
+
+    /** @return iterable<string, array{0: array<string, string>}> */
+    public static function budgets(): iterable
+    {
+        yield 'instantiation depth' => [[
+            'src/deep.ts' => "export type Deep<N extends number, A extends unknown[] = []> = A['length'] extends N ? A : [...Deep<N, [...A, 0]>];\n",
+            'src/a.ts' => "import type { Deep } from './deep';\nexport type Pre = Deep<60, [" . implode(',', array_fill(0, 30, '0')) . "]>;\nexport const a: Pre = [] as never;\n",
+            'src/b.ts' => "import type { Deep } from './deep';\nexport const b: Deep<60> = [] as never;\n",
+        ]];
+        yield 'union size' => [[
+            'src/deep.ts' => "type Digit = 0|1|2|3|4|5|6|7|8|9;\nexport type Big = `\${Digit}\${Digit}\${Digit}\${Digit}\${Digit}`;\nexport type Wrap<T> = T extends string ? { k: T } : never;\n",
+            'src/a.ts' => "import type { Big, Wrap } from './deep';\nexport type Pre = Wrap<Big>;\n",
+            'src/b.ts' => "import type { Big, Wrap } from './deep';\nexport const b: Wrap<Big> = null as never;\n",
+        ]];
     }
 
     /** @return list<string> the codes of the diagnostics one file owns */

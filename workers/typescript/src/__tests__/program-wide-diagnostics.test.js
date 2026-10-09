@@ -226,47 +226,35 @@ describe("a request's compiler diagnostics", () => {
         "src/c.ts": 'import { a } from "./a";\nexport const c: string = a;\n',
     };
 
-    /** Each file the checker was asked for, "(all)" for the whole program. */
-    function recordingChecks(checked) {
-        return (createProgram, options) =>
-            new Proxy(createProgram(options), {
-                get(target, property, receiver) {
-                    if (property !== "getSemanticDiagnostics")
-                        return Reflect.get(target, property, receiver);
-                    return (sourceFile, ...rest) => {
-                        checked.push(
-                            sourceFile === undefined
-                                ? "(all)"
-                                : sourceFile.fileName.slice(
-                                      sourceFile.fileName.lastIndexOf("/src/") +
-                                          1,
-                                  ),
-                        );
-                        return target.getSemanticDiagnostics(
-                            sourceFile,
-                            ...rest,
-                        );
-                    };
-                },
-            });
-    }
-
-    it("check only the files the request names, not the whole program", () => {
-        const root = fixture(typed);
-        const checked = [];
-        hook.createProgram = recordingChecks(checked);
-
-        const byPath = scan(
+    it("leave a file's facts the same whatever else the request names", () => {
+        // How far the checker instantiates `Deep` depends on what it cached
+        // from files it checked before; a file checked alone ran out of
+        // depth where the same file checked after `a.ts` did not.
+        const root = fixture({
+            "tsconfig.json": JSON.stringify({
+                compilerOptions: { strict: true, lib: ["es2020"] },
+                include: ["src"],
+            }),
+            "src/deep.ts":
+                "export type Deep<N extends number, A extends unknown[] = []> = A['length'] extends N ? A : [...Deep<N, [...A, 0]>];\n",
+            "src/a.ts": `import type { Deep } from './deep';\nexport type Pre = Deep<60, [${Array(30).fill(0).join(",")}]>;\nexport const a: Pre = [] as never;\n`,
+            "src/b.ts":
+                "import type { Deep } from './deep';\nexport const b: Deep<60> = [] as never;\n",
+        });
+        const all = scan(
             new TypeScriptScanner(),
             root,
-            ["src/c.ts"],
+            ["src/deep.ts", "src/a.ts", "src/b.ts"],
+            ["tsconfig.json"],
+        );
+        const alone = scan(
+            new TypeScriptScanner(),
+            root,
+            ["src/b.ts"],
             ["tsconfig.json"],
         );
 
-        expect(checked).toEqual(["src/c.ts"]);
-        expect(byPath["src/c.ts"].diagnostics.map((item) => item.code)).toEqual(
-            ["TS2322"],
-        );
+        expect(alone["src/b.ts"]).toEqual(all["src/b.ts"]);
     });
 
     it("are the ones a request naming every file reports", () => {

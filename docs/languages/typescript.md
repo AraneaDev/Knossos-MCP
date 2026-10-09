@@ -186,17 +186,17 @@ than a guessed one.
 
 ## Compiler diagnostics
 
-Compiler errors that name a file are attached to that file. Only the files a
-scan reads are type-checked, so rescanning one file does not check the rest of
-its program. An option error that names no file, such as a deprecated
+Compiler errors that name a file are attached to that file. An option error that names no file, such as a deprecated
 `moduleResolution` value, or a global type your `lib` lacks, appears once per
 program, on the program's first file in path order, and its message says it
-applies to the whole program. A global type the compiler only looks for while
-checking one file's code (`IterableIterator` for a generator under an ES5
-`lib`) is not reported: whether it was found would follow which files a scan
-checked. That file is the same however your files are
+applies to the whole program. That file is the same however your files are
 batched, so an incremental scan that does not touch it neither repeats nor
 drops the diagnostic. If a deprecation is not worth acting on yet, you can silence it
-with `"ignoreDeprecations"` in your `tsconfig.json`. A program the compiler
+with `"ignoreDeprecations"` in your `tsconfig.json`. A global type the compiler only
+looks for while checking one file's code (`IterableIterator` for a generator
+under an ES5 `lib`) is not reported: an edit to that file would not rebuild
+the file the diagnostic sits on. Neither is a compiler budget running out
+(TS2589, TS2590, TS2321, TS7056), which describes the compiler's own counters
+rather than your code. A program the compiler
 cannot build or check at all reports `TS_PROGRAM_FAILED` for its files and costs
 no other program's facts.

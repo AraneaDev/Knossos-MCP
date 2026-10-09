@@ -1260,12 +1260,6 @@ export class TypeScriptScanner {
             root,
             maxFileBytes,
             fallback,
-            program
-                .getSourceFiles()
-                .filter(
-                    (sourceFile) =>
-                        !skipped(relativeInside(root, sourceFile.fileName)),
-                ),
         );
 
         // A diagnostic that names no file describes the whole program, so it
@@ -4498,8 +4492,7 @@ function componentTarget(specifier, resolved) {
 }
 
 /**
- * A program's compiler diagnostics on `sourceFiles`, the files it emits, and
- * the program-wide ones.
+ * A program's compiler diagnostics, by file and program-wide.
  *
  * Compiler diagnostics are best-effort: failing to compute them must not cost
  * the facts. A stack overflow still reaches the program-level backstop, which
@@ -4511,13 +4504,7 @@ function componentTarget(specifier, resolved) {
  * config, so an option error that names no file describes those made-up
  * options, not anything the user can fix, and is dropped.
  */
-function programDiagnostics(
-    program,
-    root,
-    maxFileBytes,
-    fallback,
-    sourceFiles,
-) {
+function programDiagnostics(program, root, maxFileBytes, fallback) {
     let byFile = new Map();
     let programLevel = [];
     try {
@@ -4525,7 +4512,6 @@ function programDiagnostics(
             program,
             root,
             maxFileBytes,
-            sourceFiles,
         ));
     } catch (error) {
         rethrowStackOverflow(error);
@@ -4588,52 +4574,30 @@ function hasControlCharacter(name) {
 }
 
 /**
- * The compiler diagnostics of the files a program emits, and the ones that
- * name no file.
+ * A program's compiler diagnostics by file, and the ones that name no file.
  *
- * Only the given files are checked: checking every file of the program cost
- * a one-file request the whole program's type check. A diagnostic that names
- * no file is taken before any file is checked (see programLevelDiagnostics).
- * One file whose diagnostics fail costs only its own; a stack overflow still
- * reaches the program-level backstop.
+ * The whole program is checked, in program order, before any fact is
+ * collected, whichever files the request names. Checking one file can change
+ * what the checker has cached for the next: a type instantiated in one file
+ * comes back whole in another where, checked alone, that file ran out of
+ * instantiation depth and its facts differed. Checking every file keeps a
+ * file's facts and diagnostics the same in every batch, at the cost of the
+ * program's whole type check for a one-file request. A diagnostic that names
+ * no file is taken before the check (see programLevelDiagnostics).
  */
-function diagnosticsForProgram(program, root, maxFileBytes, sourceFiles) {
+function diagnosticsForProgram(program, root, maxFileBytes) {
     const result = new Map();
     const programLevel = programLevelDiagnostics(program);
-    for (const sourceFile of sourceFiles) {
-        let diagnostics;
-        try {
-            diagnostics = fileDiagnostics(program, sourceFile);
-        } catch (error) {
-            rethrowStackOverflow(error);
-            continue;
-        }
-        for (const diagnostic of diagnostics) {
-            if (diagnostic.file)
-                addFileDiagnostic(
-                    { program, root, maxFileBytes },
-                    diagnostic,
-                    result,
-                );
-        }
+    for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
+        if (diagnostic.file)
+            addFileDiagnostic(
+                { program, root, maxFileBytes },
+                diagnostic,
+                result,
+            );
     }
     componentParseDiagnostics(program, root, result);
     return { byFile: result, programLevel };
-}
-
-/**
- * What `ts.getPreEmitDiagnostics` reports for one file, without the
- * program-wide part it repeats on every call.
- */
-function fileDiagnostics(program, sourceFile) {
-    const options = program.getCompilerOptions();
-    return ts.sortAndDeduplicateDiagnostics([
-        ...program.getSyntacticDiagnostics(sourceFile),
-        ...program.getSemanticDiagnostics(sourceFile),
-        ...(options.declaration || options.composite
-            ? program.getDeclarationDiagnostics(sourceFile)
-            : []),
-    ]);
 }
 
 /**
@@ -4643,10 +4607,10 @@ function fileDiagnostics(program, sourceFile) {
  *
  * Taken before any file is checked. Checking a file can add a global
  * diagnostic of its own (a global type only that file's code asks for), and
- * which files are checked follows the request, so such a diagnostic would
- * come and go with what else a batch held. What the checker reports when it
- * is created, and what the config and options report, depends only on the
- * program.
+ * the carrier is not rebuilt when another file's edit adds or removes one,
+ * so it would go stale after an incremental scan. What the checker reports
+ * when it is created, and what the config and options report, depends only
+ * on the program's configuration.
  */
 function programLevelDiagnostics(program) {
     const programLevel = [];
@@ -4679,6 +4643,16 @@ function programLevelDiagnostics(program) {
     return programLevel;
 }
 
+/**
+ * Diagnostics that say one of the checker's own budgets ran out: type
+ * instantiation depth (TS2589), union size (TS2590), recursion depth in a
+ * comparison (TS2321) and the size of an inferred declaration (TS7056). The
+ * checker counts and caches across every file it checked before, so whether
+ * a budget runs out on a file follows what else the same request checked,
+ * not the file's code.
+ */
+const CHECKER_BUDGET_CODES = new Set([2321, 2589, 2590, 7056]);
+
 /** One compiler diagnostic on a file, added to that file's list. */
 function addFileDiagnostic(
     { program, root, maxFileBytes },
@@ -4692,6 +4666,7 @@ function addFileDiagnostic(
     )
         return;
     if (diagnostic.code === 6059) return; // Analysis-only project-reference source merging triggers this.
+    if (CHECKER_BUDGET_CODES.has(diagnostic.code)) return;
     if (namesComponentDefaultExport(diagnostic)) return;
     const relative = relativeInside(root, diagnostic.file.fileName);
     if (relative === null || belowNodeModules(relative)) return;
