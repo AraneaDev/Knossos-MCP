@@ -527,6 +527,58 @@ final class ScannerProtocolSessionTest extends TestCase
         assertSame(['files' => [], 'nodes' => [['id' => 'n1']]], $session->lastScanResult());
     }
 
+    /**
+     * A file whose facts do not validate costs that file only: the scan goes
+     * on, the file is kept with an error diagnostic, and the next file's facts
+     * arrive intact. One malformed TypeScript file used to drop the language.
+     */
+    public function testAMalformedFactCostsOnlyItsOwnFile(): void
+    {
+        $node = static fn(string $name): array => [
+            'local_id' => 'ts:function:' . $name, 'kind' => 'function', 'canonical_name' => $name, 'display_name' => $name,
+            'origin' => 'ast', 'confidence' => 'certain', 'evidence' => ['path' => 'src/a.ts', 'start_line' => 1, 'end_line' => 1],
+        ];
+        $session = $this->sessionReplying([
+            ['method' => 'scan/contribution', 'params' => ['owner_key' => 'demo:file:src/a.ts', 'nodes' => [$node('')], 'edges' => [], 'diagnostics' => []]],
+            ['method' => 'scan/contribution', 'params' => ['owner_key' => 'demo:file:src/b.ts', 'nodes' => [$node('ok')], 'edges' => [], 'diagnostics' => []]],
+            ['id' => 2, 'result' => ['files' => []]],
+        ]);
+
+        $contributions = iterator_to_array($session->scan(['path' => '/test']), false);
+
+        assertSame(['demo:file:src/a.ts', 'demo:file:src/b.ts'], array_map(static fn($contribution): string => $contribution->ownerKey, $contributions));
+        assertSame([], $contributions[0]->nodes);
+        assertSame('WORKER_CONTRIBUTION_INVALID', $contributions[0]->diagnostics[0]->code);
+        assertSame('ok', $contributions[1]->nodes[0]->displayName);
+    }
+
+    /**
+     * A session whose worker answers initialize with a manifest and then the given messages in order.
+     *
+     * @param list<array<string, mixed>> $messages
+     */
+    private function sessionReplying(array $messages): ScannerProtocolSession
+    {
+        array_unshift($messages, ['id' => 1, 'result' => [
+            'id' => 'demo', 'version' => '1.0.0', 'protocol_version' => Protocol::VERSION,
+            'output_schema_version' => Protocol::OUTPUT_SCHEMA_VERSION, 'languages' => ['typescript'],
+            'file_extensions' => ['.ts'], 'capabilities' => [],
+        ]]);
+        [$process] = $this->mockDependencies();
+        $channel = new class ($messages) implements RpcChannelInterface {
+            /** @param list<array<string, mixed>> $messages */
+            public function __construct(private array $messages) {}
+            public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
+            public function send(array $message, ?callable $cancelled = null): void {}
+            public function readMessage(int $deadline, ?callable $cancelled = null): array
+            {
+                return array_shift($this->messages) ?? throw new WorkerException('WORKER_TIMEOUT', 'No more responses.');
+            }
+        };
+
+        return new ScannerProtocolSession($process, $channel);
+    }
+
     public function testScanCancelsWhenCallbackReturnsTrue(): void
     {
         $channel = new class implements RpcChannelInterface {

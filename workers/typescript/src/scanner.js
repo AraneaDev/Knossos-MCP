@@ -4914,7 +4914,14 @@ function declarationName(node, sourceFile) {
             ts.isStringLiteral(node.name) ||
             ts.isNumericLiteral(node.name))
     ) {
-        return node.name.text;
+        if (node.name.text !== "") return node.name.text;
+        // Never an empty name, which the core refuses along with every fact of
+        // the language. `""` is a legal member name and is written as one; a
+        // name the parser could not read (`export function (( {`) recovers as
+        // an empty identifier and is named by its position.
+        return ts.isStringLiteral(node.name)
+            ? '""'
+            : anonymousName(node, sourceFile);
     }
     if (
         (ts.isClassDeclaration(node) ||
@@ -4923,17 +4930,22 @@ function declarationName(node, sourceFile) {
             isContextualObjectLiteral(node)) &&
         !node.name
     ) {
-        // Include the column so minified single-line bundles don't collapse
-        // every anonymous entity onto the same `@line` key.
-        const position = sourceFile.getLineAndCharacterOfPosition(
-            node.getStart(sourceFile),
-        );
-        const label = ts.isObjectLiteralExpression(node)
-            ? "{object}"
-            : "{anonymous}";
-        return `${label}@${position.line + 1}:${position.character + 1}`;
+        return anonymousName(node, sourceFile);
     }
     return null;
+}
+
+/** The name of a declaration that has none: its kind of label and its position. */
+function anonymousName(node, sourceFile) {
+    // Include the column so minified single-line bundles don't collapse
+    // every anonymous entity onto the same `@line` key.
+    const position = sourceFile.getLineAndCharacterOfPosition(
+        node.getStart(sourceFile),
+    );
+    const label = ts.isObjectLiteralExpression(node)
+        ? "{object}"
+        : "{anonymous}";
+    return `${label}@${position.line + 1}:${position.character + 1}`;
 }
 
 // Inside `declare global { ... }` or `declare module 'x' { ... }`: a

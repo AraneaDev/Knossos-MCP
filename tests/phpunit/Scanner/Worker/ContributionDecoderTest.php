@@ -374,6 +374,100 @@ final class ContributionDecoderTest extends TestCase
         }
     }
 
+    // ----- a malformed fact costs its own file -----
+
+    /**
+     * A node with an empty name made the whole reply invalid, which failed
+     * every file of the language. Facts reference one another by local id, so
+     * one row cannot be dropped alone without leaving an edge to nothing; the
+     * file's facts go together, and the file says why.
+     */
+    public function testAMalformedFactLeavesItsFileFactFreeWithADiagnostic(): void
+    {
+        $node = ['display_name' => ''] + self::minimalNodeData();
+        $data = [
+            'owner_key' => 'knossos.typescript:file:src/a.ts',
+            'nodes' => [self::minimalNodeData(), $node],
+            'edges' => [self::minimalEdgeData()],
+            'diagnostics' => [self::minimalDiagnosticData()],
+            'content_hash' => hash('sha256', 'a'),
+            'reads' => ['src/a.ts' => hash('sha256', 'a')],
+            'program' => 'tsconfig.json',
+            'environment' => hash('sha256', 'env'),
+            'listed' => false,
+            'reads_partial' => true,
+        ];
+
+        $decoded = ContributionDecoder::decode($data, degradeMalformedFacts: true);
+
+        assertSame('knossos.typescript:file:src/a.ts', $decoded->ownerKey);
+        assertSame([], $decoded->nodes);
+        assertSame([], $decoded->edges);
+        $this->assertCount(1, $decoded->diagnostics);
+        $diagnostic = $decoded->diagnostics[0];
+        assertSame('error', $diagnostic->severity);
+        assertSame('WORKER_CONTRIBUTION_INVALID', $diagnostic->code);
+        assertSame(
+            'Left out of the graph: the scanner reported a malformed fact for src/a.ts (display_name must be a non-empty string.). '
+            . 'Its facts are omitted and the rest of the language is kept.',
+            $diagnostic->message,
+        );
+        assertSame(['src/a.ts', 1, 1], [$diagnostic->evidence?->relativePath, $diagnostic->evidence?->startLine, $diagnostic->evidence?->endLine]);
+        assertSame(hash('sha256', 'a'), $decoded->contentHash);
+        assertSame(['src/a.ts' => hash('sha256', 'a')], $decoded->reads);
+        assertSame(['tsconfig.json', hash('sha256', 'env'), false, true], [$decoded->program, $decoded->environment, $decoded->listed, $decoded->readsPartial]);
+    }
+
+    /** An unknown enum value in an edge and a malformed diagnostic are facts too; an owner that names no file gets no evidence. */
+    public function testEveryKindOfMalformedFactIsLeftOutTheSameWay(): void
+    {
+        $edge = ['origin' => 'guessed'] + self::minimalEdgeData();
+        $decoded = ContributionDecoder::decode(
+            ['owner_key' => 'demo:project', 'nodes' => [], 'edges' => [$edge], 'diagnostics' => []],
+            degradeMalformedFacts: true,
+        );
+        assertSame([], $decoded->edges);
+        assertSame(null, $decoded->diagnostics[0]->evidence);
+        $this->assertStringContainsString('for demo:project (', $decoded->diagnostics[0]->message);
+
+        $decoded = ContributionDecoder::decode(
+            ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [['severity' => 'loud', 'code' => 'X', 'message' => 'm']]],
+            degradeMalformedFacts: true,
+        );
+        assertSame('WORKER_CONTRIBUTION_INVALID', $decoded->diagnostics[0]->code);
+        assertSame('a.demo', $decoded->diagnostics[0]->evidence?->relativePath);
+
+        // A path an evidence block refuses is named in the message only.
+        $decoded = ContributionDecoder::decode(
+            ['owner_key' => 'demo:file:../x', 'nodes' => [['kind' => 'class']], 'edges' => [], 'diagnostics' => []],
+            degradeMalformedFacts: true,
+        );
+        assertSame(null, $decoded->diagnostics[0]->evidence);
+    }
+
+    /** What identifies and verifies the file stays strict: without it there is no file to keep. */
+    public function testAMalformedEnvelopeStillRejectsTheReply(): void
+    {
+        $cases = [
+            'owner' => ['nodes' => [], 'edges' => [], 'diagnostics' => []],
+            'nodes list' => ['owner_key' => 'demo:file:a.demo', 'nodes' => 'x', 'edges' => [], 'diagnostics' => []],
+            'content hash' => ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'content_hash' => 'ABC'],
+            'reads' => ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'reads' => 'x'],
+            'listed' => ['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'listed' => 'yes'],
+        ];
+        foreach ($cases as $label => $data) {
+            $error = captureThrows(fn() => ContributionDecoder::decode($data, degradeMalformedFacts: true), WorkerException::class);
+            assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode, $label);
+        }
+        // Without the flag a malformed fact still rejects the reply, as the cache needs.
+        $node = ['display_name' => ''] + self::minimalNodeData();
+        $error = captureThrows(
+            fn() => ContributionDecoder::decode(['owner_key' => 'demo:file:a.demo', 'nodes' => [$node], 'edges' => [], 'diagnostics' => []]),
+            WorkerException::class,
+        );
+        assertSame('display_name must be a non-empty string.', $error->getMessage());
+    }
+
     // ----- reads -----
 
     public function testReadsAreDecodedIncludingAProbedMiss(): void
