@@ -47,7 +47,7 @@ final class CoverageMergeTest extends KnossosTestCase
         }
     }
 
-    /** Complete shards merge, and per-process files with the same name in two shards both survive. */
+    /** Complete shards merge, and per-process files with the same name in two shards are all counted. */
     public function testCompleteShardsMergeWithoutOverwritingEachOther(): void
     {
         $this->writeShards(3);
@@ -56,13 +56,39 @@ final class CoverageMergeTest extends KnossosTestCase
 
         assertSame(0, $exit, $errors);
         assertStringContainsString('3 shards, 5 test files each run once', $output);
+        assertSame(
+            ['/src/Shard1.php' => [3 => 1], '/src/Shard2.php' => [3 => 1], '/src/Shard3.php' => [3 => 1]],
+            $this->mergedPhp(),
+        );
         foreach ([1, 2, 3] as $shard) {
-            assertFileExists($this->directory . "/into/php/pcov-s{$shard}-7.json");
             assertFileExists($this->directory . "/into/js/tmp/s{$shard}-coverage-7-1-0.json");
             assertFileExists($this->directory . "/into/python/.coverage.host{$shard}.7.abc");
             assertFileExists($this->directory . "/into/junit/shard-{$shard}.xml");
-            assertSame("{\"shard\":{$shard}}", file_get_contents($this->directory . "/into/php/pcov-s{$shard}-7.json"));
         }
+    }
+
+    /**
+     * Whether a line is executable depends on load order: PHP folds a class
+     * constant into the code when its class is already loaded, and the line
+     * then has no opcode. A line counts only when every shard that loaded the
+     * file reports it, and is covered when any of them hit it, so sharding
+     * cannot add an uncovered line an unsharded run would not have.
+     */
+    public function testALineFoldedAwayInAnyLoadingShardIsNotExecutable(): void
+    {
+        $this->writeShards(3);
+        $file = '/src/Folded.php';
+        // Shard 1 compiled line 11 to a constant fetch it never ran; shard 2
+        // folded it away. Line 12 is uncovered in shard 1 but hit in shard 2,
+        // across two of its processes. Shard 3 never loaded the file.
+        file_put_contents($this->directory . '/raw/coverage-shard-1/php/pcov-8.json', json_encode([$file => [10 => 1, 11 => -1, 12 => -1]]));
+        file_put_contents($this->directory . '/raw/coverage-shard-2/php/pcov-8.json', json_encode([$file => [10 => -1, 12 => -1]]));
+        file_put_contents($this->directory . '/raw/coverage-shard-2/php/pcov-9.json', json_encode([$file => [10 => -1, 12 => 1]]));
+
+        [$exit, , $errors] = $this->merge();
+
+        assertSame(0, $exit, $errors);
+        assertSame([10 => 1, 12 => 1], $this->mergedPhp()[$file]);
     }
 
     /** @return iterable<string, array{0: callable(self): void, 1: string}> */
@@ -126,7 +152,7 @@ final class CoverageMergeTest extends KnossosTestCase
         assertNotSame(0, $exit, 'the merge accepted broken shards');
         assertStringContainsString('refusing to merge', $errors);
         assertStringContainsString($reason, $errors);
-        assertFileDoesNotExist($this->directory . '/into/php/pcov-s1-7.json', 'a refused merge copied data');
+        assertFileDoesNotExist($this->directory . '/into/php/pcov-merged.json', 'a refused merge wrote data');
     }
 
     /** An empty download, or none at all, is refused rather than reported as zero shards. */
@@ -158,7 +184,7 @@ final class CoverageMergeTest extends KnossosTestCase
             mkdir($base . '/python', 0o777, true);
             file_put_contents($base . '/shard.json', json_encode(['shard' => $shard, 'of' => $count]));
             // The same process id in every shard, as containers produce.
-            file_put_contents($base . '/php/pcov-7.json', "{\"shard\":{$shard}}");
+            file_put_contents($base . '/php/pcov-7.json', json_encode(["/src/Shard{$shard}.php" => [3 => 1]]));
             file_put_contents($base . '/js/tmp/coverage-7-1-0.json', '{}');
             file_put_contents($base . "/python/.coverage.host{$shard}.7.abc", '');
             $this->writeJunit($shard, $assigned[$shard] ?? []);
@@ -176,6 +202,19 @@ final class CoverageMergeTest extends KnossosTestCase
             $this->directory . "/raw/coverage-shard-{$shard}/junit.xml",
             '<?xml version="1.0"?><testsuites><testsuite name="shard">' . $suites . '</testsuite></testsuites>',
         );
+    }
+
+    /** @return array<string, array<int, int>> */
+    private function mergedPhp(): array
+    {
+        $merged = json_decode((string) file_get_contents($this->directory . '/into/php/pcov-merged.json'), true, 512, JSON_THROW_ON_ERROR);
+        ksort($merged);
+        foreach ($merged as $file => $lines) {
+            ksort($lines);
+            $merged[$file] = $lines;
+        }
+
+        return $merged;
     }
 
     /** @return array{0: int, 1: string, 2: string} */

@@ -21,10 +21,21 @@ declare(strict_types=1);
  * coverage without failing, and a floor with headroom would let that through,
  * so the check is on the file set, not on the figures.
  *
- * pcov names its data after the process id, and container process ids repeat
- * across shards, so those files are prefixed with the shard; so are the V8
- * files, which carry a pid as well. coverage.py's files already carry the
- * hostname, the pid and a random suffix, and are copied as they are.
+ * The PHP data is combined here into one pcov-merged.json rather than copied,
+ * because which lines pcov reports as executable depends on load order. PHP
+ * folds a class constant (Other::NAME) into the code at compile time when the
+ * class holding it is already loaded, and then that line has no opcode and is
+ * not executable. Which classes are loaded first depends on which tests ran
+ * before, which sharding changes, so a plain union of the shards' data counted
+ * up to a few more lines than an unsharded run, and an extra uncovered line
+ * can tip a component with little headroom below its floor. So a line counts
+ * as executable only when every shard that loaded its file reports it, and as
+ * covered when any of them hit it. Within a shard the per-process files are
+ * combined as tools/pcov-report.php does, by the highest hit count per line.
+ *
+ * The V8 files carry a process id, and container process ids repeat across
+ * shards, so they are prefixed with the shard. coverage.py's files already
+ * carry the hostname, the pid and a random suffix, and are copied as they are.
  */
 
 $root = dirname(__DIR__);
@@ -183,11 +194,46 @@ $copy = static function (string $from, string $to): void {
     }
 };
 $counted = ['php' => 0, 'js' => 0, 'python' => 0];
+/** @var array<string, array<int, int>> $php the lines every loading shard reports, with their highest hit count */
+$php = [];
 foreach ($shards as $index => $directory) {
+    $shardLines = [];
     foreach (glob($directory . '/php/pcov-*.json') ?: [] as $file) {
-        $copy($file, $into . '/php/pcov-s' . $index . '-' . substr(basename($file), 5));
+        $process = json_decode((string) file_get_contents($file), true);
+        if (!is_array($process)) {
+            mergeRefuse(["{$file} is not pcov data"]);
+        }
+        foreach ($process as $source => $lines) {
+            if (!is_array($lines)) {
+                continue;
+            }
+            foreach ($lines as $line => $hits) {
+                $shardLines[$source][(int) $line] = max($shardLines[$source][(int) $line] ?? -1, (int) $hits);
+            }
+        }
         ++$counted['php'];
     }
+    foreach ($shardLines as $source => $lines) {
+        if (!isset($php[$source])) {
+            $php[$source] = $lines;
+        } else {
+            $kept = array_intersect_key($php[$source], $lines);
+            foreach ($kept as $line => $hits) {
+                $kept[$line] = max($hits, $lines[$line]);
+            }
+            $php[$source] = $kept;
+        }
+    }
+}
+$target = $into . '/php/pcov-merged.json';
+if (file_exists($target)) {
+    mergeRefuse(["{$target} already exists"]);
+}
+if (!is_dir(dirname($target)) && !mkdir(dirname($target), 0o777, true) && !is_dir(dirname($target))) {
+    mergeRefuse(['cannot create ' . dirname($target)]);
+}
+file_put_contents($target, json_encode($php, JSON_THROW_ON_ERROR));
+foreach ($shards as $index => $directory) {
     foreach (glob($directory . '/js/tmp/*.json') ?: [] as $file) {
         $copy($file, $into . '/js/tmp/s' . $index . '-' . basename($file));
         ++$counted['js'];
