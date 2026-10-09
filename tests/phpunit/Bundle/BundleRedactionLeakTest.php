@@ -45,9 +45,12 @@ final class BundleRedactionLeakTest extends KnossosTestCase
             'src/secret/dangling.ts' => "import { gone } from './missing';\nexport const kept = gone;\n",
             'pkg/__init__.py' => '',
             'pkg/secret/__init__.py' => '',
-            'pkg/secret/ledger.py' => "from pkg.secret import other\n\nclass Ledger:\n    def total(self):\n        return other.amount()\n",
+            'pkg/secret/ledger.py' => "import nspkgqq.subqq\nfrom pkg.secret import other\n\nclass Ledger:\n    def total(self):\n        return other.amount()\n",
             'pkg/secret/other.py' => "def amount():\n    return 1\n",
             'pkg/secret/broken.py' => "def broken(:\n",
+            // A namespace package: no __init__.py, so it reaches the graph
+            // only as the dotted name of the import above.
+            'nspkgqq/subqq/modqq.py' => "def amount():\n    return 2\n",
             'src/Secret/Payroll.php' => "<?php\nnamespace App\\Secret;\nfinal class Payroll { public function run(): Ledger { return new Ledger(); } }\n",
             'src/Secret/Ledger.php' => "<?php\nnamespace App\\Secret;\nfinal class Ledger {}\n",
             'src/Secret/Broken.php' => "<?php\nclass {\n",
@@ -101,13 +104,22 @@ final class BundleRedactionLeakTest extends KnossosTestCase
                 self::assertFalse(str_contains($json, $directory), 'Directory ' . $directory);
             }
         }
-        $modules = $this->column($pdo, "SELECT canonical_name FROM nodes WHERE project_id = :project AND language = 'py' AND kind = 'module' AND file_id IS NOT NULL", $projectId);
+        // Every Python module and package node, with or without a file of
+        // its own: the fixture imports nothing from outside itself, so each
+        // of them is a discovered path spelled with dots.
+        $modules = array_values(array_filter(
+            $this->column($pdo, "SELECT canonical_name FROM nodes WHERE project_id = :project AND language = 'py' AND kind IN ('module', 'package', 'external_module')", $projectId),
+            static fn(string $name): bool => str_contains($name, '.'),
+        ));
         self::assertContains('pkg.secret.ledger', $modules);
+        self::assertContains('nspkgqq.subqq', $modules);
         foreach ($modules as $module) {
-            if (str_contains($module, '.')) {
-                self::assertFalse(str_contains($json, $module), 'Python module ' . $module);
-            }
+            self::assertFalse(str_contains($json, $module), 'Python module ' . $module);
         }
+        // The namespace package's own segments are names nothing else in the
+        // fixture uses, so neither may be left anywhere, display names included.
+        self::assertFalse(str_contains($json, 'subqq'), 'Namespace package segment subqq');
+        self::assertFalse(str_contains($json, 'nspkgqq'), 'Namespace package segment nspkgqq');
     }
 
     /** @return iterable<string, array{0: string}> */

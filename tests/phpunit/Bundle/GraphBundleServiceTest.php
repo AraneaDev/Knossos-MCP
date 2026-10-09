@@ -235,6 +235,56 @@ final class GraphBundleServiceTest extends TestCase
         assertSame('h', $payload['files'][0]['content_hash'], 'Content hashes are salted in strict mode only.');
     }
 
+    /**
+     * Attributes were decoded as arrays: once a document changed, every
+     * nested `{}` and every object keyed `"0"`, `"1"` was written back as a
+     * list, and the importer, which checked the top level only, stored it so.
+     */
+    public function testARedactedAttributeDocumentKeepsItsObjectsThroughExportAndImport(): void
+    {
+        $this->seedProjectAndScan('proj-1', 'scan-1', scanner_set_hash: hash('sha256', 'scanners'));
+        $this->seedFile('f1', 'proj-1', 'src/a/b.ts', 'ts');
+        $this->pdo->exec("UPDATE files SET content_hash = '" . hash('sha256', 'b') . "'");
+        $this->seedNode('n1', 'proj-1', ['file_id' => 'f1', 'owner_key' => 'o', 'attributes_json' => '{"p":"src/a/b.ts","meta":{},"byIndex":{"0":"x","1":"y"},"list":[{}]}']);
+
+        $bytes = $this->service->export('proj-1', 'paths');
+        $exported = (new GraphBundleDecoder())->decodeAndValidate($bytes)['payload'];
+        $token = $exported['files'][0]['relative_path'];
+        $expected = '{"byIndex":{"0":"x","1":"y"},"list":[{}],"meta":{},"p":"' . $token . '"}';
+        assertSame($expected, $exported['nodes'][0]['attributes_json']);
+
+        $imported = $this->service->import($bytes);
+        $statement = $this->pdo->prepare('SELECT attributes_json FROM nodes WHERE project_id = :project');
+        $statement->execute(['project' => $imported->projectId]);
+        assertSame($expected, $statement->fetchColumn());
+    }
+
+    /**
+     * A top-level Python module named like a scanner (`knossos`) or like a
+     * common key (`main`) used to rewrite every standalone occurrence: the
+     * owner key's scanner prefix and ordinary attribute keys among them.
+     */
+    public function testExportPathsRedactionLeavesScannerPrefixesAndAttributeKeysThatAreModuleNames(): void
+    {
+        $this->seedProjectAndScan('proj-1', 'scan-1');
+        $this->seedFile('f1', 'proj-1', 'knossos.py', 'py');
+        $this->seedFile('f2', 'proj-1', 'main.py', 'py');
+        $this->seedNode('n1', 'proj-1', ['file_id' => 'f1', 'kind' => 'module', 'canonical_name' => 'knossos', 'display_name' => 'knossos', 'owner_key' => 'knossos.python:file:knossos.py', 'attributes_json' => '{"scanner_local_id":"py:module:knossos","main":"kept"}']);
+        $this->seedNode('n2', 'proj-1', ['file_id' => 'f2', 'kind' => 'module', 'canonical_name' => 'main', 'display_name' => 'main', 'owner_key' => 'knossos.python:file:main.py']);
+        $this->pdo->exec("UPDATE nodes SET language = 'py'");
+
+        $payload = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'paths'))['payload'];
+
+        $files = array_column($payload['files'], 'relative_path');
+        $node = array_values(array_filter($payload['nodes'], static fn(array $row): bool => str_contains($row['attributes_json'], 'scanner_local_id')))[0];
+        $this->assertContains(substr($node['owner_key'], strlen('knossos.python:file:')), $files);
+        $this->assertStringStartsWith('knossos.python:file:redacted/', $node['owner_key']);
+        $attributes = json_decode($node['attributes_json'], true, 8, JSON_THROW_ON_ERROR);
+        assertSame('py:module:' . $node['canonical_name'], $attributes['scanner_local_id']);
+        $this->assertStringStartsWith('redacted_', $node['canonical_name']);
+        assertSame('kept', $attributes['main']);
+    }
+
     public function testExportPathsRedactionLeavesAttributesWithNoPathByteForByte(): void
     {
         $this->seedProjectAndScan('proj-1', 'scan-1');

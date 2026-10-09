@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Bundle;
 
 use SensitiveParameter;
+use stdClass;
 
 /**
  * Rewrites a bundle's tables so no discovered path survives in any column.
@@ -24,7 +25,7 @@ final readonly class BundleRedactor
     private const ID_COLUMNS = ['id', 'parent_id', 'file_id', 'source_id', 'target_id', 'node_id', 'boundary_id'];
 
     /** Columns of free text that can contain a path. */
-    private const TEXT_COLUMNS = ['relative_path', 'canonical_name', 'owner_key', 'name', 'message'];
+    private const TEXT_COLUMNS = ['relative_path', 'canonical_name', 'name', 'message'];
 
     /** Columns holding a JSON document whose strings can contain a path. */
     private const JSON_COLUMNS = ['attributes_json', 'matcher_json'];
@@ -75,6 +76,8 @@ final readonly class BundleRedactor
                 $redacted[$column] = $this->map->id($value);
             } elseif (in_array($column, self::TEXT_COLUMNS, true)) {
                 $redacted[$column] = $this->strict && $column === 'message' ? '[redacted]' : $this->map->scrub($value);
+            } elseif ($column === 'owner_key') {
+                $redacted[$column] = $this->map->scrubQualified($value);
             } elseif (in_array($column, self::JSON_COLUMNS, true)) {
                 $redacted[$column] = $this->strict && $column === 'attributes_json' ? '{}' : $this->json($value);
             } elseif ($column === 'display_name') {
@@ -104,28 +107,36 @@ final readonly class BundleRedactor
     /**
      * A JSON document with every string and key redacted, re-encoded only when something changed.
      *
-     * A document that names no path keeps its exact bytes, so an attribute
-     * the importer already accepts is never re-shaped on the way out.
+     * A document that names no path keeps its exact bytes. Objects are
+     * decoded as objects, so a nested `{}` or an object keyed `"0"`, `"1"`
+     * stays an object instead of turning into a list on the way out.
      */
     private function json(string $json): string
     {
-        $decoded = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
-        $scrubbed = $this->scrubValue($decoded);
-        return $scrubbed === $decoded ? $json : GraphBundleDecoder::encodeCanonical($scrubbed);
+        $decoded = json_decode($json, false, flags: JSON_THROW_ON_ERROR);
+        $scrubbed = GraphBundleDecoder::encodeCanonical($this->scrubValue($decoded, null));
+        return $scrubbed === GraphBundleDecoder::encodeCanonical($decoded) ? $json : $scrubbed;
     }
 
-    /** Every string in a decoded JSON value, keys included, redacted. */
-    private function scrubValue(mixed $value): mixed
+    /**
+     * Every string in a decoded JSON value redacted. Object keys lose file and
+     * directory paths only, and a scanner-local id is redacted past its
+     * `<scanner>:<kind>:` prefix.
+     */
+    private function scrubValue(mixed $value, int|string|null $key): mixed
     {
         if (is_string($value)) {
-            return $this->map->scrub($value);
+            return $key === 'scanner_local_id' ? $this->map->scrubQualified($value) : $this->map->scrub($value);
         }
-        if (!is_array($value)) {
+        if (is_array($value)) {
+            return array_map(fn(mixed $item): mixed => $this->scrubValue($item, null), $value);
+        }
+        if (!$value instanceof stdClass) {
             return $value;
         }
-        $scrubbed = [];
-        foreach ($value as $key => $item) {
-            $scrubbed[is_string($key) ? $this->map->scrub($key) : $key] = $this->scrubValue($item);
+        $scrubbed = new stdClass();
+        foreach (get_object_vars($value) as $name => $item) {
+            $scrubbed->{$this->map->scrubPaths((string) $name)} = $this->scrubValue($item, $name);
         }
         return $scrubbed;
     }

@@ -7,6 +7,7 @@ namespace Knossos\Bundle;
 use InvalidArgumentException;
 use JsonException;
 use PDO;
+use stdClass;
 
 /**
  * Writes a decoded bundle into the local database as a new project.
@@ -348,11 +349,13 @@ final readonly class PortableGraphImporter
         // is refused as one. Left as a JsonException it reached the client as
         // "An unexpected error occurred" rather than KNOSSOS_INVALID_ARGUMENT.
         try {
-            $decoded = json_decode($value, true, 64, JSON_THROW_ON_ERROR);
+            // Decoded as objects: as arrays, every nested `{}` and every
+            // object keyed `"0"`, `"1"` was stored back as a JSON list.
+            $decoded = json_decode($value, false, 64, JSON_THROW_ON_ERROR);
         } catch (JsonException $error) {
             throw new InvalidArgumentException('Bundle JSON attributes are invalid.', previous: $error);
         }
-        if (!is_array($decoded) || ($decoded !== [] && array_is_list($decoded))) {
+        if (!$decoded instanceof stdClass && $decoded !== []) {
             throw new InvalidArgumentException('Bundle JSON attributes must be objects.');
         }
         return GraphBundleDecoder::encodeCanonical($decoded);

@@ -229,6 +229,78 @@ final class RedactionMapTest extends TestCase
     }
 
     /**
+     * A key used to need one of a short list of characters on either side, so
+     * a path in brackets, backticks, after `@`, `./` or an absolute prefix, or
+     * before `;`, `!`, `|` or `-` kept its whole spelling.
+     */
+    public function testAPathIsFoundBetweenAnyCharactersThatCannotContinueAName(): void
+    {
+        $path = 'src/secret/payroll.ts';
+        $map = $this->map([$path]);
+        $token = (string) $map->token($path);
+
+        foreach (['[%s]', '`%s`', '<%s>', '{%s}', '@%s', './%s', '/home/u/proj/%s', '%s;', '%s!', '%s|', '%s-1'] as $shape) {
+            $scrubbed = $map->scrub(sprintf($shape, $path));
+            self::assertSame(sprintf($shape, $token), $scrubbed, $shape);
+            self::assertStringNotContainsString('payroll', $scrubbed, $shape);
+        }
+    }
+
+    public function testAKeyIsNotFoundInsideALongerNameOrAfterADotOrHyphen(): void
+    {
+        $map = $this->map(['app/__init__.py'], [$this->module('app')]);
+
+        foreach (['my-app', 'my.app', 'app_x', 'xapp', 'app2', 'apps'] as $text) {
+            self::assertSame($text, $map->scrub($text));
+        }
+    }
+
+    /**
+     * A namespace package has no file of its own: it reached the graph only
+     * as `nspkg.sub`, the dotted spelling of a directory, and kept it.
+     */
+    public function testTheDottedSpellingOfADirectoryIsAKey(): void
+    {
+        $map = RedactionMap::fromPayload([
+            'files' => [['relative_path' => 'nspkg/sub/mod.py']],
+            'nodes' => [
+                ['language' => 'py', 'kind' => 'external_module', 'canonical_name' => 'nspkg', 'file_id' => 'f2'],
+                ['language' => 'py', 'kind' => 'external_module', 'canonical_name' => 'os', 'file_id' => 'f2'],
+            ],
+            'boundaries' => [],
+        ], self::SALT);
+
+        self::assertSame('redacted_' . substr(hash_hmac('sha256', 'nspkg.sub', self::SALT), 0, 24), $map->scrub('nspkg.sub'));
+        self::assertSame('redacted_' . substr(hash_hmac('sha256', 'nspkg', self::SALT), 0, 24), $map->scrub('nspkg'));
+        self::assertSame('os', $map->scrub('os'), 'A module that is not a directory here stays.');
+        self::assertSame('redacted-dir/' . substr(hash_hmac('sha256', 'nspkg/sub', self::SALT), 0, 24), $map->scrub('nspkg/sub'));
+    }
+
+    /** A module that shares a scanner's name used to rewrite the owner key's prefix. */
+    public function testAQualifiedKeyIsRedactedPastItsScannerAndKindOnly(): void
+    {
+        $map = $this->map(['knossos.py', 'src/x.php'], [$this->module('knossos')]);
+        $module = (string) $map->token('knossos');
+
+        self::assertSame('knossos.php:file:' . $map->token('src/x.php'), $map->scrubQualified('knossos.php:file:src/x.php'));
+        self::assertSame('py:module:' . $module, $map->scrubQualified('py:module:knossos'));
+        self::assertSame('knossos.typescript', $map->scrubQualified('knossos.typescript'));
+        self::assertSame('a:knossos', $map->scrubQualified('a:knossos'), 'Two parts is not the qualified shape.');
+    }
+
+    /** A JSON key named like a top-level module (`main`, `config`) is an ordinary key. */
+    public function testScrubbingPathsLeavesModuleNamesAlone(): void
+    {
+        $boundaries = [['matcher_json' => '{"type":"path_prefix","value":"lib/"}']];
+        $map = RedactionMap::fromPayload(['files' => [['relative_path' => 'src/a.ts']], 'nodes' => [$this->module('main'), $this->module('lib')], 'boundaries' => $boundaries], self::SALT);
+
+        self::assertSame('main', $map->scrubPaths('main'));
+        self::assertSame('lib', $map->scrubPaths('lib'), 'A module first, so not a path key.');
+        self::assertSame((string) $map->token('src/a.ts'), $map->scrubPaths('src/a.ts'));
+        self::assertNotSame('main', $map->scrub('main'));
+    }
+
+    /**
      * A key index that is scanned per key, or a regex alternation over every
      * key, turns the export of a large project quadratic; this bounds it.
      */
