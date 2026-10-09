@@ -38,7 +38,9 @@ final class TypescriptPackageNameTest extends KnossosTestCase
 
     public function testOnlyANameNpmCanPublishBecomesAPackage(): void
     {
-        file_put_contents($this->root . '/tsconfig.json', '{"compilerOptions": {"strict": true}, "include": ["src"]}');
+        // `@app/*` is an alias the tsconfig declares, so `@app/missing` is the
+        // project's own code that is not there, not a scoped package.
+        file_put_contents($this->root . '/tsconfig.json', '{"compilerOptions": {"strict": true, "paths": {"@app/*": ["./src/*"]}}, "include": ["src"]}');
         file_put_contents($this->root . '/src/a.ts', implode("\n", [
             "import Card from '@/components/Card';",
             "import user from '~/stores/user';",
@@ -47,7 +49,8 @@ final class TypescriptPackageNameTest extends KnossosTestCase
             "import { readFile } from 'node:fs/promises';",
             "import { map } from 'lodash/fp';",
             "import { thing } from '@scope/pkg/sub';",
-            'export const all = [Card, user, readFileSync, statSync, readFile, map, thing];',
+            "import missing from '@app/missing';",
+            'export const all = [Card, user, readFileSync, statSync, readFile, map, thing, missing];',
             '',
         ]));
         $pdo = $this->freshTestDatabase();

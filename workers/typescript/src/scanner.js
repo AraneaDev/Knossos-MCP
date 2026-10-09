@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import { isBuiltin } from "node:module";
 import path from "node:path";
 import ts from "typescript";
 import { FactAccumulator } from "./fact-accumulator.js";
 import { NestJsFactEnricher } from "./nestjs-fact-enricher.js";
+import { nodeBuiltinPackage } from "./node-builtins.js";
 import { TypeScriptApplicationEnricher } from "./typescript-application-enricher.js";
 import {
     bindingKeyword,
@@ -2761,6 +2761,16 @@ class TypeScriptLanguageFactCollector {
     moduleTarget(specifier, location) {
         const internal = this.internalModuleTarget(location);
         if (internal !== null) return internal;
+        // A tsconfig `paths` key (bundler aliases are folded into them) names
+        // the project's own code, which an import it did not resolve is
+        // missing, not a dependency: `@app/missing` under `@app/*`.
+        if (
+            this.aliasPatterns().some(
+                (patterns) =>
+                    ts.matchPatternOrExact(patterns, specifier) !== undefined,
+            )
+        )
+            return null;
 
         const packageName = externalPackageName(specifier);
         if (packageName !== null) {
@@ -2771,6 +2781,28 @@ class TypeScriptLanguageFactCollector {
             return id;
         }
         return null;
+    }
+
+    /**
+     * The program's `paths` keys as the compiler matches them, without the
+     * catch-all `*`, which says nothing about a name. Wrapped in a list, as
+     * a program without `paths` has none.
+     */
+    aliasPatterns() {
+        if (this.parsedAliases === undefined) {
+            const keys = Object.keys(this.project.options?.paths ?? {}).filter(
+                (key) => key !== "*",
+            );
+            this.parsedAliases =
+                keys.length === 0
+                    ? []
+                    : [
+                          ts.tryParsePatterns(
+                              Object.fromEntries(keys.map((key) => [key, []])),
+                          ),
+                      ];
+        }
+        return this.parsedAliases;
     }
 
     /**
@@ -5275,16 +5307,10 @@ const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
  * Only a name npm can publish is a package. A specifier nothing resolved
  * that is not one (`@/components`, `~/stores/user`, `$lib/x`, a bundler's
  * `virtual:` module) is a path under a name the project's bundler gives it,
- * and no dependency. A Node built-in is named without its `node:` prefix, so
- * `node:fs` and `fs` are one package; one only reachable under the prefix
- * (`node:test`) keeps it.
+ * and no dependency. A `node:` specifier is named by nodeBuiltinPackage.
  */
 function externalPackageName(specifier) {
-    if (specifier.startsWith("node:")) {
-        if (!isBuiltin(specifier)) return null;
-        const name = specifier.slice("node:".length).split("/")[0];
-        return isBuiltin(name) ? name : `node:${name}`;
-    }
+    if (specifier.startsWith("node:")) return nodeBuiltinPackage(specifier);
     const parts = specifier.split("/");
     const name = specifier.startsWith("@")
         ? parts.slice(0, 2).join("/")

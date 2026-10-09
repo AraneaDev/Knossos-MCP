@@ -306,27 +306,28 @@ describe("TypeScriptScanner.scan packages below node_modules", () => {
     });
 });
 
-describe("TypeScriptScanner.scan specifiers nothing resolves", () => {
-    function packageTargets(source) {
-        const root = fixture({ "src/a.ts": source });
-        const contributions = [];
-        new TypeScriptScanner().scan({ root, files: ["src/a.ts"] }, (c) =>
-            contributions.push(c),
-        );
-        return {
-            targets: contributions
-                .flatMap((c) => c.edges)
-                .filter((e) => e.kind === "imports")
-                .map((e) => e.target)
-                .sort(),
-            nodes: contributions
-                .flatMap((c) => c.nodes)
-                .filter((n) => n.kind === "package")
-                .map((n) => n.canonical_name)
-                .sort(),
-        };
-    }
+/** The import targets and package nodes of one file nothing configures. */
+function packageTargets(source) {
+    const root = fixture({ "src/a.ts": source });
+    const contributions = [];
+    new TypeScriptScanner().scan({ root, files: ["src/a.ts"] }, (c) =>
+        contributions.push(c),
+    );
+    return {
+        targets: contributions
+            .flatMap((c) => c.edges)
+            .filter((e) => e.kind === "imports")
+            .map((e) => e.target)
+            .sort(),
+        nodes: contributions
+            .flatMap((c) => c.nodes)
+            .filter((n) => n.kind === "package")
+            .map((n) => n.canonical_name)
+            .sort(),
+    };
+}
 
+describe("TypeScriptScanner.scan specifiers nothing resolves", () => {
     it("name a package only when the specifier can be an npm package", () => {
         const { targets, nodes } = packageTargets(
             [
@@ -344,6 +345,63 @@ describe("TypeScriptScanner.scan specifiers nothing resolves", () => {
 
         expect(targets).toEqual(["ts:package:@scope/pkg", "ts:package:lodash"]);
         expect(nodes).toEqual(["@scope/pkg", "lodash"]);
+    });
+});
+
+describe("TypeScriptScanner.scan specifiers that look like packages", () => {
+    it("name no package for a specifier a tsconfig paths key covers", () => {
+        const root = fixture({
+            "tsconfig.json": JSON.stringify({
+                compilerOptions: {
+                    paths: { "@app/*": ["./src/*"], "@lib/*": ["./lib/*"] },
+                },
+                include: ["src"],
+            }),
+            "src/util.ts": "export const u = 1;\n",
+            "src/a.ts": [
+                'import { u } from "@app/util";',
+                'import missing from "@app/missing";',
+                'import thing from "@lib/thing";',
+                'import real from "@scope/real";',
+                "export const all = [u, missing, thing, real];",
+                "",
+            ].join("\n"),
+        });
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            { root, files: ["src/a.ts"], config_files: ["tsconfig.json"] },
+            (c) => contributions.push(c),
+        );
+
+        expect(
+            contributions
+                .flatMap((c) => c.edges)
+                .filter((e) => e.kind === "imports")
+                .map((e) => e.target)
+                .sort(),
+        ).toEqual(["ts:module:src/util.ts", "ts:package:@scope/real"]);
+    });
+
+    it("name a built-in from a fixed list, whatever Node runs the worker", () => {
+        const { targets } = packageTargets(
+            [
+                'import a from "node:sqlite";',
+                'import b from "node:sea";',
+                'import c from "node:test/reporters";',
+                'import d from "node:quic";',
+                'import e from "node:not-a-module";',
+                'import f from "node:_http_agent";',
+                "export const all = [a, b, c, d, e, f];",
+                "",
+            ].join("\n"),
+        );
+
+        expect(targets).toEqual([
+            "ts:package:_http_agent",
+            "ts:package:node:sea",
+            "ts:package:node:sqlite",
+            "ts:package:node:test",
+        ]);
     });
 
     it("name a Node built-in the same with or without its node: prefix", () => {
