@@ -42,7 +42,8 @@
       "php -l tools/api-documentation-check.php",
       "php -l tools/supply-chain-report.php",
       "php -l tools/scanner-conformance",
-      "php -l tools/phpunit-shard"
+      "php -l tools/phpunit-shard",
+      "php -l tools/coverage-merge.php"
     ],
     "test": [
       "phpunit",

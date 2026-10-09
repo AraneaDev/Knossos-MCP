@@ -182,7 +182,7 @@ elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
-    shellcheck tools/quality tools/quality-container tools/quality-deps-key tools/install-hooks tools/benchmark \
+    shellcheck tools/quality tools/quality-container tools/quality-deps-key tools/coverage tools/install-hooks tools/benchmark \
         tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain tools/install \
         hooks/scripts/session-brief.sh hooks/scripts/session-brief-container.sh \
         hooks/scripts/knossos-run.sh hooks/scripts/knossos-run-container.sh hooks/scripts/lib.sh \

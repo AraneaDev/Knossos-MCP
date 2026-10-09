@@ -1,12 +1,59 @@
 #!/bin/sh
+# The coverage profile: the PHPUnit suite under pcov, then the reports and the
+# floors from coverage-budgets.json.
+#
+# Usage: tools/coverage                     run, then report (the local default)
+#        tools/coverage run [--shard=I/N]   only the PHPUnit run; with --shard,
+#                                           only the test files of shard I of N
+#        tools/coverage merge RAW_DIR       gather the shards' data from
+#                                           RAW_DIR into coverage/
+#        tools/coverage report              the reports and floors over coverage/
+#
+# CI runs `run --shard` in several jobs at once and `merge` then `report` in
+# one job after them, so PHPUnit runs once per pull request without one job
+# having to sit through the whole suite. Every figure is the same as an
+# unsharded run's: pcov's data merges by the highest hit count per line, and
+# V8's and coverage.py's by union, so splitting the suite cannot change them.
+# What it can do is lose a test file, which is why the merge refuses unless
+# each one ran in exactly one shard (tools/coverage-merge.php).
 set -eu
 
-php tools/reset-coverage.php
-mkdir -p coverage/php coverage/js/tmp coverage/python coverage/rust
+usage() {
+    echo "usage: tools/coverage [run [--shard=I/N] | merge RAW_DIR | report]" >&2
+    exit 64
+}
+
+mode="${1:-all}"
+shard=''
+raw=''
+case "$mode" in
+    all | report)
+        [ "$#" -le 1 ] || usage
+        ;;
+    run)
+        [ "$#" -le 2 ] || usage
+        if [ "$#" -eq 2 ]; then
+            case "$2" in
+                --shard=*/*) shard="${2#--shard=}" ;;
+                *) usage ;;
+            esac
+        fi
+        ;;
+    merge)
+        [ "$#" -eq 2 ] || usage
+        raw="$2"
+        ;;
+    *) usage ;;
+esac
 
 export KNOSSOS_PHP_COVERAGE_DIR=/opt/knossos/coverage/php
 export KNOSSOS_JS_COVERAGE_DIR=/opt/knossos/coverage/js/tmp
 export KNOSSOS_PYTHON_COVERAGE_DIR=/opt/knossos/coverage/python
+
+prepare() {
+    php tools/reset-coverage.php
+    mkdir -p coverage/php coverage/js/tmp coverage/python coverage/rust
+}
 
 # Run the covered suite as the non-root `knossos` user for the same reason
 # tools/quality does: the permission-error tests (ProjectDiscoverer unreadable
@@ -16,66 +63,112 @@ export KNOSSOS_PYTHON_COVERAGE_DIR=/opt/knossos/coverage/python
 # are not merely untested -- they are reported as *uncovered*, understating the
 # discovery-config, maintenance-runtime, and storage components.
 #
-# The coverage directory is a host bind mount owned by root, so hand it over
-# before dropping: pcov writes its per-process JSON there, as do the JS and
-# Python worker coverage sinks.
-if [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ] && [ "$(id -u)" = "0" ]; then
-    chown -R knossos:knossos coverage
-    runuser -u knossos -- env HOME=/home/knossos \
-        KNOSSOS_PHP_COVERAGE_DIR="$KNOSSOS_PHP_COVERAGE_DIR" \
-        KNOSSOS_JS_COVERAGE_DIR="$KNOSSOS_JS_COVERAGE_DIR" \
-        KNOSSOS_PYTHON_COVERAGE_DIR="$KNOSSOS_PYTHON_COVERAGE_DIR" \
-        php -d pcov.directory=/opt/knossos -d auto_prepend_file=/opt/knossos/tools/pcov-prepend.php vendor/bin/phpunit
-else
-    php -d pcov.directory=/opt/knossos -d auto_prepend_file=/opt/knossos/tools/pcov-prepend.php vendor/bin/phpunit
-fi
-php tools/pcov-report.php
+# The coverage directory is a host bind mount owned by root, so it is handed
+# over before dropping: pcov writes its per-process JSON there, as do the JS and
+# Python worker coverage sinks, and PHPUnit its JUnit log.
+as_suite_user() {
+    if [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ] && [ "$(id -u)" = "0" ]; then
+        runuser -u knossos -- env HOME=/home/knossos \
+            KNOSSOS_PHP_COVERAGE_DIR="$KNOSSOS_PHP_COVERAGE_DIR" \
+            KNOSSOS_JS_COVERAGE_DIR="$KNOSSOS_JS_COVERAGE_DIR" \
+            KNOSSOS_PYTHON_COVERAGE_DIR="$KNOSSOS_PYTHON_COVERAGE_DIR" \
+            "$@"
+    else
+        "$@"
+    fi
+}
 
-node_modules/.bin/c8 report \
-    --temp-directory=coverage/js/tmp \
-    --report-dir=coverage/js \
-    --reporter=text \
-    --reporter=html \
-    --reporter=lcov \
-    --reporter=cobertura \
-    --reporter=json-summary \
-    --all \
-    --include='workers/typescript/bin/**/*.js' \
-    --include='workers/typescript/src/**/*.js' \
-    --check-coverage \
-    --lines="$(node -p "require('./coverage-budgets.json').typescript.lines")" \
-    --branches="$(node -p "require('./coverage-budgets.json').typescript.branches")" \
-    --functions="$(node -p "require('./coverage-budgets.json').typescript.functions")" \
-    --statements="$(node -p "require('./coverage-budgets.json').typescript.statements")"
+# The JUnit log is what the merge checks the shards' file sets against, and
+# shard.json, written only once PHPUnit has passed, is what tells it the shard
+# finished. An unsharded run writes both too, as shard 1 of 1.
+run_suite() {
+    config=phpunit.xml
+    index=1
+    of=1
+    if [ -n "$shard" ]; then
+        index="${shard%/*}"
+        of="${shard#*/}"
+        config=coverage/phpunit-shard.xml
+    fi
+    if [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ] && [ "$(id -u)" = "0" ]; then
+        chown -R knossos:knossos coverage
+    fi
+    if [ -n "$shard" ]; then
+        as_suite_user php tools/phpunit-shard --shard="$shard" --out="$config"
+    fi
+    as_suite_user php -d pcov.directory=/opt/knossos -d auto_prepend_file=/opt/knossos/tools/pcov-prepend.php \
+        vendor/bin/phpunit -c "$config" --log-junit coverage/junit.xml
+    printf '{"shard": %d, "of": %d}\n' "$index" "$of" > coverage/shard.json
+}
 
-# The plugin's own TypeScript (hooks/lib, hooks/mod) is measured by vitest, and
-# the thresholds come from the same budgets file. A shortfall exits non-zero, which
-# `set -e` turns into an aborted run.
-node_modules/.bin/vitest run --config vitest.config.mjs --coverage
+report() {
+    php tools/pcov-report.php
 
-# The quality gate runs the Python unit suite separately from PHPUnit. Collect
-# it here too: the PHP integration tests exercise the real subprocess protocol,
-# while these tests cover the worker's pure collector and edge-case branches.
-coverage run --branch --parallel-mode \
-    --data-file="$KNOSSOS_PYTHON_COVERAGE_DIR/.coverage" \
-    --source="$(pwd)/workers/python/bin" \
-    -m pytest workers/python/tests -q
-coverage combine --data-file=coverage/python/.coverage
-coverage report --data-file=coverage/python/.coverage \
-    --fail-under="$(node -p "require('./coverage-budgets.json').python.lines")"
-coverage xml --data-file=coverage/python/.coverage
-coverage json --data-file=coverage/python/.coverage -o coverage/python/coverage.json
-coverage html --data-file=coverage/python/.coverage --directory=coverage/python/html
+    node_modules/.bin/c8 report \
+        --temp-directory=coverage/js/tmp \
+        --report-dir=coverage/js \
+        --reporter=text \
+        --reporter=html \
+        --reporter=lcov \
+        --reporter=cobertura \
+        --reporter=json-summary \
+        --all \
+        --include='workers/typescript/bin/**/*.js' \
+        --include='workers/typescript/src/**/*.js' \
+        --check-coverage \
+        --lines="$(node -p "require('./coverage-budgets.json').typescript.lines")" \
+        --branches="$(node -p "require('./coverage-budgets.json').typescript.branches")" \
+        --functions="$(node -p "require('./coverage-budgets.json').typescript.functions")" \
+        --statements="$(node -p "require('./coverage-budgets.json').typescript.statements")"
 
-# --fail-under-lines signals a shortfall with exit status alone; cargo-llvm-cov
-# prints no message at all. `set -e` at the top turns that into an aborted run, so
-# when this step stops without saying anything, the figure it refused is in
-# `cargo llvm-cov report --manifest-path workers/rust/Cargo.toml`.
-cargo llvm-cov --manifest-path workers/rust/Cargo.toml \
-    --fail-under-lines "$(node -p "require('./coverage-budgets.json').rust.lines")" \
-    --json --output-path coverage/rust/coverage.json
-# llvm-cov appends its own `html/` to --output-dir, so this writes coverage/rust/html/
-# -- the same shape as coverage/python/html and coverage/js/lcov-report. Passing
-# coverage/rust/html here would nest it as coverage/rust/html/html.
-cargo llvm-cov report --manifest-path workers/rust/Cargo.toml --html --output-dir coverage/rust
-cargo llvm-cov report --manifest-path workers/rust/Cargo.toml --lcov --output-path coverage/rust/lcov.info
+    # The plugin's own TypeScript (hooks/lib, hooks/mod) is measured by vitest, and
+    # the thresholds come from the same budgets file. A shortfall exits non-zero, which
+    # `set -e` turns into an aborted run.
+    node_modules/.bin/vitest run --config vitest.config.mjs --coverage
+
+    # The quality gate runs the Python unit suite separately from PHPUnit. Collect
+    # it here too: the PHP integration tests exercise the real subprocess protocol,
+    # while these tests cover the worker's pure collector and edge-case branches.
+    coverage run --branch --parallel-mode \
+        --data-file="$KNOSSOS_PYTHON_COVERAGE_DIR/.coverage" \
+        --source="$(pwd)/workers/python/bin" \
+        -m pytest workers/python/tests -q
+    coverage combine --data-file=coverage/python/.coverage
+    coverage report --data-file=coverage/python/.coverage \
+        --fail-under="$(node -p "require('./coverage-budgets.json').python.lines")"
+    coverage xml --data-file=coverage/python/.coverage
+    coverage json --data-file=coverage/python/.coverage -o coverage/python/coverage.json
+    coverage html --data-file=coverage/python/.coverage --directory=coverage/python/html
+
+    # --fail-under-lines signals a shortfall with exit status alone; cargo-llvm-cov
+    # prints no message at all. `set -e` at the top turns that into an aborted run, so
+    # when this step stops without saying anything, the figure it refused is in
+    # `cargo llvm-cov report --manifest-path workers/rust/Cargo.toml`.
+    cargo llvm-cov --manifest-path workers/rust/Cargo.toml \
+        --fail-under-lines "$(node -p "require('./coverage-budgets.json').rust.lines")" \
+        --json --output-path coverage/rust/coverage.json
+    # llvm-cov appends its own `html/` to --output-dir, so this writes coverage/rust/html/
+    # -- the same shape as coverage/python/html and coverage/js/lcov-report. Passing
+    # coverage/rust/html here would nest it as coverage/rust/html/html.
+    cargo llvm-cov report --manifest-path workers/rust/Cargo.toml --html --output-dir coverage/rust
+    cargo llvm-cov report --manifest-path workers/rust/Cargo.toml --lcov --output-path coverage/rust/lcov.info
+}
+
+case "$mode" in
+    run)
+        prepare
+        run_suite
+        ;;
+    merge)
+        prepare
+        php tools/coverage-merge.php "$raw"
+        ;;
+    report)
+        report
+        ;;
+    all)
+        prepare
+        run_suite
+        report
+        ;;
+esac

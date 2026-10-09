@@ -10,6 +10,25 @@ Inside the pinned quality image, `tools/coverage` is the shorter coverage-only
 entrypoint. The container wrapper mounts `coverage/` back into the checkout;
 CI uploads that directory as the `quality-reports` artifact.
 
+## Running in parts
+
+`tools/coverage` with no argument runs the suite under pcov and then the
+reports. The two halves can also run on their own, which is how CI splits the
+suite over several jobs:
+
+| command                            | does                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------- |
+| `tools/coverage run [--shard=I/N]` | the PHPUnit run only; with `--shard`, only the test files of shard I |
+| `tools/coverage merge RAW_DIR`     | gathers the data of every shard under `RAW_DIR` into `coverage/`     |
+| `tools/coverage report`            | the reports and every floor below, over what `coverage/` holds       |
+
+`tools/phpunit-shard` picks the files of a shard: the suite's test files
+sorted by name and dealt out in turn, so the split depends only on the file
+names. The merge refuses unless every shard of the same N finished, left PHP
+coverage data, and every test file ran in exactly one shard, the one it was
+assigned to. Splitting cannot change a figure: pcov's data merges by the highest
+hit count per line, and the JavaScript and Python data by union.
+
 ## Enforced floors
 
 The floors live in `coverage-budgets.json`, and the number there is the
