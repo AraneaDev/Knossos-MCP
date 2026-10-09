@@ -77,7 +77,7 @@ final readonly class RedactionMap
         foreach ($directories as $directory) {
             $replacements[$directory] ??= 'redacted-dir/' . self::digest($directory, $salt, 24);
         }
-        $longest = max([0, ...array_map(strlen(...), array_map('strval', array_keys($replacements)))]);
+        $longest = max([0, ...array_map(strlen(...), array_keys($replacements))]);
         return new self($salt, $replacements, $longest);
     }
 

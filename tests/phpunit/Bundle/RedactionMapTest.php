@@ -194,13 +194,22 @@ final class RedactionMapTest extends TestCase
     public function testRowsWithoutAUsablePathOrNameAddNoKey(): void
     {
         $map = RedactionMap::fromPayload([
-            'files' => [['relative_path' => null], ['relative_path' => ''], []],
+            'files' => [['relative_path' => null], ['relative_path' => ''], [], ['relative_path' => 'kept/after.ts']],
             'nodes' => [['language' => 'py', 'kind' => 'module', 'canonical_name' => null, 'file_id' => 'f1'], ['language' => 'py', 'kind' => 'module', 'canonical_name' => '', 'file_id' => 'f1']],
             'boundaries' => [],
         ], self::SALT);
 
         self::assertNull($map->token(''));
         self::assertSame('anything', $map->scrub('anything'));
+        self::assertNotNull($map->token('kept/after.ts'), 'A row without a path does not end the walk.');
+    }
+
+    /** A file named only by digits becomes an integer array key, and still counts. */
+    public function testANumericFileNameIsAKeyLikeAnyOther(): void
+    {
+        $map = $this->map(['2024']);
+
+        self::assertSame('"' . $map->token('2024') . '"', $map->scrub('"2024"'));
     }
 
     public function testAPathLongerThanItsTokenIsStillFound(): void
