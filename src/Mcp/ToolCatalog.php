@@ -64,19 +64,25 @@ final readonly class ToolCatalog
      * The declared property names and required keys for a tool, or null when
      * the tool name is unknown. Memoized because definitions() is pure data.
      *
-     * @return array{properties: list<string>, required: list<string>}|null
+     * `enums` maps each string property with an `enum` to its allowed values,
+     * and `itemEnums` each list property whose items carry one.
+     *
+     * @return array{properties: list<string>, required: list<string>, enums: array<string, list<string>>, itemEnums: array<string, list<string>>}|null
      */
     public static function schemaFor(string $name): ?array
     {
-        /** @var array<string, array{properties: list<string>, required: list<string>}>|null $index */
+        /** @var array<string, array{properties: list<string>, required: list<string>, enums: array<string, list<string>>, itemEnums: array<string, list<string>>}>|null $index */
         static $index = null;
         if ($index === null) {
             $index = [];
             foreach (self::definitions() as $definition) {
                 $properties = $definition['inputSchema']['properties'] ?? [];
+                $properties = is_array($properties) ? $properties : [];
                 $index[$definition['name']] = [
-                    'properties' => array_keys(is_array($properties) ? $properties : []),
+                    'properties' => array_keys($properties),
                     'required' => array_values($definition['inputSchema']['required'] ?? []),
+                    'enums' => array_filter(array_map(static fn(array $spec): array => $spec['enum'] ?? [], $properties)),
+                    'itemEnums' => array_filter(array_map(static fn(array $spec): array => $spec['items']['enum'] ?? [], $properties)),
                 ];
             }
         }

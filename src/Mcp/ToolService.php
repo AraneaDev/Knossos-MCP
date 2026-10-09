@@ -310,7 +310,7 @@ final readonly class ToolService
      */
     private function prepare(string $name, array $arguments, ?CancellationToken $cancellation): \Closure
     {
-        return match ($name) {
+        $run = match ($name) {
             // Nothing to parse: the whole handler is the work.
             'server_info' => fn(): ResultEnvelope => $this->serverInfo($arguments),
             'diagnose_runtime' => fn(): ResultEnvelope => $this->diagnoseRuntime($arguments),
@@ -348,6 +348,55 @@ final readonly class ToolService
             'cleanup_stale_scans' => $this->cleanupStaleScans($arguments),
             'maintain_database' => $this->maintainDatabase($arguments),
             default => throw new InvalidArgumentException(sprintf('Unknown tool: %s', $name)),
+        };
+        self::validateEnums($arguments, (array) ToolCatalog::schemaFor($name));
+
+        return $run;
+    }
+
+    /**
+     * Every value a tool's schema restricts to an enum, checked against it now
+     * rather than in the service after a rescan. Driven by ToolCatalog, so an
+     * enum added to a schema is covered without touching this. A non-string is
+     * left to the handler, which reports it as the wrong type.
+     *
+     * @param array<string, mixed> $arguments
+     * @param array{enums?: array<string, list<string>>, itemEnums?: array<string, list<string>>} $schema
+     */
+    private static function validateEnums(array $arguments, array $schema): void
+    {
+        foreach ($schema['enums'] ?? [] as $key => $allowed) {
+            $value = $arguments[$key] ?? null;
+            if (is_string($value) && !in_array(trim($value), $allowed, true)) {
+                throw new InvalidArgumentException(self::enumMessage($key, $allowed));
+            }
+        }
+        foreach ($schema['itemEnums'] ?? [] as $key => $allowed) {
+            $values = $arguments[$key] ?? null;
+            foreach (is_array($values) ? $values : [] as $value) {
+                if (is_string($value) && !in_array(trim($value), $allowed, true)) {
+                    throw new InvalidArgumentException(self::enumMessage($key, $allowed));
+                }
+            }
+        }
+    }
+
+    /**
+     * The message the service itself gives for a value outside the enum, so
+     * refusing it earlier changes when the error comes, not what it says.
+     *
+     * @param list<string> $allowed
+     */
+    private static function enumMessage(string $key, array $allowed): string
+    {
+        $last = array_pop($allowed);
+
+        return match ($key) {
+            'min_confidence' => 'min_confidence must be possible, probable, or certain.',
+            'mode' => 'Scan mode must be auto, full, or incremental.',
+            'confidences' => 'confidence filter is invalid.',
+            'severity', 'kind' => sprintf('%s must be one of: %s.', $key, implode(', ', [...$allowed, $last])),
+            default => sprintf('%s must be %s%s or %s.', $key, implode(', ', $allowed), count($allowed) > 1 ? ',' : '', $last),
         };
     }
 
@@ -556,6 +605,8 @@ final readonly class ToolService
         if (!is_array($budgets) || ($budgets !== [] && array_is_list($budgets)) || !is_array($policies) || !array_is_list($policies)) {
             throw new InvalidArgumentException('budgets must be an object and policies must be a list.');
         }
+        // The gate's own rules, now rather than after a rescan.
+        \Knossos\Query\ProjectCatalogQueryService::validateBudgets($budgets, $policies);
         $args = [
             self::string($arguments, 'project_id'),
             self::string($arguments, 'baseline_snapshot'),
@@ -865,6 +916,10 @@ final readonly class ToolService
             self::integer($arguments, 'max_edges', ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         ];
+        if ($policies !== null) {
+            // The policies' structural rules, now rather than after a rescan.
+            ArchitecturePolicyQueryService::validatePolicies($policies);
+        }
 
         return fn(): ResultEnvelope => $this->queries->checkArchitecture(...$args);
     }

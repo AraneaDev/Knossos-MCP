@@ -579,13 +579,16 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     }
 
     /**
-     * Budget evaluation against a baseline, optionally as SARIF for CI annotation.
+     * The rules a budget set must meet, checked without the database.
      *
-     * @param array<string, mixed> $budgets @param list<array<string, mixed>> $policies
+     * Public so a caller can refuse a malformed set before doing any work (the
+     * MCP layer runs it before refresh_if_stale rescans); qualityGate() checks
+     * through this, so the rules exist once.
+     *
+     * @param array<mixed> $budgets @param array<mixed> $policies
      */
-    public function qualityGate(string $projectId, string $baselineSnapshot, array $budgets, array $policies = [], bool $sarif = false, bool $proposeBaseline = false): ResultEnvelope
+    public static function validateBudgets(array $budgets, array $policies): void
     {
-        $project = $this->project($projectId);
         $allowed = ['new_cycles', 'boundary_violations', 'error_diagnostics', 'warning_diagnostics', 'hub_degree_growth', 'unreferenced_candidates', 'public_surface_changes'];
         if ($budgets === [] || array_diff(array_keys($budgets), $allowed) !== []) {
             throw new InvalidArgumentException('budgets must contain one or more supported quality limits.');
@@ -598,6 +601,17 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         if (isset($budgets['boundary_violations']) && $policies === []) {
             throw new InvalidArgumentException('policies are required when boundary_violations is budgeted.');
         }
+    }
+
+    /**
+     * Budget evaluation against a baseline, optionally as SARIF for CI annotation.
+     *
+     * @param array<string, mixed> $budgets @param list<array<string, mixed>> $policies
+     */
+    public function qualityGate(string $projectId, string $baselineSnapshot, array $budgets, array $policies = [], bool $sarif = false, bool $proposeBaseline = false): ResultEnvelope
+    {
+        $project = $this->project($projectId);
+        self::validateBudgets($budgets, $policies);
         $activeScan = (string) ($project['active_scan_id'] ?? '');
         $baseline = $this->resolveSnapshot($projectId, $baselineSnapshot, $activeScan);
         $current = $this->resolveSnapshot($projectId, 'active', $activeScan);

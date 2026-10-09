@@ -60,46 +60,14 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         self::assertLimit($limit);
         $confidenceRank = $this->confidenceQueryBounds($maxEdges, $timeoutMs, $minConfidence);
         $policies ??= self::declaredPolicies((string) $project['root_realpath']);
-        if (!array_is_list($policies) || $policies === [] || count($policies) > 50) {
-            throw new InvalidArgumentException('policies must contain between 1 and 50 declarations.');
-        }
+        $shapes = self::validatePolicies($policies);
 
         $boundaryRows = $this->pdo->prepare('SELECT id, name, source FROM boundaries WHERE project_id = :project ORDER BY source, name, id');
         $boundaryRows->execute(['project' => $projectId]);
         $availableBoundaries = $boundaryRows->fetchAll();
         $compiled = [];
-        $policyIds = [];
         $allKinds = [];
-        foreach ($policies as $policy) {
-            if (!is_array($policy)) {
-                throw new InvalidArgumentException('Each policy must be an object.');
-            }
-            $unknown = array_diff(array_keys($policy), ['id', 'from_boundary', 'allow_targets', 'deny_targets', 'edge_kinds']);
-            if ($unknown !== []) {
-                throw new InvalidArgumentException('Policy contains unknown fields: ' . implode(', ', $unknown));
-            }
-            $id = $policy['id'] ?? null;
-            $from = $policy['from_boundary'] ?? null;
-            if (!is_string($id) || trim($id) === '' || mb_strlen($id) > 100) {
-                throw new InvalidArgumentException('Policy id must be a non-empty string of at most 100 characters.');
-            }
-            if (isset($policyIds[$id])) {
-                throw new InvalidArgumentException('Policy ids must be unique: ' . $id);
-            }
-            $policyIds[$id] = true;
-            if (!is_string($from) || trim($from) === '') {
-                throw new InvalidArgumentException('Policy from_boundary must be a non-empty boundary ID or name.');
-            }
-            $allow = $this->policyList($policy, 'allow_targets');
-            $deny = $this->policyList($policy, 'deny_targets');
-            if ($allow === [] && $deny === []) {
-                throw new InvalidArgumentException('Policy must declare allow_targets or deny_targets.');
-            }
-            $kinds = $this->policyList($policy, 'edge_kinds');
-            $kinds = $kinds === [] ? self::IMPACT_EDGE_KINDS : array_values(array_unique($kinds));
-            if (array_diff($kinds, self::IMPACT_EDGE_KINDS) !== []) {
-                throw new InvalidArgumentException('Policy edge_kinds contains an unsupported dependency relationship.');
-            }
+        foreach ($shapes as ['id' => $id, 'from' => $from, 'allow' => $allow, 'deny' => $deny, 'kinds' => $kinds]) {
             $compiledAllow = array_map(fn(string $value): string => $value === '@unassigned' ? $value : $this->resolvePolicyBoundary($value, $availableBoundaries), $allow);
             $compiledDeny = array_map(fn(string $value): string => $value === '@unassigned' ? $value : $this->resolvePolicyBoundary($value, $availableBoundaries), $deny);
             $compiled[] = [
@@ -245,6 +213,59 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
     }
 
     /**
+     * The structural rules of a policy list, checked without the database.
+     *
+     * Public so a caller can refuse a malformed list before doing any work
+     * (the MCP layer runs it before refresh_if_stale rescans); the check
+     * itself compiles through this, so the rules exist once.
+     *
+     * @param array<mixed> $policies
+     * @return list<array{id: string, from: string, allow: list<string>, deny: list<string>, kinds: list<string>}>
+     */
+    public static function validatePolicies(array $policies): array
+    {
+        if (!array_is_list($policies) || $policies === [] || count($policies) > 50) {
+            throw new InvalidArgumentException('policies must contain between 1 and 50 declarations.');
+        }
+        $shapes = [];
+        $policyIds = [];
+        foreach ($policies as $policy) {
+            if (!is_array($policy)) {
+                throw new InvalidArgumentException('Each policy must be an object.');
+            }
+            $unknown = array_diff(array_keys($policy), ['id', 'from_boundary', 'allow_targets', 'deny_targets', 'edge_kinds']);
+            if ($unknown !== []) {
+                throw new InvalidArgumentException('Policy contains unknown fields: ' . implode(', ', $unknown));
+            }
+            $id = $policy['id'] ?? null;
+            $from = $policy['from_boundary'] ?? null;
+            if (!is_string($id) || trim($id) === '' || mb_strlen($id) > 100) {
+                throw new InvalidArgumentException('Policy id must be a non-empty string of at most 100 characters.');
+            }
+            if (isset($policyIds[$id])) {
+                throw new InvalidArgumentException('Policy ids must be unique: ' . $id);
+            }
+            $policyIds[$id] = true;
+            if (!is_string($from) || trim($from) === '') {
+                throw new InvalidArgumentException('Policy from_boundary must be a non-empty boundary ID or name.');
+            }
+            $allow = self::policyList($policy, 'allow_targets');
+            $deny = self::policyList($policy, 'deny_targets');
+            if ($allow === [] && $deny === []) {
+                throw new InvalidArgumentException('Policy must declare allow_targets or deny_targets.');
+            }
+            $kinds = self::policyList($policy, 'edge_kinds');
+            $kinds = $kinds === [] ? self::IMPACT_EDGE_KINDS : array_values(array_unique($kinds));
+            if (array_diff($kinds, self::IMPACT_EDGE_KINDS) !== []) {
+                throw new InvalidArgumentException('Policy edge_kinds contains an unsupported dependency relationship.');
+            }
+            $shapes[] = ['id' => $id, 'from' => $from, 'allow' => $allow, 'deny' => $deny, 'kinds' => $kinds];
+        }
+
+        return $shapes;
+    }
+
+    /**
      * The edges a policy check walks, in a stable order, one past the edge budget.
      *
      * @param list<string> $kinds
@@ -299,7 +320,7 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
      *
      * @param array<string, mixed> $policy @return list<string>
      */
-    private function policyList(array $policy, string $key): array
+    private static function policyList(array $policy, string $key): array
     {
         if (!array_key_exists($key, $policy)) {
             return [];
