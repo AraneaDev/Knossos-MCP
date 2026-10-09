@@ -22,9 +22,10 @@ suite over several jobs:
 | `tools/coverage merge RAW_DIR`     | gathers the data of every shard under `RAW_DIR` into `coverage/`     |
 | `tools/coverage report`            | the reports and every floor below, over what `coverage/` holds       |
 
-`tools/phpunit-shard` picks the files of a shard: the suite's test files
-sorted by name and dealt out in turn, so the split depends only on the file
-names. The merge refuses unless every shard of the same N finished, left PHP
+`tools/phpunit-shard` picks the files of a shard, heaviest first, each to the
+shard with the least measured time so far, by the times in
+`tests/phpunit-shard-weights.json`. The split depends only on the file names and
+that file, so every runner computes the same one. The merge refuses unless every shard of the same N finished, left PHP
 coverage data, and every test file ran in exactly one shard, the one it was
 assigned to. Splitting cannot change a figure: pcov's data merges by the highest
 hit count per line, and the JavaScript and Python data by union.
