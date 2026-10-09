@@ -410,6 +410,8 @@ final readonly class GraphReconciler
         $returnTypes = self::returnTypes($contributions);
         // Built on the first prefix or directory edge, once per reconcile.
         $references = null;
+        // Built on the first edge that matches nothing exactly, once per reconcile.
+        $caseless = null;
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
                 $sourceId = $nodeMap[$edge->sourceReference] ?? null;
@@ -447,15 +449,19 @@ final readonly class GraphReconciler
                 // receiver's type but not whether that type declares the member
                 // (it may be a trait's or a base's): kept only when it resolves.
                 $deferred = $returned || ($edge->attributes['speculative'] ?? false) === true;
-                $reference = match (true) {
-                    $returned => $this->returnedMemberReference($edge->targetReference, $returnTypes, $inheritanceSources),
-                    str_contains($edge->targetReference, ':namespaced_function:') => self::namespacedFunctionReference($edge->targetReference, $nodeMap),
-                    default => $edge->targetReference,
-                };
-                $targetId = $reference === null ? null : (self::implementationTarget($reference, $nodeMap)
-                    ?? $nodeMap[$reference]
-                    ?? $this->aliasedTypeTarget($reference, $nodeMap)
-                    ?? $this->inheritedMemberTarget($reference, $nodeMap, $inheritanceSources));
+                [$reference, $targetId] = $this->target($edge->targetReference, $returned, $nodeMap, $returnTypes, $inheritanceSources);
+                if ($targetId === null && CaseInsensitiveReferences::applies($edge->targetReference)) {
+                    // Matched again without regard to case, for a language
+                    // that reads its names so; an exact match always wins.
+                    $caseless ??= new CaseInsensitiveReferences($nodeMap, $returnTypes, $inheritanceSources, $contributions);
+                    $targetId = $this->target(
+                        CaseInsensitiveReferences::fold($edge->targetReference),
+                        $returned,
+                        $caseless->nodeMap(),
+                        $caseless->returnTypes(),
+                        $caseless->inheritanceSources(),
+                    )[1];
+                }
                 if ($targetId === null && $deferred) {
                     // A speculative reference the graph cannot confirm. Dropping
                     // it keeps an inference that did not pay off out of the
@@ -490,7 +496,7 @@ final readonly class GraphReconciler
                 if ($targetId === null) {
                     [$targetId, $externalNode] = $this->externalNode(
                         $projectId,
-                        $reference,
+                        $caseless?->spelling((string) $reference) ?? (string) $reference,
                         $edge->evidence,
                         $contribution->ownerKey,
                         $fileIds,
@@ -504,6 +510,29 @@ final readonly class GraphReconciler
         }
 
         return [$external, $edges, $warnings, $unconfirmed];
+    }
+
+    /**
+     * The reference an edge target resolves to once its deferred form is
+     * read, and the node that reference reaches, if any.
+     *
+     * @param array<string, string> $nodeMap
+     * @param array<string, string> $returnTypes
+     * @param array<string, list<string>> $inheritanceSources
+     * @return array{0: ?string, 1: ?string}
+     */
+    private function target(string $targetReference, bool $returned, array $nodeMap, array $returnTypes, array $inheritanceSources): array
+    {
+        $reference = match (true) {
+            $returned => $this->returnedMemberReference($targetReference, $returnTypes, $inheritanceSources),
+            str_contains($targetReference, ':namespaced_function:') => self::namespacedFunctionReference($targetReference, $nodeMap),
+            default => $targetReference,
+        };
+
+        return [$reference, $reference === null ? null : (self::implementationTarget($reference, $nodeMap)
+            ?? $nodeMap[$reference]
+            ?? $this->aliasedTypeTarget($reference, $nodeMap)
+            ?? $this->inheritedMemberTarget($reference, $nodeMap, $inheritanceSources))];
     }
 
     /**

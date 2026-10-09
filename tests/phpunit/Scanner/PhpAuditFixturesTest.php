@@ -10,9 +10,10 @@ use PDO;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * The audit's PHP scope and route fixtures through the whole scan: each call
- * reaches the class its receiver holds in that scope, and each route carries
- * what its groups and attributes give it.
+ * The audit's PHP scope, route and name-matching fixtures through the whole
+ * scan: each call reaches the class its receiver holds in that scope, each
+ * route carries what its groups and attributes give it, and a name written in
+ * another case reaches the declaration it names.
  */
 #[Group('php-scanner')]
 final class PhpAuditFixturesTest extends KnossosTestCase
@@ -206,6 +207,109 @@ final class PhpAuditFixturesTest extends KnossosTestCase
             'App\\Controller\\HealthController::__invoke [method]',
             'App\\Controller\\PageController::__invoke [method]',
         ], $targets);
+    }
+
+    /**
+     * A class, function or method named in another case is the same symbol:
+     * the edge reaches the declaration, which keeps its id and its spelling,
+     * and an undeclared class named two ways is one external.
+     */
+    public function testL25NamesMatchWhateverTheirCase(): void
+    {
+        $this->writeL25Fixture();
+        $pdo = $this->scan();
+
+        $nodes = $this->nodes($pdo);
+        $kinds = [];
+        foreach ($nodes as $node) {
+            $kinds[$node['canonical_name']] = $node['kind'];
+        }
+        self::assertSame('class', $kinds['App\\Foo'] ?? null);
+        self::assertSame('method', $kinds['App\\Foo::doThing'] ?? null);
+        self::assertSame('function', $kinds['App\\helper'] ?? null);
+        $externals = array_keys(array_filter($kinds, static fn(string $kind): bool => str_starts_with($kind, 'external_')));
+        sort($externals);
+        self::assertSame(['DateTime', 'DateTime::createFromFormat'], $externals, 'no twin of a declared or an external symbol');
+
+        $calls = [];
+        foreach ($this->edges($pdo) as $edge) {
+            if (in_array($edge['source'], ['App\\User2::run', 'App\\Child::go', 'App\\Foo::chain'], true) && in_array($edge['kind'], ['calls', 'constructs', 'references'], true)) {
+                $calls[] = $edge['source'] . ' ' . $edge['kind'] . ' ' . $edge['target'] . ' [' . $edge['target_kind'] . ']';
+            }
+        }
+        $calls = array_values(array_unique($calls));
+        sort($calls);
+        self::assertSame([
+            'App\\Child::go calls App\\Foo::doThing [method]',
+            // The class naming itself in another case is not a use of it.
+            'App\\Foo::chain calls App\\Foo::doThing [method]',
+            'App\\Foo::chain calls App\\Foo::make [method]',
+            'App\\User2::run calls App\\Foo::doThing [method]',
+            'App\\User2::run calls App\\Foo::make [method]',
+            'App\\User2::run calls App\\helper [function]',
+            'App\\User2::run calls DateTime::createFromFormat [external_method]',
+            'App\\User2::run constructs App\\Foo [class]',
+            'App\\User2::run constructs DateTime [external_class]',
+            'App\\User2::run references App\\Foo [class]',
+            'App\\User2::run references DateTime [external_class]',
+        ], $calls);
+    }
+
+    /** An incremental scan after a file changes the spellings in use equals a full scan of the result. */
+    public function testL25IncrementalEqualsFull(): void
+    {
+        $this->writeL25Fixture();
+        $pdo = $this->scan();
+        $this->write('src/Use.php', str_replace('new \\DateTime()', 'new \\DATETIME()', (string) file_get_contents($this->root . '/src/Use.php')));
+        (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root);
+        $fresh = $this->scan();
+
+        self::assertSame($this->graph($fresh), $this->graph($pdo));
+        self::assertContains('DATETIME', array_column($this->nodes($fresh), 'canonical_name'), 'the only spelling left names the external');
+    }
+
+    private function writeL25Fixture(): void
+    {
+        $this->write('src/Foo.php', <<<'PHP'
+            <?php
+            namespace App;
+            class Foo {
+                public function doThing(): void {}
+                public static function make(): self { return new self(); }
+                public function chain(): void { $made = $this->MAKE(); $made->doThing(); FOO::make(); }
+            }
+            function helper(): void {}
+            PHP);
+        $this->write('src/Use.php', <<<'PHP'
+            <?php
+            namespace App;
+            class User2 {
+                public function run(): void {
+                    $f = new foo();
+                    $f->DoThing();
+                    FOO::MAKE();
+                    \app\HELPER();
+                    $d = \datetime::createFromFormat('Y', '2026');
+                    $e = new \DateTime();
+                }
+            }
+            class Child extends foo {
+                public function go(): void { $this->DOTHING(); }
+            }
+            PHP);
+    }
+
+    /** @return list<string> */
+    private function graph(PDO $pdo): array
+    {
+        $rows = array_map(static fn(array $n): string => $n['kind'] . ' ' . $n['canonical_name'], $this->nodes($pdo));
+        foreach ($this->edges($pdo) as $e) {
+            $rows[] = $e['kind'] . ' ' . $e['source'] . ' -> ' . $e['target'] . ' [' . $e['target_kind'] . '] ' . $e['confidence'] . ' @' . $e['start_line'];
+        }
+        $rows = array_values(array_unique($rows));
+        sort($rows);
+
+        return $rows;
     }
 
     private function scan(): PDO

@@ -59,7 +59,8 @@ final class FactCollector extends NodeVisitorAbstract
     private array $fileScopeVariables = [];
 
     /**
-     * Declared return types of the methods this file declares, keyed `Class::method`.
+     * Declared return types of the methods this file declares, keyed
+     * `Class::method` in lower case, since PHP reads both names so.
      *
      * Collected up front because a method is routinely called above its own
      * declaration, and a single-pass visitor would not have read the signature
@@ -163,7 +164,7 @@ final class FactCollector extends NodeVisitorAbstract
                 if ($method->returnType instanceof Name) {
                     // `self` and `static` name the declaring class itself.
                     $returned = $method->returnType->toString();
-                    $this->returnTypes[$className . '::' . $method->name->toString()] = in_array(strtolower($returned), ['self', 'static'], true) ? $className : $returned;
+                    $this->returnTypes[strtolower($className . '::' . $method->name->toString())] = in_array(strtolower($returned), ['self', 'static'], true) ? $className : $returned;
                 }
             }
         }
@@ -348,7 +349,7 @@ final class FactCollector extends NodeVisitorAbstract
 
         if ($node instanceof Stmt\Class_ && $node->extends instanceof Name) {
             $this->addEdge('extends', $id, self::reference('class', $parent), $node->extends);
-            if ($parent === 'Symfony\\Component\\Validator\\Constraint' && $node->getMethod('validatedBy') === null) {
+            if (strcasecmp($parent, 'Symfony\\Component\\Validator\\Constraint') === 0 && $node->getMethod('validatedBy') === null) {
                 // Validated by `static::class . 'Validator'` unless its own
                 // `validatedBy()` says otherwise; kept only when that class
                 // exists.
@@ -740,12 +741,12 @@ final class FactCollector extends NodeVisitorAbstract
             && $expression->name instanceof Identifier) {
             $class = $this->currentClass()['name'] ?? null;
 
-            return $class === null ? null : ($this->returnTypes[$class . '::' . $expression->name->toString()] ?? null);
+            return $class === null ? null : ($this->returnTypes[strtolower($class . '::' . $expression->name->toString())] ?? null);
         }
         if ($expression instanceof Expr\StaticCall
             && $expression->class instanceof Name
             && $expression->name instanceof Identifier) {
-            return $this->returnTypes[$this->resolvedClassName($expression->class) . '::' . $expression->name->toString()] ?? null;
+            return $this->returnTypes[strtolower($this->resolvedClassName($expression->class) . '::' . $expression->name->toString())] ?? null;
         }
 
         return null;
@@ -943,7 +944,7 @@ final class FactCollector extends NodeVisitorAbstract
      * already close by edging `references` to the declaring type.
      *
      * A class naming itself is skipped: `self::`, `static::`, and an explicit
-     * mention of the enclosing class are internal traffic, not usage, and
+     * mention of the enclosing class, in any case, are internal traffic, not usage, and
      * counting them would make every class with one internal static call look
      * reachable. `parent::` resolves to a different class and is kept.
      */
@@ -954,7 +955,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
         $source = $this->currentSource();
         $resolved = $this->resolvedClassName($class);
-        if ($resolved === ($this->currentClass()['name'] ?? null)) {
+        if (strcasecmp($resolved, $this->currentClass()['name'] ?? '') === 0) {
             return;
         }
         $this->addEdge('references', $source, self::reference('class', $resolved), $evidence);
