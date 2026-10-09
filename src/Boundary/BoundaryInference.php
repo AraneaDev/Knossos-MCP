@@ -206,11 +206,24 @@ final class BoundaryInference
                 }
                 $rule['aliases'][] = $baseName;
             }
-            $aliases = array_values(array_unique(array_diff($rule['aliases'] ?? [], [$displayName])));
-            sort($aliases, SORT_STRING);
-            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], $members, $identityName, $aliases);
+            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], $members, $identityName, self::aliases($rule['aliases'] ?? [], $displayName));
         }
         return $facts;
+    }
+
+    /**
+     * The names a boundary was known by, as {@see BoundaryFact} holds them:
+     * sorted, distinct, and never its own name.
+     *
+     * @param list<string> $names
+     * @return list<string>
+     */
+    private static function aliases(array $names, string $displayName): array
+    {
+        $aliases = array_values(array_unique(array_diff($names, [$displayName])));
+        sort($aliases, SORT_STRING);
+
+        return $aliases;
     }
 
     /**
