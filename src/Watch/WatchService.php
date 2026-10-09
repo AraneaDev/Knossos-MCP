@@ -29,6 +29,14 @@ final readonly class WatchService
 {
     private const MAX_BACKOFF_MS = 30_000;
 
+    /**
+     * Timeouts in a row after which the watch stops. One may be a load spike;
+     * but a watched tree only grows, so the third identical timeout is
+     * evidence the scan is too large for its limit, and three attempts bound
+     * the waste instead of retrying forever.
+     */
+    public const MAX_CONSECUTIVE_TIMEOUTS = 3;
+
     private \Knossos\Discovery\AllowedRoots $roots;
 
     /**
@@ -221,23 +229,9 @@ final readonly class WatchService
         $mode = $state->overflow ? 'full' : 'incremental';
         $emit(['event' => 'scan_started', 'mode' => $mode, 'changes' => count($state->pending)]);
         $attempt = WatchScanAttempt::run($this->scanner, $root, $mode, $cancellation);
-        if ($attempt->isCancelled()) {
-            return false;
-        }
-        if ($attempt->isTerminal()) {
-            ++$state->scanErrors;
-            $emit(['event' => 'error', 'mode' => $mode, 'message' => (string) $attempt->errorMessage, 'retryable' => false]);
-            $state->terminalReason = 'error';
-            return false;
-        }
-        if ($attempt->isRetryable() || $attempt->result === null) {
-            ++$state->scanErrors;
-            ++$state->consecutiveFailures;
-            // Retain pending paths (later polls keep coalescing into them) so the
-            // failed batch is retried instead of dropped; back off before retrying.
-            $state->retryNotBefore = hrtime(true) + $this->backoffNanos($state->consecutiveFailures, $pollMs);
-            $emit(['event' => 'error', 'mode' => $mode, 'message' => (string) $attempt->errorMessage, 'retryable' => true, 'attempt' => $state->consecutiveFailures]);
-            return true;
+        $failed = $this->failed($attempt, $mode, $state, $pollMs, $emit);
+        if ($failed !== null || $attempt->result === null) {
+            return $failed ?? true;
         }
         $last = $attempt->result;
         [$state->projectId, $state->snapshotId] = [$last->projectId, $last->snapshotId];
@@ -250,6 +244,40 @@ final readonly class WatchService
         $emit(['event' => 'scan_completed', 'mode' => $mode, 'snapshot_id' => $last->snapshotId, 'parsed_files' => $last->data['parsed_files']]);
         $state->settle();
         self::giveBackMemory();
+        return true;
+    }
+
+    /**
+     * What a scan attempt that did not succeed means for the watch: null when
+     * it succeeded, true when it is retried after a backoff, false when the
+     * watch must stop (cancelled, a failure no retry can fix, or the
+     * {@see self::MAX_CONSECUTIVE_TIMEOUTS}th timeout in a row).
+     *
+     * @param callable(array<string, mixed>): void $emit
+     */
+    private function failed(WatchScanAttempt $attempt, string $mode, WatchState $state, int $pollMs, callable $emit): ?bool
+    {
+        if ($attempt->isCancelled()) {
+            return false;
+        }
+        if (!$attempt->isTerminal() && !$attempt->isRetryable()) {
+            return null;
+        }
+        ++$state->scanErrors;
+        $code = $attempt->code === null ? [] : ['code' => $attempt->code];
+        if ($attempt->code === WatchScanAttempt::SCAN_TIMEOUT) {
+            ++$state->consecutiveTimeouts;
+        }
+        if ($attempt->isTerminal() || $state->consecutiveTimeouts >= self::MAX_CONSECUTIVE_TIMEOUTS) {
+            $emit(['event' => 'error', 'mode' => $mode, 'message' => (string) $attempt->errorMessage, 'retryable' => false] + $code);
+            $state->terminalReason = 'error';
+            return false;
+        }
+        ++$state->consecutiveFailures;
+        // Retain pending paths (later polls keep coalescing into them) so the
+        // failed batch is retried instead of dropped; back off before retrying.
+        $state->retryNotBefore = hrtime(true) + $this->backoffNanos($state->consecutiveFailures, $pollMs);
+        $emit(['event' => 'error', 'mode' => $mode, 'message' => (string) $attempt->errorMessage, 'retryable' => true, 'attempt' => $state->consecutiveFailures] + $code);
         return true;
     }
 

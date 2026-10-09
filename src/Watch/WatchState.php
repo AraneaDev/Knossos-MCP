@@ -52,6 +52,9 @@ final class WatchState
 
     public int $consecutiveFailures = 0;
 
+    /** Scans in a row that ran past their time limit; the watch stops at {@see WatchService::MAX_CONSECUTIVE_TIMEOUTS}. */
+    public int $consecutiveTimeouts = 0;
+
     /** Clears what waits for a scan once a scan (or another writer) took it in. */
     public function settle(): void
     {
@@ -59,6 +62,7 @@ final class WatchState
         $this->overflow = false;
         $this->firstPendingAt = null;
         $this->consecutiveFailures = 0;
+        $this->consecutiveTimeouts = 0;
         $this->retryNotBefore = null;
     }
 }

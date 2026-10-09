@@ -10,6 +10,7 @@ use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanner;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Watch\ScanTimeoutException;
 use Knossos\Watch\WatchScanAttempt;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
@@ -200,6 +201,28 @@ final class WatchScanAttemptTest extends TestCase
         assertSame(false, $attempt->isTerminal());
         assertSame('worker timed out', $attempt->errorMessage);
         assertSame(null, $attempt->result);
+    }
+
+    /** A scan past its time limit is retryable, and says it timed out so the watcher can cap the retries. */
+    public function testATimedOutScanIsRetryableWithTheTimeoutCode(): void
+    {
+        $attempt = WatchScanAttempt::run(
+            self::throwingScanner(new ScanTimeoutException('The scan ran past its 300 s limit and was stopped.')),
+            '/tmp/root',
+            'incremental',
+            new CancellationToken(),
+        );
+
+        assertSame([WatchScanAttempt::RETRYABLE, 'scan_timeout'], [$attempt->outcome, $attempt->code]);
+        assertSame('The scan ran past its 300 s limit and was stopped.', $attempt->errorMessage);
+    }
+
+    /** Any other failure carries no code: only a timeout is counted toward the cap. */
+    public function testOtherOutcomesCarryNoCode(): void
+    {
+        foreach ([new RuntimeException('busy'), new Error('defect')] as $error) {
+            assertSame(null, WatchScanAttempt::run(self::throwingScanner($error), '/tmp/root', 'incremental', new CancellationToken())->code);
+        }
     }
 
     public function testRunReturnsRetryableWhenScannerThrowsArbitraryException(): void

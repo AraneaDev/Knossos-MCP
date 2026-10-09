@@ -89,7 +89,7 @@ final readonly class ProcessScanner
                 proc_close($process);
                 throw $stop === 'cancelled'
                     ? new ScanCancelledException('The scan was cancelled.')
-                    : new RuntimeException(sprintf('The scan ran past its %d s limit and was stopped.', intdiv($this->timeoutMs, 1000)));
+                    : new ScanTimeoutException(sprintf('The scan ran past its %d s limit and was stopped.', intdiv($this->timeoutMs, 1000)));
             }
             if ($this->heartbeat !== null && hrtime(true) - $beat >= $this->heartbeatMs * 1_000_000) {
                 $beat = hrtime(true);

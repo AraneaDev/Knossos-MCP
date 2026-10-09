@@ -24,6 +24,9 @@ final readonly class WatchScanAttempt
     public const RETRYABLE = 'retryable';
     public const TERMINAL = 'terminal';
 
+    /** The code of a retryable attempt whose scan ran past its time limit. */
+    public const SCAN_TIMEOUT = 'scan_timeout';
+
     /**
      * Worker diagnostic codes that reflect a transient fault (a crash, timeout,
      * or broken pipe) which may clear on the next attempt. Every other worker
@@ -41,13 +44,17 @@ final readonly class WatchScanAttempt
         'WORKER_EXITED',
     ];
 
+    /**
+     * @param string|null $code {@see self::SCAN_TIMEOUT} for a scan past its time limit, null otherwise
+     */
     private function __construct(
         public string $outcome,
         public ?ResultEnvelope $result,
         public ?string $errorMessage,
+        public ?string $code = null,
     ) {}
-    /** Attempt one rescan and classify the outcome as success, cancelled, retryable, or terminal. */
 
+    /** Attempt one rescan and classify the outcome as success, cancelled, retryable, or terminal. */
     public static function run(
         ProjectScanner|\Closure $scanner,
         string $root,
@@ -63,6 +70,10 @@ final readonly class WatchScanAttempt
             return new self(self::SUCCESS, $result, null);
         } catch (ScanCancelledException) {
             return new self(self::CANCELLED, null, null);
+        } catch (ScanTimeoutException $error) {
+            // Retryable, but counted apart: the watcher stops once the same
+            // scan has timed out too often in a row.
+            return new self(self::RETRYABLE, null, $error->getMessage(), self::SCAN_TIMEOUT);
         } catch (WorkerException $error) {
             // Classify worker faults by diagnostic code: a small allowlist of
             // transient codes stays retryable, permanent misconfigurations

@@ -8,6 +8,7 @@ use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Watch\ProcessScanner;
+use Knossos\Watch\ScanTimeoutException;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 
@@ -67,7 +68,8 @@ final class ProcessScannerTest extends KnossosTestCase
         try {
             $scanner->scan('/nowhere');
             self::fail('The hung scan returned.');
-        } catch (RuntimeException $stopped) {
+        } catch (ScanTimeoutException $stopped) {
+            // Its own class, so the watcher can count timeouts apart from other failures.
             assertStringContainsString('ran past its 1 s limit', $stopped->getMessage());
         }
         // The limit, the grace for a scan that ignores the request to stop, and no more.
