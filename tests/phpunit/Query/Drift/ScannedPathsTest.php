@@ -172,6 +172,10 @@ final class ScannedPathsTest extends KnossosTestCase
             self::assertFalse($paths->tracks('dist/x.ts', $root . '/dist/x.ts'));
             self::assertTrue($paths->tracks('src/build/x.ts', $root . '/src/build/x.ts'));
             self::assertTrue($paths->tracks('packages/b/dist/x.ts', $root . '/packages/b/dist/x.ts'));
+            // A directory that is gone, or a file where a directory was, holds no manifest.
+            file_put_contents($root . '/blob', 'x');
+            self::assertTrue($paths->tracks('gone/dist/x.ts', $root . '/gone/dist/x.ts'));
+            self::assertTrue($paths->tracks('blob/dist/x.ts', $root . '/blob/dist/x.ts'));
         } finally {
             $this->removeTempTree($root);
         }

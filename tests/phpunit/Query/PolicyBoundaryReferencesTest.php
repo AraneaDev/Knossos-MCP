@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Knossos\Query\ArchitecturePolicyQueryService;
 use Knossos\Query\FileContextQueryService;
 use Knossos\Query\GraphTopologyQueryService;
+use Knossos\Query\LocationSuggestionService;
 use Knossos\Query\SessionBriefService;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Store\StableId;
@@ -63,6 +64,15 @@ final class PolicyBoundaryReferencesTest extends KnossosTestCase
         self::assertIsString($check('node:web'));
         self::assertIsString($check($oldId));
         self::assertIsString($check('composer:acme/lib'));
+        // Targets resolve the same way: an allow list naming a former name is
+        // compiled, one naming nothing is refused.
+        $allow = static fn(string $target): string => (new ArchitecturePolicyQueryService($pdo))->checkArchitecture(
+            $projectId,
+            [['id' => 'web-allows', 'from_boundary' => 'node:web', 'allow_targets' => [$target]]],
+        )->summary;
+        self::assertIsString($allow('node:web'));
+        $error = captureThrows(static fn() => $allow('Nowhere'), InvalidArgumentException::class);
+        assertSame('Unknown policy boundary: Nowhere', $error->getMessage());
     }
 
     #[Group('query')]
@@ -92,7 +102,10 @@ final class PolicyBoundaryReferencesTest extends KnossosTestCase
         $config = static fn(string $from): string => (string) json_encode([
             'version' => 1,
             'boundaries' => [['name' => 'core', 'path_prefix' => 'src']],
-            'policies' => [['id' => 'core-alone', 'from_boundary' => $from, 'deny_targets' => ['@unassigned']]],
+            'policies' => [
+                ['id' => 'elsewhere', 'from_boundary' => 'Nowhere', 'deny_targets' => ['@unassigned']],
+                ['id' => 'core-alone', 'from_boundary' => $from, 'deny_targets' => ['@unassigned']],
+            ],
         ]);
         file_put_contents($this->root . '/knossos.json', $config('core'));
         $pdo = $this->freshTestDatabase();
@@ -101,7 +114,8 @@ final class PolicyBoundaryReferencesTest extends KnossosTestCase
 
         $context = (new FileContextQueryService($pdo))->fileContext($projectId, 'src/a.ts');
 
-        assertSame(['core-alone'], array_column($context->data['policies'], 'id'));
+        assertSame([0], array_keys($context->data['policies']));
+        assertSame('core-alone', $context->data['policies'][0]['id']);
     }
 
     /** list_boundaries shows the former names beside the matcher, never inside it. */
@@ -119,6 +133,10 @@ final class PolicyBoundaryReferencesTest extends KnossosTestCase
 
         assertSame(['type' => 'path_prefix', 'value' => ''], $boundary['matcher']);
         assertSame(['composer:acme/lib', 'node:web'], $boundary['aliases']);
+
+        // suggest_location shows the same matcher, the former names left out.
+        $matchers = array_column(array_column((new LocationSuggestionService($pdo, null))->suggestLocation($projectId, 'src a')->data['candidates'], 'boundary'), 'matcher', 'name');
+        assertSame(['type' => 'path_prefix', 'value' => ''], $matchers['composer:acme/lib (+node:web)'] ?? null);
     }
 
     /** The session brief showed a reference as written, so a policy written with a stable id read as a hash. */
@@ -128,13 +146,16 @@ final class PolicyBoundaryReferencesTest extends KnossosTestCase
         $config = static fn(string $from): string => (string) json_encode([
             'version' => 1,
             'boundaries' => [['name' => 'core', 'path_prefix' => 'src']],
-            'policies' => [['id' => 'core-alone', 'from_boundary' => $from, 'deny_targets' => ['@unassigned', 'gone']]],
+            'policies' => [
+                ['id' => 'core-alone', 'from_boundary' => $from, 'deny_targets' => ['@unassigned', 'gone', $from]],
+                ['id' => 'core-only', 'from_boundary' => $from, 'allow_targets' => [$from]],
+            ],
         ]);
         file_put_contents($this->root . '/knossos.json', $config('core'));
         $pdo = $this->freshTestDatabase();
         $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root)->projectId;
         file_put_contents($this->root . '/knossos.json', $config(StableId::boundary($projectId, 'core', 'explicit')));
 
-        assertSame(['core -x-> @unassigned, gone'], (new SessionBriefService($pdo))->gather($this->root)->rules);
+        assertSame(['core -x-> @unassigned, gone, core', 'core --> only core'], (new SessionBriefService($pdo))->gather($this->root)->rules);
     }
 }
