@@ -124,18 +124,18 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
      * position is a keyset, not an offset, so adding or removing a project
      * between pages cannot shift the rest either.
      *
+     * No position (null) starts at the beginning: every created_at sorts after
+     * the empty string. $limit is the caller's page size, not client input.
+     *
      * @return array{projects: list<array{id: string, name: string, created_at: string}>, more: bool}
      */
     public function projectsInCreationOrder(int $limit, ?string $afterCreatedAt, ?string $afterId): array
     {
-        self::assertLimit($limit);
         $statement = $this->pdo->prepare(
             'SELECT id, name, created_at FROM projects ' .
-            'WHERE :unbounded = 1 OR created_at > :after_created OR (created_at = :same_created AND id > :after_id) ' .
+            'WHERE created_at > :after_created OR (created_at = :same_created AND id > :after_id) ' .
             'ORDER BY created_at ASC, id ASC LIMIT :limit',
         );
-        $unbounded = $afterCreatedAt === null || $afterId === null;
-        $statement->bindValue(':unbounded', $unbounded ? 1 : 0, PDO::PARAM_INT);
         $statement->bindValue(':after_created', (string) $afterCreatedAt);
         $statement->bindValue(':same_created', (string) $afterCreatedAt);
         $statement->bindValue(':after_id', (string) $afterId);

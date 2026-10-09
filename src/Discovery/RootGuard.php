@@ -70,13 +70,13 @@ final readonly class RootGuard
     {
         try {
             $this->resolve($root);
+
+            return false;
         } catch (RootNotFoundException) {
             return false;
         } catch (DiscoveryException) {
             return true;
         }
-
-        return false;
     }
 
     /**

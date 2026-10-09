@@ -43,7 +43,7 @@ final readonly class ResourceService
         $last = $listing['projects'] === [] ? null : $listing['projects'][array_key_last($listing['projects'])];
         if ($listing['more'] && $last !== null) {
             $payload = self::CURSOR_PREFIX . json_encode([$last['created_at'], $last['id']], JSON_THROW_ON_ERROR);
-            $page['nextCursor'] = rtrim(strtr(base64_encode($payload), '+/', '-_'), '=');
+            $page['nextCursor'] = strtr(base64_encode($payload), '+/', '-_');
         }
 
         return $page;

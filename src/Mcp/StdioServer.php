@@ -50,7 +50,7 @@ final class StdioServer
     /** @var list<string> */
     private array $pendingLines = [];
     private string $inputBuffer = '';
-    /** @var array<string, true> */
+    /** @var array<string, int|string> pending cancels: cancelKey() => the request id they name */
     private array $cancelledRequests = [];
 
     public function __construct(
@@ -200,7 +200,7 @@ final class StdioServer
                     if (count($this->cancelledRequests) >= self::MAX_PENDING_LINES) {
                         array_shift($this->cancelledRequests);
                     }
-                    $this->cancelledRequests[self::cancelKey($requestId)] = true;
+                    $this->cancelledRequests[self::cancelKey($requestId)] = $requestId;
                 }
             }
             return null;
@@ -612,13 +612,13 @@ final class StdioServer
     }
     /**
      * The key a request id is pending cancellation under: its type and its
-     * value ("int:7", "string:7"), so "7" and 7 stay apart and no key is
-     * numeric (PHP would store a numeric string key as an int and renumber it
+     * value (serialize(): "i:7;", "s:1:\"7\";"), so "7" and 7 stay apart and no
+     * key is numeric (PHP would store a numeric string key as an int and renumber it
      * on array_shift).
      */
     private static function cancelKey(int|string $id): string
     {
-        return get_debug_type($id) . ':' . $id;
+        return serialize($id);
     }
 
     /** Check for a cancellation notification without blocking the running request. */
@@ -663,7 +663,7 @@ final class StdioServer
                     && (($message['params']['requestId'] ?? null) === $requestId)
                 ) {
                     $cancelled = true;
-                    $this->cancelledRequests[$key] = true;
+                    $this->cancelledRequests[$key] = $requestId;
                     continue;
                 }
                 $this->rememberPendingLine($line);
