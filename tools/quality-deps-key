@@ -1,0 +1,75 @@
+#!/bin/sh
+# Prints the key CI publishes the quality image's dependency stages under.
+#
+# The dependency stages (runtime_deps, quality_tools and the stages they copy
+# from) hold everything slow and large: system packages, PHP extensions,
+# composer and npm dependencies, the Rust toolchain and the compiled Rust
+# worker. They change only when one of the files below changes, so CI builds
+# and pushes them once per key and every lane adds the source on top. A file a
+# dependency stage copies that is missing from this list would let a changed
+# input reuse a stale image; QualityDepsKeyTest holds the list to the
+# Dockerfile.
+#
+# Python tooling is pinned inline in the Dockerfile, so the Dockerfile covers
+# it. The Dockerfile is hashed without what cannot change a dependency image:
+# comment lines, blank lines, and the x-release-please version block, whose
+# LABEL sits in the source stages and changes in every release pull request.
+# Parser directives (`# syntax=`, `# escape=` on the first lines) are kept,
+# because they change how every stage is read. The date CI adds to the key is not hashed here: it is the APT_REFRESH
+# build argument, appended by the workflow.
+#
+# Usage: tools/quality-deps-key            prints a 16-hex key
+#        tools/quality-deps-key --inputs   prints the hashed paths, one per line
+set -eu
+
+cd "$(dirname "$0")/.."
+
+inputs='Dockerfile
+.dockerignore
+composer.json
+composer.lock
+workers/php/composer.json
+workers/php/composer.lock
+package.json
+package-lock.json
+workers/typescript/package.json
+workers/typescript/package-lock.json
+workers/rust'
+
+case "${1:-}" in
+    --inputs)
+        printf '%s\n' "$inputs"
+        exit 0
+        ;;
+    '') ;;
+    *)
+        echo "usage: tools/quality-deps-key [--inputs]" >&2
+        exit 2
+        ;;
+esac
+
+for input in $inputs; do
+    if [ ! -e "$input" ]; then
+        echo "quality-deps-key: missing input $input" >&2
+        exit 1
+    fi
+done
+
+# .dockerignore keeps these out of the build context, so they cannot reach the
+# image and must not move the key either. The Dockerfile is hashed below.
+# shellcheck disable=SC2086 # $inputs is a newline-separated list of plain paths
+sums=$(find $inputs \
+    \( -path workers/rust/target -o -path workers/rust/bin -o -path workers/rust/mutants.out \) -prune \
+    -o -type f ! -path Dockerfile -exec sha256sum {} +)
+
+dockerfile=$(awk '
+    directives && /^#[ \t]*[A-Za-z_]+[ \t]*=/ { print; next }
+    { directives = 0 }
+    /x-release-please-start-version/ { release = 1 }
+    release { if (/x-release-please-end/) release = 0; next }
+    /^[ \t]*#/ || /^[ \t]*$/ { next }
+    { print }
+' directives=1 Dockerfile | sha256sum | cut -d ' ' -f 1)
+sums=$(printf '%s\n%s  Dockerfile' "$sums" "$dockerfile")
+
+printf '%s\n' "$sums" | LC_ALL=C sort -k 2 | sha256sum | cut -c 1-16

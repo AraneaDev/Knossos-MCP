@@ -4,120 +4,153 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The dependency images are keyed by date as well as by their inputs, so the
+  # first run of each UTC day rebuilds them to pick up Debian's fixes. This
+  # run does that shortly after midnight, so the day's first push finds them
+  # published. It runs the image job only.
+  schedule:
+    - cron: "17 0 * * *"
 
 permissions:
   contents: read
 
-# Tagged by commit so a lane can only run the image built for the commit it is
-# testing, and lowercased because a registry reference must be.
+# The route a run takes to its images. The registry route publishes and pulls
+# the dependency images, so it needs a GITHUB_TOKEN that can write packages:
+# pushes, scheduled runs, and pull requests from this repository. A fork's pull
+# request and a Dependabot pull request get a read-only token, so they take the
+# local route instead: a full build handed to the lanes as an artifact, with no
+# login and no push. 'true' or 'false'; every step that differs between the
+# routes tests it.
 env:
-  QUALITY_IMAGE: ghcr.io/araneadev/knossos:quality-${{ github.sha }}
-  RUNTIME_IMAGE: ghcr.io/araneadev/knossos:runtime-${{ github.sha }}
+  REGISTRY_ROUTE: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
 
 # One run per branch. A second push cancels the first, because whoever pushed
 # again has already answered the question the running job was asked. The runs
 # long enough to be overtaken are the expensive ones, so this is worth more
-# than the share of runs it cancels suggests.
+# than the share of runs it cancels suggests. A scheduled run has a group of
+# its own, so it can never replace a pending push run on main.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'schedule' || github.head_ref || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
 
 jobs:
-  # One build populates the layer cache the lanes then hit. Measured on the run
-  # this split replaced: 124s to build the image, 425s to run the gate inside
-  # it. Building once and reusing the layers keeps the first number off every
-  # lane, and running the lanes side by side turns the second into whichever
-  # lane is slowest.
+  # The image's dependency stages (runtime_deps and quality_tools in the
+  # Dockerfile) hold everything slow and large, and change only when their
+  # inputs do. They are published to the registry under a key: a hash of those
+  # inputs (tools/quality-deps-key) plus today's date, which is also the
+  # APT_REFRESH build argument, so the key and the build agree on which day's
+  # Debian fixes the image carries. When both images for the key already
+  # exist, this job only checks that and ends; each lane then adds this
+  # commit's source on top in a thin local build. Measured before this split,
+  # the per-commit build-and-push took 247 s on every run, most of it pushing
+  # and exporting to the Actions cache layers a source change had invalidated.
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
-      packages: write # pushes the run's images to this repository's registry
-    # A pull request from a fork gets a read-only GITHUB_TOKEN, so a login and
-    # a push to the registry fail there and turn the required check red for
-    # every outside contributor. Such a run builds the same two images, hands
-    # them to the lanes as a short-lived artifact, and never touches the
-    # registry. Every step that differs between the two routes carries the
-    # same expression: a push, or a pull request whose head lives in this
-    # repository.
+      packages: write # pushes the dependency images to this repository's registry
+    outputs:
+      quality-deps: ${{ steps.key.outputs.quality }}
+      runtime-deps: ${{ steps.key.outputs.runtime }}
+    # On the local route (see REGISTRY_ROUTE) a login and a push to the
+    # registry would fail and turn the required check red for every outside
+    # contributor and every Dependabot update. Such a run builds the full
+    # quality and runtime images, hands them to the lanes as a short-lived
+    # artifact, and never touches the registry.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          persist-credentials: false
+      # Lowercased because a registry reference must be.
+      - name: Key the dependency images
+        id: key
+        run: |
+          date=$(date -u +%F)
+          key="$(tools/quality-deps-key)-$date"
+          {
+            echo "date=$date"
+            echo "quality=ghcr.io/araneadev/knossos:quality-deps-$key"
+            echo "runtime=ghcr.io/araneadev/knossos:runtime-deps-$key"
+          } >> "$GITHUB_OUTPUT"
+          printf 'dependency key: %s\n' "$key"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ env.REGISTRY_ROUTE == 'true' }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Pushed to the registry rather than exported to the Actions cache.
-      # Measured on the run before this change, every lane paid between 60 and
-      # 138 seconds to `load` this image, because buildx has to rebuild it
-      # from cached layers and import it into the daemon. In three of the five
-      # lanes that cost more than the lane's own work: the rust lane spent
-      # 119 seconds loading and 13 seconds working. A pull from a registry in
-      # the same datacentre moves bytes instead of reconstructing an image.
-      #
-      # Tagged by commit, so a lane can only ever run the image built for the
-      # commit it is testing.
-      # Today's date, so the runtime stage's `apt-get upgrade` layer is rebuilt
-      # once a day instead of being served from the cache indefinitely. See the
-      # APT_REFRESH comment in the Dockerfile.
-      - name: Date the package upgrade layer
-        id: apt-refresh
-        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
-      - name: Build and push the pinned quality image
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+      # Any failure to read a tag counts as missing: the cost of a wrong
+      # "missing" is one rebuild, the cost of a wrong "present" is a red lane.
+      - name: Check for the dependency images
+        id: published
+        if: ${{ env.REGISTRY_ROUTE == 'true' }}
+        env:
+          QUALITY_DEPS: ${{ steps.key.outputs.quality }}
+          RUNTIME_DEPS: ${{ steps.key.outputs.runtime }}
+        run: |
+          if docker buildx imagetools inspect "$QUALITY_DEPS" >/dev/null 2>&1 \
+            && docker buildx imagetools inspect "$RUNTIME_DEPS" >/dev/null 2>&1; then
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+            echo 'both dependency images are published; nothing to build'
+          else
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+            echo 'a dependency image is missing; building both'
+          fi
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: ${{ steps.published.outputs.build != 'false' }}
+      # The Actions cache is written only here, on the rare run that builds the
+      # dependency images, so a source-only push no longer pays to export every
+      # layer of every stage to it. Two runs that find the same key missing
+      # both build and push it; the last push wins, and the images are
+      # equivalent because they come from the same inputs on the same day.
+      - name: Build and push the runtime dependency image
+        if: ${{ steps.published.outputs.build == 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          target: quality
-          tags: ${{ env.QUALITY_IMAGE }}
-          cache-from: type=gha,scope=quality-image
-          cache-to: type=gha,mode=max,scope=quality-image
-          build-args: APT_REFRESH=${{ steps.apt-refresh.outputs.date }}
-          push: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-      # The release lane builds this target too, from inside the quality
-      # container against the host daemon, where buildx's cache does not
-      # reach. Publishing it here and pulling it there turns an uncached
-      # build into a pull: tools/quality only builds it when it is absent.
-      - name: Build and push the runtime image
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+          target: runtime_deps
+          tags: ${{ steps.key.outputs.runtime }}
+          cache-from: type=gha,scope=quality-deps
+          cache-to: type=gha,mode=max,scope=quality-deps
+          build-args: APT_REFRESH=${{ steps.key.outputs.date }}
+          push: true
+      - name: Build and push the quality dependency image
+        if: ${{ steps.published.outputs.build == 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          target: runtime
-          tags: ${{ env.RUNTIME_IMAGE }}
-          cache-from: type=gha,scope=runtime-image
-          cache-to: type=gha,mode=max,scope=runtime-image
-          build-args: APT_REFRESH=${{ steps.apt-refresh.outputs.date }}
-          push: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-      # The fork route: the same builds, same tags and same cache scopes,
-      # written to tarballs instead of the registry.
+          target: quality_tools
+          tags: ${{ steps.key.outputs.quality }}
+          cache-from: type=gha,scope=quality-deps
+          cache-to: type=gha,mode=max,scope=quality-deps
+          build-args: APT_REFRESH=${{ steps.key.outputs.date }}
+          push: true
+      # The local route: the full quality and runtime images, written to
+      # tarballs instead of the registry. It reads the dependency layers the
+      # registry route cached and writes nothing back.
       - name: Build the quality image to a tarball
-        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        if: ${{ env.REGISTRY_ROUTE != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: quality
-          tags: ${{ env.QUALITY_IMAGE }}
-          cache-from: type=gha,scope=quality-image
-          cache-to: type=gha,mode=max,scope=quality-image
-          build-args: APT_REFRESH=${{ steps.apt-refresh.outputs.date }}
+          tags: knossos:quality
+          cache-from: type=gha,scope=quality-deps
+          build-args: APT_REFRESH=${{ steps.key.outputs.date }}
           outputs: type=docker,dest=/tmp/quality.tar
       - name: Build the runtime image to a tarball
-        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        if: ${{ env.REGISTRY_ROUTE != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: runtime
-          tags: ${{ env.RUNTIME_IMAGE }}
-          cache-from: type=gha,scope=runtime-image
-          cache-to: type=gha,mode=max,scope=runtime-image
-          build-args: APT_REFRESH=${{ steps.apt-refresh.outputs.date }}
+          tags: knossos:quality-runtime
+          cache-from: type=gha,scope=quality-deps
+          build-args: APT_REFRESH=${{ steps.key.outputs.date }}
           outputs: type=docker,dest=/tmp/runtime.tar
       - name: Hand the images to the lanes
-        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        if: ${{ env.REGISTRY_ROUTE != 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: images
@@ -129,6 +162,7 @@ jobs:
 
   lane:
     needs: image
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -181,39 +215,22 @@ jobs:
         with:
           fetch-depth: ${{ matrix.lane == 'gate' && '0' || '1' }}
           persist-credentials: false
-      # Same-repo runs pull the commit's images from the registry; a fork's
-      # run loads the tarballs the image job uploaded. Both routes end with
-      # the same local names, so every later step is shared.
+      # On the registry route the lane adds this commit's source to the
+      # dependency images the image job published; on the local route it loads
+      # the tarballs the image job uploaded. Both routes end with the same local names, so every later
+      # step is shared.
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ env.REGISTRY_ROUTE == 'true' }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Pull the pinned quality image
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-        run: |
-          docker pull --quiet "$QUALITY_IMAGE"
-          docker tag "$QUALITY_IMAGE" knossos:quality
-      - name: Pull the runtime image
-        if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && matrix.lane == 'release' }}
-        run: |
-          docker pull --quiet "$RUNTIME_IMAGE"
-          docker tag "$RUNTIME_IMAGE" knossos:quality-runtime
-      - name: Download the images built for this commit
-        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./.github/actions/quality-image
         with:
-          name: images
-          path: ${{ runner.temp }}/images
-      - name: Load the images built for this commit
-        if: ${{ !(github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        run: |
-          docker load --quiet -i "$RUNNER_TEMP/images/quality.tar"
-          docker load --quiet -i "$RUNNER_TEMP/images/runtime.tar"
-          docker tag "$QUALITY_IMAGE" knossos:quality
-          docker tag "$RUNTIME_IMAGE" knossos:quality-runtime
-          rm -rf "$RUNNER_TEMP/images"
+          quality-deps: ${{ needs.image.outputs.quality-deps }}
+          runtime-deps: ${{ needs.image.outputs.runtime-deps }}
+          runtime: ${{ matrix.lane == 'release' }}
+          registry: ${{ env.REGISTRY_ROUTE }}
       # Trivy downloads its vulnerability database on first use, and the lane
       # container is thrown away after every run, so it downloaded the whole
       # thing again each time. Cached on the host and mounted in.
@@ -295,7 +312,7 @@ jobs:
   # lane ran and passed.
   quality:
     needs: lane
-    if: always()
+    if: always() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
