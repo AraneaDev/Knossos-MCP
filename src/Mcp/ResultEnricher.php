@@ -413,13 +413,14 @@ final readonly class ResultEnricher
     }
 
     /**
-     * A node hoisted into component_legend leaves its id-keyed references
-     * (e.g. impact_analysis's dependant_id, find_component's component_id)
-     * dangling: the id no longer appears anywhere in $data for an agent to
-     * join back to a name. Rewrite any `*_id` evidence value that names a
-     * hoisted node into the canonical-name string under a de-`_id`'d key
-     * (dependant_id -> dependant). Keys whose value is not a hoisted node
-     * (e.g. boundary_id, edge_id) are left untouched.
+     * A node hoisted into component_legend leaves no id in $data, so an
+     * evidence entry's `*_id` reference (impact_analysis's dependant_id,
+     * find_component's component_id) gets the node's legend key added beside
+     * it under a de-`_id`'d key (dependant_id -> dependant). The id itself
+     * stays: a name alone cannot address a component whose name another
+     * component shares, and replacing the id with the name lost exactly that.
+     * Keys whose value is not a hoisted node (boundary_id, edge_id) are left
+     * as they are.
      *
      * @param list<array<string, mixed>> $evidence
      * @param array<string, string> $idToName
@@ -430,11 +431,10 @@ final readonly class ResultEnricher
         return array_map(static function (array $entry) use ($idToName): array {
             $rewritten = [];
             foreach ($entry as $key => $value) {
+                $rewritten[$key] = $value;
                 if (is_string($key) && str_ends_with($key, '_id') && is_string($value) && isset($idToName[$value])) {
                     $rewritten[substr($key, 0, -3)] = $idToName[$value];
-                    continue;
                 }
-                $rewritten[$key] = $value;
             }
             return $rewritten;
         }, $evidence);

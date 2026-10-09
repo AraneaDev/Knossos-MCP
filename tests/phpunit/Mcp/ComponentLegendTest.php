@@ -234,9 +234,9 @@ final class ComponentLegendTest extends KnossosTestCase
         // impact_analysis('InvoiceService') yields a distance-1 dependant
         // (Checkout) with edge-level evidence. In compact mode, ComponentLegend
         // hoists that dependant's node to a bare name string, so its evidence's
-        // dependant_id (which pointed at the now-gone inline node) must be
-        // rewritten to a `dependant` name reference that resolves in
-        // component_legend -- otherwise the evidence path:line is unjoinable.
+        // dependant_id stays (a name alone cannot address a component whose
+        // name another component shares) and a `dependant` name reference that
+        // resolves in component_legend is added beside it.
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
         $svc = new ToolService(
@@ -258,7 +258,7 @@ final class ComponentLegendTest extends KnossosTestCase
         assertSame(true, array_key_exists('component_legend', $data), 'component_legend missing from response data.');
 
         foreach ($evidence as $entry) {
-            assertSame(false, array_key_exists('dependant_id', $entry), 'dependant_id should not dangle in compact evidence.');
+            assertSame(true, str_starts_with((string) $entry['dependant_id'], 'symbol_'), 'Compact evidence keeps the id: the name may be shared.');
             assertSame(true, array_key_exists('dependant', $entry), 'dependant name reference missing from compact evidence.');
             assertSame(true, array_key_exists($entry['dependant'], $data['component_legend']), $entry['dependant'] . ' missing from component_legend.');
         }
@@ -270,8 +270,8 @@ final class ComponentLegendTest extends KnossosTestCase
         // Drives find_component through the real compact dispatch path
         // (ToolService::call, default verbosity). Its `components` list entries
         // must be hoisted to canonical-name strings resolving in
-        // component_legend, and (Fix 1) its evidence must reference names, not
-        // dangling component_id values.
+        // component_legend, and its evidence keeps component_id with the name
+        // reference added beside it.
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
         $svc = new ToolService(
@@ -299,9 +299,51 @@ final class ComponentLegendTest extends KnossosTestCase
 
         assertSame(true, count($evidence) > 0, 'Expected at least one evidence entry to exercise the rewrite.');
         foreach ($evidence as $entry) {
-            assertSame(false, array_key_exists('component_id', $entry), 'component_id should not dangle in compact evidence.');
+            assertSame(true, str_starts_with((string) $entry['component_id'], 'symbol_'), 'Compact evidence keeps the id: the name may be shared.');
             assertSame(true, array_key_exists('component', $entry), 'component name reference missing from compact evidence.');
             assertSame(true, array_key_exists($entry['component'], $data['component_legend']), $entry['component'] . ' missing from component_legend.');
         }
+    }
+
+    /**
+     * The legend was keyed by canonical name and the first descriptor won, so
+     * a module and a package both named `core.auth` became one entry and the
+     * package read as a module.
+     */
+    #[Group('mcp')]
+    public function testComponentsSharingANameStayDistinct(): void
+    {
+        $data = ['a' => ['id' => 'symbol_' . str_repeat('1', 64), 'kind' => 'module', 'canonical_name' => 'core.auth'],
+            'b' => ['id' => 'symbol_' . str_repeat('2', 64), 'kind' => 'package', 'canonical_name' => 'core.auth'],
+            'c' => ['id' => 'symbol_' . str_repeat('1', 64), 'kind' => 'module', 'canonical_name' => 'core.auth'],
+            'd' => ['id' => 'symbol_' . str_repeat('3', 64), 'kind' => 'package', 'canonical_name' => 'core.auth']];
+
+        [$compressed, $legend] = ComponentLegend::compressWithIndex($data);
+
+        assertSame('core.auth', $compressed['a']);
+        assertSame('core.auth (package)', $compressed['b']);
+        assertSame('core.auth', $compressed['c']);
+        assertSame('core.auth (package)#33333333', $compressed['d']);
+        assertSame('module', $legend['core.auth']['kind']);
+        assertSame('package', $legend['core.auth (package)']['kind']);
+        assertSame('symbol_' . str_repeat('2', 64), $legend['core.auth (package)']['id']);
+        assertSame('symbol_' . str_repeat('3', 64), $legend['core.auth (package)#33333333']['id']);
+        assertSame(false, array_key_exists('id', $legend['core.auth']));
+        assertSame($compressed, ComponentLegend::compress($data)[0], 'compress() applies the same keys.');
+    }
+
+    #[Group('mcp')]
+    public function testCompactEvidenceKeepsTheIdBesideTheName(): void
+    {
+        $enricher = new ResultEnricher(new StalenessProbe($this->storeFixture()[0]), new NextStepPlanner());
+        $module = ['id' => 'symbol_' . str_repeat('1', 64), 'kind' => 'module', 'canonical_name' => 'core.auth'];
+        $package = ['id' => 'symbol_' . str_repeat('2', 64), 'kind' => 'package', 'canonical_name' => 'core.auth'];
+        $envelope = new ResultEnvelope('p', 's', 'sum', ['items' => [$module, $package]], [['dependant_id' => $package['id'], 'path' => 'x']]);
+
+        $entry = $enricher->enrich($envelope, 'impact_analysis', 'compact')->jsonSerialize()['evidence'][0];
+
+        assertSame('symbol_' . str_repeat('2', 64), $entry['dependant_id']);
+        assertSame('core.auth (package)', $entry['dependant']);
+        assertSame('x', $entry['path']);
     }
 }

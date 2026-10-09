@@ -118,11 +118,13 @@ final class ResultEnricherBudgetTest extends KnossosTestCase
 
     /**
      * Compacting hoists a repeated component into the legend, so evidence that
-     * pointed at it by id points at its name instead, under a de-`_id`'d key.
-     * An id that names nothing hoisted is left exactly as it was.
+     * points at it by id also gets its legend key, under a de-`_id`'d key. The
+     * id stays: this test once pinned its removal, which left a component whose
+     * name is shared with no way to be addressed. An id that names nothing
+     * hoisted is left exactly as it was.
      */
     #[Group('mcp')]
-    public function testEvidenceIdsNamingAHoistedComponentBecomeNames(): void
+    public function testEvidenceIdsNamingAHoistedComponentGainTheirNames(): void
     {
         $pdo = $this->freshTestDatabase();
         $enricher = new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner());
@@ -144,9 +146,9 @@ final class ResultEnricherBudgetTest extends KnossosTestCase
         $result = $enricher->enrich($envelope, 'impact_analysis', 'compact', 30_000);
 
         assertSame(
-            ['component' => 'A\\B::c', 'boundary_id' => 'boundary_1', 'owner' => 'symbol_abc', 'path' => 'src/A.php'],
+            ['component_id' => 'symbol_abc', 'component' => 'A\\B::c', 'boundary_id' => 'boundary_1', 'owner' => 'symbol_abc', 'path' => 'src/A.php'],
             $result->evidence[0],
-            'Only an `_id` key naming a hoisted component is rewritten: an id that was not hoisted, and a hoisted id under another key, are both left alone.',
+            'Only an `_id` key naming a hoisted component gains a name: an id that was not hoisted, and a hoisted id under another key, get none.',
         );
     }
 

@@ -36,9 +36,13 @@ lossless superset: nothing is hoisted, trimmed, or shortened.
 
 - **Component legend.** Each node descriptor is registered once in
   `data.component_legend`, keyed by canonical name, and every place the
-  descriptor appeared becomes a plain name string. Because tools address
-  components by canonical name and never by `symbol_…`/`edge_…` id, those opaque
-  ids drop out of the payload as a side effect.
+  descriptor appeared becomes a plain name string. A canonical name is not
+  unique, so when a second component shares one, its key is `name (kind)`, and
+  `name (kind)#` plus the last eight characters of its id if that is taken too.
+  A legend entry under such a key carries the component's `id`. The first
+  component with a name keeps the bare name, in the order the data lists them.
+  Evidence keeps its `*_id` references and gains the legend key beside each one
+  (`dependant_id` gains `dependant`).
 - **Boundary legend.** The same treatment for repeated boundary objects, into
   `data.boundary_legend`. Ids that _are_ tool inputs (`boundary_…`, snapshot
   ids) are preserved wherever they are the answer.
