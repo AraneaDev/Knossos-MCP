@@ -1,0 +1,174 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/*
+ * Splits the PHPUnit suite into N shards for CI's coverage jobs.
+ *
+ *   tools/phpunit-shard --shard=I/N --out=PATH [--files-from=PATH]
+ *       writes a PHPUnit config that runs shard I of N: phpunit.xml with its
+ *       test suite replaced by that shard's files.
+ *   tools/phpunit-shard --list=N [--files-from=PATH]
+ *       prints every test file with the shard it belongs to, `file<TAB>shard`,
+ *       which is what tools/coverage-merge.php checks the shards' JUnit logs
+ *       against.
+ *
+ * The files come from `vendor/bin/phpunit --list-test-files`, or from a list
+ * file (one path per line) when one is given. They are sorted by name and dealt
+ * out round-robin, so the assignment depends on nothing but the file names, and
+ * neighbouring files, which tend to be equally slow because they test the same
+ * area, land in different shards.
+ *
+ * Paths in the generated config are absolute, because PHPUnit resolves a
+ * relative path against the directory the config file is in, and the config is
+ * written outside the repository root.
+ */
+
+$root = dirname(__DIR__);
+
+function shardFail(string $message): never
+{
+    fwrite(STDERR, "phpunit-shard: {$message}\n");
+    fwrite(STDERR, "usage: tools/phpunit-shard --shard=I/N --out=PATH [--files-from=PATH]\n");
+    fwrite(STDERR, "       tools/phpunit-shard --list=N [--files-from=PATH]\n");
+    exit(64);
+}
+
+$shard = null;
+$count = null;
+$list = null;
+$out = null;
+$filesFrom = null;
+foreach (array_slice($argv, 1) as $argument) {
+    if (preg_match('/^--shard=(\d+)\/(\d+)$/', $argument, $match) === 1) {
+        [$shard, $count] = [(int) $match[1], (int) $match[2]];
+    } elseif (preg_match('/^--list=(\d+)$/', $argument, $match) === 1) {
+        $list = (int) $match[1];
+    } elseif (str_starts_with($argument, '--out=') && strlen($argument) > 6) {
+        $out = substr($argument, 6);
+    } elseif (str_starts_with($argument, '--files-from=') && strlen($argument) > 13) {
+        $filesFrom = substr($argument, 13);
+    } else {
+        shardFail("unknown argument {$argument}");
+    }
+}
+if (($shard === null) === ($list === null)) {
+    shardFail('pass exactly one of --shard=I/N and --list=N');
+}
+if ($list !== null && $list < 1) {
+    shardFail('--list needs a shard count of at least 1');
+}
+if ($shard !== null && ($count < 1 || $shard < 1 || $shard > $count)) {
+    shardFail("--shard={$shard}/{$count} is not a shard of 1..N");
+}
+if ($shard !== null && $out === null) {
+    shardFail('--shard needs --out=PATH');
+}
+
+/**
+ * The suite's test files, relative to the repository root.
+ *
+ * @return list<string>
+ */
+function shardTestFiles(string $root, ?string $filesFrom): array
+{
+    if ($filesFrom !== null) {
+        $content = @file_get_contents($filesFrom);
+        if ($content === false) {
+            shardFail("cannot read {$filesFrom}");
+        }
+        $lines = explode("\n", $content);
+    } else {
+        $output = [];
+        $status = 0;
+        exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root . '/vendor/bin/phpunit')
+            . ' -c ' . escapeshellarg($root . '/phpunit.xml') . ' --list-test-files', $output, $status);
+        if ($status !== 0) {
+            shardFail('vendor/bin/phpunit --list-test-files failed');
+        }
+        $lines = [];
+        foreach ($output as $line) {
+            if (str_starts_with($line, ' - ')) {
+                $lines[] = substr($line, 3);
+            }
+        }
+    }
+
+    $files = [];
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '') {
+            continue;
+        }
+        $files[str_starts_with($line, $root . '/') ? substr($line, strlen($root) + 1) : $line] = true;
+    }
+    $files = array_keys($files);
+    usort($files, strcmp(...));
+    if ($files === []) {
+        shardFail('no test files to shard');
+    }
+
+    return $files;
+}
+
+$files = shardTestFiles($root, $filesFrom);
+$of = $list ?? $count;
+
+if ($list !== null) {
+    foreach ($files as $index => $file) {
+        printf("%s\t%d\n", $file, $index % $of + 1);
+    }
+    exit(0);
+}
+
+$selected = [];
+foreach ($files as $index => $file) {
+    if ($index % $of + 1 === $shard) {
+        $selected[] = $file;
+    }
+}
+
+$absolute = static fn(string $path): string => str_starts_with($path, '/') ? $path : $root . '/' . $path;
+
+$document = new DOMDocument();
+$document->preserveWhiteSpace = false;
+$document->formatOutput = true;
+if (!$document->load($root . '/phpunit.xml')) {
+    shardFail('cannot read phpunit.xml');
+}
+$phpunit = $document->documentElement;
+if (!$phpunit instanceof DOMElement) {
+    shardFail('phpunit.xml has no root element');
+}
+foreach (['bootstrap', 'cacheDirectory'] as $attribute) {
+    if ($phpunit->hasAttribute($attribute)) {
+        $phpunit->setAttribute($attribute, $absolute($phpunit->getAttribute($attribute)));
+    }
+}
+$schema = 'http://www.w3.org/2001/XMLSchema-instance';
+if ($phpunit->hasAttributeNS($schema, 'noNamespaceSchemaLocation')) {
+    $phpunit->setAttributeNS($schema, 'xsi:noNamespaceSchemaLocation', $absolute($phpunit->getAttributeNS($schema, 'noNamespaceSchemaLocation')));
+}
+$xpath = new DOMXPath($document);
+foreach ($xpath->query('/phpunit/source//directory | /phpunit/source//file') ?: [] as $path) {
+    $path->textContent = $absolute(trim($path->textContent));
+}
+
+$suites = $xpath->query('/phpunit/testsuites')?->item(0);
+if (!$suites instanceof DOMElement) {
+    shardFail('phpunit.xml has no <testsuites>');
+}
+while ($suites->firstChild !== null) {
+    $suites->removeChild($suites->firstChild);
+}
+$suite = $document->createElement('testsuite');
+$suite->setAttribute('name', "knossos-shard-{$shard}-of-{$of}");
+foreach ($selected as $file) {
+    $suite->appendChild($document->createElement('file'))->textContent = $root . '/' . $file;
+}
+$suites->appendChild($suite);
+
+if (@$document->save($out) === false) {
+    shardFail("cannot write {$out}");
+}
