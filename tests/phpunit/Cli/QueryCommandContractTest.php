@@ -158,9 +158,13 @@ final class QueryCommandContractTest extends KnossosTestCase
                     if (!is_array($spec) || ($spec['type'] ?? null) !== 'integer' || !array_key_exists('default', $spec)) {
                         continue;
                     }
+                    // The file commands take files after the project, not component names.
+                    $arguments = in_array($command, ['changed-files-impact', 'test-impact', 'architecture-context'], true)
+                        ? [$ids['project'], 'src/Checkout.php']
+                        : $positionals;
                     assertSame(
-                        self::outcomeOf($command, $positionals, [$option => [(string) $spec['default']]], $database),
-                        self::outcomeOf($command, $positionals, [], $database),
+                        self::outcomeOf($command, $arguments, [$option => [(string) $spec['default']]], $database),
+                        self::outcomeOf($command, $arguments, [], $database),
                         sprintf('%s: omitting --%s must do what its advertised default (%d) does.', $command, $option, $spec['default']),
                     );
                     ++$checked;
