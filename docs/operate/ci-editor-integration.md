@@ -11,7 +11,7 @@ CLI commands use the following automation contract:
 | Code | Meaning                                                                                                                                          |
 | ---: | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 |  `0` | The command completed and every evaluated gate passed.                                                                                           |
-|  `1` | The command completed, but an evaluated health or quality gate failed (`quality-gate`, `check-architecture`, `doctor`).                          |
+|  `1` | The command completed, but an evaluated health or quality gate failed (`quality-gate`, `check-architecture`, `doctor`, `maintain-database`).     |
 |  `2` | The command could not run: usage, configuration, validation, runtime, or infrastructure error.                                                   |
 |  `3` | The command completed, but its list is incomplete: a bound or time limit cut it (`dead-code`, `diagnostics`). The output says `truncated: true`. |
 
