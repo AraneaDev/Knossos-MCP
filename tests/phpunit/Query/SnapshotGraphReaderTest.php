@@ -128,4 +128,54 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
             assertSame(['type_only' => true], json_decode((string) $attributes['imports:module'], true), $how . ': an import keeps them.');
         }
     }
+
+    /**
+     * The archive was inflated a megabyte of compressed input at a time, so
+     * how much one step produced depended on the compression ratio. 20,001
+     * edges carrying the same 2 KB of attributes compress about a
+     * thousandfold, and one step inflated the whole 41 MB payload at once.
+     * Each step now takes a few kilobytes of input, which bounds its output
+     * at zlib's maximum ratio whatever the payload holds.
+     *
+     * Measured peak: 69,333,248 bytes inflating a megabyte of input per step,
+     * 15,895,200 bytes at 4 KB of base64 per step, most of it the 20,002 edge
+     * rows read. The 24 MiB bound sits well below the 41 MB payload and the
+     * first figure.
+     */
+    #[Group('query')]
+    #[\PHPUnit\Framework\Attributes\RunInSeparateProcess]
+    public function testAHighlyCompressibleArchiveIsReadInBoundedMemory(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $note = str_repeat('x', 2048);
+        for ($batch = 0; $batch < 20_001; $batch += 5_000) {
+            $edges = [];
+            for ($i = $batch; $i < min($batch + 5_000, 20_001); $i++) {
+                $edges[] = [
+                    'id' => \Knossos\Store\StableId::edge($ids['project'], 'calls', $ids['checkout'], $ids['invoice'], 'dense:' . $i),
+                    'kind' => 'calls', 'source_id' => $ids['checkout'], 'target_id' => $ids['invoice'],
+                    'file_id' => $ids['file'], 'start_line' => 1, 'end_line' => 1, 'origin' => 'ast',
+                    'confidence' => 'certain', 'attributes' => ['note' => $note], 'owner_key' => 'php:file:src/Checkout.php',
+                ];
+            }
+            $repository->bulkTransaction(static function ($repository) use ($edges, $ids): void {
+                $repository->saveEdges($edges, $ids['project'], $ids['scan']);
+            });
+        }
+        unset($edges);
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $repository->archiveActiveSnapshot($ids['project'], hash('sha256', '{}'), 5);
+        $stored = (string) $pdo->query('SELECT payload_json FROM scan_snapshots ORDER BY rowid DESC LIMIT 1')->fetchColumn();
+        $reader = new SnapshotGraphReader($pdo);
+        assertGreaterThan(40_000_000, strlen(SnapshotPayload::decode($stored)), 'The fixture is the 41 MB payload it describes.');
+
+        gc_collect_cycles();
+        memory_reset_peak_usage();
+        $before = memory_get_usage();
+        $facts = $reader->archived($stored, $ids['scan']);
+        $used = memory_get_peak_usage() - $before;
+
+        assertSame(20_002, count($facts['edges']));
+        assertSame(true, $used < 24 * 1024 * 1024, sprintf('Reading the archive peaked at %d bytes.', $used));
+    }
 }

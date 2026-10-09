@@ -78,10 +78,14 @@ final readonly class SnapshotGraphReader
     /**
      * An archived snapshot's rows, in the payload's order.
      *
-     * A compressed payload is inflated a slice at a time and its rows are
-     * taken off the front as they arrive, each decoded on its own and cut to
-     * its columns: neither the payload's JSON nor its decoded arrays are ever
-     * held whole. A payload this reading does not recognise (plain JSON from
+     * A compressed payload is decoded and inflated a few kilobytes at a time
+     * and its rows are taken off the front as they arrive, each decoded on its
+     * own and cut to its columns: neither the payload's JSON, nor its binary
+     * form, nor its decoded arrays are ever held whole, and no step's output
+     * depends on how well the payload compresses. The stored base64 string
+     * itself is held, at its compressed size: PDO's SQLite driver on PHP 8.3
+     * has no incremental blob reads (a PARAM_LOB column is the whole value
+     * behind a stream), so there is nothing smaller to read it as. A payload this reading does not recognise (plain JSON from
      * an earlier version, laid out another way) is decoded whole instead,
      * which gives the same rows.
      *
@@ -97,8 +101,20 @@ final readonly class SnapshotGraphReader
     /** Marks a compressed payload, as {@see SnapshotPayload} writes it. */
     private const PREFIX = 'gzip64:';
 
-    /** How much compressed payload is inflated at a time. */
-    private const SLICE = 1 << 20;
+    /**
+     * How much stored payload (base64 text, a multiple of 4) is decoded and
+     * inflated in one step: 4,096 characters, 3,072 compressed bytes.
+     *
+     * Small on purpose. What one step inflates to is its input times the
+     * compression ratio, and zlib's ratio reaches about 1,032:1; a megabyte
+     * per step let a payload of repeated attributes inflate whole in one call
+     * (41 MB at once for 20,001 identical 2 KB attributes). At 3 KB a step
+     * produces at most about 3 MB, whatever the payload holds.
+     */
+    private const SLICE = 4096;
+
+    /** The longest unfinished text kept between steps: no row is longer, so a buffer past it is not a payload this reads. */
+    private const MAX_BUFFER = 16 << 20;
 
     /** The next table's name and the bracket opening its rows. */
     private const TABLE = '/\G\s*,?\s*"([a-z_]+)"\s*:\s*\[/';
@@ -115,15 +131,16 @@ final readonly class SnapshotGraphReader
      */
     private function streamed(string $storedPayload): ?array
     {
-        $compressed = base64_decode(substr($storedPayload, strlen(self::PREFIX)), true);
-        $inflate = $compressed === false ? false : @inflate_init(ZLIB_ENCODING_GZIP);
-        if ($compressed === false || $inflate === false) {
+        $inflate = @inflate_init(ZLIB_ENCODING_GZIP);
+        if ($inflate === false) {
             return null;
         }
         $facts = array_fill_keys(array_keys(self::COLUMNS), []);
         $state = ['phase' => 'head', 'table' => null, 'buffer' => ''];
-        for ($at = 0; $at < strlen($compressed); $at += self::SLICE) {
-            $chunk = @inflate_add($inflate, substr($compressed, $at, self::SLICE), $at + self::SLICE >= strlen($compressed) ? ZLIB_FINISH : ZLIB_SYNC_FLUSH);
+        $length = strlen($storedPayload);
+        for ($at = strlen(self::PREFIX); $at < $length; $at += self::SLICE) {
+            $compressed = base64_decode(substr($storedPayload, $at, self::SLICE), true);
+            $chunk = $compressed === false ? false : @inflate_add($inflate, $compressed, $at + self::SLICE >= $length ? ZLIB_FINISH : ZLIB_SYNC_FLUSH);
             if ($chunk === false || !$this->take($state, $chunk, $facts)) {
                 return null;
             }
@@ -187,7 +204,7 @@ final readonly class SnapshotGraphReader
         $state['buffer'] = substr($buffer, $at);
 
         // A row is never longer than this: a buffer that grew past it without a match is not a payload this reads.
-        return strlen($state['buffer']) < 16 * self::SLICE;
+        return strlen($state['buffer']) < self::MAX_BUFFER;
     }
 
     /**
