@@ -154,6 +154,54 @@ final class PhpAuditFixturesTest extends KnossosTestCase
     }
 
     /**
+     * A controller action without `@` is a controller, never a closure: a
+     * method of the group's controller inside `Route::controller(...)`, and
+     * the class's `__invoke` otherwise, however the class is written.
+     */
+    public function testLaravelStringActionsWithoutAt(): void
+    {
+        $this->write('composer.json', '{"require": {"laravel/framework": "^11.0"}, "autoload": {"psr-4": {"App\\\\": "app/"}}}');
+        $this->write('app/Http/Controllers/UserController.php', "<?php\nnamespace App\\Http\\Controllers;\nclass UserController { public function index() {} }\n");
+        $this->write('app/Http/Controllers/InvokableController.php', "<?php\nnamespace App\\Http\\Controllers;\nclass InvokableController { public function __invoke() {} }\n");
+        $this->write('routes/web.php', <<<'PHP'
+            <?php
+            use Illuminate\Support\Facades\Route;
+            use App\Http\Controllers\InvokableController;
+            use App\Http\Controllers\UserController;
+            Route::get('/plain', InvokableController::class);
+            Route::get('/plain-string', 'App\Http\Controllers\InvokableController');
+            Route::group(['namespace' => 'App\Http\Controllers'], function () {
+                Route::get('/inv', 'InvokableController');
+            });
+            Route::controller(UserController::class)->prefix('ctl')->group(function () {
+                Route::get('/users', 'index');
+            });
+            Route::group(['controller' => UserController::class, 'prefix' => 'arr'], function () {
+                Route::get('/users', 'index');
+            });
+            PHP);
+        $pdo = $this->scan();
+
+        $targets = [];
+        foreach ($this->edges($pdo) as $edge) {
+            if ($edge['kind'] === 'routes_to') {
+                $targets[] = $edge['source'] . ' -> ' . $edge['target'] . ' [' . $edge['target_kind'] . ']';
+            }
+        }
+        sort($targets);
+        self::assertSame([
+            'GET /arr/users => App\\Http\\Controllers\\UserController::index -> App\\Http\\Controllers\\UserController::index [method]',
+            'GET /ctl/users => App\\Http\\Controllers\\UserController::index -> App\\Http\\Controllers\\UserController::index [method]',
+            'GET /inv => App\\Http\\Controllers\\InvokableController -> App\\Http\\Controllers\\InvokableController::__invoke [method]',
+            'GET /plain => App\\Http\\Controllers\\InvokableController -> App\\Http\\Controllers\\InvokableController::__invoke [method]',
+            'GET /plain-string => App\\Http\\Controllers\\InvokableController -> App\\Http\\Controllers\\InvokableController::__invoke [method]',
+        ], $targets);
+        foreach ($this->nodes($pdo) as $node) {
+            self::assertStringNotContainsString('=> closure', $node['canonical_name']);
+        }
+    }
+
+    /**
      * A class-level `#[Route]` on an invokable controller is its route, and a
      * `methods` given as one string is that method rather than any.
      */

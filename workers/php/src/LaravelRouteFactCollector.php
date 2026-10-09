@@ -39,9 +39,9 @@ final class LaravelRouteFactCollector
      * The group attribute keys of `Route::group([...], ...)` and the modifier
      * each one is: `as` is the array spelling of `name`.
      */
-    private const GROUP_KEYS = ['prefix' => 'prefix', 'middleware' => 'middleware', 'as' => 'name', 'name' => 'name', 'namespace' => 'namespace'];
+    private const GROUP_KEYS = ['prefix' => 'prefix', 'middleware' => 'middleware', 'as' => 'name', 'name' => 'name', 'namespace' => 'namespace', 'controller' => 'controller'];
 
-    /** @var list<array{prefix: string, middleware: list<string>, name: string, namespace: ?string}> */
+    /** @var list<array{prefix: string, middleware: list<string>, name: string, namespace: ?string, controller: ?string}> */
     private array $groups = [];
     /** @var array<int, true> */
     private array $groupNodes = [];
@@ -293,11 +293,11 @@ final class LaravelRouteFactCollector
      * routes inside it, from its chained modifiers (`Route::prefix('x')->group(...)`)
      * and from an attribute array (`Route::group(['prefix' => 'x'], ...)`).
      *
-     * @return array{prefix: string, middleware: list<string>, name: string, namespace: ?string}
+     * @return array{prefix: string, middleware: list<string>, name: string, namespace: ?string, controller: ?string}
      */
     private function groupModifiers(Expr\MethodCall|Expr\StaticCall $node): array
     {
-        $result = ['prefix' => '', 'middleware' => [], 'name' => '', 'namespace' => null];
+        $result = ['prefix' => '', 'middleware' => [], 'name' => '', 'namespace' => null, 'controller' => null];
         $attributes = $node->args[0]->value ?? null;
         if ($attributes instanceof Expr\Array_ && count($node->args) > 1) {
             foreach ($attributes->items as $item) {
@@ -321,8 +321,8 @@ final class LaravelRouteFactCollector
      * in the order written, and any other modifier replaces the value read
      * before it.
      *
-     * @param array{prefix: string, middleware: list<string>, name: string, namespace: ?string} $result
-     * @return array{prefix: string, middleware: list<string>, name: string, namespace: ?string}
+     * @param array{prefix: string, middleware: list<string>, name: string, namespace: ?string, controller: ?string} $result
+     * @return array{prefix: string, middleware: list<string>, name: string, namespace: ?string, controller: ?string}
      */
     private static function withModifier(array $result, string $modifier, ?Node $value): array
     {
@@ -332,6 +332,8 @@ final class LaravelRouteFactCollector
             $result[$modifier] = LaravelFactStore::string($value) ?? $result[$modifier];
         } elseif ($modifier === 'namespace') {
             $result['namespace'] = LaravelFactStore::string($value) ?? $result['namespace'];
+        } elseif ($modifier === 'controller') {
+            $result['controller'] = LaravelFactStore::classArgument($value) ?? $result['controller'];
         }
         return $result;
     }
@@ -342,15 +344,17 @@ final class LaravelRouteFactCollector
      * A group's namespace nests inside the one around it, as Laravel nests
      * it, unless it starts with a backslash.
      *
-     * @return array{prefix: string, middleware: list<string>, name: string, namespace: ?string}
+     * @return array{prefix: string, middleware: list<string>, name: string, namespace: ?string, controller: ?string}
      */
     private function combinedGroup(): array
     {
-        $result = ['prefix' => '', 'middleware' => [], 'name' => '', 'namespace' => null];
+        $result = ['prefix' => '', 'middleware' => [], 'name' => '', 'namespace' => null, 'controller' => null];
         foreach ($this->groups as $group) {
             $result['prefix'] = $this->joinUri($result['prefix'], $group['prefix']);
             $result['middleware'] = [...$result['middleware'], ...$group['middleware']];
             $result['name'] .= $group['name'];
+            // The innermost group naming a controller is the one its routes use.
+            $result['controller'] = $group['controller'] ?? $result['controller'];
             if ($group['namespace'] !== null) {
                 $result['namespace'] = $result['namespace'] !== null && !str_starts_with($group['namespace'], '\\')
                     ? trim($result['namespace'], '\\') . '\\' . trim($group['namespace'], '\\')
@@ -393,15 +397,27 @@ final class LaravelRouteFactCollector
         }
         $class = LaravelFactStore::classArgument($node);
         if ($class !== null) {
-            return ['reference' => LaravelFactStore::classReference($class), 'label' => $class];
+            // A controller class alone is invokable: Laravel calls its `__invoke`.
+            return ['reference' => 'php:method:' . ltrim($class, '\\') . '::__invoke', 'label' => $class];
         }
         $string = LaravelFactStore::string($node);
-        if ($string !== null && str_contains($string, '@')) {
+        if ($string === null || $string === '') {
+            return [];
+        }
+        if (str_contains($string, '@')) {
             $string = $this->inGroupNamespace($string);
             [$class, $method] = explode('@', $string, 2);
             return ['reference' => 'php:method:' . ltrim($class, '\\') . '::' . $method, 'label' => $string];
         }
-        return [];
+        $controller = $this->combinedGroup()['controller'];
+        if ($controller !== null) {
+            // Inside `Route::controller(...)`, a string names the group controller's method.
+            $controller = ltrim($controller, '\\');
+            return ['reference' => 'php:method:' . $controller . '::' . $string, 'label' => $controller . '::' . $string];
+        }
+        // Otherwise the string names an invokable controller class.
+        $class = ltrim($this->inGroupNamespace($string), '\\');
+        return ['reference' => 'php:method:' . $class . '::__invoke', 'label' => $class];
     }
     /** Whether a call targets the Route facade rather than an unrelated `Route` symbol. */
 
