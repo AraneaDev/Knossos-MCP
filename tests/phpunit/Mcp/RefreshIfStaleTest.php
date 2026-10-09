@@ -110,6 +110,8 @@ final class RefreshIfStaleTest extends KnossosTestCase
         // Policy and budget contents, by the validators the services use.
         yield 'a policy id' => ['check_architecture', ['policies' => [['id' => '', 'from_boundary' => 'core', 'deny_targets' => ['tests']]]], 'Policy id must be a non-empty string of at most 100 characters.'];
         yield 'a budget name' => ['quality_gate', ['baseline_snapshot' => 'active', 'budgets' => ['bogus' => 1]], 'budgets must contain one or more supported quality limits.'];
+        yield 'a gate policy' => ['quality_gate', ['baseline_snapshot' => 'active', 'budgets' => ['boundary_violations' => 0], 'policies' => [['id' => '']]], 'Policy id must be a non-empty string of at most 100 characters.'];
+        yield 'an empty policy list' => ['check_architecture', ['policies' => []], 'policies must contain between 1 and 50 declarations.'];
     }
 
     #[Group('mcp')]
