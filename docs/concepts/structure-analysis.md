@@ -71,6 +71,13 @@ count (`routes_to`, `calls`, `dispatches`, `handles`, `listens_to`,
 A pair with no static path returns an empty `paths` list rather than an error.
 That is a real answer, though it proves nothing about the runtime.
 
+The search is bounded by `timeout_ms`, by 10,000 states visited and by 10,000
+states queued, so one component with thousands of callees cannot exhaust it.
+When a bound cuts the search, `truncated` is true, `bounds.truncation_reasons`
+names each bound met (`time_limit`, `visit_limit`, `queue_limit` and others),
+and the summary says the search was truncated. An empty `paths` list from a
+truncated search means none were found before that bound, not that none exist.
+
 ![A route from ServeCommand::run to ResultEnvelope: five routes found, the strongest drawn as boxes with the call and its file and line on each hop](../images/claude-code/route.png)
 
 ## Dependency cycles

@@ -24,6 +24,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      */
     private const IN_DEGREE_FROM = [0, 1, 6, 21, 101];
 
+    /**
+     * States explain_flow may queue, and also visit: the same figure for both,
+     * because a queued state is never visited twice.
+     */
+    private const MAX_FLOW_STATES = 10_000;
+
     /** Node, relationship, role, and language counts: the orientation query for an unfamiliar codebase. */
     public function architectureSummary(string $projectId, int $limit = 50): ResultEnvelope
     {
@@ -772,10 +778,16 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $sourceSet = $this->flowEndpointSet($projectId, $source, $endpointTruncated);
         $targetSet = $this->flowEndpointSet($projectId, $target, $endpointTruncated);
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
+        // A head index instead of array_shift, which re-indexes the whole queue
+        // on every pop; each popped slot is unset so its path copy is released.
         $queue = [];
+        $head = 0;
         foreach ($sourceSet as $start) {
             $queue[] = [[$start], [], [$start['id'] => true]];
         }
+        // Every queued state carries a copy of its path, so the visit bound
+        // alone let one wide node queue far more than it could ever visit.
+        $queued = count($queue);
         $paths = [];
         // Keyed by signature: the cap and the max_paths budget are both about
         // distinct ROUTES, and two call sites between the same pair of symbols
@@ -786,19 +798,28 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $truncationReasons = [];
         $flowEdgesTruncated = false;
         $candidateCap = $maxPaths * 20;
-        while ($queue !== [] && count($paths) < $candidateCap) {
-            if ($this->now() > $deadline || $visited >= 10_000) {
+        while (isset($queue[$head]) && count($paths) < $candidateCap) {
+            if ($this->now() > $deadline || $visited >= self::MAX_FLOW_STATES) {
                 $truncated = true;
-                $truncationReasons[] = $visited >= 10_000 ? 'visit_limit' : 'time_limit';
+                $truncationReasons[] = $visited >= self::MAX_FLOW_STATES ? 'visit_limit' : 'time_limit';
                 break;
             }
-            [$nodes, $hops, $seen] = array_shift($queue);
+            [$nodes, $hops, $seen] = $queue[$head];
+            unset($queue[$head]);
+            ++$head;
             ++$visited;
             if (count($hops) >= $maxDepth) {
                 continue;
             }
             $last = $nodes[array_key_last($nodes)];
-            foreach ($this->flowEdges($projectId, $last['id'], $edgeKinds, $confidenceRank[$minConfidence], $flowEdgesTruncated) as $edge) {
+            foreach ($this->flowEdges($projectId, $last['id'], $edgeKinds, $confidenceRank[$minConfidence], $flowEdgesTruncated) as $index => $edge) {
+                // Up to 500 edges per node: the clock is read on the first and
+                // every 64th, so one wide node cannot run past the deadline.
+                if ($index % 64 === 0 && $this->now() > $deadline) {
+                    $truncated = true;
+                    $truncationReasons[] = 'time_limit';
+                    break 2;
+                }
                 // The goal may be reached even when it is already in $seen: the
                 // source is pre-seeded, so a self-flow (from == to) depends on
                 // matching the target before the visited-guard skips it.
@@ -806,10 +827,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 if (isset($seen[$edge['target_id']]) && !$isTarget) {
                     continue;
                 }
-                $next = $this->node($edge['target_id']);
-                if ($next === null) {
-                    continue;
-                }
+                // The edge query joins the target row, so a dangling target is
+                // already excluded and no lookup per edge is needed.
+                $next = [
+                    'id' => $edge['target_id'], 'kind' => $edge['target_kind'], 'canonical_name' => $edge['target_canonical_name'],
+                    'display_name' => $edge['target_display_name'], 'confidence' => $edge['target_confidence'],
+                ];
                 $newNodes = [...$nodes, $next];
                 $newHops = [...$hops, $edge];
                 if ($isTarget) {
@@ -829,9 +852,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     }
                     continue;
                 }
+                if ($queued >= self::MAX_FLOW_STATES) {
+                    $truncated = true;
+                    $truncationReasons[] = 'queue_limit';
+                    break 2;
+                }
                 $newSeen = $seen;
                 $newSeen[$next['id']] = true;
                 $queue[] = [$newNodes, $newHops, $newSeen];
+                ++$queued;
             }
         }
         if ($flowEdgesTruncated) {
@@ -865,13 +894,17 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             }
         }
         $count = count($paths);
+        $summary = $count === 0 ? 'No supported static flow was found within the configured bounds.' : sprintf('Found %d plausible static flow%s.', $count, $count === 1 ? '' : 's');
+        if ($truncated) {
+            $summary .= sprintf(' The search was truncated (%s).', implode(', ', $truncationReasons));
+        }
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            $count === 0 ? 'No supported static flow was found within the configured bounds.' : sprintf('Found %d plausible static flow%s.', $count, $count === 1 ? '' : 's'),
+            $summary,
             [
                 'from' => $source, 'to' => $target, 'paths' => $paths,
-                'bounds' => ['max_depth' => $maxDepth, 'max_paths' => $maxPaths, 'timeout_ms' => $timeoutMs, 'visited_states' => $visited, 'truncation_reason' => $truncationReasons[0] ?? null, 'truncation_reasons' => $truncationReasons],
+                'bounds' => ['max_depth' => $maxDepth, 'max_paths' => $maxPaths, 'timeout_ms' => $timeoutMs, 'visited_states' => $visited, 'queued_states' => $queued, 'truncation_reason' => $truncationReasons[0] ?? null, 'truncation_reasons' => $truncationReasons],
             ],
             $evidence,
             ['Flows are plausible statically supported paths, not proof of runtime execution.'],
@@ -1146,7 +1179,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     {
         $placeholders = implode(',', array_fill(0, count($edgeKinds), '?'));
         $statement = $this->pdo->prepare(
-            'SELECT e.*, f.relative_path, source.display_name AS source_name, target.display_name AS target_name ' .
+            'SELECT e.*, f.relative_path, source.display_name AS source_name, target.display_name AS target_name, ' .
+            'target.kind AS target_kind, target.canonical_name AS target_canonical_name, ' .
+            'target.display_name AS target_display_name, target.confidence AS target_confidence ' .
             'FROM edges e JOIN nodes source ON source.id = e.source_id JOIN nodes target ON target.id = e.target_id ' .
             'LEFT JOIN files f ON f.id = e.file_id WHERE e.project_id = ? AND e.source_id = ? ' .
             sprintf('AND e.kind IN (%s) ', $placeholders) .
