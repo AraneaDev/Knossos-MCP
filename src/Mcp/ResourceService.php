@@ -14,14 +14,53 @@ use Knossos\Query\ArchitectureQueryService;
  */
 final readonly class ResourceService
 {
+    /** Projects per resources/list page; each contributes three resources. */
+    public const PAGE_SIZE = 100;
+
+    /** The largest offset the project catalog accepts. */
+    private const MAX_OFFSET = 100_000;
+
     private const URI_PATTERN = '#^knossos://(project_[a-f0-9]{64})/(summary|boundaries|brief)$#';
 
     public function __construct(private ArchitectureQueryService $queries) {}
 
-    /** @return list<array<string, mixed>> */
-    public function list(): array
+    /**
+     * One page of resources, PAGE_SIZE projects at a time, with the cursor of the next page when there is one.
+     *
+     * @return array{resources: list<array<string, mixed>>, nextCursor?: string}
+     * @throws InvalidArgumentException when the cursor is not one this server issued
+     */
+    public function list(?string $cursor = null): array
     {
-        $projects = $this->queries->listProjects(100)->data['projects'] ?? [];
+        $listing = $this->queries->listProjects(self::PAGE_SIZE, $cursor === null ? 0 : self::offset($cursor))->data;
+        $page = ['resources' => $this->resources($listing['projects'] ?? [])];
+        $next = $listing['pagination']['next_offset'] ?? null;
+        if (is_int($next)) {
+            $page['nextCursor'] = rtrim(strtr(base64_encode('offset:' . $next), '+/', '-_'), '=');
+        }
+
+        return $page;
+    }
+
+    /** The offset an opaque cursor encodes, refusing anything this server would not have issued. */
+    private static function offset(string $cursor): int
+    {
+        $decoded = base64_decode(strtr($cursor, '-_', '+/'), true);
+        if (!is_string($decoded) || preg_match('/^offset:(0|[1-9][0-9]{0,5})$/', $decoded, $matches) !== 1 || (int) $matches[1] > self::MAX_OFFSET) {
+            throw new InvalidArgumentException('Invalid cursor.');
+        }
+
+        return (int) $matches[1];
+    }
+
+    /**
+     * The three resources of each listed project.
+     *
+     * @param list<array<string, mixed>> $projects
+     * @return list<array<string, mixed>>
+     */
+    private function resources(array $projects): array
+    {
         $resources = [];
         foreach ($projects as $project) {
             $id = $project['id'];

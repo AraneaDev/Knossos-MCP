@@ -21,7 +21,8 @@ skill that decides which questions reach these tools at all
 The server also exposes two MCP surfaces with no CLI equivalent: per-project
 resources at `knossos://<project_id>/summary`, `/boundaries` and `/brief` (the
 first two JSON, the last the markdown `export_agent_brief` renders), and the
-`orient` and `review_diff` prompts. Every field of every tool is in
+`orient` and `review_diff` prompts. `resources/list` returns 100 projects per
+page; pass its `nextCursor` back as `cursor` to read the next page. Every field of every tool is in
 [the MCP tool reference](../reference/mcp-tools.md).
 
 ## Refreshing a stale graph

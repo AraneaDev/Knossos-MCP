@@ -301,7 +301,15 @@ final class StdioServer
         }
 
         if ($this->resources !== null && $method === 'resources/list') {
-            return $this->success($id, ['resources' => $this->resources->list()]);
+            $cursor = $params['cursor'] ?? null;
+            if ($cursor !== null && !is_string($cursor)) {
+                return $this->error($id, -32602, 'Invalid cursor.');
+            }
+            try {
+                return $this->success($id, $this->resources->list($cursor));
+            } catch (\InvalidArgumentException) {
+                return $this->error($id, -32602, 'Invalid cursor.');
+            }
         }
         if ($this->resources !== null && $method === 'resources/read') {
             $uri = $params['uri'] ?? null;

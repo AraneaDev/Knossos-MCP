@@ -6,8 +6,10 @@ namespace Knossos\Tests\Phpunit\Mcp;
 
 use Knossos\Mcp\ResourceService;
 use Knossos\Mcp\StdioServer;
+use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 final class ResourcesPromptsTest extends KnossosTestCase
@@ -88,6 +90,84 @@ final class ResourcesPromptsTest extends KnossosTestCase
 
             assertSame(7, $read['id']);
             assertSame(-32603, $read['error']['code']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** resources/list stopped at 100 projects and gave no way to reach the rest. */
+    #[Group('mcp')]
+    public function testResourcesBeyondTheFirstHundredProjectsAreReachableByCursor(): void
+    {
+        [$tools, , $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $insert = $pdo->prepare(
+                "INSERT INTO projects (id, name, root_realpath, created_at, updated_at) VALUES (:id, :name, :root, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            );
+            foreach (range(1, 100) as $n) {
+                $insert->execute(['id' => 'project_' . hash('sha256', (string) $n), 'name' => 'extra-' . $n, 'root' => '/nonexistent/extra-' . $n]);
+            }
+            $server = $this->initializedResourceServer($tools, $pdo);
+
+            $first = $server->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'resources/list', 'params' => []]);
+            assertSame(300, count($first['result']['resources']));
+            assertSame(true, is_string($first['result']['nextCursor']));
+            $second = $server->handle(['jsonrpc' => '2.0', 'id' => 3, 'method' => 'resources/list', 'params' => ['cursor' => $first['result']['nextCursor']]]);
+
+            assertSame(3, count($second['result']['resources']));
+            assertSame(false, array_key_exists('nextCursor', $second['result']));
+            $uris = array_column([...$first['result']['resources'], ...$second['result']['resources']], 'uri');
+            assertSame(303, count(array_unique($uris)), 'No project is listed twice or skipped.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A cursor is opaque, but only the server's own cursors decode: anything
+     * else, or one that addresses an offset past the catalog's bound, is invalid params.
+     *
+     * @return iterable<string, array{mixed}>
+     */
+    public static function invalidCursors(): iterable
+    {
+        yield 'not a cursor' => ['not-a-cursor'];
+        yield 'not a string' => [42];
+        yield 'empty' => [''];
+        yield 'negative offset' => [rtrim(strtr(base64_encode('offset:-1'), '+/', '-_'), '=')];
+        yield 'past the bound' => [rtrim(strtr(base64_encode('offset:100001'), '+/', '-_'), '=')];
+        yield 'not a number' => [rtrim(strtr(base64_encode('offset:ten'), '+/', '-_'), '=')];
+    }
+
+    #[Group('mcp')]
+    #[DataProvider('invalidCursors')]
+    public function testAnInvalidCursorIsInvalidParams(mixed $cursor): void
+    {
+        [$tools, , $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $server = $this->initializedResourceServer($tools, $pdo);
+
+            $response = $server->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'resources/list', 'params' => ['cursor' => $cursor]]);
+
+            assertSame(-32602, $response['error']['code']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The last offset the catalog accepts is still a valid cursor; it lists what lies there (nothing). */
+    #[Group('mcp')]
+    public function testACursorAtTheBoundIsValid(): void
+    {
+        [$tools, , $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $server = $this->initializedResourceServer($tools, $pdo);
+
+            $response = $server->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'resources/list', 'params' => [
+                'cursor' => rtrim(strtr(base64_encode('offset:100000'), '+/', '-_'), '='),
+            ]]);
+
+            assertSame([], $response['result']['resources']);
         } finally {
             $this->removeTempTree($root);
         }
@@ -178,6 +258,15 @@ final class ResourcesPromptsTest extends KnossosTestCase
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    private function initializedResourceServer(ToolService $tools, \PDO $pdo): StdioServer
+    {
+        $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
+
+        return $server;
     }
 
     /**
