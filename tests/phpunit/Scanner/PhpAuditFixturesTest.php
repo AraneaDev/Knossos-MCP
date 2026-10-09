@@ -303,6 +303,22 @@ final class PhpAuditFixturesTest extends KnossosTestCase
         ], $calls);
     }
 
+    /** A class name built at runtime from a namespace written in another case reaches the classes in it. */
+    public function testL25NamespacePrefixMatchesWhateverItsCase(): void
+    {
+        $this->write('src/Cards/Ace.php', "<?php\nnamespace App\\Cards;\nclass Ace {}\n");
+        $this->write('src/Deck.php', "<?php\nnamespace App;\nclass Deck { public function draw(string \$name): object { return new ('app\\\\cards\\\\' . \$name)(); } }\n");
+        $pdo = $this->scan();
+
+        $targets = [];
+        foreach ($this->edges($pdo) as $edge) {
+            if ($edge['source'] === 'App\\Deck::draw' && $edge['kind'] === 'references') {
+                $targets[] = $edge['target'] . ' [' . $edge['target_kind'] . ']';
+            }
+        }
+        self::assertSame(['App\\Cards\\Ace [class]'], $targets);
+    }
+
     /** An incremental scan after a file changes the spellings in use equals a full scan of the result. */
     public function testL25IncrementalEqualsFull(): void
     {

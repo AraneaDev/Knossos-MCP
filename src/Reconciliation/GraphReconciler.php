@@ -412,6 +412,8 @@ final readonly class GraphReconciler
         $references = null;
         // Built on the first edge that matches nothing exactly, once per reconcile.
         $caseless = null;
+        // Built on the first prefix edge of such a language, once per reconcile.
+        $caselessReferences = null;
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
                 $sourceId = $nodeMap[$edge->sourceReference] ?? null;
@@ -436,8 +438,17 @@ final readonly class GraphReconciler
                 if (str_contains($edge->targetReference, ':class_prefix:')) {
                     // A class name built from a namespace prefix at runtime:
                     // one edge per class directly in that namespace.
-                    $references ??= new NodeReferenceIndex($nodeMap);
-                    foreach (self::classPrefixTargets($edge->targetReference, $references) as $targetId) {
+                    // A language that reads names without regard to case
+                    // looks the namespace up on the matching keys.
+                    $caselessPrefix = CaseInsensitiveReferences::foldsLanguage($edge->targetReference);
+                    if ($caselessPrefix) {
+                        $caseless ??= new CaseInsensitiveReferences($nodeMap, $returnTypes, $inheritanceSources, $contributions);
+                        $caselessReferences ??= new NodeReferenceIndex($caseless->nodeMap());
+                    } else {
+                        $references ??= new NodeReferenceIndex($nodeMap);
+                    }
+                    $index = $caselessPrefix ? $caselessReferences : $references;
+                    foreach (self::classPrefixTargets($caselessPrefix ? strtolower($edge->targetReference) : $edge->targetReference, $index) as $targetId) {
                         $record = $this->edgeWithEvidence($projectId, $edge, $sourceId, $targetId, $contribution->ownerKey, $fileIds);
                         $edges[$record['id']] = $record;
                     }

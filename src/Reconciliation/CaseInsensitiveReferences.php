@@ -96,6 +96,12 @@ final readonly class CaseInsensitiveReferences
         $this->referenced = self::referencedSpellings($contributions);
     }
 
+    /** Whether a reference is in a language that reads its symbol names without regard to case. */
+    public static function foldsLanguage(string $reference): bool
+    {
+        return isset(self::LANGUAGES[explode(':', $reference, 2)[0]]);
+    }
+
     /** Whether a reference names a symbol its language matches without regard to case. */
     public static function applies(string $reference): bool
     {

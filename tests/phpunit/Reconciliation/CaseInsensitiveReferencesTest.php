@@ -36,6 +36,8 @@ final class CaseInsensitiveReferencesTest extends KnossosTestCase
             self::assertFalse(CaseInsensitiveReferences::applies($reference), $reference);
             self::assertSame($reference, CaseInsensitiveReferences::fold($reference));
         }
+        self::assertTrue(CaseInsensitiveReferences::foldsLanguage('php:class_prefix:App\\Cards'));
+        self::assertFalse(CaseInsensitiveReferences::foldsLanguage('ts:class_prefix:App\\Cards'));
     }
 
     public function testKeysTheGraphByMatchingKeys(): void
