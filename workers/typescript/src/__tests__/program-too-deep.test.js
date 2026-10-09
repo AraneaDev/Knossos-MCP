@@ -19,10 +19,7 @@ import {
 
 // TypeScript's exports are non-configurable getters, so vi.spyOn cannot replace
 // createProgram; the module is wrapped instead, with a hook each test sets.
-const hook = vi.hoisted(() => ({
-    createProgram: null,
-    getPreEmitDiagnostics: null,
-}));
+const hook = vi.hoisted(() => ({ createProgram: null }));
 vi.mock("typescript", async (importOriginal) => {
     const actual = (await importOriginal()).default;
     const wrapped = new Proxy(actual, {
@@ -30,16 +27,6 @@ vi.mock("typescript", async (importOriginal) => {
             if (property === "createProgram" && hook.createProgram !== null) {
                 return (...args) =>
                     hook.createProgram(target.createProgram, ...args);
-            }
-            if (
-                property === "getPreEmitDiagnostics" &&
-                hook.getPreEmitDiagnostics !== null
-            ) {
-                return (...args) =>
-                    hook.getPreEmitDiagnostics(
-                        target.getPreEmitDiagnostics,
-                        ...args,
-                    );
             }
             return Reflect.get(target, property, receiver);
         },
@@ -64,7 +51,6 @@ function fixture(files) {
 
 afterEach(() => {
     hook.createProgram = null;
-    hook.getPreEmitDiagnostics = null;
     vi.restoreAllMocks();
     while (created.length > 0) {
         rmSync(created.pop(), { recursive: true, force: true });
@@ -73,6 +59,20 @@ afterEach(() => {
 
 function overflow() {
     return new RangeError("Maximum call stack size exceeded");
+}
+
+/** Programs whose checker throws what `error` makes when asked about a file. */
+function failingChecks(error) {
+    return (createProgram, options) =>
+        new Proxy(createProgram(options), {
+            get(target, property, receiver) {
+                if (property !== "getSemanticDiagnostics")
+                    return Reflect.get(target, property, receiver);
+                return () => {
+                    throw error();
+                };
+            },
+        });
 }
 
 function scan(root, files, configFiles, extra = {}) {
@@ -209,9 +209,7 @@ describe("a program that fails for a reason other than the stack", () => {
 
     it("keeps the facts when only the compiler diagnostics fail", () => {
         const root = fixture(files);
-        hook.getPreEmitDiagnostics = () => {
-            throw new Error("Debug Failure");
-        };
+        hook.createProgram = failingChecks(() => new Error("Debug Failure"));
 
         const { byPath } = scan(
             root,
@@ -227,9 +225,7 @@ describe("a program that fails for a reason other than the stack", () => {
 
     it("still reports a stack overflow in the diagnostics as too deep", () => {
         const root = fixture(files);
-        hook.getPreEmitDiagnostics = () => {
-            throw overflow();
-        };
+        hook.createProgram = failingChecks(() => overflow());
 
         const { byPath } = scan(root, ["other/ok.ts"], []);
 
@@ -249,11 +245,19 @@ describe("a program that fails for a reason other than the stack", () => {
             code: 5023,
             messageText: "Unknown compiler option.",
         };
-        hook.getPreEmitDiagnostics = (real, program) => [
-            ...real(program),
-            optionError,
-            optionError,
-        ];
+        // Reported twice, as an option and a config error can repeat.
+        hook.createProgram = (createProgram, options) =>
+            new Proxy(createProgram(options), {
+                get(target, property, receiver) {
+                    if (property === "getOptionsDiagnostics")
+                        return () => [
+                            ...target.getOptionsDiagnostics(),
+                            optionError,
+                            optionError,
+                        ];
+                    return Reflect.get(target, property, receiver);
+                },
+            });
 
         const { byPath } = scan(
             root,

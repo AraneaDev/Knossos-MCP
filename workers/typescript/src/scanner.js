@@ -1254,14 +1254,20 @@ export class TypeScriptScanner {
         // The request's own map is left as the configs filled it.
         const owners = fallback ? new Map() : request.owners;
         const tracker = declarationTracker(program.getTypeChecker());
+        const skipped = emissionSkipped(request, owners, fallback);
         const { byFile: diagnosticsByFile, programLevel } = programDiagnostics(
             program,
             root,
             maxFileBytes,
             fallback,
+            program
+                .getSourceFiles()
+                .filter(
+                    (sourceFile) =>
+                        !skipped(relativeInside(root, sourceFile.fileName)),
+                ),
         );
 
-        const skipped = emissionSkipped(request, owners, fallback);
         // A diagnostic that names no file describes the whole program, so it
         // is reported once, on one fixed file of the program. The carrier is
         // chosen from the program itself, never from the request: a project is
@@ -4492,7 +4498,8 @@ function componentTarget(specifier, resolved) {
 }
 
 /**
- * A program's compiler diagnostics, by file and program-wide.
+ * A program's compiler diagnostics on `sourceFiles`, the files it emits, and
+ * the program-wide ones.
  *
  * Compiler diagnostics are best-effort: failing to compute them must not cost
  * the facts. A stack overflow still reaches the program-level backstop, which
@@ -4504,7 +4511,13 @@ function componentTarget(specifier, resolved) {
  * config, so an option error that names no file describes those made-up
  * options, not anything the user can fix, and is dropped.
  */
-function programDiagnostics(program, root, maxFileBytes, fallback) {
+function programDiagnostics(
+    program,
+    root,
+    maxFileBytes,
+    fallback,
+    sourceFiles,
+) {
     let byFile = new Map();
     let programLevel = [];
     try {
@@ -4512,6 +4525,7 @@ function programDiagnostics(program, root, maxFileBytes, fallback) {
             program,
             root,
             maxFileBytes,
+            sourceFiles,
         ));
     } catch (error) {
         rethrowStackOverflow(error);
@@ -4573,98 +4587,154 @@ function hasControlCharacter(name) {
     return false;
 }
 
-function diagnosticsForProgram(program, root, maxFileBytes) {
+/**
+ * The compiler diagnostics of the files a program emits, and the ones that
+ * name no file.
+ *
+ * Only the given files are checked: checking every file of the program cost
+ * a one-file request the whole program's type check. A diagnostic that names
+ * no file is taken before any file is checked (see programLevelDiagnostics).
+ * One file whose diagnostics fail costs only its own; a stack overflow still
+ * reaches the program-level backstop.
+ */
+function diagnosticsForProgram(program, root, maxFileBytes, sourceFiles) {
     const result = new Map();
-    const programLevel = [];
-    for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
-        if (!diagnostic.file) {
-            // An option or configuration error names no file; it applies to
-            // the whole program and is reported once, on the program's carrier.
-            const message =
-                ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n") +
-                " (applies to the whole program)";
-            const code = `TS${diagnostic.code}`;
-            if (
-                programLevel.some(
-                    (item) => item.code === code && item.message === message,
-                )
-            )
-                continue;
-            programLevel.push({
-                severity:
-                    diagnostic.category === ts.DiagnosticCategory.Error
-                        ? "error"
-                        : "warning",
-                code,
-                message,
-            });
+    const programLevel = programLevelDiagnostics(program);
+    for (const sourceFile of sourceFiles) {
+        let diagnostics;
+        try {
+            diagnostics = fileDiagnostics(program, sourceFile);
+        } catch (error) {
+            rethrowStackOverflow(error);
             continue;
         }
-        const component = componentSources.get(diagnostic.file);
+        for (const diagnostic of diagnostics) {
+            if (diagnostic.file)
+                addFileDiagnostic(
+                    { program, root, maxFileBytes },
+                    diagnostic,
+                    result,
+                );
+        }
+    }
+    componentParseDiagnostics(program, root, result);
+    return { byFile: result, programLevel };
+}
+
+/**
+ * What `ts.getPreEmitDiagnostics` reports for one file, without the
+ * program-wide part it repeats on every call.
+ */
+function fileDiagnostics(program, sourceFile) {
+    const options = program.getCompilerOptions();
+    return ts.sortAndDeduplicateDiagnostics([
+        ...program.getSyntacticDiagnostics(sourceFile),
+        ...program.getSemanticDiagnostics(sourceFile),
+        ...(options.declaration || options.composite
+            ? program.getDeclarationDiagnostics(sourceFile)
+            : []),
+    ]);
+}
+
+/**
+ * The diagnostics of a program that name no file: an option or configuration
+ * error, or a global type the checker cannot find. Each applies to the whole
+ * program and is reported once, on the program's carrier.
+ *
+ * Taken before any file is checked. Checking a file can add a global
+ * diagnostic of its own (a global type only that file's code asks for), and
+ * which files are checked follows the request, so such a diagnostic would
+ * come and go with what else a batch held. What the checker reports when it
+ * is created, and what the config and options report, depends only on the
+ * program.
+ */
+function programLevelDiagnostics(program) {
+    const programLevel = [];
+    const diagnostics = ts.sortAndDeduplicateDiagnostics([
+        ...program.getConfigFileParsingDiagnostics(),
+        ...program.getOptionsDiagnostics(),
+        ...program.getGlobalDiagnostics(),
+    ]);
+    for (const diagnostic of diagnostics) {
+        if (diagnostic.file) continue;
+        const message =
+            ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n") +
+            " (applies to the whole program)";
+        const code = `TS${diagnostic.code}`;
         if (
-            component !== undefined &&
-            !componentDiagnosticKept(component, diagnostic)
+            programLevel.some(
+                (item) => item.code === code && item.message === message,
+            )
         )
             continue;
-        if (diagnostic.code === 6059) continue; // Analysis-only project-reference source merging triggers this.
-        if (namesComponentDefaultExport(diagnostic)) continue;
-        const relative = relativeInside(root, diagnostic.file.fileName);
-        if (relative === null || belowNodeModules(relative)) continue;
-        const overCap = declarationOverCap(
-            program,
-            diagnostic,
-            root,
-            maxFileBytes,
-        );
-        if (overCap !== null) {
-            const start = diagnostic.file.getLineAndCharacterOfPosition(
-                diagnostic.start ?? 0,
-            );
-            const list = result.get(relative) ?? [];
-            list.push({
-                severity: "warning",
-                code: "TS_DECLARATION_OVER_CAP",
-                message: overCap,
-                evidence: {
-                    path: relative,
-                    start_line: start.line + 1,
-                    end_line: start.line + 1,
-                },
-            });
-            result.set(relative, list);
-            continue;
-        }
-        const start = diagnostic.start ?? 0;
-        const startPosition =
-            diagnostic.file.getLineAndCharacterOfPosition(start);
-        const endPosition = diagnostic.file.getLineAndCharacterOfPosition(
-            start + (diagnostic.length ?? 0),
-        );
-        const item = {
+        programLevel.push({
             severity:
                 diagnostic.category === ts.DiagnosticCategory.Error
                     ? "error"
                     : "warning",
-            code: `TS${diagnostic.code}`,
-            message: ts.flattenDiagnosticMessageText(
-                diagnostic.messageText,
-                "\n",
-            ),
+            code,
+            message,
+        });
+    }
+    return programLevel;
+}
+
+/** One compiler diagnostic on a file, added to that file's list. */
+function addFileDiagnostic(
+    { program, root, maxFileBytes },
+    diagnostic,
+    result,
+) {
+    const component = componentSources.get(diagnostic.file);
+    if (
+        component !== undefined &&
+        !componentDiagnosticKept(component, diagnostic)
+    )
+        return;
+    if (diagnostic.code === 6059) return; // Analysis-only project-reference source merging triggers this.
+    if (namesComponentDefaultExport(diagnostic)) return;
+    const relative = relativeInside(root, diagnostic.file.fileName);
+    if (relative === null || belowNodeModules(relative)) return;
+    const overCap = declarationOverCap(program, diagnostic, root, maxFileBytes);
+    if (overCap !== null) {
+        const start = diagnostic.file.getLineAndCharacterOfPosition(
+            diagnostic.start ?? 0,
+        );
+        const list = result.get(relative) ?? [];
+        list.push({
+            severity: "warning",
+            code: "TS_DECLARATION_OVER_CAP",
+            message: overCap,
             evidence: {
                 path: relative,
-                start_line: startPosition.line + 1,
-                end_line: Math.max(
-                    startPosition.line + 1,
-                    endPosition.line + 1,
-                ),
+                start_line: start.line + 1,
+                end_line: start.line + 1,
             },
-        };
-        const list = result.get(relative) ?? [];
-        list.push(item);
+        });
         result.set(relative, list);
+        return;
     }
-    componentParseDiagnostics(program, root, result);
-    return { byFile: result, programLevel };
+    const start = diagnostic.start ?? 0;
+    const startPosition = diagnostic.file.getLineAndCharacterOfPosition(start);
+    const endPosition = diagnostic.file.getLineAndCharacterOfPosition(
+        start + (diagnostic.length ?? 0),
+    );
+    const item = {
+        severity:
+            diagnostic.category === ts.DiagnosticCategory.Error
+                ? "error"
+                : "warning",
+        code: `TS${diagnostic.code}`,
+        message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+        evidence: {
+            path: relative,
+            start_line: startPosition.line + 1,
+            end_line: Math.max(startPosition.line + 1, endPosition.line + 1),
+        },
+    };
+    const list = result.get(relative) ?? [];
+    list.push(item);
+    result.set(relative, list);
 }
 
 /**

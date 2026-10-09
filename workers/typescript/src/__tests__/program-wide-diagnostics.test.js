@@ -5,10 +5,7 @@ import { dirname, join } from "node:path";
 
 // TypeScript's exports are non-configurable getters, so vi.spyOn cannot replace
 // createProgram; the module is wrapped instead, with a hook each test sets.
-const hook = vi.hoisted(() => ({
-    createProgram: null,
-    getPreEmitDiagnostics: null,
-}));
+const hook = vi.hoisted(() => ({ createProgram: null }));
 vi.mock("typescript", async (importOriginal) => {
     const actual = (await importOriginal()).default;
     const wrapped = new Proxy(actual, {
@@ -16,16 +13,6 @@ vi.mock("typescript", async (importOriginal) => {
             if (property === "createProgram" && hook.createProgram !== null) {
                 return (...args) =>
                     hook.createProgram(target.createProgram, ...args);
-            }
-            if (
-                property === "getPreEmitDiagnostics" &&
-                hook.getPreEmitDiagnostics !== null
-            ) {
-                return (...args) =>
-                    hook.getPreEmitDiagnostics(
-                        target.getPreEmitDiagnostics,
-                        ...args,
-                    );
             }
             return Reflect.get(target, property, receiver);
         },
@@ -50,7 +37,6 @@ function fixture(files) {
 
 afterEach(() => {
     hook.createProgram = null;
-    hook.getPreEmitDiagnostics = null;
     vi.restoreAllMocks();
     while (created.length > 0) {
         rmSync(created.pop(), { recursive: true, force: true });
@@ -79,6 +65,21 @@ const optionError = {
     messageText: "Unknown compiler option.",
 };
 
+/** A program whose options report `optionError`, as an unknown option would. */
+function withOptionError(createProgram, options) {
+    return withOptionErrorOn(createProgram(options));
+}
+
+function withOptionErrorOn(program) {
+    return new Proxy(program, {
+        get(target, property, receiver) {
+            if (property === "getOptionsDiagnostics")
+                return () => [...target.getOptionsDiagnostics(), optionError];
+            return Reflect.get(target, property, receiver);
+        },
+    });
+}
+
 const programWide = (contribution) =>
     contribution.diagnostics.filter(
         (diagnostic) => diagnostic.code === "TS5023",
@@ -93,10 +94,7 @@ const files = {
 describe("a diagnostic that names no file", () => {
     it("is attached once, to the program's first file, however the files are batched", () => {
         const root = fixture(files);
-        hook.getPreEmitDiagnostics = (real, program) => [
-            ...real(program),
-            optionError,
-        ];
+        hook.createProgram = withOptionError;
         const scanner = new TypeScriptScanner();
 
         const first = scan(scanner, root, ["src/b.ts"], ["tsconfig.json"]);
@@ -116,10 +114,7 @@ describe("a diagnostic that names no file", () => {
 
     it("is not attached at all when the program's first file is not requested", () => {
         const root = fixture(files);
-        hook.getPreEmitDiagnostics = (real, program) => [
-            ...real(program),
-            optionError,
-        ];
+        hook.createProgram = withOptionError;
 
         const byPath = scan(
             new TypeScriptScanner(),
@@ -134,12 +129,8 @@ describe("a diagnostic that names no file", () => {
 
     it("is still attached when collecting the first file's facts fails", () => {
         const root = fixture(files);
-        hook.getPreEmitDiagnostics = (real, program) => [
-            ...real(program),
-            optionError,
-        ];
         hook.createProgram = (createProgram, options) => {
-            const program = createProgram(options);
+            const program = withOptionErrorOn(createProgram(options));
             return new Proxy(program, {
                 get(target, property, receiver) {
                     if (property !== "getSourceFiles")
@@ -214,10 +205,7 @@ describe("the fallback program for files outside every tsconfig", () => {
     it("never reports a diagnostic that names no file", () => {
         const root = fixture(deprecated);
         // Every program, the fallback included, is handed an option error.
-        hook.getPreEmitDiagnostics = (real, program) => [
-            ...real(program),
-            optionError,
-        ];
+        hook.createProgram = withOptionError;
 
         const byPath = scan(
             new TypeScriptScanner(),
@@ -227,5 +215,87 @@ describe("the fallback program for files outside every tsconfig", () => {
         );
 
         expect(programWide(byPath["test/a.test.ts"])).toEqual([]);
+    });
+});
+
+describe("a request's compiler diagnostics", () => {
+    const typed = {
+        "tsconfig.json": JSON.stringify({ include: ["src"] }),
+        "src/a.ts": 'export const a: number = "one";\n',
+        "src/b.ts": "export const b: string = 2;\n",
+        "src/c.ts": 'import { a } from "./a";\nexport const c: string = a;\n',
+    };
+
+    /** Each file the checker was asked for, "(all)" for the whole program. */
+    function recordingChecks(checked) {
+        return (createProgram, options) =>
+            new Proxy(createProgram(options), {
+                get(target, property, receiver) {
+                    if (property !== "getSemanticDiagnostics")
+                        return Reflect.get(target, property, receiver);
+                    return (sourceFile, ...rest) => {
+                        checked.push(
+                            sourceFile === undefined
+                                ? "(all)"
+                                : sourceFile.fileName.slice(
+                                      sourceFile.fileName.lastIndexOf("/src/") +
+                                          1,
+                                  ),
+                        );
+                        return target.getSemanticDiagnostics(
+                            sourceFile,
+                            ...rest,
+                        );
+                    };
+                },
+            });
+    }
+
+    it("check only the files the request names, not the whole program", () => {
+        const root = fixture(typed);
+        const checked = [];
+        hook.createProgram = recordingChecks(checked);
+
+        const byPath = scan(
+            new TypeScriptScanner(),
+            root,
+            ["src/c.ts"],
+            ["tsconfig.json"],
+        );
+
+        expect(checked).toEqual(["src/c.ts"]);
+        expect(byPath["src/c.ts"].diagnostics.map((item) => item.code)).toEqual(
+            ["TS2322"],
+        );
+    });
+
+    it("are the ones a request naming every file reports", () => {
+        const root = fixture(typed);
+        const all = scan(
+            new TypeScriptScanner(),
+            root,
+            ["src/a.ts", "src/b.ts", "src/c.ts"],
+            ["tsconfig.json"],
+        );
+
+        for (const relative of ["src/a.ts", "src/b.ts", "src/c.ts"]) {
+            const alone = scan(
+                new TypeScriptScanner(),
+                root,
+                [relative],
+                ["tsconfig.json"],
+            );
+            expect(alone[relative].diagnostics, relative).toEqual(
+                all[relative].diagnostics,
+            );
+        }
+        expect(all["src/b.ts"].diagnostics).toEqual([
+            {
+                severity: "error",
+                code: "TS2322",
+                message: "Type 'number' is not assignable to type 'string'.",
+                evidence: { path: "src/b.ts", start_line: 1, end_line: 1 },
+            },
+        ]);
     });
 });
