@@ -461,7 +461,13 @@ while (($line = fgets(STDIN)) !== false) {
                 ? ['program' => 'fake-program', 'environment' => hash('sha256', 'the globals now')]
                 : [];
             foreach ($requested as $relativePath) {
-                notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath) + $program);
+                $contribution = fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath) + $program;
+                // One malformed fact, for a file named Bad: the core keeps the
+                // file without facts and the rest of the language intact.
+                if ($mode === 'per_file_malformed_bad' && str_contains((string) $relativePath, 'Bad')) {
+                    $contribution['nodes'][0]['display_name'] = '';
+                }
+                notifyContribution($contribution);
             }
             // Shaped like the real TypeScript worker's reply: every integer is a
             // count of what THIS request did, so a caller must sum them, while
