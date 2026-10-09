@@ -604,6 +604,25 @@ final class ProjectDiscovererTest extends KnossosTestCase
     }
 
     /**
+     * Every directory the walk opened, so a watcher can stat the ones that
+     * hold no discovered file yet; never one it skipped.
+     */
+    public function testTheResultListsEveryDirectoryTheWalkOpened(): void
+    {
+        $this->writeTree([
+            'src/a.ts' => 'export const a = 1;',
+            'dist/x.ts' => 'export const x = 1;',
+            'node_modules/y/index.js' => 'module.exports = 1;',
+            'ignored/z.ts' => 'export const z = 1;',
+        ]);
+        mkdir($this->root . '/src/new');
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root], ignorePatterns: ['ignored'])))->discover($this->root);
+
+        assertSame(['src', 'src/new'], $result->directories);
+    }
+
+    /**
      * The TypeScript a package declares decides which compiler defaults its
      * sources are checked under, since 6.0 changed several of them.
      */

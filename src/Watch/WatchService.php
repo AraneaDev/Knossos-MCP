@@ -86,8 +86,8 @@ final readonly class WatchService
         // Snapshot the fingerprint BEFORE the initial scan (matching the poll
         // loop's pre-snapshot ordering). Capturing it afterwards would silently
         // miss every file changed while the initial scan was running.
-        $state->fingerprint = TreeFingerprint::of($root, $this->roots);
-        $gate->remember($state->fingerprint);
+        [$state->fingerprint, $directories, $walkStartedAt] = TreeFingerprint::observe($root, $this->roots);
+        $gate->remember($state->fingerprint, $directories, $walkStartedAt);
         $scanned = $hooks->current === null || !($hooks->current)($state->fingerprint, null);
         $running = true;
         if ($scanned) {
@@ -176,12 +176,12 @@ final readonly class WatchService
     {
         if ($gate->mayHaveChanged()) {
             try {
-                $current = TreeFingerprint::of($root, $this->roots);
+                [$current, $directories, $walkStartedAt] = TreeFingerprint::observe($root, $this->roots);
             } catch (Throwable $error) {
                 $emit(['event' => 'error', 'message' => $error->getMessage()]);
                 return $state->pending !== [] || $state->overflow;
             }
-            $gate->remember($current);
+            $gate->remember($current, $directories, $walkStartedAt);
             $changes = TreeFingerprint::changes($state->fingerprint, $current);
             $state->fingerprint = $current;
             if ($changes !== [] && $state->pending === [] && !$state->overflow) {

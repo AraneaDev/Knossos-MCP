@@ -59,6 +59,7 @@ final class DiscoveryResultTest extends TestCase
         assertSame([], $result->units);
         assertSame([], $result->diagnostics);
         assertSame([], $result->manifestRoots);
+        assertSame([], $result->directories);
         assertSame('', $result->inputHash);
         assertSame('', $result->configurationHash);
     }

@@ -63,6 +63,8 @@ final readonly class ProjectDiscoverer
 
         /** @var array<string, true> $manifestRoots directories whose listing holds a manifest */
         $manifestRoots = [];
+        /** @var list<string> $directories every directory listed, the root left out */
+        $directories = [];
         // Asked only about directories already listed: a path is matched while
         // its parent is walked, after every ancestor's listing was recorded.
         $ignoreMatcher = new IgnoreMatcher(
@@ -76,6 +78,9 @@ final readonly class ProjectDiscoverer
             $directory = array_pop($stack);
             $this->readGitIgnore($root, $directory, $gitIgnore, $gitIgnoreReads);
             $names = $this->listDirectory($root, $directory, $diagnostics, $manifestRoots);
+            if ($names !== null && $directory !== $root) {
+                $directories[] = $this->relative($root, $directory);
+            }
 
             foreach ($names ?? [] as $name) {
                 // Discovery walks and hashes up to maxFiles entries — the longest
@@ -236,8 +241,9 @@ final readonly class ProjectDiscoverer
 
         $manifestRoots = array_map('strval', array_keys($manifestRoots));
         sort($manifestRoots);
+        sort($directories);
 
-        return self::result($root, $files, $units, $diagnostics, $unparsedManifestHashes, $manifestRoots);
+        return self::result($root, $files, $units, $diagnostics, $unparsedManifestHashes, [$manifestRoots, $directories]);
     }
 
     /**
@@ -358,7 +364,7 @@ final readonly class ProjectDiscoverer
      * @param list<ProjectUnit> $units
      * @param list<DiscoveryDiagnostic> $diagnostics
      * @param array<string, string> $unparsedManifestHashes
-     * @param list<string> $manifestRoots
+     * @param array{0: list<string>, 1: list<string>} $walked the manifest roots and the directories the walk opened
      */
     private static function result(
         string $root,
@@ -366,7 +372,7 @@ final readonly class ProjectDiscoverer
         array $units,
         array $diagnostics,
         array $unparsedManifestHashes,
-        array $manifestRoots,
+        array $walked,
     ): DiscoveryResult
     {
         $files = self::withoutCompiledSiblings($files);
@@ -396,7 +402,7 @@ final readonly class ProjectDiscoverer
             hash('sha256', implode("\n", $inputParts)),
             hash('sha256', implode("\n", $configParts)),
             $unparsedManifestHashes,
-            $manifestRoots,
+            ...$walked,
         );
     }
 
