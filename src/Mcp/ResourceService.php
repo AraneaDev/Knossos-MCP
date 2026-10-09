@@ -17,40 +17,57 @@ final readonly class ResourceService
     /** Projects per resources/list page; each contributes three resources. */
     public const PAGE_SIZE = 100;
 
-    /** The largest offset the project catalog accepts. */
-    private const MAX_OFFSET = 100_000;
+    /** Prefix of the decoded cursor; what follows is the JSON pair [created_at, id] of the last listed project. */
+    private const CURSOR_PREFIX = 'after:';
 
     private const URI_PATTERN = '#^knossos://(project_[a-f0-9]{64})/(summary|boundaries|brief)$#';
 
     public function __construct(private ArchitectureQueryService $queries) {}
 
     /**
-     * One page of resources, PAGE_SIZE projects at a time, with the cursor of the next page when there is one.
+     * One page of resources, PAGE_SIZE projects at a time in creation order,
+     * with the cursor of the next page when there is one.
+     *
+     * The cursor names the last project listed (its created_at and id), not an
+     * offset, and the order is one a scan never changes, so a project rescanned,
+     * added or removed between pages neither repeats nor pushes another out.
      *
      * @return array{resources: list<array<string, mixed>>, nextCursor?: string}
      * @throws InvalidArgumentException when the cursor is not one this server issued
      */
     public function list(?string $cursor = null): array
     {
-        $listing = $this->queries->listProjects(self::PAGE_SIZE, $cursor === null ? 0 : self::offset($cursor))->data;
-        $page = ['resources' => $this->resources($listing['projects'] ?? [])];
-        $next = $listing['pagination']['next_offset'] ?? null;
-        if (is_int($next)) {
-            $page['nextCursor'] = rtrim(strtr(base64_encode('offset:' . $next), '+/', '-_'), '=');
+        [$afterCreatedAt, $afterId] = $cursor === null ? [null, null] : self::position($cursor);
+        $listing = $this->queries->projectsInCreationOrder(self::PAGE_SIZE, $afterCreatedAt, $afterId);
+        $page = ['resources' => $this->resources($listing['projects'])];
+        $last = $listing['projects'] === [] ? null : $listing['projects'][array_key_last($listing['projects'])];
+        if ($listing['more'] && $last !== null) {
+            $payload = self::CURSOR_PREFIX . json_encode([$last['created_at'], $last['id']], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            $page['nextCursor'] = rtrim(strtr(base64_encode($payload), '+/', '-_'), '=');
         }
 
         return $page;
     }
 
-    /** The offset an opaque cursor encodes, refusing anything this server would not have issued. */
-    private static function offset(string $cursor): int
+    /**
+     * The keyset position an opaque cursor encodes, refusing anything this server would not have issued.
+     *
+     * @return array{string, string} [created_at, id] of the last project on the previous page
+     */
+    private static function position(string $cursor): array
     {
         $decoded = base64_decode(strtr($cursor, '-_', '+/'), true);
-        if (!is_string($decoded) || preg_match('/^offset:(0|[1-9][0-9]{0,5})$/', $decoded, $matches) !== 1 || (int) $matches[1] > self::MAX_OFFSET) {
+        $pair = is_string($decoded) && str_starts_with($decoded, self::CURSOR_PREFIX)
+            ? json_decode(substr($decoded, strlen(self::CURSOR_PREFIX)), true)
+            : null;
+        if (
+            !is_array($pair) || !array_is_list($pair) || count($pair) !== 2
+            || !is_string($pair[0]) || !is_string($pair[1]) || $pair[0] === '' || $pair[1] === ''
+        ) {
             throw new InvalidArgumentException('Invalid cursor.');
         }
 
-        return (int) $matches[1];
+        return [$pair[0], $pair[1]];
     }
 
     /**

@@ -115,6 +115,16 @@ final readonly class ArchitectureQueryService
         return $this->refreshPolicy->decide($projectId, $drift);
     }
 
+    /**
+     * {@see ProjectCatalogQueryService::projectsInCreationOrder()}
+     *
+     * @return array{projects: list<array{id: string, name: string, created_at: string}>, more: bool}
+     */
+    public function projectsInCreationOrder(int $limit, ?string $afterCreatedAt = null, ?string $afterId = null): array
+    {
+        return $this->catalogQueries->projectsInCreationOrder($limit, $afterCreatedAt, $afterId);
+    }
+
     /** {@see ProjectCatalogQueryService::listProjects()} */
     public function listProjects(int $limit = 50, int $offset = 0, bool $includeRoots = false): ResultEnvelope
     {

@@ -115,6 +115,38 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         );
     }
 
+    /**
+     * One page of projects in creation order, starting after the given position.
+     *
+     * Ordered by (created_at, id), which a scan never changes: a rescan bumps
+     * updated_at, so paging over listProjects()' most-recently-updated order
+     * skipped or repeated projects whenever one was scanned between pages. The
+     * position is a keyset, not an offset, so adding or removing a project
+     * between pages cannot shift the rest either.
+     *
+     * @return array{projects: list<array{id: string, name: string, created_at: string}>, more: bool}
+     */
+    public function projectsInCreationOrder(int $limit, ?string $afterCreatedAt, ?string $afterId): array
+    {
+        self::assertLimit($limit);
+        $statement = $this->pdo->prepare(
+            'SELECT id, name, created_at FROM projects ' .
+            'WHERE :unbounded = 1 OR created_at > :after_created OR (created_at = :same_created AND id > :after_id) ' .
+            'ORDER BY created_at ASC, id ASC LIMIT :limit',
+        );
+        $unbounded = $afterCreatedAt === null || $afterId === null;
+        $statement->bindValue(':unbounded', $unbounded ? 1 : 0, PDO::PARAM_INT);
+        $statement->bindValue(':after_created', (string) $afterCreatedAt);
+        $statement->bindValue(':same_created', (string) $afterCreatedAt);
+        $statement->bindValue(':after_id', (string) $afterId);
+        $statement->bindValue(':limit', $limit + 1, PDO::PARAM_INT);
+        $statement->execute();
+        /** @var list<array{id: string, name: string, created_at: string}> $rows */
+        $rows = $statement->fetchAll();
+
+        return ['projects' => array_slice($rows, 0, $limit), 'more' => count($rows) > $limit];
+    }
+
     /** Retained scan history, for choosing a baseline to diff or gate against. */
 
     public function listSnapshots(string $projectId, int $limit = 20, int $offset = 0): ResultEnvelope

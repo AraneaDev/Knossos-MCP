@@ -99,44 +99,82 @@ final class ResourcesPromptsTest extends KnossosTestCase
     #[Group('mcp')]
     public function testResourcesBeyondTheFirstHundredProjectsAreReachableByCursor(): void
     {
-        [$tools, , $root, $pdo] = $this->buildToolServiceWithScan('mixed');
-        try {
-            $insert = $pdo->prepare(
-                "INSERT INTO projects (id, name, root_realpath, created_at, updated_at) VALUES (:id, :name, :root, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
-            );
-            foreach (range(1, 100) as $n) {
-                $insert->execute(['id' => 'project_' . hash('sha256', (string) $n), 'name' => 'extra-' . $n, 'root' => '/nonexistent/extra-' . $n]);
-            }
-            $server = $this->initializedResourceServer($tools, $pdo);
+        $this->withHundredExtraProjects(function (StdioServer $server): void {
+            $first = $this->listPage($server, null);
+            assertSame(300, count($first['resources']));
+            assertSame(true, is_string($first['nextCursor']));
+            $second = $this->listPage($server, $first['nextCursor']);
 
-            $first = $server->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'resources/list', 'params' => []]);
-            assertSame(300, count($first['result']['resources']));
-            assertSame(true, is_string($first['result']['nextCursor']));
-            $second = $server->handle(['jsonrpc' => '2.0', 'id' => 3, 'method' => 'resources/list', 'params' => ['cursor' => $first['result']['nextCursor']]]);
-
-            assertSame(3, count($second['result']['resources']));
-            assertSame(false, array_key_exists('nextCursor', $second['result']));
-            $uris = array_column([...$first['result']['resources'], ...$second['result']['resources']], 'uri');
+            assertSame(3, count($second['resources']));
+            assertSame(false, array_key_exists('nextCursor', $second));
+            $uris = array_column([...$first['resources'], ...$second['resources']], 'uri');
             assertSame(303, count(array_unique($uris)), 'No project is listed twice or skipped.');
-        } finally {
-            $this->removeTempTree($root);
-        }
+            $ids = array_values(array_unique(array_map(static fn(string $uri): string => explode('/', $uri)[2], $uris)));
+            $sorted = $ids;
+            sort($sorted, SORT_STRING);
+            assertSame($sorted, $ids, 'Projects created at the same moment are ordered by id, across the page boundary too.');
+        });
+    }
+
+    /**
+     * Pages were offsets into a most-recently-updated order, and every scan
+     * bumps updated_at: a project scanned between two pages moved to the
+     * front, pushing the last project of page one onto page two (listed twice)
+     * or, the other way round, skipping one.
+     */
+    #[Group('mcp')]
+    public function testARescanBetweenPagesNeitherSkipsNorRepeatsAProject(): void
+    {
+        $this->withHundredExtraProjects(function (StdioServer $server, \PDO $pdo): void {
+            $first = $this->listPage($server, null);
+            // What a rescan does to the catalogue: updated_at moves, nothing
+            // else. The extra project with the largest id is the one a
+            // most-recently-updated order would have left for page two.
+            $pdo->exec("UPDATE projects SET updated_at = '2999-01-01T00:00:00Z' WHERE id = (SELECT MAX(id) FROM projects WHERE name LIKE 'extra-%')");
+            $second = $this->listPage($server, $first['nextCursor']);
+
+            $uris = array_column([...$first['resources'], ...$second['resources']], 'uri');
+            assertSame(303, count($uris));
+            assertSame(303, count(array_unique($uris)), 'No project is listed twice or skipped.');
+        });
+    }
+
+    /** Removing a listed project and adding a new one between pages shifts nothing already listed. */
+    #[Group('mcp')]
+    public function testAddingAndRemovingProjectsBetweenPagesRepeatsNothing(): void
+    {
+        $this->withHundredExtraProjects(function (StdioServer $server, \PDO $pdo): void {
+            $first = $this->listPage($server, null);
+            $firstListed = explode('/', $first['resources'][0]['uri'])[2];
+            $pdo->prepare('DELETE FROM projects WHERE id = ?')->execute([$firstListed]);
+            $pdo->exec("INSERT INTO projects (id, name, root_realpath, created_at, updated_at) VALUES ('project_" . str_repeat('f', 64) . "', 'late', '/nonexistent/late', '2999-01-01T00:00:00Z', '2999-01-01T00:00:00Z')");
+            $second = $this->listPage($server, $first['nextCursor']);
+
+            $firstUris = array_column($first['resources'], 'uri');
+            $secondUris = array_column($second['resources'], 'uri');
+            assertSame([], array_values(array_intersect($firstUris, $secondUris)), 'Nothing on page one comes back on page two.');
+            assertSame(6, count($secondUris), 'Page two holds the project that was already there and the one added.');
+            assertSame(true, in_array('knossos://project_' . str_repeat('f', 64) . '/summary', $secondUris, true));
+        });
     }
 
     /**
      * A cursor is opaque, but only the server's own cursors decode: anything
-     * else, or one that addresses an offset past the catalog's bound, is invalid params.
+     * else is invalid params.
      *
      * @return iterable<string, array{mixed}>
      */
     public static function invalidCursors(): iterable
     {
+        $cursor = static fn(string $payload): string => rtrim(strtr(base64_encode($payload), '+/', '-_'), '=');
         yield 'not a cursor' => ['not-a-cursor'];
         yield 'not a string' => [42];
         yield 'empty' => [''];
-        yield 'negative offset' => [rtrim(strtr(base64_encode('offset:-1'), '+/', '-_'), '=')];
-        yield 'past the bound' => [rtrim(strtr(base64_encode('offset:100001'), '+/', '-_'), '=')];
-        yield 'not a number' => [rtrim(strtr(base64_encode('offset:ten'), '+/', '-_'), '=')];
+        yield 'an offset, not a position' => [$cursor('offset:100')];
+        yield 'one field' => [$cursor('after:["2026-01-01T00:00:00Z"]')];
+        yield 'not strings' => [$cursor('after:[1,2]')];
+        yield 'empty id' => [$cursor('after:["2026-01-01T00:00:00Z",""]')];
+        yield 'an object' => [$cursor('after:{"a":"x","b":"y"}')];
     }
 
     #[Group('mcp')]
@@ -150,24 +188,6 @@ final class ResourcesPromptsTest extends KnossosTestCase
             $response = $server->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'resources/list', 'params' => ['cursor' => $cursor]]);
 
             assertSame(-32602, $response['error']['code']);
-        } finally {
-            $this->removeTempTree($root);
-        }
-    }
-
-    /** The last offset the catalog accepts is still a valid cursor; it lists what lies there (nothing). */
-    #[Group('mcp')]
-    public function testACursorAtTheBoundIsValid(): void
-    {
-        [$tools, , $root, $pdo] = $this->buildToolServiceWithScan('mixed');
-        try {
-            $server = $this->initializedResourceServer($tools, $pdo);
-
-            $response = $server->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'resources/list', 'params' => [
-                'cursor' => rtrim(strtr(base64_encode('offset:100000'), '+/', '-_'), '='),
-            ]]);
-
-            assertSame([], $response['result']['resources']);
         } finally {
             $this->removeTempTree($root);
         }
@@ -258,6 +278,42 @@ final class ResourcesPromptsTest extends KnossosTestCase
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    /**
+     * Run $test against a server over the scanned fixture plus 100 more
+     * projects (101 in all), all created at the same moment so their order,
+     * and the page boundary, rests on the id tie-break.
+     *
+     * @param \Closure(StdioServer, \PDO): void $test
+     */
+    private function withHundredExtraProjects(\Closure $test): void
+    {
+        [$tools, , $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $insert = $pdo->prepare(
+                "INSERT INTO projects (id, name, root_realpath, created_at, updated_at) VALUES (:id, :name, :root, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            );
+            foreach (range(1, 100) as $n) {
+                $insert->execute(['id' => 'project_' . hash('sha256', (string) $n), 'name' => 'extra-' . $n, 'root' => '/nonexistent/extra-' . $n]);
+            }
+            $pdo->exec("UPDATE projects SET created_at = '2026-01-01T00:00:00Z' WHERE name NOT LIKE 'extra-%'");
+            $test($this->initializedResourceServer($tools, $pdo), $pdo);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * One resources/list page: its result.
+     *
+     * @return array<string, mixed>
+     */
+    private function listPage(StdioServer $server, ?string $cursor): array
+    {
+        $params = $cursor === null ? [] : ['cursor' => $cursor];
+
+        return $server->handle(['jsonrpc' => '2.0', 'id' => 9, 'method' => 'resources/list', 'params' => $params])['result'];
     }
 
     private function initializedResourceServer(ToolService $tools, \PDO $pdo): StdioServer
