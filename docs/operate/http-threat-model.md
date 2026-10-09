@@ -29,6 +29,16 @@ confused-deputy: an intermediary that routes or rate-limits on the header while
 the server acts on the body would otherwise apply policy to one tool while a
 different one executes.
 
+A `2025-11-25` request inside a session mirrors only `MCP-Protocol-Version`.
+The session runs under the revision that header names, and a body whose
+`_meta` declares a different revision is refused with `400` and `-32020`
+rather than silently winning.
+
+On both revisions, and over stdio, a request id must be an integer or a
+string. A request whose id is anything else (`null`, a fraction, an array or
+an object) is answered with `-32600` "Invalid Request" and `id: null`, over
+HTTP with status `400`. Notifications carry no id and are not affected.
+
 That mirroring is also a control for operators. A reverse proxy in front of
 Knossos can allow-list read-only tools by `Mcp-Name`, or deny
 `scan_project` and `remove_project` outright, without parsing request bodies.
@@ -53,7 +63,7 @@ and [HTTP authorization specification](https://modelcontextprotocol.io/specifica
 | CSRF                            | Origin rejection plus Authorization header; JSON content type only.                                                                                                                                                             | A compromised allowed client retains its granted tool authority.                                                                                              |
 | Host/proxy confusion            | Exact single Host value; comma-combined/forwarded host values are rejected. Proxy must rewrite Host to an explicitly configured value.                                                                                          | Forwarded headers are intentionally not trusted.                                                                                                              |
 | Session fixation/replay         | Not applicable under `2026-07-28`, which has no sessions. Under `2025-11-25`, initialization rejects client-supplied session IDs; 256-bit random IDs are hashed at rest, expire, and are capacity-limited.                      | Bearer/session theft within the TTL enables replay on the legacy path; terminate TLS at a trusted local proxy.                                                |
-| Header/body confusion           | `2026-07-28` requests must mirror `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` into headers; each is validated against the body (Base64 sentinel decoded first) and any mismatch or omission returns 400 with `-32020`. | Legacy `2025-11-25` requests carry no such mirroring, so an intermediary must check the version header before enforcing policy on header values.              |
+| Header/body confusion           | `2026-07-28` requests must mirror `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` into headers; each is validated against the body (Base64 sentinel decoded first) and any mismatch or omission returns 400 with `-32020`. | Legacy `2025-11-25` requests mirror no method or name, so header policy cannot apply to them; a contradicting body `_meta` version gets 400 `-32020`.         |
 | Request/response flood          | 1 MiB request and response caps, strict JSON object framing, schema limits, scan/query/worker caps, no-store responses.                                                                                                         | PHP/web-server limits should be set at least as strictly upstream.                                                                                            |
 | Slow/idle clients               | Web server handles socket timeouts; MCP sessions have fixed idle expiry.                                                                                                                                                        | PHP's development server is single-process and unsuitable for hostile production traffic.                                                                     |
 | Concurrent scans                | Existing per-project SQLite writer leases serialize mutation while WAL readers keep the active snapshot available.                                                                                                              | PHP development server itself serializes requests; use a controlled multi-worker proxy/runtime for concurrency.                                               |

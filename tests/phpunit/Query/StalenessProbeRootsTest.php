@@ -32,7 +32,11 @@ final class StalenessProbeRootsTest extends KnossosTestCase
         assertSame(false, array_key_exists('changed_files_since', $staleness), 'Nothing was measured, so no counts are reported.');
     }
 
-    /** A newer failed scan attempt is a database fact; it still makes the graph stale outside the roots. */
+    /**
+     * A newer failed scan attempt is a database fact; it still makes the graph
+     * stale outside the roots. The guidance said to rescan with scan_project,
+     * which refuses such a root.
+     */
     #[Group('query')]
     public function testAProjectOutsideTheRootsWithANewerFailedScanIsStale(): void
     {
@@ -47,6 +51,11 @@ final class StalenessProbeRootsTest extends KnossosTestCase
 
         assertSame(0, $oracle->calls);
         assertSame('stale', $staleness['state']);
+        assertSame(
+            "Graph may be stale, and this project's root is outside this server's allowed roots, so it cannot be rescanned here; add the root to the allowed roots to rescan or verify it.",
+            $staleness['guidance'],
+            'scan_project refuses a root outside the allowed roots, so the advice must not be to call it.',
+        );
     }
 
     #[Group('query')]

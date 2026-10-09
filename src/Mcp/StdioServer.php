@@ -130,6 +130,19 @@ final class StdioServer
     }
 
     /**
+     * Whether a message carries an id that is neither an integer nor a string
+     * (MCP: a request id MUST be one of those; null included). Such an id
+     * cannot be echoed, so the message is an invalid request answered with id
+     * null. Shared with the HTTP transport so both apply one rule.
+     *
+     * @param array<string, mixed> $message
+     */
+    public static function hasInvalidId(array $message): bool
+    {
+        return array_key_exists('id', $message) && self::replyId($message['id']) === null;
+    }
+
+    /**
      * Continue a session whose handshake happened on an earlier request.
      *
      * For a transport that keeps the handshake in its own session store and
@@ -192,10 +205,9 @@ final class StdioServer
             }
             return null;
         }
-        if ($id === null) {
-            // The id is present but neither an integer nor a string (MCP: a
-            // request id MUST be one of those). It cannot be echoed, so the
-            // request is invalid and answered with id null.
+        if (self::hasInvalidId($message)) {
+            // The id is present but neither an integer nor a string, so it
+            // cannot be echoed: the request is invalid and answered with id null.
             return $this->error(null, -32600, 'Invalid Request');
         }
         $params = $message['params'] ?? [];

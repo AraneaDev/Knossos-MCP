@@ -13,6 +13,7 @@ use Knossos\Mcp\Protocol\UnsupportedProtocolVersionException;
 use Knossos\Mcp\ResourceService;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
@@ -103,6 +104,36 @@ final class HttpLegacySessionTest extends KnossosTestCase
         ]));
 
         assertSame(200, $response['status']);
+    }
+
+    /**
+     * HTTP echoed any id back. MCP requires an integer or a string, the same
+     * rule stdio applies: anything else is -32600 with id null, and the
+     * session carries on.
+     *
+     * @return iterable<string, array{mixed}>
+     */
+    public static function idsThatAreNeitherIntegersNorStrings(): iterable
+    {
+        yield 'array' => [[1]];
+        yield 'fractional' => [1.5];
+        yield 'null' => [null];
+    }
+
+    #[Group('mcp')]
+    #[DataProvider('idsThatAreNeitherIntegersNorStrings')]
+    public function testARequestWhoseIdIsNeitherAnIntegerNorAStringIsInvalid(mixed $id): void
+    {
+        [$endpoint, $headers] = $this->initializedLegacySession();
+
+        $refused = $endpoint->handle('POST', $headers, $this->body(['jsonrpc' => '2.0', 'id' => $id, 'method' => 'tools/list']));
+        $served = $endpoint->handle('POST', $headers, $this->body(['jsonrpc' => '2.0', 'id' => 6, 'method' => 'tools/list']));
+
+        assertSame(400, $refused['status']);
+        $body = json_decode($refused['body'], true, 512, JSON_THROW_ON_ERROR);
+        assertSame(null, $body['id']);
+        assertSame(-32600, $body['error']['code']);
+        assertSame(200, $served['status'], 'A normal request in the same session is still served.');
     }
 
     #[Group('mcp')]

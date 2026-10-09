@@ -130,8 +130,10 @@ final readonly class StalenessProbe
             'state' => $newerAttempt ? 'stale' : 'unverified',
             'scanned_at' => $finishedAt,
             'age_seconds' => $ageSeconds,
+            // scan_project refuses a root outside the allowed roots, so the
+            // usual "rescan" advice could not be followed here.
             'guidance' => $newerAttempt
-                ? 'Graph may be stale; rescan with scan_project for current results.'
+                ? "Graph may be stale, and this project's root is outside this server's allowed roots, so it cannot be rescanned here; add the root to the allowed roots to rescan or verify it."
                 : "Change detection runs only inside this server's allowed roots, and this project's root is outside them; freshness is unconfirmed.",
         ];
     }
