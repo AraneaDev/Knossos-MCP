@@ -36,7 +36,10 @@ jobs:
   release-please:
     name: Release PR + tag/release on merge
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The job runs the full quality profile, mutation included. It took 22
+    # minutes for 0.20.0 and passed 30 for 0.20.1, so the old limit cancelled
+    # a release whose gate was still passing and deleted its draft.
+    timeout-minutes: 60
     steps:
       # On merge of a Release PR, creates a DRAFT GitHub Release and sets
       # release_created=true. A draft has no tag yet, so a failing gate below
