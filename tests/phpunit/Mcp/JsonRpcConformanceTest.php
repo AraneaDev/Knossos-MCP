@@ -63,6 +63,43 @@ final class JsonRpcConformanceTest extends KnossosTestCase
         assertSame(true, isset($frames[1]['result']));
     }
 
+    /**
+     * The size cap judged the whole read buffer, so a valid frame followed in
+     * the same read by the next frame's bytes was rejected as oversized and its
+     * request was never answered.
+     */
+    #[Group('mcp')]
+    public function testAPipelinedFrameInTheSameReadDoesNotMakeTheFirstOversized(): void
+    {
+        [$initialize, $ping] = $this->pipelinedPair();
+        $limit = strlen($initialize) + 1 + 10; // first frame fits; both together do not
+        assertSame(true, strlen($initialize) + strlen($ping) + 2 > $limit);
+
+        $frames = $this->frames([$initialize . "\n" . $ping . "\n"], maxLineBytes: $limit);
+
+        assertSame(2, count($frames));
+        assertSame(1, $frames[0]['id']);
+        assertSame(true, isset($frames[0]['result']), 'The first frame is within the limit and must be answered.');
+        assertSame(2, $frames[1]['id']);
+        assertSame(true, isset($frames[1]['result']));
+    }
+
+    /** A frame one byte over the limit is still refused when the next frame arrives with it. */
+    #[Group('mcp')]
+    public function testAnOversizedFrameFollowedInTheSameReadIsRefusedAndTheNextAnswered(): void
+    {
+        [$initialize, $ping] = $this->pipelinedPair();
+
+        // The newline makes the first frame one byte over the limit.
+        $frames = $this->frames([$initialize . "\n" . $ping . "\n"], maxLineBytes: strlen($initialize));
+
+        assertSame(2, count($frames));
+        assertSame(-32700, $frames[0]['error']['code']);
+        assertSame(null, $frames[0]['id']);
+        assertSame(2, $frames[1]['id']);
+        assertSame(true, isset($frames[1]['result']));
+    }
+
     #[Group('mcp')]
     public function testAResponseOverTheByteLimitIsReplacedByAnError(): void
     {
@@ -156,6 +193,22 @@ final class JsonRpcConformanceTest extends KnossosTestCase
         }
 
         return $frames;
+    }
+
+    /**
+     * An initialize frame of about 3 KB and a ping, small enough to arrive in one 8 KB read.
+     *
+     * @return array{string, string}
+     */
+    private function pipelinedPair(): array
+    {
+        $initialize = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
+            'protocolVersion' => StdioServer::PROTOCOL_VERSION,
+            'clientInfo' => ['name' => str_repeat('c', 3000), 'version' => '1'],
+        ]], JSON_THROW_ON_ERROR);
+        $ping = json_encode(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping'], JSON_THROW_ON_ERROR);
+
+        return [$initialize, $ping];
     }
 
     private function initialized(): StdioServer

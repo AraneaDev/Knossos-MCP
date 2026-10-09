@@ -472,7 +472,11 @@ final class StdioServer
             if ($chunk !== '') {
                 $this->inputBuffer .= $chunk;
             }
-            if (strlen($this->inputBuffer) > $this->maxLineBytes) {
+            // The cap applies to one frame, never to bytes that follow its
+            // newline: once the buffer holds a newline, the loop's top returns
+            // that line and run() judges its length alone, so a valid frame
+            // pipelined with the next one in the same read is still answered.
+            if (!str_contains($this->inputBuffer, "\n") && strlen($this->inputBuffer) > $this->maxLineBytes) {
                 // Oversized frame: skip forward to the newline that ends it
                 // without accumulating the discarded bytes, so the buffer stays
                 // bounded no matter how long the bad line is.
