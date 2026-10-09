@@ -132,6 +132,40 @@ final class TurnBriefServiceTest extends KnossosTestCase
         }
     }
 
+    /**
+     * scan_ms once included the test search after the scan, up to five
+     * seconds of it, so a fast scan read as a slow one.
+     */
+    #[Group('query')]
+    public function testScanMsCoversTheScanAndNothingAfterIt(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            // The scan takes 7 ms by this clock. Anything the brief does after
+            // the scan (ledger work, then the test search) is made to cost
+            // seconds: the ledger row the brief records after the scan tells
+            // the clock that the scan has long returned.
+            $ledgerRows = static fn(): int => (int) $pdo->query('SELECT COUNT(*) FROM scan_ledger')->fetchColumn();
+            $rowsBefore = $ledgerRows();
+            $reads = 0;
+            $clock = static function () use (&$reads, $ledgerRows, $rowsBefore): int {
+                ++$reads;
+                if ($reads === 1) {
+                    return 0;
+                }
+                return $ledgerRows() === $rowsBefore ? 7_000_000 : 7_000_000 + 5_000_000_000;
+            };
+            $this->touch($root, self::TARGET);
+            $brief = (new TurnBriefService($pdo, ':memory:', self::repositoryRoot(), clock: $clock))->brief($root);
+            assertSame('ok', $brief['status']);
+            assertSame([self::TARGET], $brief['changed_files']);
+            assertSame(7, $brief['scan_ms'], 'Read right after the scan returns; later work must not count.');
+            assertSame(2, $reads, 'The clock is read once before the scan and once after it.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     #[Group('query')]
     public function testANoChangeTurnReportsNothingChanged(): void
     {
