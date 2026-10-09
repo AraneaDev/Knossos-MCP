@@ -132,9 +132,13 @@ knossos architecture-health project_... --limit=20 --json
 ```
 
 A hub's score is its degree, the number of edges in and out, counted over
-every selected relationship in the project. `max_nodes` keeps the
-highest-degree components and drops the rest, which cannot be hubs, so a cut
-node window never hides a hub or the callers it counts. A hotspot adds
+every selected relationship in the project. `max_nodes` keeps the components
+the ranking can list first (external and test components only after them,
+unless you include those), highest degree first, and drops the rest, so a cut
+node window never hides a hub or the callers it counts. The top `limit`
+components are always ranked, even when `timeout_ms` runs out while the
+degrees are counted; the summary then still says the ranking was truncated.
+A hotspot adds
 twice its cross-boundary degree, plus three if it takes part in a cycle.
 The cycle check runs with the same `max_nodes` (default 50,000) and
 `max_edges` as the rest of the call, inside what is left of `timeout_ms`;

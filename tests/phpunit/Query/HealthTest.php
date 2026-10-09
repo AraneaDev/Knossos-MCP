@@ -167,10 +167,13 @@ final class HealthTest extends KnossosTestCase
      * materialised one, so that is what is asserted — removing the bound from
      * either fetch reads the whole 5,001-node or 5,000-edge result and fails it.
      *
-     * The empty report is the intended shape: a deadline that has already
-     * expired means nothing was read within budget, and `truncated` plus
-     * `nodes_examined: 0` say exactly that. The alternative — a full node list
-     * gathered past the deadline — is the bug being fixed.
+     * An expired deadline still yields the first `limit` (20) nodes: the
+     * degree counts finish before the first row, so those rows, which are the
+     * hubs, cost nothing more to read. This test once pinned
+     * `nodes_examined: 0` and an empty hub list, which left the agent brief
+     * with no hub section whenever the counts were slow. Past those 20 rows
+     * the deadline stops the fetch, so the whole 5,001-node result is still
+     * never read.
      */
     #[Group('health')]
     public function testHealthFetchesStopAtTheirDeadlineDuringTheFetch(): void
@@ -190,9 +193,9 @@ final class HealthTest extends KnossosTestCase
         assertSame(true, $envelope->truncated);
         assertSame(true, in_array('time_limit', $envelope->data['bounds']['truncation_reasons'], true));
         assertSame(true, RowCountingStatement::$rows < 100);
-        assertSame(0, $envelope->data['bounds']['nodes_examined']);
+        assertSame(20, $envelope->data['bounds']['nodes_examined']);
         assertSame(0, $envelope->data['bounds']['edges_examined']);
-        assertSame([], $envelope->data['hubs']);
+        assertSame(20, count($envelope->data['hubs']));
         assertSame([], $envelope->data['dead_code_candidates']);
     }
 
@@ -204,7 +207,9 @@ final class HealthTest extends KnossosTestCase
      * 0 static hotspots, and 0 unreferenced-code candidates." was byte-identical
      * for a genuinely clean project and for a walk that read nothing at all
      * before its deadline. dependency_cycles already qualifies its own summary
-     * that way; this pins the two to the same contract.
+     * that way; this pins the two to the same contract. Since the node slice
+     * keeps its first `limit` rows past an expired deadline, the bounded
+     * report still ranks the two hubs; the summary names the bound either way.
      */
     #[Group('health')]
     public function testABoundedHealthReportNamesItsBoundInTheSummary(): void
@@ -220,8 +225,8 @@ final class HealthTest extends KnossosTestCase
         $bounded = $expired->architectureHealth($ids['project'], timeoutMs: 1, candidateTimeoutMs: 1);
         $whole = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project']);
 
-        assertSame([], $bounded->data['hubs']);
-        assertSame(true, str_starts_with($bounded->summary, 'Ranked 0 hubs, 0 static hotspots, and 0 unreferenced-code candidates, 0 of them reached only by tests.'));
+        assertSame(2, count($bounded->data['hubs']));
+        assertSame(true, str_starts_with($bounded->summary, 'Ranked 2 hubs, 2 static hotspots, and 0 unreferenced-code candidates, 0 of them reached only by tests.'), $bounded->summary);
         // The expired deadline also skips the cycle check, named since a cut
         // cycle scan marks the ranking truncated.
         assertSame(true, str_contains($bounded->summary, 'The ranking was truncated (time_limit, cycle_scan)'));
@@ -360,5 +365,136 @@ final class HealthTest extends KnossosTestCase
         assertSame(true, in_array('cycle_scan', $health->data['bounds']['truncation_reasons'], true));
         assertSame(true, $health->truncated);
         assertSame(true, str_contains($health->summary, 'cycle_scan'), $health->summary);
+    }
+
+    /**
+     * The degree aggregate finishes before its first row arrives, so a slow
+     * one put the first deadline check already past the deadline: the slice
+     * came back empty and so did every hub. The rows are computed by then, so
+     * the first `limit` of them, which are the hubs, are kept regardless.
+     */
+    #[Group('health')]
+    public function testAnAggregateThatOutrunsTheDeadlineStillYieldsTheTopHubs(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $this->hubGraph($repository, $ids);
+        $reads = 0;
+        $clock = static function () use (&$reads): int {
+            return ++$reads === 1 ? 0 : PHP_INT_MAX >> 1;
+        };
+
+        $health = (new ArchitectureQueryService($pdo, $clock))->architectureHealth($ids['project'], limit: 3);
+
+        assertSame(['App\\Zeta', 'App\\Aaa01', 'App\\Aaa02'], array_column(array_column($health->data['hubs'], 'component'), 'canonical_name'));
+        assertSame(6, $health->data['hubs'][0]['metrics']['in_degree']);
+        assertSame(true, in_array('time_limit', $health->data['bounds']['truncation_reasons'], true));
+        assertSame(3, $health->data['bounds']['nodes_examined'], 'The rows after the first `limit` honour the deadline.');
+    }
+
+    /**
+     * Degree is counted per end over the selected relationships, filtered by
+     * confidence only when a minimum above `possible` is asked for. Pinned
+     * against a plain count over the edge table for both cases.
+     */
+    #[Group('health')]
+    public function testDegreesMatchACountOverTheSelectedEdgesAtEachMinimumConfidence(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $names = ['App\\N1', 'App\\N2', 'App\\N3', 'App\\N4'];
+        $node = [];
+        foreach ($names as $name) {
+            $node[$name] = $id = StableId::symbol($project, 'php', 'class', $name);
+            $repository->saveNode($id, $project, 'php', 'class', $name, substr($name, 4), null, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/N.php', $ids['scan']);
+        }
+        $edges = [
+            ['calls', 'App\\N1', 'App\\N2', 'certain'], ['calls', 'App\\N1', 'App\\N3', 'possible'], ['references', 'App\\N2', 'App\\N3', 'probable'],
+            ['imports', 'App\\N4', 'App\\N3', 'possible'], ['contains', 'App\\N4', 'App\\N1', 'certain'], ['calls', 'App\\N3', 'App\\N3', 'certain'],
+        ];
+        foreach ($edges as $index => [$kind, $source, $target, $confidence]) {
+            $repository->saveEdge(StableId::edge($project, $kind, $node[$source], $node[$target], 'mix' . $index), $project, $kind, $node[$source], $node[$target], $ids['file'], 1, 1, 'ast', $confidence, [], 'php:file:src/N.php', $ids['scan']);
+        }
+        $repository->completeScan($project, $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        foreach (['possible' => 1, 'probable' => 2] as $minimum => $rank) {
+            $expected = [];
+            foreach (['in_degree' => 'target_id', 'out_degree' => 'source_id'] as $metric => $column) {
+                $count = $pdo->prepare(sprintf(
+                    "SELECT n.canonical_name, COUNT(*) FROM edges e JOIN nodes n ON n.id = e.%s WHERE e.project_id = ? AND e.kind <> 'contains' " .
+                    "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) GROUP BY n.canonical_name",
+                    $column,
+                ));
+                $count->execute([$project, $rank]);
+                foreach ($count->fetchAll(PDO::FETCH_KEY_PAIR) as $name => $degree) {
+                    $expected[$name][$metric] = (int) $degree;
+                }
+            }
+            $actual = [];
+            foreach ($queries->architectureHealth($project, minConfidence: $minimum, limit: 100)->data['hubs'] as $hub) {
+                $metrics = array_filter($hub['metrics'], static fn(int $value, string $key): bool => $value > 0 && in_array($key, ['in_degree', 'out_degree'], true), ARRAY_FILTER_USE_BOTH);
+                $actual[$hub['component']['canonical_name']] = $metrics;
+            }
+            ksort($expected);
+            ksort($actual);
+            assertSame($expected, $actual, 'min_confidence ' . $minimum);
+        }
+    }
+
+    /**
+     * The node window counted external and test components that the ranking
+     * drops afterwards, so a few busy vendor symbols could fill a small window
+     * and leave no hub at all. Rankable components now come first.
+     */
+    #[Group('health')]
+    public function testHighDegreeExternalsDoNotPushAnInternalHubOutOfTheWindow(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $save = static function (string $name, string $kind, string $origin) use ($repository, $ids, $project): string {
+            $id = StableId::symbol($project, 'php', $kind, $name);
+            $repository->saveNode($id, $project, 'php', $kind, $name, $name, null, $ids['file'], 1, 1, $origin, 'certain', [], 'php:file:src/X.php', $ids['scan']);
+            return $id;
+        };
+        $hub = $save('App\\Hub', 'class', 'ast');
+        $externals = [$save('Vendor\\Busy', 'external_class', 'external'), $save('Vendor\\Lost', 'class', 'unresolved')];
+        // Each external is called six times, the hub four times; no caller has a degree above two.
+        foreach (range(1, 10) as $index) {
+            $caller = $save(sprintf('App\\Caller%02d', $index), 'class', 'ast');
+            foreach ($index <= 4 ? [$hub] : $externals as $target) {
+                $repository->saveEdge(StableId::edge($project, 'calls', $caller, $target, 'x'), $project, 'calls', $caller, $target, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/X.php', $ids['scan']);
+            }
+        }
+        $repository->completeScan($project, $ids['scan']);
+
+        $health = (new ArchitectureQueryService($pdo))->architectureHealth($project, maxNodes: 2);
+
+        assertSame('App\\Hub', $health->data['hubs'][0]['component']['canonical_name'] ?? null);
+        assertSame(4, $health->data['hubs'][0]['metrics']['in_degree']);
+        assertSame(0, $health->data['bounds']['excluded_external_components'], 'Externals sort after every rankable component, so a full window holds none.');
+    }
+
+    /**
+     * App\Zeta called by App\Aaa01..06, and App\Aab1..3 with no edges.
+     *
+     * @param array<string, string> $ids
+     */
+    private function hubGraph(\Knossos\Store\GraphRepository $repository, array $ids): void
+    {
+        $project = $ids['project'];
+        $class = static function (string $name) use ($repository, $ids, $project): string {
+            $id = StableId::symbol($project, 'php', 'class', $name);
+            $repository->saveNode($id, $project, 'php', 'class', $name, substr($name, 4), null, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Hub.php', $ids['scan']);
+            return $id;
+        };
+        $zeta = $class('App\\Zeta');
+        foreach (range(1, 6) as $index) {
+            $caller = $class(sprintf('App\\Aaa%02d', $index));
+            $repository->saveEdge(StableId::edge($project, 'calls', $caller, $zeta, 'hub'), $project, 'calls', $caller, $zeta, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Hub.php', $ids['scan']);
+        }
+        foreach (range(1, 3) as $index) {
+            $class(sprintf('App\\Aab%d', $index));
+        }
+        $repository->completeScan($project, $ids['scan']);
     }
 }

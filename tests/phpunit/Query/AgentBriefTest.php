@@ -131,25 +131,32 @@ final class AgentBriefTest extends KnossosTestCase
     }
 
     /**
-     * A hub list cut short by a bound is labelled as partial, so a reader does
-     * not take the five listed for the five most depended-on.
+     * The hub section is never labelled partial for a bound that cannot change
+     * which hubs lead. A deadline met during the edge walk cuts only the
+     * cross-boundary degree hotspots use, and one met during the node slice
+     * comes after its first `limit` rows, which are the hubs themselves. The
+     * section once read "partial: time_limit" over a complete list.
      */
     #[Group('query')]
-    public function testATruncatedHubRankingIsLabelledPartial(): void
+    public function testABoundThatCannotChangeTheHubsLeavesTheHeadingPlain(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        // On time while the deadline is set and the node slice is read, late
-        // from the edge walk on: the hubs come from the slice, the walk is cut.
-        $reads = 0;
-        $clock = static function () use (&$reads): int {
-            return ++$reads <= 2 ? 0 : PHP_INT_MAX >> 1;
-        };
-
-        $markdown = (new ArchitectureQueryService($pdo, $clock))->exportAgentBrief($ids['project'])->data['markdown'];
         $whole = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+        // Late from the edge walk on, then late from the slice's first deadline check on.
+        foreach ([2, 1] as $onTime) {
+            $reads = 0;
+            $clock = static function () use (&$reads, $onTime): int {
+                return ++$reads <= $onTime ? 0 : PHP_INT_MAX >> 1;
+            };
+            $queries = new ArchitectureQueryService($pdo, $clock);
 
-        assertSame(true, str_contains($markdown, "## Key hubs (most depended-on, partial: time_limit)\n"), $markdown);
+            $markdown = $queries->exportAgentBrief($ids['project'])->data['markdown'];
+
+            assertSame(true, str_contains($markdown, "## Key hubs (most depended-on)\n"), $markdown);
+            assertSame(true, str_contains($markdown, '- Checkout (class, degree 1)'), $markdown);
+            assertSame(true, str_contains($markdown, '- InvoiceService (class, degree 1)'), $markdown);
+        }
         assertSame(true, str_contains($whole, "## Key hubs (most depended-on)\n"));
     }
 }

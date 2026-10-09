@@ -188,15 +188,16 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
     /**
      * The brief's hub section: the components a change is most likely to reach.
      *
-     * A ranking a bound cut is labelled partial with its reasons, except the
-     * three that cannot change which hubs lead: `result_limit` (only five are
-     * asked for), `node_limit` (the node window drops the lowest-degree
-     * components first) and `cycle_scan` (cycles score hotspots, not hubs).
+     * Never labelled partial. No bound architecture_health reports can change
+     * which five hubs lead: the node slice keeps its first `limit` rows, which
+     * are those hubs, whatever the deadline; `node_limit` drops only
+     * lower-ranked components; `edge_limit` and a deadline met during the edge
+     * walk cut only the cross-boundary degree hotspots use; `cycle_scan`
+     * scores hotspots; and `result_limit` is the five asked for.
      */
     private function hubsSection(string $projectId): ?string
     {
-        $health = $this->topology->architectureHealth($projectId, limit: 5);
-        $hubs = $health->data['hubs'];
+        $hubs = $this->topology->architectureHealth($projectId, limit: 5)->data['hubs'];
         if ($hubs === []) {
             return null;
         }
@@ -209,9 +210,7 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
             ),
             $hubs,
         );
-        $partial = $health->truncated ? array_values(array_diff($health->data['bounds']['truncation_reasons'], ['result_limit', 'node_limit', 'cycle_scan'])) : [];
-        $heading = $partial === [] ? 'most depended-on' : sprintf('most depended-on, partial: %s', implode(', ', $partial));
-        return sprintf("\n## Key hubs (%s)\n\n", $heading) . implode("\n", $lines) . "\n";
+        return "\n## Key hubs (most depended-on)\n\n" . implode("\n", $lines) . "\n";
     }
     /** The brief's framework section, since conventions change what the code means. */
 

@@ -171,7 +171,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // roles and boundaries are loaded for the reported page alone. A full
         // row per node, with its roles and boundaries, needed more than 128 MB
         // well before the 50,000-node default.
-        $slice = $this->healthSlice($projectId, $edgeKinds, $confidenceRank[$minConfidence], $maxNodes, $deadline);
+        $slice = $this->healthSlice($projectId, $edgeKinds, $confidenceRank[$minConfidence], ['nodes' => $maxNodes, 'page' => $limit, 'external' => $includeExternal, 'tests' => $includeTests], $deadline);
         $truncationReasons = $slice['truncation_reasons'];
         $truncated = $truncationReasons !== [];
 
@@ -314,52 +314,76 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     /**
      * The nodes architecture_health ranks, as the facts the ranking reads.
      *
-     * Each node in the slice is numbered in degree order (highest first, then
-     * name) and keeps its in and out degree, whether it is external, whether
-     * it is test code, and which boundaries it belongs to; nothing else about
-     * it is held. Degree is counted in SQL over every selected edge of the
-     * project, so a node's callers count whether or not they are in the slice,
-     * and `max_nodes` drops the lowest-degree nodes, which cannot be hubs. The
-     * slice used to be the first `max_nodes` by name, which dropped a hub
-     * named late together with every edge from outside the window. The
-     * boundaries are kept as one of a few distinct sets (most nodes share
-     * their set with many others), with the repository-wide boundaries left
-     * out because they partition nothing.
+     * Each node in the slice is numbered in rank order and keeps its in and
+     * out degree, whether it is external, whether it is test code, and which
+     * boundaries it belongs to; nothing else about it is held. Rank order puts
+     * the components the ranking keeps first (external and test ones last,
+     * unless the caller includes them), then the highest degree, then name.
+     * Degree is counted in SQL over every selected edge of the project, so a
+     * node's callers count whether or not they are in the slice, and
+     * `max_nodes` drops the lowest-ranked nodes, which cannot be hubs while
+     * the window holds a rankable one. The slice used to be the first
+     * `max_nodes` by name, which dropped a hub named late together with every
+     * edge from outside the window. The boundaries are kept as one of a few
+     * distinct sets (most nodes share their set with many others), with the
+     * repository-wide boundaries left out because they partition nothing.
+     *
+     * Degree is two grouped counts, one per end, so each reads a covering
+     * index (`edges_project_target_idx`, `edges_project_source_idx`) when no
+     * confidence filter is asked for. The counts finish before the first row
+     * arrives, so the first `page` rows (the hubs a caller asked for) are kept
+     * even when the deadline has passed by then; the deadline is honoured from
+     * the next row on, and still reported.
      *
      * @param list<string> $edgeKinds
+     * @param array{nodes: int, page: int, external: bool, tests: bool} $bounds max_nodes, the page size, and whether externals and tests are ranked
      * @return array{ids: list<string>, index: array<string, int>, in: list<int>, out: list<int>, external: list<bool>, test: array<int, true>, boundary_set: array<int, int>, boundary_sets: list<list<string>>, truncation_reasons: list<string>}
      */
-    private function healthSlice(string $projectId, array $edgeKinds, int $minimumRank, int $maxNodes, int $deadline): array
+    private function healthSlice(string $projectId, array $edgeKinds, int $minimumRank, array $bounds, int $deadline): array
     {
         $slice = ['ids' => [], 'index' => [], 'in' => [], 'out' => [], 'external' => [], 'test' => [], 'boundary_set' => [], 'boundary_sets' => [], 'truncation_reasons' => []];
-        $selected = sprintf(
-            "FROM edges WHERE project_id = ? AND kind IN (%s) AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER)",
-            implode(',', array_fill(0, count($edgeKinds), '?')),
-        );
-        $statement = $this->pdo->prepare(
-            'SELECT n.id, n.kind, n.origin, COALESCE(d.in_degree, 0) AS in_degree, COALESCE(d.out_degree, 0) AS out_degree FROM nodes n LEFT JOIN (' .
-            'SELECT node_id, SUM(inbound) AS in_degree, SUM(outbound) AS out_degree FROM (' .
-            'SELECT target_id AS node_id, 1 AS inbound, 0 AS outbound ' . $selected . ' UNION ALL SELECT source_id, 0, 1 ' . $selected .
-            ') GROUP BY node_id) d ON d.node_id = n.id WHERE n.project_id = ? ' .
-            'ORDER BY COALESCE(d.in_degree, 0) + COALESCE(d.out_degree, 0) DESC, n.canonical_name, n.id LIMIT ?',
-        );
-        $position = 0;
-        foreach ([...[$projectId, ...$edgeKinds, $minimumRank], ...[$projectId, ...$edgeKinds, $minimumRank], $projectId] as $value) {
-            $statement->bindValue(++$position, $value);
+        $filter = sprintf('project_id = ? AND kind IN (%s)', implode(',', array_fill(0, count($edgeKinds), '?')));
+        $filterValues = [$projectId, ...$edgeKinds];
+        if ($minimumRank > 1) {
+            $filter .= " AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER)";
+            $filterValues[] = $minimumRank;
         }
-        $statement->bindValue(++$position, $maxNodes + 1, PDO::PARAM_INT);
+        $statement = $this->pdo->prepare(
+            'SELECT n.id, n.kind, n.origin, COALESCE(i.degree, 0) AS in_degree, COALESCE(o.degree, 0) AS out_degree FROM nodes n ' .
+            sprintf('LEFT JOIN (SELECT target_id AS node_id, COUNT(*) AS degree FROM edges WHERE %s GROUP BY target_id) i ON i.node_id = n.id ', $filter) .
+            sprintf('LEFT JOIN (SELECT source_id AS node_id, COUNT(*) AS degree FROM edges WHERE %s GROUP BY source_id) o ON o.node_id = n.id ', $filter) .
+            'WHERE n.project_id = ? ORDER BY CASE WHEN (? = 1 AND (substr(n.kind, 1, 9) = \'external_\' OR n.origin IN (\'external\', \'unresolved\'))) ' .
+            'OR (? = 1 AND n.id IN (SELECT node_id FROM classifications WHERE project_id = ? AND role = ?)) THEN 1 ELSE 0 END, ' .
+            'COALESCE(i.degree, 0) + COALESCE(o.degree, 0) DESC, n.canonical_name, n.id LIMIT ?',
+        );
+        $values = [...$filterValues, ...$filterValues, $projectId, $bounds['external'] ? 0 : 1, $bounds['tests'] ? 0 : 1, $projectId, ReportableComponent::TEST_ROLE];
+        foreach ($values as $position => $value) {
+            $statement->bindValue($position + 1, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $statement->bindValue(count($values) + 1, $bounds['nodes'] + 1, PDO::PARAM_INT);
         $statement->execute();
         // Streamed: max_nodes reaches 50,000 rows, and fetchAll() read every
         // one of them before the deadline was ever consulted.
-        $slice['truncation_reasons'] = $this->streamBounded($statement, $maxNodes, $deadline, static function (array $row) use (&$slice): bool {
-            $slice['index'][$row['id']] = count($slice['ids']);
-            $slice['ids'][] = (string) $row['id'];
-            $slice['in'][] = (int) $row['in_degree'];
-            $slice['out'][] = (int) $row['out_degree'];
-            $slice['external'][] = ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
-
-            return true;
-        }, 'node_limit');
+        $seen = 0;
+        try {
+            while (($row = $statement->fetch()) !== false) {
+                if (++$seen > $bounds['nodes']) {
+                    $slice['truncation_reasons'] = ['node_limit'];
+                    break;
+                }
+                if ($seen > $bounds['page'] && ($seen - $bounds['page']) % 64 === 1 && $this->now() > $deadline) {
+                    $slice['truncation_reasons'] = ['time_limit'];
+                    break;
+                }
+                $slice['index'][$row['id']] = count($slice['ids']);
+                $slice['ids'][] = (string) $row['id'];
+                $slice['in'][] = (int) $row['in_degree'];
+                $slice['out'][] = (int) $row['out_degree'];
+                $slice['external'][] = ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
+            }
+        } finally {
+            $statement->closeCursor();
+        }
 
         $tests = $this->pdo->prepare('SELECT DISTINCT node_id FROM classifications WHERE project_id = ? AND role = ?');
         $tests->execute([$projectId, ReportableComponent::TEST_ROLE]);

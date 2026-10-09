@@ -121,7 +121,8 @@ final readonly class TestReachSearch extends AbstractArchitectureQueryService
      * project up front, so the search holds nothing beyond what it visited:
      * a project's full test set sat outside the visit bound.
      *
-     * @param list<string> $nodeIds visited at $distance @param array<string, int> $tests
+     * @param list<string> $nodeIds visited at $distance
+     * @param array<string, int> $tests
      */
     private function markTests(string $projectId, array $nodeIds, int $distance, array &$tests): void
     {
