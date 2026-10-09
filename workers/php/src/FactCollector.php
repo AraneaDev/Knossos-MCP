@@ -36,8 +36,20 @@ final class FactCollector extends NodeVisitorAbstract
     /** @var list<array{id: string, name: string, parent: ?string, interfaces: list<string>, properties: array<string, string>}> */
     private array $classes = [];
 
-    /** @var list<array{id: string, variables: array<string, array{type: ?string, confidence: string, returned_by?: string}>}> */
+    /** @var list<array{id: string}> */
     private array $callables = [];
+
+    /**
+     * The variables of each function-like node the traversal is inside,
+     * innermost last, beside the bindings a closure captured by reference.
+     *
+     * A closure and an arrow function have variables of their own: a
+     * parameter or an assignment there does not reach the code around them,
+     * which sees only what a by-reference capture may have changed.
+     *
+     * @var list<array{variables: array<string, array{type: ?string, confidence: string, returned_by?: string}>, by_reference: array<string, ?array{type: ?string, confidence: string, returned_by?: string}>}>
+     */
+    private array $scopeVariables = [];
 
     /**
      * The variables of code no callable encloses: a script's body.
@@ -250,6 +262,7 @@ final class FactCollector extends NodeVisitorAbstract
     {
         if ($node instanceof Node\FunctionLike) {
             array_pop($this->variableScopes);
+            $this->leaveVariableTypes();
         }
         if ($node instanceof Stmt\ClassMethod || $node instanceof Stmt\Function_) {
             array_pop($this->callables);
@@ -376,7 +389,7 @@ final class FactCollector extends NodeVisitorAbstract
             ...(self::overridesSupertypeMember($node->name->toString(), $attributes, $class) ? ['overrides' => true] : []),
         ]);
         $this->addEdge('contains', $class['id'], $id, $node);
-        $this->callables[] = ['id' => $id, 'variables' => []];
+        $this->callables[] = ['id' => $id];
 
         $constructor = strtolower($node->name->toString()) === '__construct';
         $this->parametersAndReturn($node->params, $node->returnType, $constructor ? $class['id'] : $id, $constructor);
@@ -455,7 +468,7 @@ final class FactCollector extends NodeVisitorAbstract
         $name = $this->declarationName($node, $this->relativePath);
         $id = self::reference('function', $name);
         $this->addNode($id, 'function', $name, $node->name->toString(), $node);
-        $this->callables[] = ['id' => $id, 'variables' => []];
+        $this->callables[] = ['id' => $id];
         $this->parametersAndReturn($node->params, $node->returnType, $id, false);
     }
 
@@ -791,6 +804,78 @@ final class FactCollector extends NodeVisitorAbstract
         }
         foreach ($captured as $variable => $prefix) {
             $this->classPrefixes[$this->prefixKey($variable)] = $prefix;
+        }
+        $this->enterVariableTypes($node);
+    }
+
+    /**
+     * Open a function-like node's variable types: everything around an arrow
+     * function, which captures by value, the `use` list of a closure, and
+     * nothing for any other function. A closure's or arrow function's own
+     * parameters then bind over whatever was captured.
+     */
+    private function enterVariableTypes(Node\FunctionLike $node): void
+    {
+        $outer = $this->variables();
+        $variables = $node instanceof Expr\ArrowFunction ? $outer : [];
+        $byReference = [];
+        foreach ($node instanceof Expr\Closure ? $node->uses : [] as $use) {
+            if (!is_string($use->var->name)) {
+                continue;
+            }
+            $binding = $outer[$use->var->name] ?? null;
+            if ($binding !== null) {
+                $variables[$use->var->name] = $binding;
+            }
+            if ($use->byRef) {
+                $byReference[$use->var->name] = $binding;
+            }
+        }
+        $this->scopeVariables[] = ['variables' => $variables, 'by_reference' => $byReference];
+        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
+            $this->closureSignature($node);
+        }
+    }
+
+    /**
+     * Close a function-like node's variable types. A variable a closure took
+     * by reference and rebound may hold either value once the closure might
+     * have run, so the code around it no longer knows its type.
+     */
+    private function leaveVariableTypes(): void
+    {
+        $scope = array_pop($this->scopeVariables);
+        foreach ($scope['by_reference'] ?? [] as $variable => $captured) {
+            if (($scope['variables'][$variable] ?? null) !== $captured) {
+                $this->clearVariableType($variable);
+            }
+        }
+    }
+
+    /**
+     * Bind a closure's or arrow function's parameters by their declared
+     * types, and record the classes its signature names as references of
+     * the code that writes it. An untyped parameter shadows a captured
+     * variable of the same name.
+     */
+    private function closureSignature(Expr\Closure|Expr\ArrowFunction $node): void
+    {
+        $source = $this->currentSource();
+        foreach ($node->params as $param) {
+            $types = $this->typeNames($param->type);
+            foreach ($types as $type) {
+                $this->addEdge('references', $source, self::reference('class', $type), $param);
+            }
+            if ($param->var instanceof Expr\Variable && is_string($param->var->name)) {
+                if ($types === []) {
+                    $this->clearVariableType($param->var->name);
+                } else {
+                    $this->setVariableType($param->var->name, $types[0]);
+                }
+            }
+        }
+        foreach ($this->typeNames($node->returnType) as $type) {
+            $this->addEdge('references', $source, self::reference('class', $type), $node->returnType ?? $node);
         }
     }
 
@@ -1198,8 +1283,8 @@ final class FactCollector extends NodeVisitorAbstract
     }
 
     /**
-     * The variables of the scope being read: the innermost callable's, or the
-     * file's own when no callable encloses the code.
+     * The variables of the scope being read: the innermost function-like
+     * node's, closures included, or the file's own when none encloses the code.
      *
      * A script makes its calls from file scope (`$endpoint = new Endpoint();
      * $endpoint->handle();`), and leaving those variables untracked typed
@@ -1211,11 +1296,11 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private function &variables(): array
     {
-        if ($this->callables === []) {
+        if ($this->scopeVariables === []) {
             return $this->fileScopeVariables;
         }
 
-        return $this->callables[array_key_last($this->callables)]['variables'];
+        return $this->scopeVariables[array_key_last($this->scopeVariables)]['variables'];
     }
 
     /** Remember a variable's inferred class so later calls on it can be resolved. */
