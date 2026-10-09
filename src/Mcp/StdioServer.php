@@ -130,6 +130,22 @@ final class StdioServer
     }
 
     /**
+     * Continue a session whose handshake happened on an earlier request.
+     *
+     * For a transport that keeps the handshake in its own session store and
+     * builds a fresh server per request: the server starts initialized and
+     * pinned to the revision the session negotiated, so a `_meta`-less request
+     * gets that revision's envelope and error codes, as it would over stdio.
+     *
+     * @throws UnsupportedProtocolVersionException when the revision is not on offer
+     */
+    public function resumeSession(string $protocolVersion): void
+    {
+        $this->negotiator->pin($protocolVersion);
+        $this->initialized = true;
+    }
+
+    /**
      * Handle one JSON-RPC message, selecting the protocol revision and decorating the result.
      *
      * @param array<string, mixed> $message @return array<string, mixed>|null
