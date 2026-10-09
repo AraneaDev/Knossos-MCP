@@ -152,63 +152,16 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
      */
     public function changedFilesImpact(string $projectId, array $files = [], bool $workingTree = false, ?string $baseRef = null, int $maxDepth = 4, int $limit = 100, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000): ResultEnvelope
     {
-        $project = $this->project($projectId);
-        // A lone base_ref (no working_tree, no files) gets the specific coupling
-        // message rather than the generic mutual-exclusion error.
-        if (!$workingTree && $baseRef !== null && $files === []) {
-            throw new InvalidArgumentException('base_ref requires working_tree.');
-        }
-        if ($workingTree === ($files !== [])) {
-            throw new InvalidArgumentException('Provide either files or working_tree, but not both.');
-        }
-        if (count($files) > self::MAX_FILES) {
-            throw new InvalidArgumentException(sprintf('files must contain at most %d paths.', self::MAX_FILES));
-        }
-        $git = ['used' => false, 'base_ref' => $baseRef, 'renames' => [], 'truncated' => false];
-        if ($workingTree) {
-            if ($this->gitWorkingTree === null) {
-                throw new InvalidArgumentException('Working-tree change discovery is unavailable.');
-            }
-            try {
-                $changes = $this->gitWorkingTree->changes($project['root_realpath'], $baseRef, self::MAX_FILES, $timeoutMs);
-            } catch (Throwable $error) {
-                throw new InvalidArgumentException('Working-tree change discovery failed: ' . substr($error->getMessage(), 0, self::MAX_REASON_BYTES), previous: $error);
-            }
-            $files = $changes['paths'];
-            $git = ['used' => true, 'base_ref' => $baseRef, 'renames' => $changes['renames'], 'truncated' => $changes['truncated']];
-        } elseif ($baseRef !== null) {
-            throw new InvalidArgumentException('base_ref requires working_tree.');
-        }
-        foreach ($files as $path) {
-            if (!is_string($path)) {
-                throw new InvalidArgumentException('files must contain project-relative strings.');
-            }
-            RelativePath::assertValid($path, 'Changed file');
-        }
-        $files = array_values(array_unique($files));
-        sort($files, SORT_STRING);
-        $direct = [];
-        if ($files !== []) {
-            $placeholders = implode(',', array_fill(0, count($files), '?'));
-            $statement = $this->pdo->prepare(
-                'SELECT n.id, n.kind, n.canonical_name, n.display_name, n.confidence, f.relative_path, n.start_line, n.end_line ' .
-                'FROM nodes n JOIN files f ON f.id = n.file_id WHERE n.project_id = ? AND f.relative_path IN (' . $placeholders . ') ' .
-                sprintf('ORDER BY f.relative_path, n.canonical_name, n.id LIMIT %d', self::MAX_DIRECT_COMPONENTS + 1),
-            );
-            $statement->execute([$projectId, ...$files]);
-            $direct = $statement->fetchAll();
-        }
-        $resolvedPaths = array_fill_keys(array_column($direct, 'relative_path'), true);
-        $unresolved = array_values(array_filter($files, static fn(string $path): bool => !isset($resolvedPaths[$path])));
+        $changeSet = $this->changeSet($projectId, $files, $workingTree, $baseRef, $timeoutMs);
+        ['project' => $project, 'files' => $files, 'git' => $git, 'direct' => $direct, 'unresolved' => $unresolved] = $changeSet;
         $impacted = [];
         $entryPoints = [];
         $warnings = [];
-        $truncated = $git['truncated'] || count($direct) > self::MAX_DIRECT_COMPONENTS;
+        $truncated = $changeSet['truncation_reasons'] !== [];
         // One deadline shared across the whole fan-out bounds the entire request,
         // instead of each per-component analysis resetting its own timeout (which
         // could otherwise multiply into minutes of wall time for a single call).
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
-        $direct = array_slice($direct, 0, self::MAX_DIRECT_COMPONENTS);
         foreach ($direct as $node) {
             $impact = $this->topologyQueries->impactAnalysis($projectId, $node['id'], $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs, $deadline);
             foreach ($impact->data['dependants'] ?? [] as $record) {
@@ -332,6 +285,79 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
             array_values(array_unique($warnings)),
             $truncated,
         );
+    }
+
+    /**
+     * The changed files, Git context and directly changed components both impact tools start from.
+     *
+     * Validates the file arguments, asks Git for the working tree when told to,
+     * and maps each file to the components it declares (at most
+     * MAX_DIRECT_COMPONENTS, in path, name and id order). A cut list or change
+     * set is named in `truncation_reasons`.
+     *
+     * @param list<string> $files
+     * @return array{project: array<string, mixed>, files: list<string>, git: array<string, mixed>, direct: list<array<string, mixed>>, unresolved: list<string>, truncation_reasons: list<string>}
+     */
+    private function changeSet(string $projectId, array $files, bool $workingTree, ?string $baseRef, int $timeoutMs): array
+    {
+        $project = $this->project($projectId);
+        // A lone base_ref (no working_tree, no files) gets the specific coupling
+        // message rather than the generic mutual-exclusion error.
+        if (!$workingTree && $baseRef !== null && $files === []) {
+            throw new InvalidArgumentException('base_ref requires working_tree.');
+        }
+        if ($workingTree === ($files !== [])) {
+            throw new InvalidArgumentException('Provide either files or working_tree, but not both.');
+        }
+        if (count($files) > self::MAX_FILES) {
+            throw new InvalidArgumentException(sprintf('files must contain at most %d paths.', self::MAX_FILES));
+        }
+        $git = ['used' => false, 'base_ref' => $baseRef, 'renames' => [], 'truncated' => false];
+        if ($workingTree) {
+            if ($this->gitWorkingTree === null) {
+                throw new InvalidArgumentException('Working-tree change discovery is unavailable.');
+            }
+            try {
+                $changes = $this->gitWorkingTree->changes($project['root_realpath'], $baseRef, self::MAX_FILES, $timeoutMs);
+            } catch (Throwable $error) {
+                throw new InvalidArgumentException('Working-tree change discovery failed: ' . substr($error->getMessage(), 0, self::MAX_REASON_BYTES), previous: $error);
+            }
+            $files = $changes['paths'];
+            $git = ['used' => true, 'base_ref' => $baseRef, 'renames' => $changes['renames'], 'truncated' => $changes['truncated']];
+        } elseif ($baseRef !== null) {
+            throw new InvalidArgumentException('base_ref requires working_tree.');
+        }
+        foreach ($files as $path) {
+            if (!is_string($path)) {
+                throw new InvalidArgumentException('files must contain project-relative strings.');
+            }
+            RelativePath::assertValid($path, 'Changed file');
+        }
+        $files = array_values(array_unique($files));
+        sort($files, SORT_STRING);
+        $direct = [];
+        if ($files !== []) {
+            $placeholders = implode(',', array_fill(0, count($files), '?'));
+            $statement = $this->pdo->prepare(
+                'SELECT n.id, n.kind, n.canonical_name, n.display_name, n.confidence, f.relative_path, n.start_line, n.end_line ' .
+                'FROM nodes n JOIN files f ON f.id = n.file_id WHERE n.project_id = ? AND f.relative_path IN (' . $placeholders . ') ' .
+                sprintf('ORDER BY f.relative_path, n.canonical_name, n.id LIMIT %d', self::MAX_DIRECT_COMPONENTS + 1),
+            );
+            $statement->execute([$projectId, ...$files]);
+            $direct = $statement->fetchAll();
+        }
+        $resolvedPaths = array_fill_keys(array_column($direct, 'relative_path'), true);
+        $unresolved = array_values(array_filter($files, static fn(string $path): bool => !isset($resolvedPaths[$path])));
+        $reasons = [];
+        if ($git['truncated']) {
+            $reasons[] = 'changed_file_limit';
+        }
+        if (count($direct) > self::MAX_DIRECT_COMPONENTS) {
+            $reasons[] = 'direct_component_limit';
+            $direct = array_slice($direct, 0, self::MAX_DIRECT_COMPONENTS);
+        }
+
+        return ['project' => $project, 'files' => $files, 'git' => $git, 'direct' => $direct, 'unresolved' => $unresolved, 'truncation_reasons' => $reasons];
     }
 
     /**
