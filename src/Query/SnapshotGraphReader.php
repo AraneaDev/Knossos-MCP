@@ -50,8 +50,14 @@ final readonly class SnapshotGraphReader
     /** The most rows one table of the active graph may hold, as the snapshot diff bounds it. */
     private const ROW_LIMIT = 200_000;
 
-    /** Reads through the project's database connection. */
-    public function __construct(private PDO $pdo) {}
+    /**
+     * Reads through the project's database connection.
+     *
+     * @param bool $blobReads read stored payloads through SQLite's blob stream
+     *   where the connection offers one; false always fetches them as one
+     *   string, the PHP 8.3 path, so a test can cover that path on any runtime
+     */
+    public function __construct(private PDO $pdo, private bool $blobReads = true) {}
 
     /**
      * The active graph's rows, ordered by id as the snapshot diff and the archive order them.
@@ -198,16 +204,26 @@ final readonly class SnapshotGraphReader
     private function payloadBlob(string $scanId)
     {
         $open = [$this->pdo, 'openBlob'];
-        if (!is_callable($open)) {
+        if (!$this->blobReads || !is_callable($open)) {
             return null;
         }
-        $statement = $this->pdo->prepare('SELECT rowid FROM scan_snapshots WHERE scan_id = :scan');
+        // Only a stored text or blob value can be opened. openBlob() on a
+        // NULL value, or on a row deleted since, emits an E_WARNING before it
+        // returns false, and the suite fails on any byte of stderr.
+        $statement = $this->pdo->prepare("SELECT rowid FROM scan_snapshots WHERE scan_id = :scan AND typeof(payload_json) IN ('text', 'blob')");
         $statement->execute(['scan' => $scanId]);
         $rowid = $statement->fetchColumn();
         if ($rowid === false) {
             return null;
         }
-        $blob = $open('scan_snapshots', 'payload_json', (int) $rowid);
+        // The row can still go between the two statements; a failed open is
+        // then a fallback to the fetched string, not a warning.
+        set_error_handler(static fn(): bool => true, E_WARNING);
+        try {
+            $blob = $open('scan_snapshots', 'payload_json', (int) $rowid);
+        } finally {
+            restore_error_handler();
+        }
 
         return is_resource($blob) ? $blob : null;
     }

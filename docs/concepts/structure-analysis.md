@@ -79,7 +79,8 @@ component with thousands of callees cannot exhaust it. A full queue accepts no
 new states but still searches the ones it holds. When a bound cuts the search,
 `truncated` is true, `bounds.truncation_reasons` names each bound met
 (`time_limit`, `queue_limit` and others), and the summary says the search was
-truncated. An empty `paths` list from a truncated search means none were found
+truncated. `bounds.visited_states` and `bounds.queued_states` say how far the
+search got. An empty `paths` list from a truncated search means none were found
 before that bound, not that none exist.
 
 ![A route from ServeCommand::run to ResultEnvelope: five routes found, the strongest drawn as boxes with the call and its file and line on each hop](../images/claude-code/route.png)

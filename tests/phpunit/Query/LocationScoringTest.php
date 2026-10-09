@@ -251,6 +251,7 @@ final class LocationScoringTest extends KnossosTestCase
         assertSame(true, in_array('time_limit', $result->data['bounds']['truncation_reasons'], true));
         assertSame(true, $result->truncated);
         assertSame(true, $result->data['bounds']['members_examined'] < 300, 'The member read stops at the deadline instead of reading every row first.');
+        assertSame(true, str_contains($result->summary, 'The ranking was truncated (time_limit'), 'The summary names the bound that cut the ranking: ' . $result->summary);
     }
 
     /**

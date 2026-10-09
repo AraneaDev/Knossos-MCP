@@ -435,7 +435,8 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            sprintf('Ranked %d existing architecture location candidate%s.', count($candidates), count($candidates) === 1 ? '' : 's'),
+            sprintf('Ranked %d existing architecture location candidate%s.', count($candidates), count($candidates) === 1 ? '' : 's')
+                . ($truncationReasons === [] ? '' : sprintf(' The ranking was truncated (%s).', implode(', ', $truncationReasons))),
             [
                 'feature_description' => $featureDescription, 'tokens' => $tokens, 'ranking' => $ranking, 'candidates' => $candidates,
                 'bounds' => $bounds + [

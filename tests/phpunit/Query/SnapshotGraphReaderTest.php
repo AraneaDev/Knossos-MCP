@@ -194,6 +194,12 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
             $reader = new SnapshotGraphReader($pdo);
 
             assertSame($reader->archived($stored, $scan), $reader->archivedById($scan));
+            // The fetched-string source, forced so it runs on every runtime,
+            // not only where there is no blob stream.
+            $fetched = new SnapshotGraphReader($pdo, blobReads: false);
+            assertSame(null, (new \ReflectionMethod($fetched, 'payloadBlob'))->invoke($fetched, $scan));
+            assertSame($reader->archivedById($scan), $fetched->archivedById($scan));
+            assertSame($reader->archivedTablesById($scan, ['edges']), $fetched->archivedTablesById($scan, ['edges']));
             assertSame(true, $reader->isStreamable($scan));
             $whole = json_decode(SnapshotPayload::decode($stored), true, 512, JSON_THROW_ON_ERROR)['facts'];
             foreach (['nodes', 'edges', 'boundary_memberships'] as $table) {
@@ -277,5 +283,42 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
         if (!is_callable([$pdo, 'openBlob'])) {
             self::markTestSkipped('Pdo\\Sqlite::openBlob() is unavailable (PHP ' . PHP_VERSION . ', ' . $pdo::class . '); it arrived in PHP 8.4.');
         }
+    }
+
+    /**
+     * openBlob() warns before returning false on a value it cannot open (a
+     * NULL, or a row gone since its id was read). The reader must fall back
+     * to the fetched string without a warning: the suite fails on any.
+     */
+    #[Group('query')]
+    public function testAPayloadTheBlobReaderCannotOpenFallsBackWithoutAWarning(): void
+    {
+        $pdo = \Knossos\Store\SqliteConnection::open(':memory:');
+        self::requireBlobReads($pdo);
+        $pdo->exec('CREATE TABLE scan_snapshots (scan_id TEXT PRIMARY KEY, payload_json TEXT NULL)');
+        $pdo->exec("INSERT INTO scan_snapshots VALUES ('scan_null', NULL)");
+        $reader = new SnapshotGraphReader($pdo);
+        $warnings = [];
+        set_error_handler(static function (int $level, string $message) use (&$warnings): bool {
+            $warnings[] = $message;
+            return true;
+        });
+        try {
+            $blob = (new \ReflectionMethod($reader, 'payloadBlob'))->invoke($reader, 'scan_null');
+            $gone = (new \ReflectionMethod($reader, 'payloadBlob'))->invoke($reader, 'scan_missing');
+            $error = null;
+            try {
+                $reader->archivedById('scan_null');
+            } catch (InvalidArgumentException $caught) {
+                $error = $caught;
+            }
+        } finally {
+            restore_error_handler();
+        }
+
+        assertSame(null, $blob);
+        assertSame(null, $gone);
+        assertSame('Snapshot facts are not retained: scan_null', $error?->getMessage());
+        assertSame([], $warnings);
     }
 }
