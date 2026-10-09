@@ -39,7 +39,10 @@ checkable instead of asserted. Over MCP the default `compact` verbosity
 collapses `via` to the edge kind. Ask for `verbosity: "full"`, or use `--json`
 on the CLI, to get the whole edge. `counts` breaks the result down
 `by_distance` and `by_confidence`, and `entry_points` lists the ways into the
-system among the dependants.
+system among the dependants: routes, commands and endpoints, and classes
+classified as a controller, a command or an entry point. Test code is never an
+entry point. This is the same definition the agent brief and the session brief
+use, so all three name the same components.
 
 The result always carries the warning "Impact is a conservative static blast
 radius; it does not guarantee that a dependant will break." Reflection,

@@ -1238,25 +1238,13 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         ];
     }
     /**
-     * Whether a node is reachable from outside: a route, command, or listener.
+     * Whether a dependant is a way into the system, by the definition the briefs share.
      *
      * @param array<string, mixed> $record
      */
     private function isEntryPoint(array $record): bool
     {
-        if (in_array($record['node']['kind'], ['route', 'command'], true)) {
-            return true;
-        }
-        $entryRoles = [
-            'application.controller', 'application.command', 'laravel.controller', 'laravel.command',
-            'laravel.job', 'application.entry_point',
-        ];
-        foreach ($record['roles'] as $role) {
-            if (in_array($role['role'], $entryRoles, true)) {
-                return true;
-            }
-        }
-        return false;
+        return EntryPointCriteria::matches((string) $record['node']['kind'], array_column($record['roles'], 'role'));
     }
     /**
      * The confidence name for a rank in {@see self::CONFIDENCE_RANK}.
