@@ -103,4 +103,20 @@ final class ToolLengthAgreementTest extends KnossosTestCase
 
         assertSame(['src/Checkout.php'], array_column($files, 'path'));
     }
+
+    /**
+     * The enum check before the rescan reads values as the handlers do: a
+     * padded valid value is accepted, a non-string is left to the handler's
+     * type error, and the scan mode keeps the planner's wording.
+     */
+    #[Group('mcp')]
+    public function testTheEarlyEnumCheckMatchesTheHandlers(): void
+    {
+        [$tools, $project] = $this->tools();
+
+        assertSame(null, self::errorFrom($tools, 'list_usages', ['project_id' => $project, 'symbol' => 'App\\Checkout', 'min_confidence' => ' possible ']));
+        assertSame(null, self::errorFrom($tools, 'search_architecture', ['project_id' => $project, 'query' => 'checkout', 'confidences' => [' certain ']]));
+        assertSame('confidences must contain non-empty strings.', self::errorFrom($tools, 'search_architecture', ['project_id' => $project, 'query' => 'checkout', 'confidences' => [5]]));
+        assertSame('Scan mode must be auto, full, or incremental.', self::errorFrom($tools, 'scan_project', ['path' => self::repositoryRoot() . '/tests/Fixtures/mixed', 'mode' => 'bogus']));
+    }
 }

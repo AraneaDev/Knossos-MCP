@@ -97,7 +97,7 @@ final class QueryCommandContractTest extends KnossosTestCase
                     ARRAY_FILTER_USE_KEY,
                 );
                 foreach ($allowed as $option) {
-                    $spec = $properties[str_replace('-', '_', $option)] ?? null;
+                    $spec = $properties[self::schemaKey($option)] ?? null;
                     if (!is_array($spec) || ($spec['type'] ?? null) !== 'integer' || !isset($spec['minimum'], $spec['maximum'])) {
                         continue;
                     }
@@ -129,6 +129,113 @@ final class QueryCommandContractTest extends KnossosTestCase
             }
         }
         assertSame(true, $checked >= 25, sprintf('Expected to check at least 25 bounded CLI options, checked %d.', $checked));
+    }
+
+    /**
+     * Every integer default the CLI applies is the default the MCP schema advertises.
+     *
+     * Omitting an option must do what passing its advertised default does. The
+     * CLI keeps a third copy of each default, and nothing compared it with the
+     * schema, so a default could move on one side only.
+     */
+    #[Group('cli')]
+    public function testEveryCliIntegerDefaultIsTheAdvertisedDefault(): void
+    {
+        $schemas = [];
+        foreach (ToolCatalog::definitions(false) as $definition) {
+            $schemas[$definition['name']] = (array) ($definition['inputSchema']['properties'] ?? []);
+        }
+        $database = sys_get_temp_dir() . '/knossos-stale-defaults-' . bin2hex(random_bytes(4)) . '.sqlite';
+        [, $repository, $ids] = $this->storeFixture(null, (new RuntimeFactory(self::repositoryRoot()))->database($database));
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $positionals = [$ids['project'], 'App\\Checkout', 'App\\InvoiceService'];
+        $checked = 0;
+        try {
+            foreach (self::COMMANDS as $command) {
+                $properties = $schemas[str_replace('-', '_', $command)] ?? [];
+                foreach ((new QueryCommand())->allowedOptions($command) as $option) {
+                    $spec = $properties[self::schemaKey($option)] ?? null;
+                    if (!is_array($spec) || ($spec['type'] ?? null) !== 'integer' || !array_key_exists('default', $spec)) {
+                        continue;
+                    }
+                    assertSame(
+                        self::outcomeOf($command, $positionals, [$option => [(string) $spec['default']]], $database),
+                        self::outcomeOf($command, $positionals, [], $database),
+                        sprintf('%s: omitting --%s must do what its advertised default (%d) does.', $command, $option, $spec['default']),
+                    );
+                    ++$checked;
+                }
+            }
+        } finally {
+            foreach ([$database, $database . '-wal', $database . '-shm'] as $file) {
+                @unlink($file);
+            }
+        }
+        assertSame(true, $checked >= 40, sprintf('Expected to check at least 40 CLI defaults, checked %d.', $checked));
+    }
+
+    /**
+     * Each value option on the graph commands reaches the query: an invalid
+     * value is refused by the service, which an option the command dropped
+     * (or replaced by its default) would never be.
+     *
+     * @return iterable<string, array{string, list<string>, array<string, list<string>>, string}>
+     */
+    public static function invalidValueOptions(): iterable
+    {
+        foreach (['list-usages' => 2, 'explain-flow' => 3, 'impact-analysis' => 2, 'dependency-cycles' => 1, 'architecture-health' => 1, 'export-diagram' => 1] as $command => $arity) {
+            yield $command . ' --min-confidence' => [$command, $arity, ['min-confidence' => ['bogus']], 'min_confidence must be possible, probable, or certain.'];
+        }
+        yield 'architecture-health --candidate-confidence' => ['architecture-health', 1, ['candidate-confidence' => ['bogus']], 'candidate_confidence must be probable or possible.'];
+        yield 'export-diagram --format' => ['export-diagram', 1, ['format' => ['bogus']], 'format must be mermaid or plantuml.'];
+        yield 'export-diagram --direction' => ['export-diagram', 1, ['direction' => ['bogus']], 'direction must be LR or TB.'];
+        yield 'list-usages --edge-kind' => ['list-usages', 2, ['edge-kind' => ['bogus']], 'edge_kinds contains an unsupported dependency relationship.'];
+    }
+
+    #[Group('cli')]
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidValueOptions')]
+    public function testEachValueOptionReachesTheQuery(string $command, int $arity, array $options, string $message): void
+    {
+        $database = sys_get_temp_dir() . '/knossos-stale-values-' . bin2hex(random_bytes(4)) . '.sqlite';
+        [, $repository, $ids] = $this->storeFixture(null, (new RuntimeFactory(self::repositoryRoot()))->database($database));
+        $repository->completeScan($ids['project'], $ids['scan']);
+        try {
+            $positionals = array_slice([$ids['project'], 'App\\Checkout', 'App\\InvoiceService'], 0, $arity);
+
+            assertSame($message, self::errorFrom($command, $positionals, $options, $database));
+        } finally {
+            foreach ([$database, $database . '-wal', $database . '-shm'] as $file) {
+                @unlink($file);
+            }
+        }
+    }
+
+    /**
+     * What one command produces: its data as JSON with timestamps blanked, or the error it fails with.
+     *
+     * @param list<string> $positionals @param array<string, list<string>> $options
+     */
+    private static function outcomeOf(string $command, array $positionals, array $options, string $database): string
+    {
+        $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $database);
+        ob_start();
+        try {
+            (new QueryCommand())->run($command, $positionals, ['json' => ['']] + $options, $context);
+            $output = json_decode((string) ob_get_contents(), true, 512, JSON_THROW_ON_ERROR);
+            $encoded = json_encode($output['data'] ?? $output, JSON_THROW_ON_ERROR);
+
+            return preg_replace('/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/', '<time>', $encoded) ?? $encoded;
+        } catch (Throwable $error) {
+            return $error::class . ': ' . $error->getMessage();
+        } finally {
+            ob_end_clean();
+        }
+    }
+
+    /** The schema property a CLI option mirrors: kebab case to snake case, plus the one option named differently. */
+    private static function schemaKey(string $option): string
+    {
+        return $option === 'candidate-timeout' ? 'candidate_timeout_ms' : str_replace('-', '_', $option);
     }
 
     /** The documented annotation mutation flags must reach QueryCommand's executor. */
@@ -220,6 +327,50 @@ final class QueryCommandContractTest extends KnossosTestCase
 
             assertSame(['src/CheckoutService.php'], $result['data']['changed_files']);
         });
+    }
+
+    /** The files given after the project are the change set, and the project argument is not one of them. */
+    #[Group('cli')]
+    public function testChangedFilesImpactReadsTheFilesAfterTheProject(): void
+    {
+        $this->withScannedFixture(function (\Closure $run, string $project): void {
+            $result = $run('changed-files-impact', [$project, 'src/CheckoutService.php'], []);
+
+            assertSame(['src/CheckoutService.php'], $result['data']['changed_files']);
+        });
+    }
+
+    /** check-architecture exits 1 only when a policy is violated, and 0 when none is. */
+    #[Group('cli')]
+    public function testCheckArchitectureExitsOneOnlyOnAViolation(): void
+    {
+        $database = sys_get_temp_dir() . '/knossos-stale-check-exit-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $pdo = (new RuntimeFactory(self::repositoryRoot()))->database($database);
+        [, $repository, $ids] = $this->storeFixture(null, $pdo);
+        $boundary = \Knossos\Store\StableId::boundary($ids['project'], 'Core', 'explicit');
+        $repository->saveBoundary($boundary, $ids['project'], 'Core', ['path_prefix' => 'src'], 'explicit', $ids['scan']);
+        $repository->saveBoundaryMembership($boundary, $ids['project'], $ids['checkout'], $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $database);
+        $exit = static function (array $policy) use ($context, $ids): int {
+            $file = self::temporaryJson([['id' => 'p', 'from_boundary' => 'Core', ...$policy]]);
+            ob_start();
+            try {
+                return (new QueryCommand())->run('check-architecture', [$ids['project']], ['policies' => [$file]], $context);
+            } finally {
+                ob_end_clean();
+                @unlink($file);
+            }
+        };
+        try {
+            // Checkout (in Core) calls InvoiceService, which is in no boundary.
+            assertSame(1, $exit(['deny_targets' => ['@unassigned']]));
+            assertSame(0, $exit(['allow_targets' => ['@unassigned']]));
+        } finally {
+            foreach ([$database, $database . '-wal', $database . '-shm'] as $file) {
+                @unlink($file);
+            }
+        }
     }
 
     /** --include-source=0 read source excerpts from the working tree anyway. */

@@ -62,6 +62,36 @@ final class CliDocumentedOptionsTest extends KnossosTestCase
         assertSame('No option allowlist for not-a-query.', $error->getMessage());
     }
 
+    /** Every query command reads a graph and renders JSON, so every one accepts --db and --json, documented or not. */
+    #[Group('cli')]
+    public function testEveryQueryCommandTakesTheDatabaseAndJsonOptions(): void
+    {
+        $query = new QueryCommand();
+        foreach ((new \ReflectionClassConstant(QueryCommand::class, 'COMMANDS'))->getValue() as $command) {
+            assertSame([], array_values(array_diff(['db', 'json'], $query->allowedOptions($command))), $command);
+        }
+    }
+
+    /** help prints the help and nothing else; version prints the version and no help. */
+    #[Group('cli')]
+    public function testHelpAndVersionPrintOnlyTheirOwnText(): void
+    {
+        foreach (['help' => true, 'version' => false] as $command => $isHelp) {
+            $help = fopen('php://memory', 'w+');
+            assertSame(true, is_resource($help));
+            $context = new \Knossos\Cli\CliCommandContext(new CliOptionParser(), new \Knossos\Cli\CliInputLoader(), new \Knossos\Runtime\RuntimeFactory(self::repositoryRoot()), null);
+            ob_start();
+            $status = (new \Knossos\Cli\Command\MetaCommand(new CliHelpRenderer($help), '9.9.9'))->run($command, [], [], $context);
+            $printed = (string) ob_get_clean();
+            rewind($help);
+            $helpText = (string) stream_get_contents($help);
+
+            assertSame(0, $status, $command);
+            assertSame($isHelp, str_contains($helpText, 'Usage:'), $command);
+            assertSame($isHelp ? '' : 'Knossos 9.9.9' . PHP_EOL, $printed, $command);
+        }
+    }
+
     /**
      * Each command in the reference's usage block with the `--options` it documents.
      *
