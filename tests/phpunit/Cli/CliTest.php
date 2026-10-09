@@ -58,6 +58,27 @@ final class CliTest extends KnossosTestCase
         }
     }
 
+    /**
+     * An installation without its dependencies could not run at all, which
+     * the exit-code contract calls 2; it exited 1, the code for a failed gate.
+     */
+    #[Group('cli')]
+    public function testAnInstallationWithoutDependenciesExitsTwo(): void
+    {
+        $installation = sys_get_temp_dir() . '/knossos-stale-no-vendor-' . bin2hex(random_bytes(6));
+        mkdir($installation . '/bin', 0o777, true);
+        copy(self::repositoryRoot() . '/bin/knossos', $installation . '/bin/knossos');
+        try {
+            [$exit, $stdout, $stderr] = $this->runFixtureCommandOutput([PHP_BINARY, $installation . '/bin/knossos', 'version']);
+
+            assertSame(2, $exit);
+            assertSame('', $stdout);
+            assertSame("Knossos dependencies are not installed. Run composer install.\n", $stderr);
+        } finally {
+            $this->removeTempTree($installation);
+        }
+    }
+
     #[Group('cli')]
     public function testCliOptionParsingPreservesRepeatedValuesFlagsAndPositionalOrder(): void
     {
