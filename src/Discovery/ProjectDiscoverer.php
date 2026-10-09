@@ -373,8 +373,7 @@ final readonly class ProjectDiscoverer
         array $diagnostics,
         array $unparsedManifestHashes,
         array $walked,
-    ): DiscoveryResult
-    {
+    ): DiscoveryResult {
         $files = self::withoutCompiledSiblings($files);
         usort($files, static fn(DiscoveredFile $left, DiscoveredFile $right): int =>
             $left->relativePath <=> $right->relativePath);

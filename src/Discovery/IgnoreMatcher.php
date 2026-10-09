@@ -254,7 +254,12 @@ final readonly class IgnoreMatcher
             && $this->anchored($segments);
     }
 
-    /** @return list<string> */
+    /**
+     * A project-relative path as its segments, with either separator and no
+     * leading or trailing one; the root is no segment at all.
+     *
+     * @return list<string>
+     */
     private static function segments(string $relativePath): array
     {
         $path = trim(str_replace('\\', '/', $relativePath), '/');
