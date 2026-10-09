@@ -310,7 +310,7 @@ COPY tests ./tests
 COPY workers/python/tests ./workers/python/tests
 COPY tools ./tools
 COPY .github ./.github
-RUN chmod 0755 tools/quality tools/quality-container tools/install-hooks tools/coverage tools/benchmark tools/supply-chain tools/release-lifecycle tools/scanner-conformance
+RUN chmod 0755 tools/quality tools/quality-container tools/quality-deps-key tools/install-hooks tools/coverage tools/benchmark tools/supply-chain tools/release-lifecycle tools/scanner-conformance
 
 # The quality stage installs its tooling as root (Trivy, the docker socket, and
 # pcov all need it), but the permission-error tests -- DoctorService's
