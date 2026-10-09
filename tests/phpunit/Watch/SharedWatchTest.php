@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Watch;
 
+use Knossos\Discovery\AllowedRoots;
 use Knossos\Query\ScanLedger;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanService;
@@ -291,5 +292,53 @@ final class SharedWatchTest extends KnossosTestCase
         $events = $this->watch($pdo, $database, $root, count($phases), $alive);
         assertSame(['following', 'leader_scanning', 'leader_scanning', 'stopped'], self::names($events));
         $held->release();
+    }
+
+    /**
+     * The leader's scan limit was fixed at 300 s; a project's
+     * `limits.watch_scan_timeout_ms` now sets it, and a scan past it is
+     * reported as a timeout.
+     */
+    #[Group('watch')]
+    public function testTheLeadersScanLimitComesFromTheProjectConfiguration(): void
+    {
+        [$pdo, $database, $root] = $this->project();
+        $cancellation = new CancellationToken();
+        $events = [];
+        $emit = static function (array $event) use (&$events, $cancellation, $root): void {
+            $events[] = $event;
+            if ($event['event'] === 'ready') {
+                // Edited while the watcher runs: a configuration change is due a scan, read with the limit it sets,
+                // and the scan the slow installation runs outlives it.
+                file_put_contents($root . '/knossos.json', '{"version":1,"limits":{"watch_scan_timeout_ms":10000}}');
+            }
+            if ($event['event'] === 'error') {
+                $cancellation->cancel();
+            }
+        };
+        $started = hrtime(true);
+        (new SharedWatch($pdo, $database, self::repositoryRoot() . '/tests/Fixtures/slow-scan'))->run($root, 1, 0, $cancellation, $emit, null, 20_000);
+
+        $errors = array_values(array_filter($events, static fn(array $e): bool => $e['event'] === 'error'));
+        assertSame(1, count($errors));
+        assertSame(['scan_timeout', true], [$errors[0]['code'], $errors[0]['retryable']]);
+        assertSame('The scan ran past its 10 s limit and was stopped.', $errors[0]['message']);
+        assertSame(true, intdiv(hrtime(true) - $started, 1_000_000) < 60_000);
+    }
+
+    /** The limit a project sets, else the default: also when the configuration cannot be read, since the scan reports that itself. */
+    #[Group('watch')]
+    public function testTheScanLimitFallsBackToTheDefault(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o700);
+        $this->trees[] = $root;
+        $allowed = AllowedRoots::of([$root]);
+        assertSame(SharedWatch::DEFAULT_SCAN_TIMEOUT_MS, SharedWatch::scanTimeoutMs($root, $allowed));
+        file_put_contents($root . '/knossos.json', '{"version":1,"limits":{"watch_scan_timeout_ms":20000}}');
+        assertSame(20_000, SharedWatch::scanTimeoutMs($root, $allowed));
+        file_put_contents($root . '/knossos.json', '{"version":1,"limits":{"watch_scan_timeout_ms":1}}');
+        assertSame(SharedWatch::DEFAULT_SCAN_TIMEOUT_MS, SharedWatch::scanTimeoutMs($root, $allowed));
+        assertSame(300_000, SharedWatch::DEFAULT_SCAN_TIMEOUT_MS);
     }
 }

@@ -63,16 +63,25 @@ configuration fingerprint, so changing it invalidates the cached contributions.
 
 ### Limits
 
-| Key                 | Range                     | Meaning                                               |
-| ------------------- | ------------------------- | ----------------------------------------------------- |
-| `max_files`         | 1 to 100,000              | Files discovered per scan.                            |
-| `max_file_bytes`    | 1 to 100,000,000          | Size of the largest file a worker reads.              |
-| `worker_timeout_ms` | 1,000 to 120,000 (30,000) | How long a worker may stay silent during one request. |
-| `worker_memory_mb`  | 64 to 65,536              | Heap cap for a language worker.                       |
+| Key                     | Range                         | Meaning                                               |
+| ----------------------- | ----------------------------- | ----------------------------------------------------- |
+| `max_files`             | 1 to 100,000                  | Files discovered per scan.                            |
+| `max_file_bytes`        | 1 to 100,000,000              | Size of the largest file a worker reads.              |
+| `worker_timeout_ms`     | 1,000 to 120,000 (30,000)     | How long a worker may stay silent during one request. |
+| `worker_memory_mb`      | 64 to 65,536                  | Heap cap for a language worker.                       |
+| `watch_scan_timeout_ms` | 10,000 to 3,600,000 (300,000) | How long one scan of the shared watcher may run.      |
 
 Every file a worker reports and every heartbeat restarts the `worker_timeout_ms`
 wait, and no request runs longer than 120,000 milliseconds. When a worker hits
 its heap cap, the scan error names `limits.worker_memory_mb` as the fix.
+
+`watch_scan_timeout_ms` bounds each scan of the [shared
+watcher](../operate/watch-mode.md#shared-mode) the Claude Code mod starts. It
+is a project key rather than a flag because the mod's hooks start that watcher.
+A scan past the limit is stopped and retried, and the watcher stops after 3
+timeouts in a row. The watcher reads the value before each scan. Like any edit
+to this file, changing it changes the configuration fingerprint, so the next
+scan analyses the project again.
 
 ### Boundaries
 

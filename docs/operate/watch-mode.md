@@ -104,7 +104,10 @@ you rarely run it by hand. It differs from the plain watcher in a few ways:
   snapshot, which is one row and never a scan, and reports it with `following`.
   It takes over with `leading` when the leader is gone. The kernel releases the
   lock when the process ends, so a crashed watcher leaves nothing to clean up.
-- The leader runs each scan in a process of its own and records it in the scan
+- The leader runs each scan in a process of its own, for at most
+  `limits.watch_scan_timeout_ms` (default 300,000 milliseconds, see
+  [project configuration](../get-started/project-configuration.md#limits)).
+- The leader records each scan in the scan
   ledger, so a turn brief that finds its edits already scanned can still say
   what they changed. A change another writer already scanned is taken in with
   `absorbed` and no scan, and another writer's snapshot is announced as

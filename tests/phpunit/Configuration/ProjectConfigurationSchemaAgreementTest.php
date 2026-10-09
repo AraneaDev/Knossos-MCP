@@ -86,4 +86,22 @@ final class ProjectConfigurationSchemaAgreementTest extends TestCase
 
         return array_keys($node['properties'] ?? []);
     }
+
+    /**
+     * The Limits table in the configuration guide lists every limit the loader
+     * accepts and nothing else: a key the docs leave out is one nobody finds.
+     */
+    public function testTheLimitsTableDocumentsExactlyTheLimitKeys(): void
+    {
+        $guide = (string) file_get_contents(dirname(__DIR__, 3) . '/docs/get-started/project-configuration.md');
+        $section = substr($guide, (int) strpos($guide, '### Limits'));
+        $section = substr($section, 0, (int) strpos($section, "\n### ", 1) ?: strlen($section));
+        preg_match_all('/^\| `([a-z_]+)`/m', $section, $matches);
+        $documented = $matches[1];
+        $accepted = ProjectConfigurationLoader::LIMIT_KEYS;
+        sort($documented);
+        sort($accepted);
+
+        assertSame($accepted, $documented);
+    }
 }

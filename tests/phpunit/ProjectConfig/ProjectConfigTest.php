@@ -96,4 +96,32 @@ final class ProjectConfigTest extends KnossosTestCase
             @rmdir($invalid);
         }
     }
+
+    /**
+     * The shared watcher's scan time limit was fixed at 300 s, out of reach
+     * for a project whose scan needs longer: the plugin's hooks start the
+     * watcher, so no flag can set it.
+     */
+    #[Group('project-config')]
+    public function testTheWatchScanTimeoutIsALimitWithItsOwnRange(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o700);
+        try {
+            assertSame(null, ProjectConfigurationLoader::load($root, [$root])->watchScanTimeoutMs);
+            file_put_contents($root . '/knossos.json', '{"version":1,"limits":{"watch_scan_timeout_ms":600000}}');
+            assertSame(600_000, ProjectConfigurationLoader::load($root, [$root])->watchScanTimeoutMs);
+            foreach ([10_000, 3_600_000] as $bound) {
+                file_put_contents($root . '/knossos.json', '{"version":1,"limits":{"watch_scan_timeout_ms":' . $bound . '}}');
+                assertSame($bound, ProjectConfigurationLoader::load($root, [$root])->watchScanTimeoutMs);
+            }
+            foreach (['9999', '3600001', '"60000"'] as $invalid) {
+                file_put_contents($root . '/knossos.json', '{"version":1,"limits":{"watch_scan_timeout_ms":' . $invalid . '}}');
+                $error = captureThrows(fn() => ProjectConfigurationLoader::load($root, [$root]), DiscoveryException::class);
+                assertSame('PROJECT_CONFIG_INVALID: watch_scan_timeout_ms must be between 10000 and 3600000.', $error->getMessage());
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }

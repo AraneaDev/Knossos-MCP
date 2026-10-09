@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Knossos\Watch;
 
 use Closure;
+use Knossos\Configuration\ProjectConfigurationLoader;
+use Knossos\Discovery\AllowedRoots;
+use Knossos\Query\ResultEnvelope;
 use Knossos\Query\ScanLedger;
 use Knossos\Query\ScanTarget;
 use Knossos\Scan\CancellationToken;
@@ -37,8 +40,8 @@ final readonly class SharedWatch
     /** How often the leader rewrites its lock state, idle or scanning. */
     private const HEARTBEAT_MS = 15_000;
 
-    /** The longest one scan of the watcher's may run before it is stopped. */
-    private const SCAN_TIMEOUT_MS = 300_000;
+    /** The longest one scan of the watcher's may run before it is stopped, unless the project sets `limits.watch_scan_timeout_ms`. */
+    public const DEFAULT_SCAN_TIMEOUT_MS = 300_000;
 
     /**
      * @param PDO $pdo an existing, migrated graph database
@@ -94,7 +97,7 @@ final readonly class SharedWatch
      * @param callable(array<string, mixed>): void $emit
      * @param (Closure(): bool)|null $alive
      */
-    private function lead(WatchLock $lock, string $root, string $projectId, ScanLedger $ledger, \Knossos\Discovery\AllowedRoots $allowed, int $pollMs, int $debounceMs, CancellationToken $cancellation, callable $emit, ?Closure $alive, ?int $maxPolls): void
+    private function lead(WatchLock $lock, string $root, string $projectId, ScanLedger $ledger, AllowedRoots $allowed, int $pollMs, int $debounceMs, CancellationToken $cancellation, callable $emit, ?Closure $alive, ?int $maxPolls): void
     {
         $known = $ledger->activeSnapshot($projectId);
         $say = static function (?string $snapshot, string $phase) use ($lock, $projectId, $root, &$known): void {
@@ -129,7 +132,8 @@ final readonly class SharedWatch
         // That process (`knossos scan`) records the scan in the ledger itself, under the scan's own write lease.
         // Bounded in time, stopped with the watcher, and still beating while it runs: a follower sees a leader that
         // scans, and only one that stopped answering reads as stuck.
-        $scanner = new ProcessScanner($this->installationRoot, $this->databasePath, self::SCAN_TIMEOUT_MS, $alive, static fn() => $beat(null, 'scanning'), self::HEARTBEAT_MS);
+        // The limit is read for each scan, so an edit to `limits.watch_scan_timeout_ms` holds from the next one.
+        $scanner = fn(string $root, ?string $mode, CancellationToken $cancellation): ResultEnvelope => (new ProcessScanner($this->installationRoot, $this->databasePath, self::scanTimeoutMs($root, $allowed), $alive, static fn() => $beat(null, 'scanning'), self::HEARTBEAT_MS))->scan($root, $mode, $cancellation);
         $observer = static function (array $event) use ($emit, $say): void {
             $phase = ['ready' => 'idle', 'scan_started' => 'scanning', 'scan_completed' => 'idle', 'absorbed' => 'idle'][$event['event']] ?? null;
             if ($phase !== null) {
@@ -137,6 +141,21 @@ final readonly class SharedWatch
             }
             $emit($event);
         };
-        (new WatchService($scanner->scan(...), $allowed))->run($root, $pollMs, $debounceMs, 1000, $cancellation, $observer, $maxPolls, $hooks);
+        (new WatchService($scanner, $allowed))->run($root, $pollMs, $debounceMs, 1000, $cancellation, $observer, $maxPolls, $hooks);
+    }
+
+    /**
+     * How long one scan of the watcher's may run: the project's
+     * `limits.watch_scan_timeout_ms`, else {@see self::DEFAULT_SCAN_TIMEOUT_MS}.
+     * A configuration that cannot be loaded gets the default and does not
+     * stop the watch: the scan reports that fault itself.
+     */
+    public static function scanTimeoutMs(string $root, AllowedRoots $allowed): int
+    {
+        try {
+            return ProjectConfigurationLoader::load($root, $allowed)->watchScanTimeoutMs ?? self::DEFAULT_SCAN_TIMEOUT_MS;
+        } catch (Throwable) {
+            return self::DEFAULT_SCAN_TIMEOUT_MS;
+        }
     }
 }

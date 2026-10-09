@@ -14,6 +14,7 @@ final readonly class ProjectConfiguration
      * @param list<array<string, mixed>> $policies
      * @param array<string, int> $qualityBudgets
      * @param list<string> $deadCodeSuppressions
+     * @param int|null $watchScanTimeoutMs how long one scan of the shared watcher may run; null for its default
      */
     public function __construct(
         public ?string $path = null,
@@ -28,5 +29,6 @@ final readonly class ProjectConfiguration
         public array $policies = [],
         public array $qualityBudgets = [],
         public array $deadCodeSuppressions = [],
+        public ?int $watchScanTimeoutMs = null,
     ) {}
 }
