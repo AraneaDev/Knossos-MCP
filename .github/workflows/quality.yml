@@ -257,11 +257,16 @@ jobs:
         env:
           LANE: ${{ matrix.lane }}
           EXTERNAL_LINKS: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+          # A pull request runs PHPUnit once, in the coverage shards. A push
+          # to main runs it here as well, without pcov, as the backstop for a
+          # defect that only shows when pcov is not loaded.
+          PHPUNIT_IN_COVERAGE: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: |
           mkdir -p "$RUNNER_TEMP/trivy-cache"
           docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
             -e TRIVY_CACHE_DIR=/tmp/trivy-cache \
             -e KNOSSOS_EXTERNAL_LINKS="$EXTERNAL_LINKS" \
+            -e KNOSSOS_PHPUNIT_IN_COVERAGE="$PHPUNIT_IN_COVERAGE" \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$RUNNER_TEMP/trivy-cache:/tmp/trivy-cache" \
             knossos:quality full "$LANE"
@@ -413,24 +418,36 @@ jobs:
           if-no-files-found: error
 
   # The name branch protection requires. Keeping it means the required check
-  # survives the split: a lane that goes red fails this job, and a lane that is
-  # skipped or cancelled fails it too, so a green `quality` still means every
-  # lane ran and passed.
+  # survives the split: a lane, shard or merge that goes red fails this job,
+  # and one that is skipped or cancelled when it should have run fails it too,
+  # so a green `quality` still means everything ran and passed. The one
+  # expected skip is a release-please pull request's coverage jobs.
   quality:
-    needs: lane
+    needs: [lane, coverage-shard, coverage]
     if: always() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write # publishes the coverage badge to the gh-pages branch
     steps:
-      - name: Require every lane to have passed
+      - name: Require every lane, shard and the merge to have passed
         env:
-          RESULT: ${{ needs.lane.result }}
+          LANES: ${{ needs.lane.result }}
+          SHARDS: ${{ needs.coverage-shard.result }}
+          MERGE: ${{ needs.coverage.result }}
+          RELEASE_PLEASE: ${{ startsWith(github.head_ref, 'release-please--branches--') }}
         run: |
-          result="$RESULT"
-          printf 'lane matrix result: %s\n' "$result"
-          [ "$result" = 'success' ] || exit 1
+          printf 'lanes: %s\ncoverage shards: %s\ncoverage merge: %s\nrelease-please branch: %s\n' \
+            "$LANES" "$SHARDS" "$MERGE" "$RELEASE_PLEASE"
+          if [ "$RELEASE_PLEASE" = 'true' ]; then
+            expected='success skipped skipped'
+          else
+            expected='success success success'
+          fi
+          [ "$LANES $SHARDS $MERGE" = "$expected" ] || {
+            echo "expected lanes, shards and merge to be: $expected" >&2
+            exit 1
+          }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: github.ref == 'refs/heads/main'
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

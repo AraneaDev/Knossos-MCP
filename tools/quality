@@ -44,11 +44,23 @@ root=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 # Trivy/docker-socket/coverage steps. Outside the container (local dev) run in
 # place. HOME is set because the caller's environment is preserved and root's
 # HOME is not writable by the non-root user.
+#
+# A pull request in CI sets KNOSSOS_PHPUNIT_IN_COVERAGE=1: there the suite runs
+# once, under pcov, in the coverage shards, and running it again here would
+# double the slowest work of the run for no new verdict. This lane then runs
+# only the shell tests. Pushes to main leave it unset, so the suite still runs
+# once without pcov loaded, which is the backstop for a defect that only shows
+# without it. Locally it is unset too.
 run_test_suite() {
+    suite='test'
+    if [ "${KNOSSOS_PHPUNIT_IN_COVERAGE:-0}" = "1" ]; then
+        suite='test:shell'
+        echo 'tests lane: PHPUnit runs in the coverage shards (KNOSSOS_PHPUNIT_IN_COVERAGE=1); running the shell tests only'
+    fi
     if [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ] && [ "$(id -u)" = "0" ]; then
-        runuser -u knossos -- env HOME=/home/knossos composer test
+        runuser -u knossos -- env HOME=/home/knossos composer "$suite"
     else
-        composer test
+        composer "$suite"
     fi
 }
 

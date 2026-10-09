@@ -96,7 +96,14 @@ fails unless the whole matrix succeeded, which is the check branch protection
 requires: a lane that is skipped or cancelled fails it just as a red lane does.
 A second push to a pull request cancels the run in progress.
 
-A release-please pull request runs `static` alone. Its diff is version files, a
+A pull request runs PHPUnit once. The `tests` lane gets
+`KNOSSOS_PHPUNIT_IN_COVERAGE=1` and runs only the shell tests from
+`composer test`, because the suite already runs under pcov in the coverage
+shards. A push to `main` leaves the variable unset, so the suite also runs there
+once without pcov, which catches a defect that only shows when pcov is not
+loaded. Locally the variable is unset and `tools/quality` runs the whole suite.
+
+A release-please pull request runs `static` alone and skips the coverage jobs. Its diff is version files, a
 manifest and a changelog entry, so every other lane would re-verify code
 identical to the `main` it was cut from, which had just passed. The full matrix
 runs again on the push to `main` after it merges, so nothing reaches a tag
@@ -186,7 +193,7 @@ where they run:
 ## The PHP test suite
 
 `tests/phpunit/` is the single PHP suite, run by `composer test`, which also runs
-the two hook shell tests in `tests/shell/`. The suite drives every language
+the hook shell tests in `tests/shell/` (`composer test:shell` runs those alone). The suite drives every language
 through one runner that spawns the TypeScript and Python workers as
 subprocesses, so worker behaviour is proven end-to-end from PHP. The TypeScript
 worker additionally has a focused vitest suite (`workers/typescript/src/__tests__/`,

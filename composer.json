@@ -47,6 +47,9 @@
     ],
     "test": [
       "phpunit",
+      "@test:shell"
+    ],
+    "test:shell": [
       "sh tests/shell/session-brief-hook.sh",
       "sh tests/shell/knossos-run-hook.sh",
       "sh tests/shell/install-hooks.sh",
