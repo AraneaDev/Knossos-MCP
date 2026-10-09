@@ -425,7 +425,7 @@ RUN chmod 0755 \
     workers/php/bin/worker \
     workers/typescript/bin/worker.js \
     workers/python/bin/worker.py \
-    tools/quality tools/quality-container tools/quality-deps-key tools/install-hooks tools/coverage tools/benchmark tools/supply-chain tools/release-lifecycle tools/scanner-conformance
+    tools/quality tools/quality-container tools/quality-deps-key tools/install-hooks tools/coverage tools/benchmark tools/supply-chain tools/release-lifecycle tools/scanner-conformance tools/phpunit-shard
 
 ENTRYPOINT ["/opt/knossos/tools/quality"]
 CMD ["fast"]

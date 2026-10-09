@@ -10,6 +10,32 @@ Inside the pinned quality image, `tools/coverage` is the shorter coverage-only
 entrypoint. The container wrapper mounts `coverage/` back into the checkout;
 CI uploads that directory as the `quality-reports` artifact.
 
+## Running in parts
+
+`tools/coverage` with no argument runs the suite under pcov and then the
+reports. The two halves can also run on their own, which is how CI splits the
+suite over several jobs:
+
+| command                            | does                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------- |
+| `tools/coverage run [--shard=I/N]` | the PHPUnit run only; with `--shard`, only the test files of shard I |
+| `tools/coverage merge RAW_DIR`     | gathers the data of every shard under `RAW_DIR` into `coverage/`     |
+| `tools/coverage report`            | the reports and every floor below, over what `coverage/` holds       |
+
+`tools/phpunit-shard` picks the files of a shard, heaviest first, each to the
+shard with the least measured time so far, by the times in
+`tests/phpunit-shard-weights.json`. The split depends only on the file names and
+that file, so every runner computes the same one. The merge refuses unless every shard of the same N finished, left PHP
+coverage data, and every test file ran in exactly one shard, the one it was
+assigned to. A `*Test.php` with no runnable test, such as an abstract
+base class, is not expected in any shard. The JavaScript and Python data merge by
+union, so splitting cannot change those figures. For PHP, which lines count as
+executable depends on load order: PHP folds a class constant into the code when
+its class is already loaded, leaving no executable line. The merge therefore
+counts a line only when every shard that loaded its file reports it, and as
+covered when any of them hit it, so a different split cannot add an uncovered
+line.
+
 ## Enforced floors
 
 The floors live in `coverage-budgets.json`, and the number there is the

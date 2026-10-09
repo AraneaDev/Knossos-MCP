@@ -28,9 +28,10 @@ machine.
 ## Profiles and lanes
 
 `fast` is what the commit hook runs. `full` is what the push hook and CI run. The
-script is one linear gate, and locally it runs as one. CI splits it into six
-lanes that run at the same time, because most of the work does not depend on the
-rest of it. Both commands take an optional second argument naming a lane, so a
+script is one linear gate, and locally it runs as one. CI runs it as jobs that
+run at the same time, because most of the work does not depend on the rest of
+it: five lanes in a matrix, and the `coverage` lane as several shards and a
+merge (see [how CI runs it](#how-ci-runs-it)). Both commands take an optional second argument naming a lane, so a
 lane that failed in CI can be reproduced here:
 
 ```sh
@@ -41,10 +42,10 @@ tools/quality full static
 | lane       | profiles | holds                                                                                                                                                                                                                               |
 | ---------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `static`   | both     | Composer and npm validation, linters, PHP-CS-Fixer, PHPStan, ESLint, `typecheck:mod`, Prettier, markdownlint, Ruff, mypy, the documentation and repository checks, pre-commit config, ShellCheck, Hadolint, `docker compose config` |
-| `tests`    | both     | the PHPUnit suite and the hook shell tests, the TypeScript worker's checks, pytest, scanner conformance, the mod's vitest suite and plugin checks                                                                                   |
+| `tests`    | both     | the PHPUnit suite (in CI on pushes to `main` only, see below) and the hook shell tests, the TypeScript worker's checks, pytest, scanner conformance, the mod's vitest suite and plugin checks                                       |
 | `rust`     | both     | `cargo fmt`, `clippy` and `test`, and conformance of the Rust worker, which are slow and self-contained                                                                                                                             |
 | `release`  | `full`   | Composer and npm audits, the external link check, the MCP Inspector smoke, the runtime image build and `doctor`, the release lifecycle, supply chain, the benchmark                                                                 |
-| `coverage` | `full`   | the pcov run and the coverage floors                                                                                                                                                                                                |
+| `coverage` | `full`   | the pcov run and the coverage floors; in CI, split into shards and a merge                                                                                                                                                          |
 | `gate`     | `full`   | Knossos scanned by Knossos, held to the budgets in `knossos.json`                                                                                                                                                                   |
 
 Omitting the argument runs every lane the profile has, which is the local
@@ -90,14 +91,50 @@ baseline.
 
 ## How CI runs it
 
-One job builds the quality image and pushes it to the repository's registry,
-tagged by commit, and the lanes pull it. An aggregating job named `quality`
-fails unless the whole matrix succeeded, which is the check branch protection
-requires: a lane that is skipped or cancelled fails it just as a red lane does.
+The quality image is built in two parts. The dependency stages of the
+`Dockerfile` (system packages, PHP extensions, Composer and npm dependencies,
+the Rust toolchain and the compiled Rust worker) are published to the
+repository's registry under a key: a hash of their inputs, printed by
+`tools/quality-deps-key` (`--inputs` lists them), plus the UTC date. Each job
+pulls that image and adds the commit's source on top in a build of a few
+seconds. The key changes, and the run first rebuilds and publishes the
+dependency images, when the `Dockerfile` changes in anything but comments and
+the release version, when a Composer or npm manifest or lockfile changes, when
+anything under `workers/rust` changes, and on the first run of each UTC day, so
+Debian's fixes reach the image. That run takes several minutes longer. A
+scheduled run shortly after midnight UTC does the daily rebuild, so the day's
+first push usually finds the images published. A pull request from a fork, or
+from Dependabot, cannot write to the registry and builds the whole image in the
+run instead.
+
+Coverage runs as several `coverage-shard` jobs and one `coverage` job after
+them. Each shard runs `tools/coverage run --shard=I/N`, the test files
+`tools/phpunit-shard` assigns it, and uploads its raw data. The shard count is
+the length of the matrix in `quality.yml`. The files are balanced by the times
+in `tests/phpunit-shard-weights.json`; a file missing there weighs the median.
+To refresh the weights, download the `coverage-shard-*` artifacts of a run and
+pass their `junit.xml` files to `tools/phpunit-shard --weigh`. The `coverage`
+job runs `tools/coverage merge` and then `tools/coverage report`, which enforces
+every floor exactly as an unsharded run does. The merge refuses unless every
+shard of the same N finished, left PHP coverage data, and every test file ran
+in exactly one shard, the one it was assigned to, so a shard that lost files
+cannot pass with a lower figure. To reproduce one shard locally, run
+`tools/coverage run --shard=2/4` in the quality image.
+
+An aggregating job named `quality` fails unless every lane, every shard and the
+merge succeeded, which is the check branch protection requires: a job that is
+skipped or cancelled when it should have run fails it just as a red one does.
 A second push to a pull request cancels the run in progress.
 
-A release-please pull request runs `static` alone. Its diff is version files, a
-manifest and a changelog entry, so every other lane would re-verify code
+A pull request runs PHPUnit once. The `tests` lane gets
+`KNOSSOS_PHPUNIT_IN_COVERAGE=1` and runs only the shell tests from
+`composer test`, because the suite already runs under pcov in the coverage
+shards. A push to `main` leaves the variable unset, so the suite also runs there
+once without pcov, which catches a defect that only shows when pcov is not
+loaded. Locally the variable is unset and `tools/quality` runs the whole suite.
+
+A release-please pull request runs `static` alone and skips the coverage jobs.
+Its diff is version files, a manifest and a changelog entry, so every other lane would re-verify code
 identical to the `main` it was cut from, which had just passed. The full matrix
 runs again on the push to `main` after it merges, so nothing reaches a tag
 unchecked.
@@ -186,7 +223,7 @@ where they run:
 ## The PHP test suite
 
 `tests/phpunit/` is the single PHP suite, run by `composer test`, which also runs
-the two hook shell tests in `tests/shell/`. The suite drives every language
+the hook shell tests in `tests/shell/` (`composer test:shell` runs those alone). The suite drives every language
 through one runner that spawns the TypeScript and Python workers as
 subprocesses, so worker behaviour is proven end-to-end from PHP. The TypeScript
 worker additionally has a focused vitest suite (`workers/typescript/src/__tests__/`,

@@ -41,10 +41,15 @@
       "php -l tools/maintainability-report.php",
       "php -l tools/api-documentation-check.php",
       "php -l tools/supply-chain-report.php",
-      "php -l tools/scanner-conformance"
+      "php -l tools/scanner-conformance",
+      "php -l tools/phpunit-shard",
+      "php -l tools/coverage-merge.php"
     ],
     "test": [
       "phpunit",
+      "@test:shell"
+    ],
+    "test:shell": [
       "sh tests/shell/session-brief-hook.sh",
       "sh tests/shell/knossos-run-hook.sh",
       "sh tests/shell/install-hooks.sh",
