@@ -63,9 +63,9 @@ final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProv
             $this->collect($this->runner->run([...$diff, '--', '.'], $timeoutMs, 'working-tree query'), $paths, $renames);
         }
         if ($baseRef === null) {
-            foreach (explode("\0", rtrim($this->runner->run([
+            foreach (explode("\0", $this->runner->run([
                 ...$git, 'ls-files', '--others', '--exclude-standard', '-z', '--', '.',
-            ], $timeoutMs, 'working-tree query'), "\0")) as $path) {
+            ], $timeoutMs, 'working-tree query')) as $path) {
                 if ($path === '') {
                     continue;
                 }
@@ -106,7 +106,8 @@ final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProv
      */
     private function collect(string $output, array &$paths, array &$renames): void
     {
-        $tokens = explode("\0", rtrim($output, "\0"));
+        // The NUL that ends the last entry leaves one empty token, which fails validation like any empty path.
+        $tokens = explode("\0", $output);
         for ($index = 0; $index < count($tokens);) {
             $status = $tokens[$index++] ?? '';
             $from = $tokens[$index++] ?? '';

@@ -124,7 +124,8 @@ final class PaneQueriesTest extends KnossosTestCase
                     }
                     $this->log = $command;
 
-                    return "KNOSSOS_CHURN\x1f\0\nsrc/Core/we\"ird.php\0src/Core/Greeter.php\0KNOSSOS_CHURN\x1f\0\nsrc/Core/we\"ird.php\0";
+                    // The second commit names its file twice: a commit counts once per file.
+                    return "KNOSSOS_CHURN\x1f\0\nsrc/Core/we\"ird.php\0src/Core/Greeter.php\0KNOSSOS_CHURN\x1f\0\nsrc/Core/we\"ird.php\0src/Core/we\"ird.php\0";
                 }
             };
             $churn = (new ChurnService($pdo, $runner))->churn($root);
@@ -132,6 +133,7 @@ final class PaneQueriesTest extends KnossosTestCase
             $commits = array_column($churn['files'], 'commits', 'path');
             assertSame([2, 1], [$commits['src/Core/we"ird.php'] ?? null, $commits['src/Core/Greeter.php'] ?? null]);
             assertSame(true, in_array('-z', $runner->log, true));
+            assertSame(true, in_array('--since=' . ChurnService::DAYS . '.days.ago', $runner->log, true));
         } finally {
             $this->removeTempTree($root);
         }

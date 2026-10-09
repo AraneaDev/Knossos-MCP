@@ -416,6 +416,43 @@ final class ProcessGitProviderTest extends KnossosTestCase
         }
     }
 
+    /** A rename takes three tokens: the entry after it is read from the right place. */
+    public function testAnEntryAfterARenameIsReadInStep(): void
+    {
+        $runner = $this->recordingRunner(static fn(array $command): string => match (true) {
+            in_array('rev-parse', $command, true) => str_repeat('a', 40),
+            in_array('diff', $command, true) => "R090\0src/old.php\0src/new.php\0M\0src/other.php\0",
+            default => '',
+        });
+        $result = (new ProcessGitWorkingTreeProvider(runner: $runner))->changes($this->existingDir, null, 10, 100);
+
+        assertSame(['src/new.php', 'src/old.php', 'src/other.php'], $result['paths']);
+        assertSame([['from' => 'src/old.php', 'to' => 'src/new.php']], $result['renames']);
+    }
+
+    /** A rename whose source is no valid project path is no rename: the target alone is listed, as an add. */
+    public function testARenameFromAnInvalidPathIsListedAsAnAdd(): void
+    {
+        $runner = $this->recordingRunner(static fn(array $command): string => match (true) {
+            in_array('rev-parse', $command, true) => str_repeat('a', 40),
+            in_array('diff', $command, true) => "R100\0../outside.php\0src/x.php\0",
+            default => '',
+        });
+        $result = (new ProcessGitWorkingTreeProvider(runner: $runner))->changes($this->existingDir, null, 10, 100);
+
+        assertSame([['src/x.php'], []], [$result['paths'], $result['renames']]);
+    }
+
+    /** A base ref is resolved to the commit it names (`^{commit}`), so a tag peels to its commit. */
+    public function testABaseRefIsPeeledToItsCommit(): void
+    {
+        $runner = $this->recordingRunner(static fn(array $command): string => in_array('rev-parse', $command, true) ? str_repeat('b', 40) : '');
+        (new ProcessGitWorkingTreeProvider(runner: $runner))->changes($this->existingDir, 'v1.0', 10, 100);
+
+        assertSame(['rev-parse', '--verify', 'v1.0^{commit}'], array_slice($runner->commandsWith('rev-parse')[0], -3));
+        assertSame([str_repeat('b', 40), '--', '.'], array_slice($runner->commandsWith('diff')[0], -3));
+    }
+
     // ── A branch with no commit yet ──────────────────────────────────
 
     /**
@@ -449,10 +486,10 @@ final class ProcessGitProviderTest extends KnossosTestCase
         }
     }
 
-    /** An empty answer to `rev-parse --verify -q HEAD` is the same unborn branch as a failed one. */
+    /** An empty answer to `rev-parse --verify -q HEAD`, a bare line break included, is the same unborn branch as a failed one. */
     public function testAnEmptyHeadAnswerIsTreatedAsAnUnbornBranch(): void
     {
-        $runner = $this->recordingRunner(static fn(array $command): string => '');
+        $runner = $this->recordingRunner(static fn(array $command): string => in_array('rev-parse', $command, true) ? "\n" : '');
         (new ProcessGitWorkingTreeProvider(runner: $runner))->changes($this->existingDir, null, 10, 100);
 
         $diffs = $runner->commandsWith('diff');
@@ -468,7 +505,7 @@ final class ProcessGitProviderTest extends KnossosTestCase
         (new ProcessGitWorkingTreeProvider(runner: $runner))->changes($this->existingDir, null, 10, 100);
 
         $revParse = $runner->commandsWith('rev-parse');
-        assertSame(['rev-parse', '--verify', '-q', 'HEAD'], array_slice($revParse[0], -4));
+        assertSame(['git', '--no-optional-locks', '--no-pager', '-C', (string) realpath($this->existingDir), 'rev-parse', '--verify', '-q', 'HEAD'], $revParse[0]);
         $diffs = $runner->commandsWith('diff');
         assertSame(1, count($diffs));
         assertSame(false, in_array('--cached', $diffs[0], true));

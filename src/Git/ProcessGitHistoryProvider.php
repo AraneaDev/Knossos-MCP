@@ -90,8 +90,8 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
                 }
                 $paths[$path] = true;
             }
+            // The hash (field 0) is read but not kept: nothing in the answer names a commit.
             $commits[] = [
-                'hash' => $fields[0],
                 'changed_at' => $fields[1],
                 // %aI carries the author's local UTC offset, so comparing
                 // those strings orders 10:00+02:00 (08:00Z) above
