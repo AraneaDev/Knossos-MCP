@@ -111,7 +111,7 @@ final class StdioServer
         // handle() answers an id that is neither an integer nor a string with
         // -32600 and id null, so the id echoed here always encodes and this
         // error cannot fail the way the answer it replaces did.
-        $id = self::replyId($message['id'] ?? null);
+        $id = JsonRpcId::reply($message['id'] ?? null);
         try {
             $response = $this->handle($message);
             if ($response !== null) {
@@ -121,25 +121,6 @@ final class StdioServer
             fwrite($errors, $error->getMessage() . PHP_EOL);
             $this->write($output, $this->error($id, -32603, 'Internal error'));
         }
-    }
-
-    /** The id a reply may echo: MCP request ids are integers or strings, anything else is answered with null. */
-    private static function replyId(mixed $id): int|string|null
-    {
-        return is_int($id) || is_string($id) ? $id : null;
-    }
-
-    /**
-     * Whether a message carries an id that is neither an integer nor a string
-     * (MCP: a request id MUST be one of those; null included). Such an id
-     * cannot be echoed, so the message is an invalid request answered with id
-     * null. Shared with the HTTP transport so both apply one rule.
-     *
-     * @param array<string, mixed> $message
-     */
-    public static function hasInvalidId(array $message): bool
-    {
-        return array_key_exists('id', $message) && self::replyId($message['id']) === null;
     }
 
     /**
@@ -165,7 +146,7 @@ final class StdioServer
      */
     public function handle(array $message): ?array
     {
-        $id = self::replyId($message['id'] ?? null);
+        $id = JsonRpcId::reply($message['id'] ?? null);
         if (($message['jsonrpc'] ?? null) !== '2.0') {
             return $this->error($id, -32600, 'Invalid Request');
         }
@@ -205,7 +186,7 @@ final class StdioServer
             }
             return null;
         }
-        if (self::hasInvalidId($message)) {
+        if (JsonRpcId::isInvalid($message)) {
             // The id is present but neither an integer nor a string, so it
             // cannot be echoed: the request is invalid and answered with id null.
             return $this->error(null, -32600, 'Invalid Request');

@@ -128,7 +128,7 @@ final readonly class HttpEndpoint
             return $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32700, 'message' => 'Parse error']], $baseHeaders);
         }
         // The same id rule as stdio, before anything echoes the id back.
-        if (StdioServer::hasInvalidId($message)) {
+        if (JsonRpcId::isInvalid($message)) {
             return $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32600, 'message' => 'Invalid Request']], $baseHeaders);
         }
         $rpcMethod = $message['method'] ?? null;
