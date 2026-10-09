@@ -107,7 +107,7 @@ final class RootsCommand implements CliCommand
                 $json,
                 sprintf('%s is already present in %s. Nothing to do.', $path, $configPath),
             );
-            return 0;
+            return CliCommand::EXIT_OK;
         }
 
         $roots[] = $path;
@@ -129,7 +129,7 @@ final class RootsCommand implements CliCommand
                     sprintf($effect, 'the addition would take effect'),
                 ),
             );
-            return 0;
+            return CliCommand::EXIT_OK;
         }
 
         self::writeRoots($configPath, $roots);
@@ -148,7 +148,7 @@ final class RootsCommand implements CliCommand
                 sprintf($effect, 'this takes effect immediately'),
             ),
         );
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**

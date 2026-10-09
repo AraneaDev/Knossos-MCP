@@ -67,7 +67,7 @@ final class BundleCommand implements CliCommand
             }
         }
         $context->output(['project_id' => $projectId, 'output' => $output, 'bytes' => strlen($bundle)], $context->options->flag($options, 'json'), sprintf('Exported %d-byte graph bundle.', strlen($bundle)));
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
@@ -83,6 +83,6 @@ final class BundleCommand implements CliCommand
             $context->options->single($options, 'name'),
         );
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary . "\nProject: " . $result->projectId);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 }

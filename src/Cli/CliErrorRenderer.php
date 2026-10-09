@@ -69,6 +69,6 @@ final class CliErrorRenderer
     public function render(Throwable $error): int
     {
         fwrite($this->stream, self::diagnosticCode($error) . ': ' . $error->getMessage() . PHP_EOL);
-        return 2;
+        return CliCommand::EXIT_ERROR;
     }
 }

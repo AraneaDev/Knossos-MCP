@@ -71,8 +71,8 @@ final class SessionCommand implements CliCommand
                 : (new SessionBriefRenderer())->render(SessionBriefService::unscanned($path, $databasePath));
             $context->output(['brief' => $brief], $context->options->flag($options, 'json'), $brief);
         } catch (Throwable) {
-            return 0;
+            return CliCommand::EXIT_OK;
         }
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 }

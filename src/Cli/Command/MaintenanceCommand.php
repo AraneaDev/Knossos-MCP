@@ -54,7 +54,7 @@ final class MaintenanceCommand implements CliCommand
             $text .= sprintf("[%s] %s: %s\n", strtoupper($check['status']), $check['name'], $check['detail']);
         }
         $context->output($report, $context->options->flag($options, 'json'), rtrim($text));
-        return $report['ok'] ? 0 : 1;
+        return $report['ok'] ? CliCommand::EXIT_OK : CliCommand::EXIT_GATE_FAILED;
     }
 
     /**
@@ -67,7 +67,7 @@ final class MaintenanceCommand implements CliCommand
         $projectId = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos remove-project <project-id> [--execute] [--json]');
         $result = $context->maintenance()->removeProject($projectId, $context->options->flag($options, 'execute'));
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
@@ -84,7 +84,7 @@ final class MaintenanceCommand implements CliCommand
             $context->options->flag($options, 'execute'),
         );
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
@@ -101,6 +101,6 @@ final class MaintenanceCommand implements CliCommand
             $context->options->single($options, 'backup-name'),
         );
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
-        return ($result->data['ok'] ?? true) ? 0 : 1;
+        return ($result->data['ok'] ?? true) ? CliCommand::EXIT_OK : CliCommand::EXIT_GATE_FAILED;
     }
 }

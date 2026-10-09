@@ -45,6 +45,6 @@ final class ScanCommand implements CliCommand
             isset($options['worker-memory-mb']) ? $context->options->integer($options, 'worker-memory-mb', 1024, 64, 65536) : null,
         );
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary . "\nProject: " . $result->projectId . "\nSnapshot: " . $result->snapshotId);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 }

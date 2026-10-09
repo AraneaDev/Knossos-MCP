@@ -139,7 +139,7 @@ final class QueryCommand implements CliCommand
             );
         }
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $text);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
@@ -180,7 +180,7 @@ final class QueryCommand implements CliCommand
         $policies = $c->options->single($o, 'policies');
         $result = $this->queries($c)->qualityGate($project, $baseline, $c->input->jsonObject($budget), $policies === null ? [] : $c->input->policies($policies), $c->options->flag($o, 'sarif'), $c->options->flag($o, 'propose-baseline'));
         $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->summary);
-        return $result->data['passed'] ? 0 : 1;
+        return $result->data['passed'] ? CliCommand::EXIT_OK : CliCommand::EXIT_GATE_FAILED;
     }
 
     /**
@@ -193,7 +193,7 @@ final class QueryCommand implements CliCommand
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-trends <path|project-id> [options]'), $c);
         $result = $this->queries($c)->architectureTrends($project, $c->options->integer($o, 'limit', 10, 2, 20), $c->options->single($o, 'release-from'));
         $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->data['release_notes']['markdown'] ?? $result->summary);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
@@ -244,7 +244,7 @@ final class QueryCommand implements CliCommand
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-summary <path|project-id> [--json]'), $c);
         $result = $this->queries($c)->architectureSummary($project, $c->options->integer($o, 'limit', 50, 1, 100));
         $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->summary);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
@@ -313,7 +313,7 @@ final class QueryCommand implements CliCommand
         // Exit non-zero when declared-policy violations exist so the "check"
         // command can gate CI on its own result, mirroring quality-gate. The
         // authoritative count is the (possibly larger) bounds.violation_count.
-        return ($result->data['bounds']['violation_count'] ?? count($result->data['violations'])) > 0 ? 1 : 0;
+        return ($result->data['bounds']['violation_count'] ?? count($result->data['violations'])) > 0 ? CliCommand::EXIT_GATE_FAILED : CliCommand::EXIT_OK;
     }
 
     /**
@@ -417,7 +417,7 @@ final class QueryCommand implements CliCommand
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos export-diagram <path|project-id> [options]'), $c);
         $result = $this->queries($c)->exportDiagram($project, $c->options->single($o, 'format') ?? 'mermaid', $c->options->single($o, 'boundary'), $c->options->values($o, 'edge-kind'), $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->single($o, 'direction') ?? 'LR', $c->options->integer($o, 'max-nodes', 200, 1, 400), $c->options->integer($o, 'max-edges', 500, 1, 1000));
         $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->data['diagram']);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
@@ -434,7 +434,7 @@ final class QueryCommand implements CliCommand
             throw new InvalidArgumentException(sprintf('Unable to write brief to %s.', $out));
         }
         $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->data['markdown']);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
@@ -527,6 +527,6 @@ final class QueryCommand implements CliCommand
     private function result(ResultEnvelope $result, array $options, CliCommandContext $context): int
     {
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 }

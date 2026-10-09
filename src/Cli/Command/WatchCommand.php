@@ -58,7 +58,7 @@ final class WatchCommand implements CliCommand
             $observer,
         );
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
@@ -76,7 +76,7 @@ final class WatchCommand implements CliCommand
             $databasePath = (new ProjectDatabaseLocator())->locate($root, $options, $context);
             if (!is_file($databasePath)) {
                 $emit(['event' => 'refused', 'status' => 'unscanned']);
-                return 0;
+                return CliCommand::EXIT_OK;
             }
             $pdo = (new RuntimeFactory($context->installationRoot()))->database($databasePath);
             // Started by a session: when that process is gone (the watcher was re-parented), stop.
@@ -94,6 +94,6 @@ final class WatchCommand implements CliCommand
             $emit(['event' => 'error', 'message' => $error->getMessage(), 'retryable' => false]);
             $emit(['event' => 'stopped', 'reason' => 'error']);
         }
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 }

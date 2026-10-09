@@ -93,7 +93,7 @@ final class BriefCommand implements CliCommand
                 $context->output(['status' => 'error'], true, '');
             }
         }
-        return 0;
+        return CliCommand::EXIT_OK;
     }
 
     /**
