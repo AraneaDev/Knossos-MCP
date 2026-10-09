@@ -111,6 +111,11 @@ like any other module.
 - A generic component's type parameters
   (`<script lang="ts" generics="T extends …">` in Svelte, `generic="T"` in Vue)
   are declared, each standing for its constraint.
+- These declarations (the route's `$props`, the type parameters, Astro's
+  `Astro`) are written nowhere in your file, so they are no nodes and nothing
+  refers to them, and no fact of a component stands past its last line. What
+  they imply stays: Astro reads `Props` by name, so the component still
+  references it.
 - A component's default export is the component its bundler compiles, which its
   source never writes (`<script setup>`, Svelte, Astro): importing it,
   re-exporting it or destructuring `default` from `await import('./X.vue')` is

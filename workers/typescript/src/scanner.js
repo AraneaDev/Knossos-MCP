@@ -1432,10 +1432,14 @@ class TypeScriptLanguageFactCollector {
         this.relative = relativeInside(root, sourceFile.fileName);
         this.container = [];
         this.moduleId = reference("module", this.relative);
+        const ownEnd = componentSources.get(sourceFile)?.sourceLength;
         this.accumulator = new FactAccumulator(
             sourceFile,
             this.relative,
             evidence,
+            ownEnd === undefined
+                ? {}
+                : { end: ownEnd, moduleId: this.moduleId },
         );
         this.application = new TypeScriptApplicationEnricher(this);
         this.nest = new NestJsFactEnricher(this);

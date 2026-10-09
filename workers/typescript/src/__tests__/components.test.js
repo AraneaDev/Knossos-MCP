@@ -613,3 +613,84 @@ describe("an import that names a component", () => {
         expect(imports).toEqual(["ts:module:src/Card.vue"]);
     });
 });
+
+describe("declarations the virtual source appends", () => {
+    const tails = {
+        "tsconfig.json":
+            '{"compilerOptions":{"strict":true},"include":["src"]}',
+        "src/routes/+page.svelte":
+            '<script lang="ts">\n  let { data } = $props();\n</script>\n<h1>{data.title}</h1>\n<p>x</p>\n',
+        // Its virtual source holds no token before the appended ones.
+        "src/routes/about/+page.svelte": "<h1>About</h1>\n",
+        "src/List.svelte":
+            '<script lang="ts" generics="T extends { id: number }">\n  let { items }: { items: T[] } = $props();\n</script>\n{#each items as item}{item.id}{/each}\n',
+        "src/Gen.vue":
+            '<script setup lang="ts" generic="T extends string, U = number">\ndefineProps<{ a: T; b: U }>();\n</script>\n<template><div /></template>\n',
+        "src/Tag.astro": "---\ntype Props = { name: string };\n---\n<span />\n",
+    };
+    const components = Object.keys(tails).filter(
+        (path) => path !== "tsconfig.json",
+    );
+
+    function scanned() {
+        const { contributions } = scan(tails, components, ["tsconfig.json"]);
+        return Object.fromEntries(
+            contributions.map((c) => [
+                c.owner_key.replace("knossos.typescript:file:", ""),
+                c,
+            ]),
+        );
+    }
+
+    it("become no nodes, and nothing refers to them", () => {
+        const byPath = scanned();
+        const names = components.flatMap((path) =>
+            byPath[path].nodes.map((n) => n.local_id),
+        );
+        const targets = components.flatMap((path) =>
+            byPath[path].edges.map((e) => `${e.kind} ${e.target}`),
+        );
+
+        expect(names.sort()).toEqual([
+            "ts:module:src/Gen.vue",
+            "ts:module:src/List.svelte",
+            "ts:module:src/Tag.astro",
+            "ts:module:src/routes/+page.svelte",
+            "ts:module:src/routes/about/+page.svelte",
+            "ts:type_alias:src/Tag.astro#Props",
+        ]);
+        expect(targets.filter((t) => /\$props|#[TU]$/.test(t))).toEqual([]);
+    });
+
+    it("leave every fact inside the component's own lines", () => {
+        const byPath = scanned();
+
+        for (const path of components) {
+            const lastLine = tails[path].split("\n").length;
+            const facts = [...byPath[path].nodes, ...byPath[path].edges];
+            for (const fact of facts) {
+                expect(fact.evidence.end_line, path).toBeLessThanOrEqual(
+                    lastLine,
+                );
+            }
+            expect(
+                byPath[path].nodes.find((n) => n.kind === "module").evidence
+                    .end_line,
+            ).toBe(lastLine);
+        }
+    });
+
+    it("still let Astro read a component's Props by name", () => {
+        const references = scanned()["src/Tag.astro"].edges.filter(
+            (e) => e.kind === "references",
+        );
+
+        expect(references).toEqual([
+            expect.objectContaining({
+                source: "ts:module:src/Tag.astro",
+                target: "ts:type_alias:src/Tag.astro#Props",
+                evidence: { path: "src/Tag.astro", start_line: 5, end_line: 5 },
+            }),
+        ]);
+    });
+});
