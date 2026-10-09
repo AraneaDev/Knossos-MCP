@@ -295,7 +295,9 @@ final class McpTest extends KnossosTestCase
         ]);
         assertSame(null, $cancelled);
         $cancelledProperty = new ReflectionProperty($server, 'cancelledRequests');
-        assertSame(false, array_key_exists('scan-1', $cancelledProperty->getValue($server)));
+        // Keys carry the id's type ("s:scan-1"), so look for an empty map rather
+        // than the bare id, which would never be present and prove nothing.
+        assertSame([], $cancelledProperty->getValue($server));
         $scanned = $server->handle([
             'jsonrpc' => '2.0', 'id' => 16, 'method' => 'tools/call',
             'params' => ['name' => 'scan_project', 'arguments' => ['path' => self::repositoryRoot() . '/tests/Fixtures/mixed']],

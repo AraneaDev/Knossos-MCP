@@ -165,11 +165,13 @@ final class StdioServer
                 if (is_int($requestId) || is_string($requestId)) {
                     // A cancel whose request never arrives would otherwise linger
                     // forever; evict the oldest entry once the map is full so the
-                    // set of pending cancellations stays bounded.
+                    // set of pending cancellations stays bounded. Keys are
+                    // prefixed, never numeric, so array_shift keeps insertion
+                    // order instead of renumbering the remaining ids.
                     if (count($this->cancelledRequests) >= self::MAX_PENDING_LINES) {
                         array_shift($this->cancelledRequests);
                     }
-                    $this->cancelledRequests[(string) $requestId] = true;
+                    $this->cancelledRequests[self::cancelKey($requestId)] = true;
                 }
             }
             return null;
@@ -187,7 +189,16 @@ final class StdioServer
         $this->profile = $profile;
         $this->noteProtocol($message, $profile);
 
-        $response = $this->dispatchMethod($method, $id, $params, $profile);
+        try {
+            $response = $this->dispatchMethod($method, $id, $params, $profile);
+        } finally {
+            // Whatever method answered it, the request is done: a cancel that
+            // named it must not outlive it and withdraw a later request that
+            // reuses the id.
+            if (is_int($id) || is_string($id)) {
+                unset($this->cancelledRequests[self::cancelKey($id)]);
+            }
+        }
         // Envelope rules are the one thing that varies per revision, so they are
         // applied once here rather than at every success() call site.
         if ($response !== null && isset($response['result']) && is_array($response['result'])) {
@@ -257,17 +268,15 @@ final class StdioServer
                 // params error, not a tool that ran and failed.
                 $response = $this->error($id, -32602, $invalid->getMessage());
             } catch (\Knossos\Scan\ScanCancelledException $cancelled) {
-                if (isset($this->cancelledRequests[(string) $id])) {
+                if ((is_int($id) || is_string($id)) && isset($this->cancelledRequests[self::cancelKey($id)])) {
                     // The client asked to cancel this request and is no longer
-                    // waiting; drop the entry and send nothing back.
-                    unset($this->cancelledRequests[(string) $id]);
+                    // waiting; send nothing back (handle() drops the entry).
                     return null;
                 }
                 $response = $this->toolError($id, 'KNOSSOS_SCAN_CANCELLED', $cancelled->getMessage());
             } catch (Throwable $error) {
                 $response = $this->toolError($id, ToolErrorMapper::code($error), ToolErrorMapper::publicMessage($error));
             }
-            unset($this->cancelledRequests[(string) $id]);
             return $response;
         }
 
@@ -559,11 +568,26 @@ final class StdioServer
             'method' => 'ping',
         ]);
     }
-    /** Check for a cancellation notification without blocking the running request. */
+    /**
+     * The key a request id is pending cancellation under: its type and its
+     * value, so "7" and 7 stay apart and no key is numeric (PHP would store a
+     * numeric string key as an int and renumber it on array_shift).
+     */
+    private static function cancelKey(int|string $id): string
+    {
+        return (is_int($id) ? 'i:' : 's:') . $id;
+    }
 
+    /** Check for a cancellation notification without blocking the running request. */
     private function pollCancellation(mixed $requestId): bool
     {
-        if (isset($this->cancelledRequests[(string) $requestId])) {
+        if (!is_int($requestId) && !is_string($requestId)) {
+            // A cancel names its request by a string or an integer (handle()
+            // ignores any other requestId), so no other id can be cancelled.
+            return false;
+        }
+        $key = self::cancelKey($requestId);
+        if (isset($this->cancelledRequests[$key])) {
             return true;
         }
         if (!is_resource($this->input)) {
@@ -601,7 +625,7 @@ final class StdioServer
                     && (($message['params']['requestId'] ?? null) === $requestId)
                 ) {
                     $cancelled = true;
-                    $this->cancelledRequests[(string) $requestId] = true;
+                    $this->cancelledRequests[$key] = true;
                     continue;
                 }
                 $this->rememberPendingLine($line);
@@ -609,7 +633,7 @@ final class StdioServer
         } finally {
             stream_set_blocking($this->input, true);
         }
-        return $cancelled || isset($this->cancelledRequests[(string) $requestId]);
+        return $cancelled || isset($this->cancelledRequests[$key]);
     }
 
     /** Park a non-cancellation line for the main loop, capped so a flood cannot grow memory without bound. */
