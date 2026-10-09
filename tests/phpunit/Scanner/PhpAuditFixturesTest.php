@@ -12,7 +12,7 @@ use PHPUnit\Framework\Attributes\Group;
 /**
  * The audit's PHP scope and route fixtures through the whole scan: each call
  * reaches the class its receiver holds in that scope, and each route carries
- * what its groups give it.
+ * what its groups and attributes give it.
  */
 #[Group('php-scanner')]
 final class PhpAuditFixturesTest extends KnossosTestCase
@@ -149,6 +149,62 @@ final class PhpAuditFixturesTest extends KnossosTestCase
             'App\\Http\\Controllers\\Admin\\UserController::index' => 'method',
             'App\\Http\\Controllers\\RootController::show' => 'method',
             'PlainController::index' => 'external_method',
+        ], $targets);
+    }
+
+    /**
+     * A class-level `#[Route]` on an invokable controller is its route, and a
+     * `methods` given as one string is that method rather than any.
+     */
+    public function testL24InvokableControllerAndStringMethods(): void
+    {
+        $this->write('composer.json', '{"require": {"symfony/framework-bundle": "^7.0"}, "autoload": {"psr-4": {"App\\\\": "src/"}}}');
+        $this->write('src/Controller/Controllers.php', <<<'PHP'
+            <?php
+            namespace App\Controller;
+            use Symfony\Component\Routing\Attribute\Route;
+            #[Route('/health', name: 'health', methods: 'GET')]
+            final class HealthController { public function __invoke(): void {} }
+            #[Route('/api', name: 'api_', methods: ['GET'])]
+            final class ApiController {
+                #[Route('/items', name: 'items', methods: 'POST')]
+                public function items(): void {}
+                #[Route('/list', name: 'list')]
+                public function list(): void {}
+            }
+            #[Route('/page')]
+            final class PageController {
+                #[Route('/view', name: 'view')]
+                public function __invoke(): void {}
+            }
+            PHP);
+        $pdo = $this->scan();
+
+        $routes = [];
+        foreach ($this->nodes($pdo) as $node) {
+            if ($node['kind'] === 'route') {
+                $routes[$node['canonical_name']] = json_decode($node['attributes_json'], true)['name'];
+            }
+        }
+        ksort($routes);
+        self::assertSame([
+            'ANY /page/view => App\\Controller\\PageController::__invoke' => 'view',
+            'GET /api/list => App\\Controller\\ApiController::list' => 'api_list',
+            'GET /health => App\\Controller\\HealthController::__invoke' => 'health',
+            'GET|POST /api/items => App\\Controller\\ApiController::items' => 'api_items',
+        ], $routes);
+        $targets = [];
+        foreach ($this->edges($pdo) as $edge) {
+            if ($edge['kind'] === 'routes_to') {
+                $targets[] = $edge['target'] . ' [' . $edge['target_kind'] . ']';
+            }
+        }
+        sort($targets);
+        self::assertSame([
+            'App\\Controller\\ApiController::items [method]',
+            'App\\Controller\\ApiController::list [method]',
+            'App\\Controller\\HealthController::__invoke [method]',
+            'App\\Controller\\PageController::__invoke [method]',
         ], $targets);
     }
 
