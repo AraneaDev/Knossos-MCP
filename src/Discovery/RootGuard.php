@@ -61,6 +61,25 @@ final readonly class RootGuard
     }
 
     /**
+     * Whether a root exists and lies outside every allowed root: exactly what
+     * {@see resolve()} rejects with a bare {@see DiscoveryException}. A missing
+     * root is not refused (there is nothing to read), and neither is an
+     * admitted one. Built on resolve() so the two cannot disagree.
+     */
+    public function refuses(string $root): bool
+    {
+        try {
+            $this->resolve($root);
+        } catch (RootNotFoundException) {
+            return false;
+        } catch (DiscoveryException) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * Explain a rejection well enough to act on.
      *
      * The bare "outside the configured allowed roots" this replaces gave a

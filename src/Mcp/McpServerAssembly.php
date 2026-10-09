@@ -44,13 +44,15 @@ final readonly class McpServerAssembly
             gitHistory: new ProcessGitHistoryProvider(),
             gitWorkingTree: new ProcessGitWorkingTreeProvider(),
         );
+        $environment = new ServerEnvironment($allowedRoots, $databasePath, $installationRoot, $pdo);
         $this->tools = new ToolService(
             // Recorded in the scan ledger, so a turn whose edits the model scanned still reports them.
             LedgeredScanner::local($pdo, $installationRoot, $allowedRoots),
             $this->queries,
             $maintenance ?? new DatabaseMaintenanceService($pdo, $databasePath),
-            new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
-            new ServerEnvironment($allowedRoots, $databasePath, $installationRoot, $pdo),
+            // Confined: the probe reads files and runs git, so it stays inside the allowed roots.
+            new ResultEnricher(new StalenessProbe($pdo, rootAdmitted: $environment->admitsRoot(...)), new NextStepPlanner()),
+            $environment,
         );
     }
 

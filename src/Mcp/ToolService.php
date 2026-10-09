@@ -238,6 +238,15 @@ final readonly class ToolService
         if ($projectId === '') {
             return [[], null];
         }
+        // Outside the allowed roots the probe would read files and run git, so
+        // there is nothing to refresh from here. No warning: the enricher's
+        // confined probe attaches 'unverified' with guidance saying why.
+        if ($this->environment !== null) {
+            $root = $this->queries->projectRoot($projectId);
+            if ($root !== null && !$this->environment->admitsRoot($root)) {
+                return [[], null];
+            }
+        }
         // The snapshot comes from the probe rather than being assembled here,
         // so the verdict and the scan it describes cannot be read at two
         // different moments.

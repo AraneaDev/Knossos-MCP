@@ -226,6 +226,17 @@ final class RootGuardTest extends TestCase
 
 
 
+    /** refuses() is true only for a root that exists and lies outside every allowed root. */
+    public function testRefusesOnlyAnExistingRootOutsideEveryAllowedRoot(): void
+    {
+        $this->tempDir = $this->makeTempDir();
+        $guard = new RootGuard(allowedRoots: [$this->tempDir]);
+
+        $this->assertFalse($guard->refuses($this->tempDir), 'A root inside the allowed roots is admitted.');
+        $this->assertTrue($guard->refuses(sys_get_temp_dir()), 'An existing root outside them is refused.');
+        $this->assertFalse($guard->refuses($this->tempDir . '/missing'), 'A missing root has nothing to read, so it is not refused.');
+    }
+
     private function makeTempDir(): string
     {
         $dir = sys_get_temp_dir() . '/knossos-rootguard-' . uniqid('', true);

@@ -24,6 +24,7 @@ use Knossos\Query\StalenessProbe;
 use Knossos\Query\StalenessSnapshot;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use Knossos\Tests\Phpunit\Support\CountingDriftOracle;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
 
@@ -268,7 +269,7 @@ final class RefreshIfStaleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
         try {
-            $oracle = $this->countingOracle(new WalkDriftOracle($pdo));
+            $oracle = new CountingDriftOracle(new WalkDriftOracle($pdo));
             $tools = new ToolService(
                 new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
                 new ArchitectureQueryService($pdo, driftOracle: $oracle),
@@ -402,24 +403,6 @@ final class RefreshIfStaleTest extends KnossosTestCase
                 $this->removeTempTree($root);
             }
         }
-    }
-
-    /** An oracle that counts how often it was consulted and otherwise answers exactly as the one it wraps. */
-    private function countingOracle(DriftOracle $inner)
-    {
-        return new class ($inner) implements DriftOracle {
-            public int $calls = 0;
-
-            public function __construct(private readonly DriftOracle $inner) {}
-
-            /** Counts the probe, then defers to the wrapped oracle. */
-            public function drift(string $projectId, string $activeScanId, string $root, ?string $finishedAt): ?DriftCounts
-            {
-                ++$this->calls;
-
-                return $this->inner->drift($projectId, $activeScanId, $root, $finishedAt);
-            }
-        };
     }
 
     /**
