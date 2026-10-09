@@ -44,14 +44,19 @@ executable payloads.
 
 In `paths` mode the replaced paths are every discovered file path, every
 directory that holds a file (two or more segments deep), every directory a
-boundary names, and every Python module id derived from a file's path. They are
-replaced wherever they occur as a whole token: in file paths, component names
-(`src/billing/invoice.ts#Invoice` keeps `#Invoice`), owner keys (the scanner
-prefix stays), attributes, diagnostic messages, boundary names and boundary
-matchers. A file becomes `redacted/<token>.<ext>` with its lower-cased extension
-kept, a directory `redacted-dir/<token>`, and a Python module `redacted_<token>`.
-Every ID and every reference to one is re-keyed as well, because a stable ID is
-derived from the path.
+boundary names, the same directories spelled with dots, and every Python module
+or package name derived from a path, including a namespace package that has no
+file of its own. They are replaced wherever they occur as a whole token, that
+is, not inside a longer name: in file paths, component names
+(`src/billing/invoice.ts#Invoice` keeps `#Invoice`), owner keys and
+scanner-local IDs (the `<scanner>:<kind>:` prefix stays), attributes,
+diagnostic messages, boundary names and boundary matchers. A path inside an
+absolute or `./` path, or between brackets, quotes or other punctuation, is
+replaced too. Attribute keys lose file and directory paths, but not module names,
+so a key such as `main` stays. A file becomes `redacted/<token>.<ext>` with its
+lower-cased extension kept, a directory `redacted-dir/<token>`, and a Python
+module `redacted_<token>`. Every ID and every reference to one is re-keyed as
+well, because a stable ID is derived from the path.
 
 `paths` mode keeps:
 
@@ -61,12 +66,16 @@ derived from the path.
   (`./billing/invoice`) or the name of an explicit boundary you chose;
 - one-segment directory names such as `src`, which occur as ordinary words,
   unless a boundary names them;
+- file basenames that a scanner writes into a free-text diagnostic message,
+  such as `invalid syntax (invoice.py, line 3)`;
 - the project name, file sizes, line counts, content hashes and fact metadata.
 
 `strict` mode replaces the attributes of nodes, edges and roles with `{}`, every
 diagnostic message with `[redacted]`, the project name with `redacted` (import
 with `--name` to give the imported project a name), and every content hash with
-a salted hash, because the hash of a well-known file names that file.
+a salted hash, because the hash of a well-known file names that file. It keeps
+file sizes, line counts and lower-cased extensions, and together those can still
+identify a well-known file, such as a vendored library at a known version.
 
 The salt is 32 random bytes drawn for each export and never written to the
 bundle, its manifest or a log. Without it, a token cannot be checked against a
