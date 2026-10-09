@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Knossos\Boundary\BoundaryReferences;
 use Knossos\Configuration\ProjectConfigurationLoader;
 use Knossos\Discovery\AllowedRoots;
 use Knossos\Discovery\DiscoveryException;
@@ -118,7 +119,7 @@ final readonly class SessionBriefService
             isset($probe['age_seconds']) ? (int) $probe['age_seconds'] : null,
             $drift,
             $this->trackedFiles($projectId),
-            $this->rules($root),
+            $this->rules($root, $projectId),
             $this->notes($projectId),
             $state === 'fresh' ? $this->entryPoints($projectId) : [],
             $state === 'fresh' ? $this->hubs($projectId) : [],
@@ -245,25 +246,29 @@ final readonly class SessionBriefService
      *
      * @return list<string>
      */
-    private function rules(string $root): array
+    private function rules(string $root, string $projectId): array
     {
         try {
             $policies = ProjectConfigurationLoader::load($root, [$root])->policies;
         } catch (Throwable) {
             return [];
         }
+        // Each reference shown as the boundary's current name, resolved as the
+        // policy check resolves it; one that resolves to none stays as written.
+        $references = BoundaryReferences::load($this->pdo, $projectId);
+        $name = static fn(mixed $reference): string => is_string($reference) ? ($references->nameOf($reference) ?? $reference) : '';
         $rules = [];
         foreach ($policies as $policy) {
-            $from = (string) ($policy['from_boundary'] ?? '');
+            $from = $name($policy['from_boundary'] ?? '');
             $deny = $policy['deny_targets'] ?? null;
             $allow = $policy['allow_targets'] ?? null;
             if ($from === '') {
                 continue;
             }
             if (is_array($deny) && $deny !== []) {
-                $rules[] = sprintf('%s -x-> %s', $from, implode(', ', $deny));
+                $rules[] = sprintf('%s -x-> %s', $from, implode(', ', array_map($name, $deny)));
             } elseif (is_array($allow) && $allow !== []) {
-                $rules[] = sprintf('%s --> only %s', $from, implode(', ', $allow));
+                $rules[] = sprintf('%s --> only %s', $from, implode(', ', array_map($name, $allow)));
             }
         }
         return $rules;

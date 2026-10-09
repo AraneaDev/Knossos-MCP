@@ -109,9 +109,7 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
 
         $boundaryId = null;
         if ($boundary !== null) {
-            $statement = $this->pdo->prepare('SELECT id, name, source FROM boundaries WHERE project_id = :project ORDER BY source, name, id');
-            $statement->execute(['project' => $projectId]);
-            $boundaryId = $this->resolvePolicyBoundary($boundary, $statement->fetchAll());
+            $boundaryId = $this->boundaryReferences($projectId)->resolve($boundary);
         }
         // Ranked by how connected each node is, because a bounded diagram of a
         // real codebase has to choose, and the alphabetically-first nodes are

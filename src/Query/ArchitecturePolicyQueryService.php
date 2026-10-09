@@ -62,17 +62,15 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         $policies ??= self::declaredPolicies((string) $project['root_realpath']);
         $shapes = self::validatePolicies($policies);
 
-        $boundaryRows = $this->pdo->prepare('SELECT id, name, source FROM boundaries WHERE project_id = :project ORDER BY source, name, id');
-        $boundaryRows->execute(['project' => $projectId]);
-        $availableBoundaries = $boundaryRows->fetchAll();
+        $references = $this->boundaryReferences($projectId);
         $compiled = [];
         $allKinds = [];
         foreach ($shapes as ['id' => $id, 'from' => $from, 'allow' => $allow, 'deny' => $deny, 'kinds' => $kinds]) {
-            $compiledAllow = array_map(fn(string $value): string => $value === '@unassigned' ? $value : $this->resolvePolicyBoundary($value, $availableBoundaries), $allow);
-            $compiledDeny = array_map(fn(string $value): string => $value === '@unassigned' ? $value : $this->resolvePolicyBoundary($value, $availableBoundaries), $deny);
+            $compiledAllow = array_map(static fn(string $value): string => $value === '@unassigned' ? $value : $references->resolve($value), $allow);
+            $compiledDeny = array_map(static fn(string $value): string => $value === '@unassigned' ? $value : $references->resolve($value), $deny);
             $compiled[] = [
                 'id' => $id,
-                'from_id' => $this->resolvePolicyBoundary($from, $availableBoundaries),
+                'from_id' => $references->resolve($from),
                 'allow' => array_values(array_unique($compiledAllow)),
                 'deny' => array_values(array_unique($compiledDeny)),
                 'edge_kinds' => $kinds,

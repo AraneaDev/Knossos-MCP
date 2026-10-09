@@ -295,7 +295,7 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
             $roleRelevance = round(($roleScore / $memberCount) * 10, 3);
             $score = round($nameScore + $memberRelevance + $roleRelevance + $cohesionScore, 3);
             $candidates[] = [
-                'boundary' => ['id' => $boundary['id'], 'name' => $boundary['name'], 'source' => $boundary['source'], 'matcher' => self::decode($boundary['matcher_json'])],
+                'boundary' => ['id' => $boundary['id'], 'name' => $boundary['name'], 'source' => $boundary['source'], 'matcher' => self::matcherAndAliases($boundary['matcher_json'])[0]],
                 'score' => $score,
                 'confidence' => count($matchedTokens) >= 2 ? 'probable' : 'possible',
                 'factors' => [

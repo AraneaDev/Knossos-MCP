@@ -53,7 +53,7 @@ final class BoundaryInference
             // with the path prefix that defined its members. Boundary NAMES stay
             // exactly as they were before this change ("kind:name", e.g.
             // "composer:acme/lib") — a policy's `from_boundary` resolves by name
-            // (see AbstractArchitectureQueryService::resolvePolicyBoundary()), so this
+            // (see BoundaryReferences, which also accepts a former name), so this
             // fix must not rename any boundary, only stop two of them from colliding
             // on the same internal key. TypeScript units have no declared package name
             // (tsconfig.json carries none), so they keep displaying their key, as

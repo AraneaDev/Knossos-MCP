@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Knossos\Boundary\BoundaryReferences;
 use PDO;
 
 /**
@@ -27,8 +28,9 @@ final readonly class BoundaryLabels
      * @param PDO $pdo an existing, migrated graph database
      * @param array<string, array{int, int, int, string}> $ranks each boundary's rank by id: declared, wide, members, name
      * @param array<string, string> $sources each boundary's source (`explicit` or `inferred`) by id
+     * @param BoundaryReferences $references how a policy's boundary reference resolves
      */
-    private function __construct(private PDO $pdo, private array $ranks, private array $sources) {}
+    private function __construct(private PDO $pdo, private array $ranks, private array $sources, private BoundaryReferences $references) {}
 
     /**
      * Every boundary of the project, ranked for labelling.
@@ -44,14 +46,15 @@ final readonly class BoundaryLabels
         $statement->execute(['project' => $projectId]);
         $ranks = [];
         $sources = [];
-        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($rows as $row) {
             $matcher = json_decode((string) $row['matcher_json'], true);
             $wide = is_array($matcher) && ($matcher['type'] ?? null) === 'path_prefix' && ($matcher['value'] ?? null) === '';
             $ranks[(string) $row['id']] = [$row['source'] === 'explicit' ? 0 : 1, $wide ? 1 : 0, (int) $row['members'], (string) $row['name']];
             $sources[(string) $row['id']] = (string) $row['source'];
         }
 
-        return new self($pdo, $ranks, $sources);
+        return new self($pdo, $ranks, $sources, BoundaryReferences::fromRows($projectId, $rows));
     }
 
     /**
@@ -161,36 +164,23 @@ final readonly class BoundaryLabels
     }
 
     /**
-     * The name a policy's boundary reference stands for: a boundary id, or a
-     * name, the way the policy check resolves one. Null when it names none.
+     * The name a policy's boundary reference stands for, the way the policy
+     * check resolves one ({@see BoundaryReferences}). Null when it names none,
+     * or more than one.
      */
     public function nameOf(string $reference): ?string
     {
-        if (isset($this->ranks[$reference])) {
-            return $this->ranks[$reference][3];
-        }
-        foreach ($this->ranks as $rank) {
-            if ($rank[3] === $reference) {
-                return $reference;
-            }
-        }
-
-        return null;
+        return $this->references->nameOf($reference);
     }
 
     /**
      * The id a policy's boundary reference resolves to, the way the policy
-     * check resolves it: an id, else the one boundary of that name. Null when
-     * it names none, or more than one (the check refuses such a reference).
+     * check resolves it. Null when it names none, or more than one (the check
+     * refuses such a reference).
      */
     public function idOf(string $reference): ?string
     {
-        if (isset($this->ranks[$reference])) {
-            return $reference;
-        }
-        $ids = array_keys(array_filter($this->ranks, static fn(array $rank): bool => $rank[3] === $reference));
-
-        return count($ids) === 1 ? (string) $ids[0] : null;
+        return $this->references->find($reference);
     }
 
     /** The most declared boundaries named beside the list. */
