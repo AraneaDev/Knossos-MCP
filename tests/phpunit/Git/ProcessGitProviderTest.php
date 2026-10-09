@@ -437,6 +437,95 @@ final class ProcessGitProviderTest extends KnossosTestCase
         }
     }
 
+    // ── A branch with no commit yet ──────────────────────────────────
+
+    /**
+     * Before the first commit `HEAD` names nothing, so `diff HEAD` failed and
+     * the working tree read as "git unavailable". The index is compared with
+     * nothing instead (every staged file is an add), then the worktree with
+     * the index.
+     */
+    public function testAnUnbornBranchIsDiffedThroughTheIndexInsteadOfHead(): void
+    {
+        $runner = $this->recordingRunner(static function (array $command): string {
+            if (in_array('rev-parse', $command, true)) {
+                throw new RuntimeException('fatal: Needed a single revision');
+            }
+            if (in_array('--cached', $command, true)) {
+                return "A\0src/staged.ts\0";
+            }
+
+            return in_array('diff', $command, true) ? "M\0src/staged.ts\0D\0src/gone.ts\0" : "src/untracked.ts\0";
+        });
+        $result = (new ProcessGitWorkingTreeProvider(runner: $runner))->changes($this->existingDir, null, 10, 100);
+
+        assertSame(['src/gone.ts', 'src/staged.ts', 'src/untracked.ts'], $result['paths']);
+        $diffs = $runner->commandsWith('diff');
+        assertSame(2, count($diffs));
+        assertSame([true, false], [in_array('--cached', $diffs[0], true), in_array('--cached', $diffs[1], true)]);
+        foreach ($diffs as $diff) {
+            assertSame(false, in_array('HEAD', $diff, true));
+            assertSame(true, in_array('--relative', $diff, true));
+            assertSame(['--', '.'], array_slice($diff, -2));
+        }
+    }
+
+    /** An empty answer to `rev-parse --verify -q HEAD` is the same unborn branch as a failed one. */
+    public function testAnEmptyHeadAnswerIsTreatedAsAnUnbornBranch(): void
+    {
+        $runner = $this->recordingRunner(static fn(array $command): string => '');
+        (new ProcessGitWorkingTreeProvider(runner: $runner))->changes($this->existingDir, null, 10, 100);
+
+        $diffs = $runner->commandsWith('diff');
+        assertSame(2, count($diffs));
+        assertSame(true, in_array('--cached', $diffs[0], true));
+    }
+
+    /** A born branch keeps the single diff against the commit HEAD resolved to. */
+    public function testABornBranchIsDiffedAgainstHead(): void
+    {
+        $hash = str_repeat('c', 40);
+        $runner = $this->recordingRunner(static fn(array $command): string => in_array('rev-parse', $command, true) ? $hash . "\n" : '');
+        (new ProcessGitWorkingTreeProvider(runner: $runner))->changes($this->existingDir, null, 10, 100);
+
+        $revParse = $runner->commandsWith('rev-parse');
+        assertSame(['rev-parse', '--verify', '-q', 'HEAD'], array_slice($revParse[0], -4));
+        $diffs = $runner->commandsWith('diff');
+        assertSame(1, count($diffs));
+        assertSame(false, in_array('--cached', $diffs[0], true));
+        assertSame(true, in_array('HEAD', $diffs[0], true));
+    }
+
+    public function testStagedAndUntrackedFilesAreListedBeforeTheFirstCommit(): void
+    {
+        $repo = $this->gitRepository();
+        try {
+            $this->writeFiles($repo, ['a.ts' => "a\n"]);
+            $this->git($repo, ['add', 'a.ts']);
+            $this->writeFiles($repo, ['b.ts' => "b\n"]);
+
+            $result = (new ProcessGitWorkingTreeProvider())->changes($repo, null, 100, 5000);
+
+            assertSame(['a.ts', 'b.ts'], $result['paths']);
+            assertSame(false, $result['truncated']);
+        } finally {
+            $this->removeTempTree($repo);
+        }
+    }
+
+    public function testANestedProjectBeforeTheFirstCommitSeesOnlyItsOwnFiles(): void
+    {
+        $repo = $this->gitRepository();
+        try {
+            $this->writeFiles($repo, ['pkg/a.ts' => "a\n", 'top.ts' => "t\n"]);
+            $this->git($repo, ['add', 'pkg/a.ts', 'top.ts']);
+
+            assertSame(['a.ts'], (new ProcessGitWorkingTreeProvider())->changes($repo . '/pkg', null, 100, 5000)['paths']);
+        } finally {
+            $this->removeTempTree($repo);
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     /** A fresh, empty repository under the temporary directory; skips the test without git. */
