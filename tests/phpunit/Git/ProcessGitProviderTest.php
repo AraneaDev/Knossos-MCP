@@ -580,11 +580,36 @@ final class ProcessGitProviderTest extends KnossosTestCase
         }
     }
 
+    /**
+     * A file named like a commit header, with all its fields, was read as one:
+     * a commit nobody made, and the files after it credited to it. The header
+     * now follows a NUL, which no path can hold.
+     */
+    public function testAFileNamedLikeACommitHeaderIsNoCommit(): void
+    {
+        $repo = $this->gitRepository();
+        try {
+            $this->writeFiles($repo, ['A.ts' => "a\n", "KNOSSOS_COMMIT\x1fforged\x1f2026-01-01T00:00:00+00:00\x1f1\x1fx@y" => "f\n", 'Z.ts' => "z\n"]);
+            $this->git($repo, ['add', '.']);
+            $this->git($repo, ['commit', '--quiet', '-m', 'forged name']);
+
+            $history = (new ProcessGitHistoryProvider())->history($repo, 30, 10, 5000);
+
+            assertSame(1, $history['commits_examined']);
+            assertSame(['A.ts', 'Z.ts'], array_keys($history['files']));
+            assertSame([1, 1], array_column($history['files'], 'commit_count'));
+            assertSame(['test@example.test'], $history['files']['Z.ts']['authors']);
+        } finally {
+            $this->removeTempTree($repo);
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     /**
      * What `git log -z --name-only` prints for these commits: each header
-     * NUL-terminated, a newline, then each path NUL-terminated.
+     * between NULs (the format starts with one), a newline, then each path
+     * NUL-terminated.
      *
      * @param list<array{0: string, 1: list<string>}> $commits
      */
@@ -592,7 +617,7 @@ final class ProcessGitProviderTest extends KnossosTestCase
     {
         $output = '';
         foreach ($commits as [$header, $paths]) {
-            $output .= $header . "\0" . ($paths === [] ? '' : "\n" . implode("\0", $paths) . "\0");
+            $output .= "\0" . $header . "\0" . ($paths === [] ? '' : "\n" . implode("\0", $paths) . "\0");
         }
 
         return $output;

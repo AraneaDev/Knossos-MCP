@@ -89,7 +89,7 @@ final class PaneQueriesTest extends KnossosTestCase
                     if ($count === '--max-count=' . ChurnService::COMMITS) {
                         throw new RuntimeException('Git churn output exceeded its configured byte limit.');
                     }
-                    return "KNOSSOS_CHURN\x1f\0\nsrc/Core/Greeter.php\0KNOSSOS_CHURN\x1f\0\nsrc/Core/Greeter.php\0";
+                    return "\0KNOSSOS_CHURN\x1f\0\nsrc/Core/Greeter.php\0\0KNOSSOS_CHURN\x1f\0\nsrc/Core/Greeter.php\0";
                 }
             };
             $churn = (new ChurnService($pdo, $runner))->churn($root);
@@ -125,7 +125,7 @@ final class PaneQueriesTest extends KnossosTestCase
                     $this->log = $command;
 
                     // The second commit names its file twice: a commit counts once per file.
-                    return "KNOSSOS_CHURN\x1f\0\nsrc/Core/we\"ird.php\0src/Core/Greeter.php\0KNOSSOS_CHURN\x1f\0\nsrc/Core/we\"ird.php\0src/Core/we\"ird.php\0";
+                    return "\0KNOSSOS_CHURN\x1f\0\nsrc/Core/we\"ird.php\0src/Core/Greeter.php\0\0KNOSSOS_CHURN\x1f\0\nsrc/Core/we\"ird.php\0src/Core/we\"ird.php\0";
                 }
             };
             $churn = (new ChurnService($pdo, $runner))->churn($root);

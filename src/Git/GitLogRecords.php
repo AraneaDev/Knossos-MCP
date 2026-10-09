@@ -15,15 +15,18 @@ namespace Knossos\Git;
 final class GitLogRecords
 {
     /**
-     * Splits `git log -z --format=<MARKER><fields> --name-only` output into
-     * commits: each a header (the fields after the marker, split on \x1f) and
-     * its paths, exactly as git wrote them.
+     * Splits `git log -z --format=%x00<MARKER><fields> --name-only` output
+     * into commits: each a header (the fields after the marker, split on
+     * \x1f) and its paths, exactly as git wrote them.
      *
-     * With -z git ends the header with NUL, then writes a newline, then each
-     * path NUL-terminated; the next header follows the last path's NUL. So the
-     * first path after a header carries one leading "\n" that is not part of it.
+     * The format starts with a NUL, so every header follows an empty token;
+     * a path is never empty and never holds a NUL, so a file named like a
+     * header is still a path and cannot forge a commit. With -z git ends the
+     * header with NUL, then writes a newline, then each path NUL-terminated;
+     * so the first path after a header carries one leading "\n" that is not
+     * part of it.
      *
-     * @param non-empty-string $marker what every header starts with; the fields follow it
+     * @param non-empty-string $marker what every header starts with, after its NUL; the fields follow it
      * @return list<array{fields: list<string>, paths: list<string>}>
      */
     public static function parse(string $output, string $marker): array
@@ -31,8 +34,11 @@ final class GitLogRecords
         $records = [];
         $current = null;
         $first = false;
+        $previous = null;
         foreach (explode("\0", $output) as $token) {
-            if (str_starts_with($token, $marker)) {
+            $afterNul = $previous === '';
+            $previous = $token;
+            if ($afterNul && str_starts_with($token, $marker)) {
                 $records[] = ['fields' => explode("\x1f", substr($token, strlen($marker))), 'paths' => []];
                 $current = array_key_last($records);
                 $first = true;

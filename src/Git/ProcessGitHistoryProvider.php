@@ -24,7 +24,7 @@ use Throwable;
  */
 final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
 {
-    /** What every commit header in the log starts with; the fields follow it. */
+    /** What every commit header in the log starts with, after the NUL the format puts before it; the fields follow it. */
     private const MARKER = "KNOSSOS_COMMIT\x1f";
 
     private GitProcessRunnerInterface $runner;
@@ -53,7 +53,7 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
         $output = $this->runner->run([
             'git', '-c', 'core.quotePath=false', '--no-optional-locks', '--no-pager', '-C', $root, 'log',
             '--since=' . $sinceDays . ' days ago', '--max-count=' . ($maxCommits + 1),
-            '--format=KNOSSOS_COMMIT%x1f%H%x1f%aI%x1f%at%x1f%ae', '-z', '--name-only', '--no-renames', '--relative', '--', '.',
+            '--format=%x00KNOSSOS_COMMIT%x1f%H%x1f%aI%x1f%at%x1f%ae', '-z', '--name-only', '--no-renames', '--relative', '--', '.',
         ], $timeoutMs, 'history');
         return $this->parse($output, $maxCommits);
     }

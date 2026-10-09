@@ -45,8 +45,8 @@ final readonly class ChurnService
     /** What starts each commit in the log; read NUL-separated so a path git would quote keeps its real name. */
     private const MARKER = "KNOSSOS_CHURN\x1f";
 
-    /** {@see self::MARKER} as `git log --format` writes it. */
-    private const MARKER_FORMAT = 'KNOSSOS_CHURN%x1f';
+    /** {@see self::MARKER} as `git log --format` writes it, after a NUL so no file name can forge it. */
+    private const MARKER_FORMAT = '%x00KNOSSOS_CHURN%x1f';
 
     /** How long git may take. */
     private const GIT_TIMEOUT_MS = 3000;
