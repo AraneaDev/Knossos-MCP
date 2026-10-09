@@ -194,12 +194,13 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             unset($fromRows, $toRows); // free the raw rows before the next table
             if ($section === 'components') {
                 $allComponentChanges = $diff['changed'];
-                $diff['changed'] = array_values(array_filter($diff['changed'], static function (array $change): bool {
-                    $before = $change['before'];
-                    $after = $change['after'];
-                    unset($before['file_id'], $after['file_id']);
-                    return $before !== $after;
-                }));
+                // A component in another file is a move, reported under
+                // `moved` with every field that changed; listing it under
+                // `changed` too counted one component twice.
+                $diff['changed'] = array_values(array_filter(
+                    $diff['changed'],
+                    static fn(array $change): bool => ($change['before']['file_id'] ?? null) === ($change['after']['file_id'] ?? null),
+                ));
             }
             $rawDiffs[$section] = $diff;
             $sectionOutput = [];

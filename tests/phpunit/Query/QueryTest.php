@@ -154,7 +154,9 @@ final class QueryTest extends KnossosTestCase
         assertSame($next, $diff->data['to']['scan_id']);
         assertSame(1, $diff->data['changes']['components']['counts']['added']);
         assertSame(1, $diff->data['changes']['components']['counts']['removed']);
-        assertSame(1, $diff->data['changes']['components']['counts']['changed']);
+        // The one component that changed also moved file; it is counted once,
+        // as moved. It used to be counted under `changed` as well.
+        assertSame(0, $diff->data['changes']['components']['counts']['changed']);
         assertSame(1, $diff->data['changes']['components']['counts']['moved']);
         assertSame('src/MovedCheckout.php', $diff->data['changes']['components']['moved'][0]['after']['path']);
         assertSame('exact_kind_and_display_name', $diff->data['changes']['components']['rename_candidates'][0]['heuristic']);
