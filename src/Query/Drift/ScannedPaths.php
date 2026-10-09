@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query\Drift;
 
+use Closure;
 use Knossos\Discovery\FilesystemContentReader;
 use Knossos\Discovery\GitIgnoreRules;
 use Knossos\Discovery\IgnoreMatcher;
@@ -78,7 +79,31 @@ final readonly class ScannedPaths implements TrackedPathPredicate
             return (new FilesystemContentReader())->read($path, self::GITIGNORE_MAX_BYTES)->bytes;
         });
 
-        return new self(new IgnoreMatcher($patterns), $gitIgnore);
+        return new self(new IgnoreMatcher($patterns, $root === null ? null : self::manifestRoots($root)), $gitIgnore);
+    }
+
+    /**
+     * Whether a project-relative directory holds a package or build manifest,
+     * read from the tree as it stands, so build output below it is excluded
+     * here exactly where the walk excludes it. Each directory is listed once
+     * for the life of the predicate.
+     *
+     * @return Closure(string): bool
+     */
+    private static function manifestRoots(string $root): Closure
+    {
+        /** @var array<string, bool> $known */
+        $known = [];
+
+        return static function (string $directory) use ($root, &$known): bool {
+            if (!array_key_exists($directory, $known)) {
+                $path = $root . ($directory === '' ? '' : '/' . $directory);
+                $names = is_dir($path) && is_readable($path) ? scandir($path) : false;
+                $known[$directory] = $names !== false && array_filter($names, ProjectDiscoverer::isManifest(...)) !== [];
+            }
+
+            return $known[$directory];
+        };
     }
 
     /**
@@ -102,7 +127,7 @@ final readonly class ScannedPaths implements TrackedPathPredicate
             return false;
         }
         if (!ProjectDiscoverer::isConfigurationFile($relativePath)) {
-            if ($this->ignores->matches($relativePath)) {
+            if ($this->ignores->matchesWithAncestors($relativePath)) {
                 return false;
             }
             if ($this->gitIgnore?->ignoresWithAncestors($relativePath, is_dir($absolutePath)) === true) {

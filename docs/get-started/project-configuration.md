@@ -44,19 +44,35 @@ Unknown keys are an error. These are the keys:
 
 Patterns are relative to the project root. Absolute paths and parent traversal
 (`..`) are rejected, and a pattern is at most 500 bytes. The built-in
-exclusions apply first, and a `!` pattern cannot re-include them. They cover:
+exclusions come in two groups.
 
-- dependency and build directories: `vendor`, `node_modules`, `dist`, `build`,
-  `coverage`, `site`, `.next`, `.nuxt`, `.venv`, `venv`, `__pycache__`, `.tox`,
-  `.mypy_cache`, `.pytest_cache`, `.pnpm-store`, `.yarn`, `.stryker-tmp`,
-  `.worktrees` and the VCS and IDE folders `.git` and `.idea`;
+These apply anywhere in the tree, before your patterns, and a `!` pattern
+cannot re-include them:
+
+- dependency and tool directories: `vendor`, `node_modules`, `.next`, `.nuxt`,
+  `.venv`, `venv`, `__pycache__`, `.tox`, `.mypy_cache`, `.pytest_cache`,
+  `.pnpm-store`, `.yarn`, `.stryker-tmp`, `.worktrees` and the VCS and IDE
+  folders `.git` and `.idea`;
 - Knossos's own namespace: `.knossos` and anything starting with `.knossos-`,
   such as `.knossos-src` and `.knossos-ci`;
-- Laravel IDE Helper stubs (`_ide_helper*`) and the VitePress `.vitepress/cache`
-  and `.vitepress/dist` directories;
+- Laravel IDE Helper stubs (`_ide_helper*`), the VitePress `.vitepress/cache`
+  and `.vitepress/dist` directories, and the Laravel paths `public/build`,
+  `storage/framework`, `storage/attachments`, `storage/debugbar` and
+  `storage/logs` at the project root;
 - minified bundles (`*.min.js`, `*.min.mjs`, `*.min.cjs`), and JavaScript
   compiled beside its source: a `.js` ending with a `sourceMappingURL` comment
   next to a same-named `.ts`.
+
+Build output, `build`, `dist`, `coverage` and `site`, is skipped only directly
+under the project root or directly under a manifest root: a directory holding
+`composer.json`, `package.json`, `pyproject.toml`, `Cargo.toml`,
+`requirements*.txt` or `tsconfig*.json`. A directory of that name anywhere else,
+such as `src/build` or `apps/site` when `apps` holds no manifest, is scanned.
+Each skipped directory is reported as an `info` diagnostic,
+`DISCOVERY_BUILD_OUTPUT_SKIPPED`, unless your own patterns or a `.gitignore`
+already leave it out. Your patterns decide after this rule, so a `!` pattern
+re-includes build output: `"!dist"` scans every anchored `dist`, and
+`"!packages/a/dist/**"` scans that one.
 
 The configuration file itself cannot be ignored. It is part of the scanner
 configuration fingerprint, so changing it invalidates the cached contributions.

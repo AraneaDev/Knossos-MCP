@@ -150,6 +150,55 @@ final class ScannedPathsTest extends KnossosTestCase
     }
 
     /**
+     * The probe excludes build output where discovery does: directly under the
+     * root or a manifest root. It excluded those names at any depth, so a new
+     * file in src/build was no drift although a rescan would add it.
+     */
+    #[Group('query')]
+    public function testBuildOutputIsExcludedOnlyWhereDiscoveryExcludesIt(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.ts', 'packages/a/package.json']);
+        try {
+            foreach (['packages/a/dist/x.ts', 'src/build/x.ts', 'dist/x.ts', 'packages/b/dist/x.ts'] as $path) {
+                if (!is_dir(dirname($root . '/' . $path))) {
+                    mkdir(dirname($root . '/' . $path), 0o777, true);
+                }
+                file_put_contents($root . '/' . $path, "export const x = 1;\n");
+            }
+            $paths = ScannedPaths::forProject($pdo, $projectId);
+
+            self::assertFalse($paths->tracks('packages/a/dist/x.ts', $root . '/packages/a/dist/x.ts'));
+            self::assertFalse($paths->tracks('packages/a/dist', $root . '/packages/a/dist'));
+            self::assertFalse($paths->tracks('dist/x.ts', $root . '/dist/x.ts'));
+            self::assertTrue($paths->tracks('src/build/x.ts', $root . '/src/build/x.ts'));
+            self::assertTrue($paths->tracks('packages/b/dist/x.ts', $root . '/packages/b/dist/x.ts'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Discovery never enters an ignored directory, so a negated pattern naming
+     * a file below it re-includes nothing; the probe answered for the path
+     * alone and counted that file as drift no rescan could clear.
+     */
+    #[Group('query')]
+    public function testAPathBelowAnIgnoredDirectoryIsNotDriftWhateverALaterPatternSays(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            $pdo->prepare('UPDATE projects SET config_json = :config WHERE id = :id')
+                ->execute(['config' => '{"ignores":["legacy","!old.php"]}', 'id' => $projectId]);
+            mkdir($root . '/src/legacy', 0o777, true);
+            file_put_contents($root . '/src/legacy/old.php', "<?php\n");
+
+            self::assertFalse(ScannedPaths::forProject($pdo, $projectId)->tracks('src/legacy/old.php', $root . '/src/legacy/old.php'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * A project root holding one source file and a knossos.json that ignores
      * one directory, scanned for real.
      *

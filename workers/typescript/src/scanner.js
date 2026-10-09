@@ -66,27 +66,25 @@ const COMPONENT_FILE_EXTENSIONS = [".vue", ".svelte", ".astro"].map(
     }),
 );
 // What discovery leaves out, for a request that does not carry the core's own
-// rules: the directories a project builds into, vendors under or keeps tool
-// state in, and the namespace this tool owns (`.knossos-ci` beside a project).
-// A request that carries `exclusions`, the rules the core's IgnoreMatcher
-// applies, uses those instead for its duration.
+// rules: the directories a project vendors under or keeps tool state in, the
+// namespace this tool owns (`.knossos-ci` beside a project), and build output
+// directly under the project root. A request that carries `exclusions`, the
+// rules the core's IgnoreMatcher applies, uses those instead for its duration.
 const BUILT_IN_EXCLUSIONS = Object.freeze({
     segments: [
         ".git",
         ".knossos",
         "node_modules",
         "vendor",
-        "coverage",
         ".next",
         ".nuxt",
         ".stryker-tmp",
         ".pnpm-store",
         ".yarn",
         ".worktrees",
-        "build",
-        "dist",
-        "site",
     ],
+    anchored_segments: ["build", "coverage", "dist", "site"],
+    anchor_roots: [""],
     prefixes: [".knossos-"],
     sequences: [
         [".vitepress", "cache"],
@@ -107,6 +105,8 @@ let activeExclusions = exclusionRules(BUILT_IN_EXCLUSIONS);
 /**
  * Exclusion rules ready to apply, from the core's `exclusions` object (see
  * IgnoreMatcher::workerRules in the core), each pattern compiled once.
+ * `anchored_segments` and `anchor_roots` are optional: without them no
+ * segment is anchored.
  *
  * @throws {Error} for anything but that object
  */
@@ -119,6 +119,9 @@ function exclusionRules(input) {
         ["segments", "prefixes", "suffixes", "path_prefixes"].every((field) =>
             strings(input[field]),
         ) &&
+        ["anchored_segments", "anchor_roots"].every(
+            (field) => input[field] === undefined || strings(input[field]),
+        ) &&
         Array.isArray(input.sequences) &&
         input.sequences.every((pair) => strings(pair) && pair.length === 2) &&
         Array.isArray(input.patterns) &&
@@ -130,10 +133,12 @@ function exclusionRules(input) {
         );
     if (!valid)
         throw new Error(
-            "TypeScript exclusions must be an object of segments, prefixes, sequences, suffixes, path_prefixes and patterns.",
+            "TypeScript exclusions must be an object of segments, anchored_segments, anchor_roots, prefixes, sequences, suffixes, path_prefixes and patterns.",
         );
     return {
         segments: new Set(input.segments),
+        anchoredSegments: new Set(input.anchored_segments ?? []),
+        anchorRoots: new Set(input.anchor_roots ?? []),
         prefixes: input.prefixes,
         sequences: input.sequences,
         suffixes: input.suffixes,
@@ -149,14 +154,32 @@ function exclusionRules(input) {
 }
 
 /**
- * Whether discovery leaves a project-relative path out: the path, or a
- * directory above it, matches the request's rules, since discovery never
- * descends into a directory that matches. A segment rule, a file-name suffix
- * and a path prefix that match a directory match everything below it; the
- * patterns are asked of each directory in turn, the last match deciding.
+ * Whether the given `exclusions` rules leave a project-relative path out, as
+ * a scan applies them. Exported so the rules can be checked against the
+ * core's shared case list without a scan.
+ *
+ * @throws {Error} when `exclusions` is not the rules object
  */
+export function excludedBy(exclusions, relative) {
+    return excludedByRules(exclusionRules(exclusions), relative);
+}
+
+/** Whether discovery leaves a project-relative path out, under the request's rules. */
 function excludedFromDiscovery(relative) {
-    const rules = activeExclusions;
+    return excludedByRules(activeExclusions, relative);
+}
+
+/**
+ * Whether discovery leaves a project-relative path out: the path, or a
+ * directory above it, matches the rules, since discovery never descends into
+ * a directory that matches. A segment rule, a file-name suffix and a path
+ * prefix that match a directory match everything below it. Each directory in
+ * turn is then marked ignored when it lies in an anchored segment directly
+ * under an anchor root (build output beside a manifest), and the patterns are
+ * asked of it, the last match deciding, so a negated pattern re-includes
+ * build output.
+ */
+function excludedByRules(rules, relative) {
     const segments = relative.split("/");
     const bySegment = segments.some(
         (segment, index) =>
@@ -176,20 +199,24 @@ function excludedFromDiscovery(relative) {
         )
     )
         return true;
-    for (
-        let end = 1;
-        end <= segments.length && rules.patterns.length > 0;
-        ++end
-    ) {
-        if (patternsIgnore(rules.patterns, segments.slice(0, end))) return true;
+    let anchored = false;
+    for (let end = 1; end <= segments.length; ++end) {
+        anchored ||=
+            rules.anchoredSegments.has(segments[end - 1]) &&
+            rules.anchorRoots.has(segments.slice(0, end - 1).join("/"));
+        if (patternsIgnore(rules.patterns, segments.slice(0, end), anchored))
+            return true;
     }
     return false;
 }
 
-/** Whether the last pattern that matches a path ignores it. */
-function patternsIgnore(patterns, segments) {
+/**
+ * Whether a path is ignored: the last pattern that matches decides, and with
+ * none matching, whether an anchored segment already marked it.
+ */
+function patternsIgnore(patterns, segments, ignoredBefore) {
     const joined = segments.join("/");
-    let ignored = false;
+    let ignored = ignoredBefore;
     for (const pattern of patterns) {
         const matched = pattern.anchored
             ? pattern.expression.test(joined)

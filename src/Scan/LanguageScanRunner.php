@@ -474,7 +474,9 @@ final readonly class LanguageScanRunner
         if (in_array($descriptor->key, ['typescript', 'python'], true)) {
             // What discovery leaves out, so a worker resolving imports leaves
             // it out too instead of keeping a copy of the rules that drifts.
-            $request['exclusions'] = (new IgnoreMatcher($plan->preparation->configuration->ignores))->workerRules();
+            // The manifest roots anchor build output as they did in the walk.
+            $request['exclusions'] = (new IgnoreMatcher($plan->preparation->configuration->ignores))
+                ->workerRules($plan->preparation->discovery->manifestRoots);
         }
         if ($descriptor->key === 'php') {
             $request['frameworks'] = array_keys(array_filter(['laravel' => $plan->preparation->laravel, 'symfony' => $plan->preparation->symfony]));

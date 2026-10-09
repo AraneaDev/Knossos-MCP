@@ -172,18 +172,30 @@ final readonly class IgnoreMatcher
      * applies to the paths it reads, so it leaves out what discovery leaves out.
      *
      * A path is excluded when it, or a directory above it, matches: discovery
-     * never descends into a directory that matches. A pattern's `regex` is a
-     * body to anchor as `^body$` (followed by `(?:/.*)?` when `anchored`, and
-     * matched against each segment when not), with POSIX bracket classes
-     * spelled out, since JavaScript and Python do not read them. The last
-     * pattern that matches decides, and a `negated` one re-includes.
+     * never descends into a directory that matches. `segments`, `prefixes`,
+     * `sequences`, `suffixes` and `path_prefixes` exclude outright. A segment in
+     * `anchored_segments` whose parent directory is one of `anchor_roots` (`''`
+     * for the project root, which is always one) marks the path ignored before
+     * the patterns are applied, so a later `!` pattern can re-include it. A
+     * pattern's `regex` is a body to anchor as `^body$` (followed by `(?:/.*)?`
+     * when `anchored`, and matched against each segment when not), with POSIX
+     * bracket classes spelled out, since JavaScript and Python do not read
+     * them. The last pattern that matches decides, and a `negated` one
+     * re-includes.
      *
-     * @return array{segments: list<string>, prefixes: list<string>, sequences: list<array{0: string, 1: string}>, suffixes: list<string>, path_prefixes: list<string>, patterns: list<array{regex: string, anchored: bool, negated: bool}>}
+     * @param list<string> $anchorRoots the manifest roots discovery saw, the
+     *        directories the matcher's predicate answers true for
+     * @return array{segments: list<string>, anchored_segments: list<string>, anchor_roots: list<string>, prefixes: list<string>, sequences: list<array{0: string, 1: string}>, suffixes: list<string>, path_prefixes: list<string>, patterns: list<array{regex: string, anchored: bool, negated: bool}>}
      */
-    public function workerRules(): array
+    public function workerRules(array $anchorRoots = ['']): array
     {
+        $roots = array_values(array_unique(['', ...$anchorRoots]));
+        sort($roots);
+
         return [
-            'segments' => [...self::EXCLUDED_SEGMENTS, ...self::ANCHORED_SEGMENTS],
+            'segments' => self::EXCLUDED_SEGMENTS,
+            'anchored_segments' => self::ANCHORED_SEGMENTS,
+            'anchor_roots' => $roots,
             'prefixes' => self::EXCLUDED_SEGMENT_PREFIXES,
             'sequences' => self::EXCLUDED_SEGMENT_SEQUENCES,
             'suffixes' => self::EXCLUDED_FILE_SUFFIXES,
@@ -197,6 +209,23 @@ final readonly class IgnoreMatcher
                 $this->compiled,
             ),
         ];
+    }
+
+    /**
+     * Whether the walk leaves a path out: the path or a directory above it
+     * matches. The walk never enters an excluded directory, so a later `!`
+     * pattern naming something below one re-includes nothing, as in git.
+     */
+    public function matchesWithAncestors(string $relativePath): bool
+    {
+        $segments = self::segments($relativePath);
+        for ($end = 1, $count = count($segments); $end <= $count; ++$end) {
+            if ($this->matches(implode('/', array_slice($segments, 0, $end)))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** Whether a path is ignored, applying built-in exclusions then the user patterns. */
