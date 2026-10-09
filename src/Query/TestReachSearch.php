@@ -55,7 +55,6 @@ final readonly class TestReachSearch extends AbstractArchitectureQueryService
      */
     public function search(string $projectId, array $startIds, int $maxDepth, array $edgeKinds, int $minimumRank, int $deadline): array
     {
-        $testIds = $this->testIds($projectId);
         $seen = [];
         $tests = [];
         $frontier = [];
@@ -70,10 +69,8 @@ final readonly class TestReachSearch extends AbstractArchitectureQueryService
             }
             $seen[$id] = true;
             $frontier[] = $id;
-            if (isset($testIds[$id])) {
-                $tests[$id] = 0;
-            }
         }
+        $this->markTests($projectId, $frontier, 0, $tests);
         $examined = 0;
         for ($level = 0; $reason === null && $level < $maxDepth && $frontier !== []; ++$level) {
             sort($frontier, SORT_STRING);
@@ -101,9 +98,6 @@ final readonly class TestReachSearch extends AbstractArchitectureQueryService
                     }
                     $seen[$sourceId] = true;
                     $next[] = $sourceId;
-                    if (isset($testIds[$sourceId])) {
-                        $tests[$sourceId] = $level + 1;
-                    }
                 }
                 // Abandoned mid-result when a bound stops the walk; SQLite holds
                 // its read lock until the cursor is closed.
@@ -112,6 +106,8 @@ final readonly class TestReachSearch extends AbstractArchitectureQueryService
                     break;
                 }
             }
+            // Also when a bound cut the level: what it did visit is reported.
+            $this->markTests($projectId, $next, $level + 1, $tests);
             $frontier = $next;
         }
 
@@ -119,19 +115,27 @@ final readonly class TestReachSearch extends AbstractArchitectureQueryService
     }
 
     /**
-     * Every component classified as test code, loaded once per search as a set.
+     * Record which of one level's newly visited components are test code.
      *
-     * @return array<string, true>
+     * Looked up per chunk of the level rather than loaded for the whole
+     * project up front, so the search holds nothing beyond what it visited:
+     * a project's full test set sat outside the visit bound.
+     *
+     * @param list<string> $nodeIds visited at $distance @param array<string, int> $tests
      */
-    private function testIds(string $projectId): array
+    private function markTests(string $projectId, array $nodeIds, int $distance, array &$tests): void
     {
-        $statement = $this->pdo->prepare('SELECT node_id FROM classifications WHERE project_id = ? AND role = ?');
-        $statement->execute([$projectId, ReportableComponent::TEST_ROLE]);
-        $ids = [];
-        while (($id = $statement->fetchColumn()) !== false) {
-            $ids[(string) $id] = true;
+        sort($nodeIds, SORT_STRING);
+        foreach (array_chunk($nodeIds, self::CHUNK) as $chunk) {
+            $statement = $this->pdo->prepare(sprintf(
+                'SELECT node_id FROM classifications WHERE project_id = ? AND role = ? AND node_id IN (%s) GROUP BY node_id ORDER BY node_id',
+                implode(',', array_fill(0, count($chunk), '?')),
+            ));
+            $statement->execute([$projectId, ReportableComponent::TEST_ROLE, ...$chunk]);
+            while (($id = $statement->fetchColumn()) !== false) {
+                $tests[(string) $id] = $distance;
+            }
         }
-        return $ids;
     }
 
     /**

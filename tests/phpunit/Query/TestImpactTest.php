@@ -57,12 +57,11 @@ final class TestImpactTest extends KnossosTestCase
     /**
      * `limit` caps the answer, never the search.
      *
-     * It used to be handed straight to the underlying blast-radius scan, so a
-     * caller who narrowed the result set also narrowed the candidate pool the
-     * test roles are filtered out of. Production dependants that sort ahead of a
-     * test file consumed the whole window and the tool answered "0 test files
-     * statically exercise the change" — a false negative, not a truncation, for
-     * the one tool whose output decides which tests get run.
+     * The test search walks every dependant within its own bounds and only
+     * then cuts the list of test files to `limit`. Production callers that
+     * sort ahead of the test class therefore cannot push it out of the
+     * answer, and `bounds.max_visited` shows how wide the search may run
+     * whatever `limit` the caller asked for.
      */
     #[Group('query')]
     public function testASmallLimitTruncatesTheAnswerWithoutShrinkingTheSearch(): void

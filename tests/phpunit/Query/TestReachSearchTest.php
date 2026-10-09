@@ -58,6 +58,24 @@ final class TestReachSearchTest extends KnossosTestCase
         self::assertSame(6, $found['edges_examined'], 'Five caller edges and the test edge; Checkout\'s own call to Invoice points the other way.');
     }
 
+    /**
+     * A bound cuts the walk only when something lies beyond it: reaching the
+     * count exactly, with nothing left to visit or read, is a finished search.
+     */
+    #[Group('query')]
+    public function testASearchThatEndsExactlyAtItsBoundsIsNotTruncated(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $test = $this->fiveCallersAndATest($repository, $ids);
+
+        $found = (new TestReachSearch($pdo, maxVisited: 7, maxEdges: 6))->search($ids['project'], [$ids['checkout']], 4, AbstractArchitectureQueryService::IMPACT_EDGE_KINDS, 1, PHP_INT_MAX);
+
+        self::assertSame([], $found['truncation_reasons']);
+        self::assertSame(7, $found['visited']);
+        self::assertSame(6, $found['edges_examined']);
+        self::assertSame([$test => 2], $found['tests']);
+    }
+
     #[Group('query')]
     public function testTheDeadlineStopsTheSearchAndIsReported(): void
     {
