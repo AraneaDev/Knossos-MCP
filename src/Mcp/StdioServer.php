@@ -108,25 +108,25 @@ final class StdioServer
      */
     private function answer($output, $errors, array $message): void
     {
-        $id = $message['id'] ?? null;
+        // handle() answers an id that is neither an integer nor a string with
+        // -32600 and id null, so the id echoed here always encodes and this
+        // error cannot fail the way the answer it replaces did.
+        $id = self::replyId($message['id'] ?? null);
         try {
             $response = $this->handle($message);
+            if ($response !== null) {
+                $this->write($output, $response);
+            }
         } catch (Throwable $error) {
             fwrite($errors, $error->getMessage() . PHP_EOL);
-            $response = $this->error($id, -32603, 'Internal error');
+            $this->write($output, $this->error($id, -32603, 'Internal error'));
         }
-        if ($response === null) {
-            return;
-        }
-        try {
-            $this->write($output, $response);
-        } catch (Throwable $error) {
-            fwrite($errors, $error->getMessage() . PHP_EOL);
-            // An id JSON cannot encode (a number past the float range decodes
-            // to INF) would make this error fail as well; JSON-RPC answers
-            // with id null when the id cannot be determined.
-            $this->write($output, $this->error(is_float($id) && !is_finite($id) ? null : $id, -32603, 'Internal error'));
-        }
+    }
+
+    /** The id a reply may echo: MCP request ids are integers or strings, anything else is answered with null. */
+    private static function replyId(mixed $id): int|string|null
+    {
+        return is_int($id) || is_string($id) ? $id : null;
     }
 
     /**
@@ -136,7 +136,7 @@ final class StdioServer
      */
     public function handle(array $message): ?array
     {
-        $id = $message['id'] ?? null;
+        $id = self::replyId($message['id'] ?? null);
         if (($message['jsonrpc'] ?? null) !== '2.0') {
             return $this->error($id, -32600, 'Invalid Request');
         }
@@ -176,6 +176,12 @@ final class StdioServer
             }
             return null;
         }
+        if ($id === null) {
+            // The id is present but neither an integer nor a string (MCP: a
+            // request id MUST be one of those). It cannot be echoed, so the
+            // request is invalid and answered with id null.
+            return $this->error(null, -32600, 'Invalid Request');
+        }
         $params = $message['params'] ?? [];
         if (!is_array($params) || ($params !== [] && array_is_list($params))) {
             return $this->error($id, -32602, 'Params must be an object.');
@@ -195,9 +201,7 @@ final class StdioServer
             // Whatever method answered it, the request is done: a cancel that
             // named it must not outlive it and withdraw a later request that
             // reuses the id.
-            if (is_int($id) || is_string($id)) {
-                unset($this->cancelledRequests[self::cancelKey($id)]);
-            }
+            unset($this->cancelledRequests[self::cancelKey($id)]);
         }
         // Envelope rules are the one thing that varies per revision, so they are
         // applied once here rather than at every success() call site.
@@ -214,7 +218,7 @@ final class StdioServer
      * @param array<string, mixed> $params
      * @return array<string, mixed>|null
      */
-    private function dispatchMethod(string $method, mixed $id, array $params, ProtocolProfile $profile): ?array
+    private function dispatchMethod(string $method, int|string $id, array $params, ProtocolProfile $profile): ?array
     {
         if ($method === 'server/discover') {
             return $this->success($id, [
@@ -268,7 +272,7 @@ final class StdioServer
                 // params error, not a tool that ran and failed.
                 $response = $this->error($id, -32602, $invalid->getMessage());
             } catch (\Knossos\Scan\ScanCancelledException $cancelled) {
-                if ((is_int($id) || is_string($id)) && isset($this->cancelledRequests[self::cancelKey($id)])) {
+                if (isset($this->cancelledRequests[self::cancelKey($id)])) {
                     // The client asked to cancel this request and is no longer
                     // waiting; send nothing back (handle() drops the entry).
                     return null;
@@ -579,13 +583,8 @@ final class StdioServer
     }
 
     /** Check for a cancellation notification without blocking the running request. */
-    private function pollCancellation(mixed $requestId): bool
+    private function pollCancellation(int|string $requestId): bool
     {
-        if (!is_int($requestId) && !is_string($requestId)) {
-            // A cancel names its request by a string or an integer (handle()
-            // ignores any other requestId), so no other id can be cancelled.
-            return false;
-        }
         $key = self::cancelKey($requestId);
         if (isset($this->cancelledRequests[$key])) {
             return true;

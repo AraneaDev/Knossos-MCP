@@ -13,6 +13,7 @@ use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\StalenessProbe;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use stdClass;
 
@@ -102,19 +103,58 @@ final class JsonRpcConformanceTest extends KnossosTestCase
     }
 
     /**
-     * An answer that cannot be encoded used to surface as a parse error. It is
-     * an internal error; an id JSON cannot encode (a number past the float
-     * range) is answered with id null, because the error must still be written.
+     * MCP requires a request id to be an integer or a string. Any other id was
+     * echoed back, and one JSON cannot encode (1e999 decodes to INF) made the
+     * answer itself fail. Such a request is invalid, answered with id null,
+     * and the session carries on.
+     *
+     * @return iterable<string, array{string}>
      */
-    #[Group('mcp')]
-    public function testAnAnswerThatCannotBeEncodedIsAnInternalError(): void
+    public static function idsThatAreNeitherIntegersNorStrings(): iterable
     {
-        $frames = $this->frames(['{"jsonrpc":"2.0","id":1e999,"method":"ping"}' . "\n", '{"jsonrpc":"2.0","id":2,"method":"ping"}' . "\n"]);
+        yield 'fractional' => ['1.5'];
+        yield 'array' => ['[1]'];
+        yield 'past the float range' => ['1e999'];
+        yield 'null' => ['null'];
+    }
+
+    #[Group('mcp')]
+    #[DataProvider('idsThatAreNeitherIntegersNorStrings')]
+    public function testARequestWhoseIdIsNeitherAnIntegerNorAStringIsInvalid(string $id): void
+    {
+        $frames = $this->frames(['{"jsonrpc":"2.0","id":' . $id . ',"method":"ping"}' . "\n", '{"jsonrpc":"2.0","id":2,"method":"ping"}' . "\n"]);
 
         assertSame(2, count($frames));
-        assertSame(-32603, $frames[0]['error']['code']);
+        assertSame(-32600, $frames[0]['error']['code']);
         assertSame(null, $frames[0]['id']);
-        assertSame(2, $frames[1]['id'], 'The session carries on after the failed answer.');
+        assertSame(2, $frames[1]['id'], 'A normal request after the invalid one is still answered.');
+        assertSame(true, isset($frames[1]['result']));
+    }
+
+    /** A notification carries no id at all, and the id rule does not touch it. */
+    #[Group('mcp')]
+    public function testANotificationIsStillAnsweredWithNothing(): void
+    {
+        $frames = $this->frames(['{"jsonrpc":"2.0","method":"notifications/initialized"}' . "\n", '{"jsonrpc":"2.0","id":"a","method":"ping"}' . "\n"]);
+
+        assertSame(1, count($frames));
+        assertSame('a', $frames[0]['id']);
+    }
+
+    /** The cap counts the newline: a line exactly maxLineBytes long is accepted, one byte more is refused. */
+    #[Group('mcp')]
+    public function testALineExactlyAtTheCapIsAcceptedAndOneByteMoreIsRefused(): void
+    {
+        [$initialize] = $this->pipelinedPair();
+        $line = $initialize . "\n";
+
+        $atCap = $this->frames([$line], maxLineBytes: strlen($line));
+        $overCap = $this->frames([$line], maxLineBytes: strlen($line) - 1);
+
+        assertSame(1, $atCap[0]['id']);
+        assertSame(true, isset($atCap[0]['result']));
+        assertSame(-32700, $overCap[0]['error']['code']);
+        assertSame(null, $overCap[0]['id']);
     }
 
     #[Group('mcp')]

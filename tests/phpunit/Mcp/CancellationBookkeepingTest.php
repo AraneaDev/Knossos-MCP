@@ -81,21 +81,6 @@ final class CancellationBookkeepingTest extends KnossosTestCase
         assertSame(false, $response['result']['isError']);
     }
 
-    /** A request whose id no cancel can name (neither a string nor an integer) runs to completion. */
-    #[Group('mcp')]
-    public function testARequestWithAFractionalIdIsNeverCancelled(): void
-    {
-        $server = $this->initializedServer();
-
-        $response = $server->handle(['jsonrpc' => '2.0', 'id' => 1.5, 'method' => 'tools/call', 'params' => [
-            'name' => 'scan_project',
-            'arguments' => ['path' => self::repositoryRoot() . '/tests/Fixtures/mixed'],
-        ]]);
-
-        assertSame(1.5, $response['id']);
-        assertSame(false, $response['result']['isError']);
-    }
-
     private function initializedServer(): StdioServer
     {
         [$tools] = $this->toolServiceWithScannedFixture();
