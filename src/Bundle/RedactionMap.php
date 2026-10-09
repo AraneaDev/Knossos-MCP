@@ -43,7 +43,7 @@ final readonly class RedactionMap
      * Build the map from its keys and their replacements.
      *
      * @param array<string, string> $replacements key to token
-     * @param array<string, true> $paths the keys that are file or directory paths, not dotted names
+     * @param array<string, string> $paths the keys that are file or directory paths, not dotted names
      */
     private function __construct(#[SensitiveParameter] private string $salt, private array $replacements, private array $paths, private int $longest) {}
 
@@ -68,9 +68,9 @@ final readonly class RedactionMap
             }
             $extension = pathinfo($path, PATHINFO_EXTENSION);
             $replacements[$path] = 'redacted/' . self::digest($path, $salt, 24) . ($extension === '' ? '' : '.' . strtolower($extension));
-            $paths[$path] = true;
+            $paths[$path] = $path;
             for ($directory = dirname($path); $directory !== '.'; $directory = dirname($directory)) {
-                $ancestors[$directory] = true;
+                $ancestors[$directory] = $directory;
                 if (str_contains($directory, '/')) {
                     $directories[$directory] = $directory;
                 }
@@ -81,10 +81,11 @@ final readonly class RedactionMap
             if (($node['language'] ?? null) !== 'py' || !is_string($name) || $name === '') {
                 continue;
             }
-            // A module read from a file, or any Python name that spells a
-            // directory holding files: a namespace package has no file of
-            // its own and reaches the graph only as the name of an import.
-            if ((($node['kind'] ?? null) === 'module' && ($node['file_id'] ?? null) !== null) || isset($ancestors[str_replace('.', '/', $name)])) {
+            // A module read from a file, or a top-level name that is a
+            // directory holding files: a namespace package has no file of its
+            // own and reaches the graph only as the name of an import. A
+            // dotted one is already a key, as the dotted form of a directory.
+            if ((($node['kind'] ?? null) === 'module' && is_string($node['file_id'] ?? null)) || isset($ancestors[$name])) {
                 $replacements[$name] ??= 'redacted_' . self::digest($name, $salt, 24);
             }
         }
@@ -97,7 +98,7 @@ final readonly class RedactionMap
         foreach ($directories as $directory) {
             if (!isset($replacements[$directory])) {
                 $replacements[$directory] = 'redacted-dir/' . self::digest($directory, $salt, 24);
-                $paths[$directory] = true;
+                $paths[$directory] = $directory;
             }
             $dotted = str_replace('/', '.', $directory);
             $replacements[$dotted] ??= 'redacted_' . self::digest($dotted, $salt, 24);
