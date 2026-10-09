@@ -18,6 +18,7 @@ use Knossos\Cli\Command\ServeCommand;
 use Knossos\Cli\Command\WatchCommand;
 use Knossos\Reconciliation\GraphReconciler;
 use Knossos\Runtime\RuntimeFactory;
+use Knossos\Tests\Phpunit\Runtime\DoctorInstallation;
 use Knossos\Store\StableId;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;
@@ -555,6 +556,40 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         $report = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
         assertSame($report['ok'] ? 0 : 1, $exit);
         assertSame(true, count($report['checks']) >= 10);
+    }
+
+    /** @return array<string, array{?string, string}> */
+    public static function doctorHeadlines(): array
+    {
+        return [
+            'a stale Rust worker' => [str_repeat('0', 64), 'Knossos doctor: healthy, 1 warning(s)'],
+            'a fresh Rust worker' => [null, 'Knossos doctor: healthy'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('doctorHeadlines')]
+    public function testTheDoctorHeadlineCountsWarnings(?string $sourceHash, string $headline): void
+    {
+        $missing = DoctorInstallation::runtimesMissing();
+        if ($missing !== null) {
+            self::markTestSkipped($missing);
+        }
+        $root = DoctorInstallation::create($sourceHash);
+        ob_start();
+        try {
+            $exit = (new MaintenanceCommand())->run('doctor', [], [], new CliCommandContext(
+                new CliOptionParser(),
+                new CliInputLoader(),
+                new RuntimeFactory($root),
+                ':memory:',
+            ));
+        } finally {
+            $output = (string) ob_get_clean();
+            DoctorInstallation::remove($root);
+        }
+
+        assertSame(0, $exit, $output);
+        assertSame($headline, strtok($output, "\n"));
     }
 
     public function testMaintenanceCommandRemoveProjectAgainstMemoryDb(): void

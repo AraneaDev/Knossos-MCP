@@ -19,6 +19,7 @@ use Knossos\Scan\ProjectScanService;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use Knossos\Tests\Phpunit\Runtime\DoctorInstallation;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
 
@@ -125,6 +126,35 @@ final class ServerEnvironmentToolsTest extends KnossosTestCase
         assertSame(dirname($this->databasePath), $data['data_directory']);
     }
 
+    /** @return array<string, array{?string, string, int}> */
+    public static function diagnoseSummaries(): array
+    {
+        return [
+            'a stale Rust worker' => [str_repeat('0', 64), '/^All \d+ runtime checks passed, 1 with a warning\.$/D', 1],
+            'a fresh Rust worker' => [null, '/^All \d+ runtime checks passed\.$/D', 0],
+        ];
+    }
+
+    #[Group('mcp')]
+    #[\PHPUnit\Framework\Attributes\DataProvider('diagnoseSummaries')]
+    public function testDiagnoseRuntimeSummaryCountsWarnings(?string $sourceHash, string $summary, int $warned): void
+    {
+        $missing = DoctorInstallation::runtimesMissing();
+        if ($missing !== null) {
+            self::markTestSkipped($missing);
+        }
+        $root = DoctorInstallation::create($sourceHash);
+        try {
+            $result = $this->tools(new AllowedRoots([]), $root)->call('diagnose_runtime', []);
+        } finally {
+            DoctorInstallation::remove($root);
+        }
+
+        self::assertMatchesRegularExpression($summary, $result->summary, implode("\n", $result->warnings));
+        $rust = array_values(array_filter($result->warnings, static fn(string $warning): bool => str_starts_with($warning, 'worker.rust: ')));
+        assertSame($warned, count($rust));
+    }
+
     #[Group('mcp')]
     public function testEnvironmentToolsAreOnlyAdvertisedWhenTheServerCanAnswerThem(): void
     {
@@ -169,12 +199,12 @@ final class ServerEnvironmentToolsTest extends KnossosTestCase
         assertSame(['2026-07-28', '2025-11-25'], ProtocolNegotiator::supported());
     }
 
-    private function tools(?AllowedRoots $roots): ToolService
+    private function tools(?AllowedRoots $roots, ?string $installationRoot = null): ToolService
     {
         $pdo = $this->database();
         $environment = $roots === null
             ? null
-            : new ServerEnvironment($roots, $this->databasePath, self::repositoryRoot(), $pdo);
+            : new ServerEnvironment($roots, $this->databasePath, $installationRoot ?? self::repositoryRoot(), $pdo);
 
         return new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), $roots ?? []),

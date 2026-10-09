@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Runtime;
 
 use Knossos\Runtime\WorkerSourceHash;
-use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
@@ -83,27 +82,27 @@ final class WorkerSourceHashTest extends KnossosTestCase
     }
 
     /**
-     * The installed binary's embedded hash and this class agree on the real
-     * tree. Fails on a checkout whose binary predates its source, which is the
-     * condition `doctor` reports: run `tools/install` to rebuild it.
+     * The real worker crate hashes exactly its build inputs: a copy holding
+     * only src/, Cargo.toml, Cargo.lock and build.rs hashes the same as the
+     * whole directory with its tests, binary and target. No binary needed, so
+     * a stale local build cannot fail this; doctor reports that instead.
      */
-    public function testTheInstalledRustWorkerWasBuiltFromThisCheckoutsSource(): void
+    public function testTheRealWorkerCrateHashesOnlyItsBuildInputs(): void
     {
-        $binary = self::repositoryRoot() . '/workers/rust/bin/knossos-rust-worker';
-        if (!is_file($binary)) {
-            self::markTestSkipped('The Rust worker is not installed.');
-        }
-        $client = new ProcessScannerClient([$binary]);
-        try {
-            $embedded = $client->initialize()->sourceHash;
-        } finally {
-            $client->shutdown();
-        }
+        $crate = self::repositoryRoot() . '/workers/rust';
+        $hash = WorkerSourceHash::of($crate);
+        self::assertMatchesRegularExpression('/^[0-9a-f]{64}$/D', (string) $hash);
+        self::assertFileExists($crate . '/build.rs', 'build.rs embeds the hash, so it must be one of the inputs');
 
-        assertSame(
-            WorkerSourceHash::of(self::repositoryRoot() . '/workers/rust'),
-            $embedded,
-            'The installed Rust worker was built from other source; run tools/install.',
-        );
+        exec('rm -rf ' . escapeshellarg($this->root));
+        mkdir($this->root);
+        exec(sprintf('cp -R %s %s', escapeshellarg($crate . '/src'), escapeshellarg($this->root . '/src')));
+        foreach (['Cargo.toml', 'Cargo.lock', 'build.rs'] as $input) {
+            copy($crate . '/' . $input, $this->root . '/' . $input);
+        }
+        assertSame($hash, WorkerSourceHash::of($this->root));
+
+        unlink($this->root . '/build.rs');
+        self::assertNotSame($hash, WorkerSourceHash::of($this->root));
     }
 }
