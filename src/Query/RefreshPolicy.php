@@ -11,9 +11,11 @@ use PDO;
  * Decides whether refreshing a stale graph fits inside a query the caller is
  * already waiting on.
  *
- * Cost comes from the project's own last scan rather than a tuned constant: a
+ * Cost comes from the project's own scans rather than a tuned constant: a
  * PHP monolith and a small TypeScript package do not cost the same per file,
- * and only the project knows which it is. When there is nothing to measure the
+ * and only the project knows which it is. The per-file cost is the active
+ * scan's; the fixed overhead a rescan pays before its first file is measured
+ * too, from the project's recent incremental scans. When there is nothing to measure the
  * policy declines, because a cost that cannot be estimated cannot be capped,
  * and a query held open past the client's timeout returns nothing at all.
  */
@@ -22,17 +24,25 @@ final readonly class RefreshPolicy
     public const DEFAULT_BUDGET_MS = 5000;
 
     /**
-     * What a rescan costs before it touches a single drifted file.
+     * The floor of what a rescan costs before it touches a single drifted file.
      *
      * A rescan is not a linear fraction of a full one. Rescanning one file
      * still pays for discovery, for starting the language workers, and for
      * reconciling the result, and those do not shrink with the change set.
      * Modelling the cost as per-file alone made a one-file refresh look free
-     * on a large project and unaffordable on a small one. Deliberately small
-     * against the default budget, so the overhead term alone never declines a
-     * refresh the per-file term would have allowed.
+     * on a large project and unaffordable on a small one.
+     *
+     * The overhead itself is measured: the fastest of the project's last
+     * {@see self::OVERHEAD_SAMPLE} incremental scans with a recorded duration,
+     * since every one of them paid it in full. This constant is the floor under
+     * that measurement, and the whole overhead when there is none. A fixed
+     * 500 ms alone costed a one-file refresh at 510 ms on a project whose every
+     * recent incremental scan took seconds.
      */
     private const FIXED_OVERHEAD_MS = 500;
+
+    /** How many recent incremental scans the overhead is measured over. */
+    private const OVERHEAD_SAMPLE = 10;
 
     public function __construct(private PDO $pdo, private int $budgetMs = self::DEFAULT_BUDGET_MS) {}
 
@@ -84,7 +94,7 @@ final readonly class RefreshPolicy
         // fit. ceil() cannot manufacture a false decline the way round() can
         // manufacture a false allow, so it is the only direction that keeps
         // the estimate a ceiling rather than an approximation.
-        $estimateMs = (int) ceil($this->cap($cost, $drift, self::FIXED_OVERHEAD_MS + $cost['perFile'] * $driftedFiles));
+        $estimateMs = (int) ceil($this->cap($cost, $drift, $cost['overhead'] + $cost['perFile'] * $driftedFiles));
         // Strict >, not >=: an estimate that lands exactly on the budget is
         // allowed. The budget is already a deliberately conservative cap (see
         // the class docblock), so a tie is the estimate saying "exactly what
@@ -134,7 +144,7 @@ final readonly class RefreshPolicy
      * decline and a warning, too small a one costs the caller their whole
      * answer.
      *
-     * @param array{total: float, perFile: float} $cost
+     * @param array{total: float, perFile: float, overhead: float} $cost
      */
     private function cap(array $cost, DriftCounts $drift, float $estimate): float
     {
@@ -156,7 +166,12 @@ final readonly class RefreshPolicy
      * and legitimate answer, a scan too fast to time being a scan too cheap
      * to worry about repeating, so the caller tests for null strictly.
      *
-     * @return array{total: float, perFile: float}|null
+     * `overhead` is {@see self::FIXED_OVERHEAD_MS} or the fastest recent
+     * incremental scan, whichever is larger. A scan that found nothing to do
+     * records no duration (it is restamped, not rebuilt), so it cannot pull
+     * the figure down.
+     *
+     * @return array{total: float, perFile: float, overhead: float}|null
      */
     private function scanCost(string $projectId): ?array
     {
@@ -175,7 +190,17 @@ final readonly class RefreshPolicy
             return null;
         }
         $total = max(0.0, (float) $row['duration_ms']);
+        $recent = $this->pdo->prepare(
+            'SELECT MIN(duration_ms) FROM (SELECT duration_ms FROM scans WHERE project_id = :id AND mode = :mode AND status = :status ' .
+            'AND duration_ms IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT :sample)',
+        );
+        $recent->bindValue(':id', $projectId);
+        $recent->bindValue(':mode', 'incremental');
+        $recent->bindValue(':status', 'complete');
+        $recent->bindValue(':sample', self::OVERHEAD_SAMPLE, PDO::PARAM_INT);
+        $recent->execute();
+        $fastest = $recent->fetchColumn();
 
-        return ['total' => $total, 'perFile' => $total / $files];
+        return ['total' => $total, 'perFile' => $total / $files, 'overhead' => max((float) self::FIXED_OVERHEAD_MS, is_numeric($fastest) ? (float) $fastest : 0.0)];
     }
 }

@@ -207,9 +207,10 @@ rescan attempted.
 
 The rescan only runs when it is cheap enough to fit inside the call you are
 already waiting on. `RefreshPolicy` estimates the cost from the duration the
-project's own last scan recorded: a fixed overhead for the discovery, worker
-startup and reconciliation any rescan pays, plus that scan's per-file cost times
-the number of files that drifted. That estimate is capped at what the full scan
+project's own scans recorded: an overhead for the discovery, worker startup and
+reconciliation any rescan pays, plus the last scan's per-file cost times the
+number of files that drifted. The overhead is the fastest of the project's last
+ten incremental scans, and never less than 500 ms. That estimate is capped at what the full scan
 cost only when the drift is deletions alone, which is the one case where the old
 duration is a genuine upper bound: an added file was never in that scan, and a
 changed file may have grown since it was, so capping either against the old scan
