@@ -28,8 +28,8 @@ final class ImpactConfidencePropagationTest extends KnossosTestCase
             $repository->saveNode($id, $project, 'php', 'class', 'App\\' . $name, $name, null, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/T.php', $ids['scan']);
             return $id;
         };
-        $edge = static function (string $kind, string $source, string $target, string $confidence) use ($repository, $ids, $project): void {
-            $repository->saveEdge(StableId::edge($project, $kind, $source, $target, 'test'), $project, $kind, $source, $target, $ids['file'], 1, 1, 'ast', $confidence, [], 'php:file:src/T.php', $ids['scan']);
+        $edge = static function (string $kind, string $source, string $target, string $confidence, int $line = 1) use ($repository, $ids, $project): void {
+            $repository->saveEdge(StableId::edge($project, $kind, $source, $target, 'test'), $project, $kind, $source, $target, $ids['file'], $line, $line, 'ast', $confidence, [], 'php:file:src/T.php', $ids['scan']);
         };
         $t = $node('T');
         $p1 = $node('P1');
@@ -40,8 +40,8 @@ final class ImpactConfidencePropagationTest extends KnossosTestCase
         // discovers X first, over the possible edge.
         $edge('calls', $p1, $t, 'certain');
         $edge('references', $p2, $t, 'certain');
-        $edge('calls', $x, $p1, 'possible');
-        $edge('calls', $x, $p2, 'certain');
+        $edge('calls', $x, $p1, 'possible', 10);
+        $edge('calls', $x, $p2, 'certain', 20);
         $edge('calls', $y, $x, 'certain');
         $repository->completeScan($project, $ids['scan']);
 
@@ -51,6 +51,11 @@ final class ImpactConfidencePropagationTest extends KnossosTestCase
             $byName[$record['node']['canonical_name']] = $record;
         }
         self::assertSame('certain', $byName['App\\X']['path_confidence'], 'X is reached for certain through P2.');
+        self::assertSame('certain', $byName['App\\X']['via']['confidence'], 'The hop shown for X is the one that justifies its confidence.');
+        self::assertSame($p2, $byName['App\\X']['via']['target_id']);
+        $evidence = array_values(array_filter($result->evidence, static fn(array $item): bool => $item['dependant_id'] === $x));
+        self::assertCount(1, $evidence);
+        self::assertSame(20, $evidence[0]['start_line'], 'X\'s evidence points at the certain edge, not the possible one.');
         self::assertSame(3, $byName['App\\Y']['distance']);
         self::assertSame('certain', $byName['App\\Y']['path_confidence'], 'Y inherits the upgraded certainty of X, not the weaker first path.');
         self::assertSame(0, $result->data['counts']['by_confidence']['possible']);

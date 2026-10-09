@@ -25,30 +25,46 @@ final class ExplainFlowBoundsTest extends KnossosTestCase
     public function testTheQueueIsBoundedByStatesQueuedNotOnlyByStatesVisited(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
-        $project = $ids['project'];
-        $edges = [];
-        $nodes = [self::node($ids, 'S'), self::node($ids, 'T')];
-        $source = $nodes[0]['id'];
-        for ($i = 0; $i <= 100; $i++) {
-            $middle = self::node($ids, sprintf('M%03d', $i));
-            $nodes[] = $middle;
-            $edges[] = self::edge($ids, $source, $middle['id']);
-            for ($j = 0; $j < 100; $j++) {
-                $leaf = self::node($ids, sprintf('M%03d\\L%03d', $i, $j));
-                $nodes[] = $leaf;
-                $edges[] = self::edge($ids, $middle['id'], $leaf['id']);
-            }
-        }
+        [$nodes, $edges] = self::wideGraph($ids);
         self::save($repository, $ids, $nodes, $edges);
 
-        $result = (new ArchitectureQueryService($pdo))->explainFlow($project, 'App\\S', 'App\\T', maxDepth: 3, timeoutMs: 5000);
+        // Depth 2 keeps the drained leaves from costing a query each: a leaf
+        // already holds two hops, so it is popped and dropped.
+        $result = (new ArchitectureQueryService($pdo))->explainFlow($ids['project'], 'App\\S', 'App\\T', maxDepth: 2, timeoutMs: 5000);
 
         self::assertTrue($result->truncated);
-        self::assertContains('queue_limit', $result->data['bounds']['truncation_reasons']);
-        self::assertNotContains('visit_limit', $result->data['bounds']['truncation_reasons'], 'The push bound must stop the search long before 10,000 pops.');
-        self::assertLessThanOrEqual(10_000, $result->data['bounds']['queued_states']);
+        self::assertSame(['queue_limit'], $result->data['bounds']['truncation_reasons']);
+        self::assertSame(10_000, $result->data['bounds']['queued_states'], 'States stop being accepted exactly at the bound.');
+        self::assertSame(10_000, $result->data['bounds']['visited_states'], 'Every state accepted before the bound is still visited.');
         self::assertStringContainsString('No supported static flow', $result->summary);
         self::assertStringContainsString('The search was truncated (queue_limit).', $result->summary);
+    }
+
+    /**
+     * A full queue stops new states, not the search: the states already queued
+     * cost no more memory, and one of them may be a hop from the target.
+     */
+    #[Group('query')]
+    public function testStatesQueuedBeforeTheBoundAreStillSearchedForTheTarget(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        [$nodes, $edges] = self::wideGraph($ids);
+        // Edges leave a node in edge-id order, so the middle behind the
+        // highest S edge id is queued last and expanded last: the 100 middles
+        // ahead of it have filled the queue by then.
+        $fromSource = array_values(array_filter($edges, static fn(array $edge): bool => $edge['source_id'] === $nodes[0]['id']));
+        usort($fromSource, static fn(array $left, array $right): int => strcmp($left['id'], $right['id']));
+        $last = $fromSource[array_key_last($fromSource)]['target_id'];
+        $edges[] = self::edge($ids, $last, $nodes[1]['id']);
+        self::save($repository, $ids, $nodes, $edges);
+
+        $result = (new ArchitectureQueryService($pdo))->explainFlow($ids['project'], 'App\\S', 'App\\T', maxDepth: 2, timeoutMs: 5000);
+
+        self::assertTrue($result->truncated);
+        self::assertSame(['queue_limit'], $result->data['bounds']['truncation_reasons']);
+        self::assertCount(1, $result->data['paths']);
+        self::assertSame([$nodes[0]['id'], $last, $nodes[1]['id']], array_column($result->data['paths'][0]['nodes'], 'id'));
+        self::assertSame('Found 1 plausible static flow. The search was truncated (queue_limit).', $result->summary);
     }
 
     #[Group('query')]
@@ -98,6 +114,31 @@ final class ExplainFlowBoundsTest extends KnossosTestCase
         self::assertSame('class', $last['kind']);
         self::assertSame('certain', $last['confidence']);
         self::assertSame(1, $result->data['bounds']['queued_states'], 'Only the source is queued; a target is recorded, never queued.');
+    }
+
+    /**
+     * S calls M000..M100 and each of those calls 100 leaves: 10,202 states
+     * when fully queued, more than the queue bound allows. T is reached by
+     * nothing unless a test adds an edge to it.
+     *
+     * @param array<string, string> $ids
+     * @return array{list<array<string, mixed>>, list<array<string, mixed>>}
+     */
+    private static function wideGraph(array $ids): array
+    {
+        $nodes = [self::node($ids, 'S'), self::node($ids, 'T')];
+        $edges = [];
+        for ($i = 0; $i <= 100; $i++) {
+            $middle = self::node($ids, sprintf('M%03d', $i));
+            $nodes[] = $middle;
+            $edges[] = self::edge($ids, $nodes[0]['id'], $middle['id']);
+            for ($j = 0; $j < 100; $j++) {
+                $leaf = self::node($ids, sprintf('M%03d\\L%03d', $i, $j));
+                $nodes[] = $leaf;
+                $edges[] = self::edge($ids, $middle['id'], $leaf['id']);
+            }
+        }
+        return [$nodes, $edges];
     }
 
     /**

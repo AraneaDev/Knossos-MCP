@@ -25,8 +25,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     private const IN_DEGREE_FROM = [0, 1, 6, 21, 101];
 
     /**
-     * States explain_flow may queue, and also visit: the same figure for both,
-     * because a queued state is never visited twice.
+     * States explain_flow may queue. It also bounds the states visited, since
+     * a state is visited at most once and only after it was queued, so no
+     * separate visit bound is needed.
      */
     private const MAX_FLOW_STATES = 10_000;
 
@@ -794,14 +795,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // are one route written twice. Counting the copies let a hot pair spend
         // the whole search before any other route was reached.
         $visited = 0;
+        $queueFull = false;
         $truncated = false;
         $truncationReasons = [];
         $flowEdgesTruncated = false;
         $candidateCap = $maxPaths * 20;
         while (isset($queue[$head]) && count($paths) < $candidateCap) {
-            if ($this->now() > $deadline || $visited >= self::MAX_FLOW_STATES) {
+            if ($this->now() > $deadline) {
                 $truncated = true;
-                $truncationReasons[] = $visited >= self::MAX_FLOW_STATES ? 'visit_limit' : 'time_limit';
+                $truncationReasons[] = 'time_limit';
                 break;
             }
             [$nodes, $hops, $seen] = $queue[$head];
@@ -853,9 +855,16 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     continue;
                 }
                 if ($queued >= self::MAX_FLOW_STATES) {
-                    $truncated = true;
-                    $truncationReasons[] = 'queue_limit';
-                    break 2;
+                    // A full queue refuses new states but keeps searching the
+                    // ones it holds: they cost no more memory, and any of them
+                    // may be one hop from the target, as this edge's target
+                    // check above already allows.
+                    if (!$queueFull) {
+                        $queueFull = true;
+                        $truncated = true;
+                        $truncationReasons[] = 'queue_limit';
+                    }
+                    continue;
                 }
                 $newSeen = $seen;
                 $newSeen[$next['id']] = true;
@@ -988,10 +997,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     if ($existingIndex !== null && $dependants[$existingIndex]['distance'] === $distance + 1) {
                         $candidateRank = min($pathConfidence, $edgeConfidence);
                         if ($candidateRank > $bestRank[$edge['source_id']]) {
-                            // Raise the record and the rank its own dependants
-                            // inherit together, so the two never disagree.
+                            // Raise the record, the hop that justifies it (and
+                            // so its evidence), and the rank its own dependants
+                            // inherit together, so the three never disagree.
                             $bestRank[$edge['source_id']] = $candidateRank;
                             $dependants[$existingIndex]['path_confidence'] = self::rankName($candidateRank);
+                            $dependants[$existingIndex]['via'] = $this->impactHop($edge);
                         }
                     }
                     continue;
