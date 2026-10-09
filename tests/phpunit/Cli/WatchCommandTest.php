@@ -8,6 +8,7 @@ use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\CliInputLoader;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Cli\Command\WatchCommand;
+use Knossos\Query\ResultEnvelope;
 use Knossos\Runtime\RuntimeFactory;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
@@ -41,5 +42,22 @@ final class WatchCommandTest extends KnossosTestCase
         } finally {
             $this->removeTempTree($directory);
         }
+    }
+
+    /**
+     * A watch that stopped on a failure no retry could fix exited 0, or (when
+     * the initial scan failed) 2 before it emitted anything: the exit code now
+     * follows the stop reason the result carries.
+     */
+    #[Group('cli')]
+    public function testAWatchThatStoppedOnAnErrorExitsWithTheErrorCode(): void
+    {
+        $result = static fn(string $reason): ResultEnvelope => new ResultEnvelope('p', 's', 'Watch stopped.', ['stopped_reason' => $reason]);
+
+        assertSame(2, WatchCommand::exitCode($result('error')));
+        foreach (['cancelled', 'poll_limit', 'orphaned'] as $reason) {
+            assertSame(0, WatchCommand::exitCode($result($reason)));
+        }
+        assertSame(0, WatchCommand::exitCode(new ResultEnvelope('p', 's', 'Watch stopped.', [])));
     }
 }

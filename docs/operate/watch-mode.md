@@ -57,6 +57,19 @@ seconds, so the failed batch is scanned again once the fault clears.
 Only an engine-level fault, a defect that would recur identically, is terminal:
 it emits a non-retryable `error` and then `stopped` with reason `error`.
 
+The initial scan follows the same rules. A transient failure there is retried
+the same way, and `ready` follows the first scan that succeeds; a terminal one
+emits `error` and `stopped` without a `ready`.
+
+A shared watcher's scan that runs past its time limit (see
+[shared mode](#shared-mode)) is retried too, and its `error` event carries
+`code: "scan_timeout"`. After 3 timeouts in a row the watcher stops: the third
+`error` is not retryable and `stopped` follows with reason `error`. A scan that
+succeeds resets the count.
+
+The plain watcher exits with `2` when it stopped with reason `error`, and with
+`0` otherwise.
+
 ## Events and the result
 
 Lifecycle events are one JSON object per line on standard error, and the final
@@ -73,8 +86,8 @@ result is on standard output.
 | `stopped`        | always last, with the reason: `cancelled`, `poll_limit` or `error`   |
 
 The result reports the poll and scan counts, incremental and full scans,
-coalesced changes, queue overflows, `scan_errors`, pending work, and up to 200
-of the events.
+coalesced changes, queue overflows, `scan_errors`, pending work, the
+`stopped_reason` the `stopped` event carried, and up to 200 of the events.
 
 ## Shared mode
 

@@ -8,15 +8,18 @@ use Closure;
 use Error;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Scan\CancellationToken;
+use Knossos\Scan\ScanCancelledException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Watch\ScanTimeoutException;
+use Knossos\Watch\WatchHooks;
 use Knossos\Watch\WatchService;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 
 /**
  * What a watcher does with each scan's outcome: a timeout is counted and
- * capped, and a success resets the count.
+ * capped, a success resets the count, and the initial scan is classified like
+ * every later one.
  */
 #[Group('watch')]
 final class WatchServiceScanOutcomeTest extends KnossosTestCase
@@ -74,6 +77,106 @@ final class WatchServiceScanOutcomeTest extends KnossosTestCase
         assertSame('poll_limit', end($events)['reason']);
     }
 
+    /** The initial scan ran outside the attempt classifier: one transient fault killed the watcher before it had started. */
+    public function testATransientInitialFailureIsRetriedAndReadyFollowsTheFirstSuccess(): void
+    {
+        [$result, $events] = $this->watch(['fail', 'ok'], maxPolls: 200);
+
+        assertSame(['error', true, 1], [$events[0]['event'], $events[0]['retryable'], $events[0]['attempt']]);
+        $names = array_column($events, 'event');
+        $ready = array_search('ready', $names, true);
+        assertSame(true, is_int($ready));
+        assertSame(true, $events[$ready]['scanned']);
+        assertSame('snapshot-2', $events[$ready]['snapshot_id']);
+        assertSame('scan_completed', $names[$ready + 1]);
+        assertSame(1, count(array_keys($names, 'ready', true)));
+        // The retry announces itself only by `ready`, as the first attempt does: no scan_started before it.
+        assertSame(false, in_array('scan_started', array_slice($names, 0, $ready), true));
+        assertSame([1, 1, 'poll_limit'], [$result->data['scans'], $result->data['scan_errors'], $result->data['stopped_reason']]);
+        assertSame('snapshot-2', $result->snapshotId);
+    }
+
+    public function testATerminalInitialFailureStopsWithAnErrorReason(): void
+    {
+        [$result, $events] = $this->watch(['error'], maxPolls: 200);
+
+        assertSame(['error', false], [$events[0]['event'], $events[0]['retryable']]);
+        assertSame(['event' => 'stopped', 'reason' => 'error'], $events[1]);
+        assertSame(2, count($events));
+        assertSame(['error', 0, 0], [$result->data['stopped_reason'], $result->data['polls'], $result->data['scans']]);
+    }
+
+    /** The timeout cap holds for the initial scan too: it never reaches `ready`. */
+    public function testAnInitialScanThatKeepsTimingOutStops(): void
+    {
+        [$result, $events] = $this->watch(['timeout'], maxPolls: 5_000);
+
+        assertSame([true, true, false], array_column(self::named($events, 'error'), 'retryable'));
+        assertSame([], self::named($events, 'ready'));
+        assertSame('error', $result->data['stopped_reason']);
+    }
+
+    /** A watch cancelled before its first scan stops at once, says so, and never scans. */
+    public function testAWatchCancelledBeforeItsInitialScanStopsAsCancelled(): void
+    {
+        $cancellation = new CancellationToken();
+        $cancellation->cancel();
+        [$result, $events] = $this->watch(['ok'], maxPolls: 200, cancellation: $cancellation);
+
+        assertSame([['event' => 'stopped', 'reason' => 'cancelled']], $events);
+        assertSame(['cancelled', 0], [$result->data['stopped_reason'], $result->data['scans']]);
+    }
+
+    /** The result's stop reason is the one the `stopped` event carried. */
+    public function testTheResultCarriesTheStopReason(): void
+    {
+        [$result, $events] = $this->watch(['ok'], maxPolls: 3);
+
+        assertSame(['event' => 'stopped', 'reason' => 'poll_limit'], end($events));
+        assertSame('poll_limit', $result->data['stopped_reason']);
+    }
+
+    /**
+     * A scan stopped because whoever started the watcher is gone ends the
+     * watch as `orphaned`; it read as `poll_limit`, a limit that was never set.
+     */
+    public function testAScanStoppedBecauseTheStarterIsGoneEndsTheWatchAsOrphaned(): void
+    {
+        $alive = true;
+        $scanner = static function () use (&$alive): ResultEnvelope {
+            $alive = false;
+            throw new ScanCancelledException('The scan was cancelled.');
+        };
+        $events = [];
+        $result = (new WatchService($scanner, [$this->root]))->run(
+            $this->root,
+            pollMs: 1,
+            observer: static function (array $event) use (&$events): void {
+                $events[] = $event;
+            },
+            maxPolls: 50,
+            hooks: new WatchHooks(alive: static function () use (&$alive): bool {
+                return $alive;
+            }),
+        );
+
+        assertSame([['event' => 'stopped', 'reason' => 'orphaned']], $events);
+        assertSame('orphaned', $result->data['stopped_reason']);
+    }
+
+    /** A watch that took in another writer's graph, which has no snapshot yet, still returns a result. */
+    public function testAWatchWithNoSnapshotKnownReturnsEmptyIds(): void
+    {
+        $result = (new WatchService(static fn(): never => throw new Error('No scan was due.'), [$this->root]))->run(
+            $this->root,
+            pollMs: 1,
+            maxPolls: 1,
+            hooks: new WatchHooks(current: static fn(): bool => true, activeSnapshot: static fn(): ?string => null),
+        );
+
+        assertSame(['', '', 'poll_limit', 0], [$result->projectId, $result->snapshotId, $result->data['stopped_reason'], $result->data['scans']]);
+    }
+
     /**
      * Runs a watch whose scanner answers each call from `$script` in turn,
      * repeating the last entry: `ok`, `ok+change` (succeeds and edits a file,
@@ -83,7 +186,7 @@ final class WatchServiceScanOutcomeTest extends KnossosTestCase
      * @param list<string> $script
      * @return array{0: ResultEnvelope, 1: list<array<string, mixed>>}
      */
-    private function watch(array $script, int $maxPolls): array
+    private function watch(array $script, int $maxPolls, ?CancellationToken $cancellation = null): array
     {
         $events = [];
         $result = (new WatchService($this->scanner($script), [$this->root]))->run(
@@ -91,7 +194,7 @@ final class WatchServiceScanOutcomeTest extends KnossosTestCase
             pollMs: 1,
             debounceMs: 0,
             maxQueue: 100,
-            cancellation: new CancellationToken(),
+            cancellation: $cancellation ?? new CancellationToken(),
             observer: static function (array $event) use (&$events): void {
                 $events[] = $event;
             },

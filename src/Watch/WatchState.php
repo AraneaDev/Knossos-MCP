@@ -34,6 +34,9 @@ final class WatchState
 
     public ?string $terminalReason = null;
 
+    /** The initial scan failed in a way a retry may fix: the loop retries it, and `ready` waits for it. */
+    public bool $initialPending = false;
+
     public int $scans = 0;
 
     public int $incrementalScans = 0;

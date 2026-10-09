@@ -88,18 +88,18 @@ final readonly class WatchService
         $state->fingerprint = TreeFingerprint::of($root, $this->roots);
         $gate->remember($state->fingerprint);
         $scanned = $hooks->current === null || !($hooks->current)($state->fingerprint, null);
+        $running = true;
         if ($scanned) {
-            $initial = $this->scanner instanceof \Closure ? ($this->scanner)($root, 'auto', $cancellation) : $this->scanner->scan($root, mode: 'auto', cancellation: $cancellation);
-            [$state->projectId, $state->snapshotId] = [$initial->projectId, $initial->snapshotId];
+            $running = $this->initial($root, $state, $pollMs, $cancellation, $emit);
         } else {
             [$state->projectId, $state->snapshotId] = [$hooks->projectId, $hooks->activeSnapshot === null ? null : ($hooks->activeSnapshot)()];
         }
-        $state->scans = $scanned ? 1 : 0;
-        self::giveBackMemory();
         $state->lastBeatAt = hrtime(true);
-        $emit(['event' => 'ready', 'project_id' => $state->projectId, 'snapshot_id' => $state->snapshotId, 'files' => count($state->fingerprint), 'scanned' => $scanned]);
+        if ($running && !$state->initialPending) {
+            $emit(['event' => 'ready', 'project_id' => $state->projectId, 'snapshot_id' => $state->snapshotId, 'files' => count($state->fingerprint), 'scanned' => $scanned]);
+        }
 
-        while (!$cancellation->isCancelled() && ($maxPolls === null || $state->polls < $maxPolls)) {
+        while ($running && !$cancellation->isCancelled() && ($maxPolls === null || $state->polls < $maxPolls)) {
             usleep($pollMs * 1000);
             ++$state->polls;
             if ($hooks->alive !== null && !($hooks->alive)()) {
@@ -107,21 +107,27 @@ final readonly class WatchService
                 break;
             }
             $this->beat($state, $hooks, $emit);
-            if (!$this->poll($root, $state, $gate, $maxQueue, $emit) || !$this->due($state, $debounceMs)) {
+            // A failed initial scan is retried with nothing changed: the graph is what waits.
+            $waiting = $this->poll($root, $state, $gate, $maxQueue, $emit) || $state->initialPending;
+            if (!$waiting || !$this->due($state, $debounceMs)) {
                 continue;
             }
-            if ($hooks->current !== null && ($hooks->current)($state->fingerprint, array_keys($state->pending))) {
+            if (!$state->initialPending && $hooks->current !== null && ($hooks->current)($state->fingerprint, array_keys($state->pending))) {
                 $this->absorb($state, $hooks, $emit);
                 continue;
             }
-            if (!$this->scan($root, $state, $pollMs, $cancellation, $emit)) {
-                break;
-            }
+            $running = $this->scan($root, $state, $pollMs, $cancellation, $emit);
         }
 
-        $reason = $state->terminalReason ?? ($cancellation->isCancelled() ? 'cancelled' : 'poll_limit');
+        $reason = $state->terminalReason ?? match (true) {
+            $cancellation->isCancelled() => 'cancelled',
+            // A scan stopped because whoever started the watcher is gone ends it as orphaned, not at a limit.
+            $hooks->alive !== null && !($hooks->alive)() => 'orphaned',
+            default => 'poll_limit',
+        };
         $emit(['event' => 'stopped', 'reason' => $reason]);
-        return new ResultEnvelope((string) $state->projectId, $state->snapshotId, sprintf('Watch stopped after %d polls and %d scans.', $state->polls, $state->scans), [
+        // Empty ids when no scan succeeded and no other writer's snapshot was known.
+        return new ResultEnvelope((string) $state->projectId, (string) $state->snapshotId, sprintf('Watch stopped after %d polls and %d scans.', $state->polls, $state->scans), [
             'polls' => $state->polls,
             'scans' => $state->scans,
             'incremental_scans' => $state->incrementalScans,
@@ -131,6 +137,7 @@ final readonly class WatchService
             'queue_overflows' => $state->overflows,
             'scan_errors' => $state->scanErrors,
             'pending_changes' => count($state->pending),
+            'stopped_reason' => $reason,
             'events' => $state->events,
         ]);
     }
@@ -219,6 +226,29 @@ final readonly class WatchService
     }
 
     /**
+     * The initial scan, classified like every later one. False when the watch
+     * must stop (cancelled, or a failure no retry can fix); after a retryable
+     * failure it is marked pending, so the loop retries it after the backoff
+     * and only then emits `ready`.
+     *
+     * @param callable(array<string, mixed>): void $emit
+     */
+    private function initial(string $root, WatchState $state, int $pollMs, CancellationToken $cancellation, callable $emit): bool
+    {
+        $attempt = WatchScanAttempt::run($this->scanner, $root, 'auto', $cancellation);
+        $failed = $this->failed($attempt, 'auto', $state, $pollMs, $emit);
+        if ($failed !== null || $attempt->result === null) {
+            $state->initialPending = $failed !== false;
+            $state->firstPendingAt = hrtime(true);
+            return $failed ?? true;
+        }
+        [$state->projectId, $state->snapshotId] = [$attempt->result->projectId, $attempt->result->snapshotId];
+        $state->scans = 1;
+        self::giveBackMemory();
+        return true;
+    }
+
+    /**
      * One scan of what waits. False when the watch must stop: cancelled, or
      * a failure no retry can fix.
      *
@@ -226,8 +256,11 @@ final readonly class WatchService
      */
     private function scan(string $root, WatchState $state, int $pollMs, CancellationToken $cancellation, callable $emit): bool
     {
-        $mode = $state->overflow ? 'full' : 'incremental';
-        $emit(['event' => 'scan_started', 'mode' => $mode, 'changes' => count($state->pending)]);
+        $mode = $state->initialPending ? 'auto' : ($state->overflow ? 'full' : 'incremental');
+        if (!$state->initialPending) {
+            // A retried initial scan announces itself as the first did: by `ready` once it succeeds.
+            $emit(['event' => 'scan_started', 'mode' => $mode, 'changes' => count($state->pending)]);
+        }
         $attempt = WatchScanAttempt::run($this->scanner, $root, $mode, $cancellation);
         $failed = $this->failed($attempt, $mode, $state, $pollMs, $emit);
         if ($failed !== null || $attempt->result === null) {
@@ -236,7 +269,11 @@ final readonly class WatchService
         $last = $attempt->result;
         [$state->projectId, $state->snapshotId] = [$last->projectId, $last->snapshotId];
         ++$state->scans;
-        if ($mode === 'full') {
+        if ($state->initialPending) {
+            // The retried initial scan: the watch is ready only now.
+            $state->initialPending = false;
+            $emit(['event' => 'ready', 'project_id' => $state->projectId, 'snapshot_id' => $state->snapshotId, 'files' => count($state->fingerprint), 'scanned' => true]);
+        } elseif ($mode === 'full') {
             ++$state->fullScans;
         } else {
             ++$state->incrementalScans;
