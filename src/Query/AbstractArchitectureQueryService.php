@@ -42,39 +42,13 @@ abstract readonly class AbstractArchitectureQueryService
     ) {}
 
     /**
-     * Whether an edge exists only in the source and is gone from the built code.
-     *
-     * TypeScript erases `import type { T } from './x'` and `export type { T }`
-     * entirely, so a dependency recorded from one describes the type-checker's
-     * view rather than the program's. A cycle that runs over such an edge does
-     * not exist at runtime and has nothing to break: a React project split
-     * `Badge.tsx` from `badgeVariants.ts` deliberately, to keep Vite's hot
-     * module replacement intact, and `dependency_cycles` then reported the split
-     * as a certain cycle — asking for a considered improvement to be undone.
-     *
-     * The scanner records one edge per source/target pair, so several import
-     * statements between the same two modules collapse into one. When they
-     * disagree it leaves `type_only_variants` behind, and a single value import
-     * among them is enough to make the dependency real.
+     * Whether an edge exists only in the source and is gone from the built code; see {@see ErasedTypeEdge}.
      *
      * @param array<string, mixed> $edge An edge row carrying `kind` and `attributes_json`.
      */
     protected static function isErasedTypeEdge(array $edge): bool
     {
-        if (!in_array($edge['kind'] ?? null, ['imports', 're_exports'], true)) {
-            return false;
-        }
-        $attributes = $edge['attributes_json'] ?? null;
-        if (!is_string($attributes)) {
-            return false;
-        }
-        $decoded = json_decode($attributes, true);
-        if (!is_array($decoded) || ($decoded['type_only'] ?? false) !== true) {
-            return false;
-        }
-        $variants = $decoded['type_only_variants'] ?? null;
-
-        return !is_array($variants) || !in_array(false, $variants, true);
+        return ErasedTypeEdge::matches($edge);
     }
 
     /**
@@ -116,9 +90,34 @@ abstract readonly class AbstractArchitectureQueryService
     /**
      * Resolve a component reference to one node, reporting ambiguity rather than guessing.
      *
+     * Exact matches first ({@see self::resolveExact()}); only when there are
+     * none, the components whose canonical or display name starts with the
+     * query. A read answers with candidates either way; a write must use
+     * resolveExact() alone, or a prefix becomes a different component.
+     *
      * @return list<array<string, mixed>>
      */
     protected function resolve(string $projectId, string $query): array
+    {
+        $rows = $this->resolveExact($projectId, $query);
+        if ($rows !== []) {
+            return $rows;
+        }
+
+        $statement = $this->pdo->prepare(
+            'SELECT id, kind, canonical_name, display_name, confidence FROM nodes WHERE project_id = :project ' .
+            "AND (canonical_name LIKE :prefix ESCAPE '!' OR display_name LIKE :prefix ESCAPE '!') ORDER BY canonical_name LIMIT 21",
+        );
+        $statement->execute(['project' => $projectId, 'prefix' => self::like($query) . '%']);
+        return $statement->fetchAll();
+    }
+
+    /**
+     * The components a reference names exactly: a stable id, or a canonical or display name equal to it.
+     *
+     * @return list<array<string, mixed>>
+     */
+    protected function resolveExact(string $projectId, string $query): array
     {
         if (trim($query) === '') {
             throw new InvalidArgumentException('Flow endpoint must not be empty.');
@@ -135,16 +134,6 @@ abstract readonly class AbstractArchitectureQueryService
             'ORDER BY CASE WHEN canonical_name = :query THEN 0 ELSE 1 END, canonical_name LIMIT 21',
         );
         $statement->execute(['project' => $projectId, 'query' => $query]);
-        $rows = $statement->fetchAll();
-        if ($rows !== []) {
-            return $rows;
-        }
-
-        $statement = $this->pdo->prepare(
-            'SELECT id, kind, canonical_name, display_name, confidence FROM nodes WHERE project_id = :project ' .
-            "AND (canonical_name LIKE :prefix ESCAPE '!' OR display_name LIKE :prefix ESCAPE '!') ORDER BY canonical_name LIMIT 21",
-        );
-        $statement->execute(['project' => $projectId, 'prefix' => self::like($query) . '%']);
         return $statement->fetchAll();
     }
     /** Escape a value for a LIKE pattern so user input cannot inject wildcards. */

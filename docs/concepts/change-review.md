@@ -63,24 +63,29 @@ instead of failing the whole call:
 
 - `change`: the `changed_files_impact` result: `changed_files`,
   `unresolved_files`, `direct_components`, `impacted_components`, `git`.
-- `policy_check`: `policies_evaluated`, `total_violations`, and
-  `violations_touching_change` (the subset of `check_architecture`'s
+- `policy_check`: `policies_evaluated`; `total_violations`, the whole
+  project's violation count; `touching_violation_count`, the exact number of
   violations whose source or target is a direct or impacted component of the
-  change). `not_evaluated` when no policies are declared or supplied.
+  change; and `violations_touching_change`, the first 100 of those. The touching
+  ones come from a check scoped to the change's components, not from the first
+  page of the whole project's. `not_evaluated` when no policies are declared or
+  supplied.
 - `quality_gate`: `passed`, `checks`, `baseline_snapshot`, computed against
   the most recently retained non-active snapshot unless `baseline_snapshot` is
   given explicitly. `not_evaluated` when no budgets are declared or supplied,
   or when no retained baseline snapshot exists yet.
 - `cycles_touching_change`: the subset of `dependency_cycles`'s cycles with
-  at least one member among the change's direct or impacted components.
+  at least one member among the change's direct or impacted components,
+  matched on every member (`member_ids`), not only the first 100 listed.
   `not_evaluated` (with a reason) if the cycle scan itself fails.
 
 `bounds` mirrors `changed_files_impact`'s bounds with `cycle_scan_limit`
 added. The envelope's evidence, warnings, and truncation flag are the union of
 the underlying calls': evidence from `change`, the policy check (when
-evaluated), the quality gate (when evaluated), and the cycle scan (when
-evaluated), capped at the first 100 rows; a section that degrades to
-`not_evaluated` contributes no evidence.
+evaluated, the scoped check's evidence for the violations touching the change),
+the quality gate (when evaluated), and the cycle scan (when evaluated), capped
+at the first 100 rows; a section that degrades to `not_evaluated` contributes
+no evidence.
 
 Results are static and conservative, subject to the same caveats as the
 underlying tools: impact is a blast-radius estimate that guarantees nothing; change
@@ -132,9 +137,13 @@ paths are returned explicitly, and truncation means the reported set may be inco
 
 ## Test impact
 
-`test_impact` projects a changed-files blast radius (the same analysis behind
-`changed_files_impact`) onto the test files that statically reach the changed
-code, ranked by distance. Use it to run the relevant tests first in an
+`test_impact` finds the test files that statically reach the changed code,
+ranked by distance. It maps the changed files to their components the way
+`changed_files_impact` does, then runs a search of its own: a reverse
+breadth-first walk over every dependant, production and test alike, that keeps
+only the components classified `quality.test_module`. Production dependants
+cost a visit but never a place in the answer, so a test behind a hub with
+hundreds of callers is still found. Use it to run the relevant tests first in an
 edit-test loop; it is a lower bound, so keep running the full suite:
 data-driven tests, fixtures, and glob-only discovery are invisible to the
 graph.
@@ -156,10 +165,25 @@ path:
 - `via` names up to three of the test components (classes/functions) in that
   file responsible for the reachability, sorted and de-duplicated.
 
-`changed_files`, `unresolved_files`, and `bounds` mirror
-`changed_files_impact`'s fields, with `bounds.impacted_scan_limit` added to
-record the per-component dependant scan cap. A warning is always attached
-reminding callers this is a lower bound.
+`changed_files` and `unresolved_files` mirror `changed_files_impact`'s
+fields. `bounds` reports the limits and what the search did:
+
+- `max_files`, `max_direct_components`, `limit` and `max_depth`: the change
+  set and answer limits, as in `changed_files_impact`.
+- `max_visited` (50,000 components) and `max_edges` (100,000 relationships):
+  the search's own bounds. `timeout_ms` bounds the whole request.
+- `visited_nodes` and `edges_examined`: how far the search went.
+- `test_files_found`: how many test files the search reached before `limit`
+  cut the list.
+- `truncation_reasons`: every bound that cut the answer, in the order met:
+  `changed_file_limit`, `direct_component_limit`, `visit_limit`,
+  `edge_limit`, `time_limit` or `result_limit`.
+
+When the search was cut, the summary says so and names the reasons, because
+test files beyond that bound are not listed. When only `limit` cut the list,
+the summary says how many of how many test files you are seeing. Reaching
+`max_depth` is the horizon you asked for, not a cut. A warning is always
+attached reminding you this is a lower bound.
 
 ## Git change signals and time-aware impact
 

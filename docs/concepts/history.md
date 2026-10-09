@@ -81,7 +81,10 @@ facts may still miss runtime-generated architecture.
 `architecture_trends` reports a bounded chronological series across the active
 and retained snapshots. Each complete point contains component, relationship,
 role, boundary, and diagnostic counts plus static cycles, maximum degree,
-diagnostic severity, and unreferenced-candidate metrics.
+diagnostic severity, and unreferenced-candidate metrics. A loop closed only by
+type-only imports (a TypeScript `import type`) is not counted as a cycle, as in
+`dependency_cycles`, so `metrics.cycles` can be lower than a trend computed
+before that rule, for the same graph.
 
 ```sh
 knossos architecture-trends project_... --limit=10 --json

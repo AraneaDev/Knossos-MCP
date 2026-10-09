@@ -129,4 +129,34 @@ final class AgentBriefTest extends KnossosTestCase
         $result = $tools->call('export_agent_brief', ['project_id' => $ids['project'], 'max_chars' => 1500]);
         assertSame(true, strlen($result->data['markdown']) <= 1500);
     }
+
+    /**
+     * The hub section is never labelled partial for a bound that cannot change
+     * which hubs lead. A deadline met during the edge walk cuts only the
+     * cross-boundary degree hotspots use, and one met during the node slice
+     * comes after its first `limit` rows, which are the hubs themselves. The
+     * section once read "partial: time_limit" over a complete list.
+     */
+    #[Group('query')]
+    public function testABoundThatCannotChangeTheHubsLeavesTheHeadingPlain(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $whole = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+        // Late from the edge walk on, then late from the slice's first deadline check on.
+        foreach ([2, 1] as $onTime) {
+            $reads = 0;
+            $clock = static function () use (&$reads, $onTime): int {
+                return ++$reads <= $onTime ? 0 : PHP_INT_MAX >> 1;
+            };
+            $queries = new ArchitectureQueryService($pdo, $clock);
+
+            $markdown = $queries->exportAgentBrief($ids['project'])->data['markdown'];
+
+            assertSame(true, str_contains($markdown, "## Key hubs (most depended-on)\n"), $markdown);
+            assertSame(true, str_contains($markdown, '- Checkout (class, degree 1)'), $markdown);
+            assertSame(true, str_contains($markdown, '- InvoiceService (class, degree 1)'), $markdown);
+        }
+        assertSame(true, str_contains($whole, "## Key hubs (most depended-on)\n"));
+    }
 }

@@ -6,7 +6,6 @@ namespace Knossos\Query;
 
 use Closure;
 use InvalidArgumentException;
-use Knossos\Store\SnapshotPayload;
 use PDO;
 
 /**
@@ -194,12 +193,13 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             unset($fromRows, $toRows); // free the raw rows before the next table
             if ($section === 'components') {
                 $allComponentChanges = $diff['changed'];
-                $diff['changed'] = array_values(array_filter($diff['changed'], static function (array $change): bool {
-                    $before = $change['before'];
-                    $after = $change['after'];
-                    unset($before['file_id'], $after['file_id']);
-                    return $before !== $after;
-                }));
+                // A component in another file is a move, reported under
+                // `moved` with every field that changed; listing it under
+                // `changed` too counted one component twice.
+                $diff['changed'] = array_values(array_filter(
+                    $diff['changed'],
+                    static fn(array $change): bool => ($change['before']['file_id'] ?? null) === ($change['after']['file_id'] ?? null),
+                ));
             }
             $rawDiffs[$section] = $diff;
             $sectionOutput = [];
@@ -278,8 +278,10 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
      * Both graphs are read whole, one after the other and with only the
      * columns the comparison uses ({@see SnapshotGraphReader}), and analysed
      * the way {@see self::qualityGate()} analyses them: the same reportable components, impact
-     * edges, cycles and unreferenced candidates. A dependency is new when no
-     * impact edge joined the same two components (by full name) before;
+     * edges, cycles and unreferenced candidates. A component is the same in
+     * both graphs when its language, kind and full name are, the tuple its id
+     * is a hash of; a full name alone is not unique. A dependency is new when no
+     * impact edge joined the same two components before;
      * boundaries are the active graph's labels ({@see BoundaryLabels}); a
      * cycle is new unless all its members already formed one cycle; a hub
      * has grown when at least {@see self::HUB_MIN} components depend on it
@@ -292,15 +294,15 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     {
         $project = $this->project($projectId);
         $active = (string) ($project['active_scan_id'] ?? '');
-        // The base first, reduced to what the comparison asks of it (keyed by full name) and let go,
+        // The base first, reduced to what the comparison asks of it (keyed by identity) and let go,
         // so the two graphs are never held at once.
         $resolved = $this->resolveSnapshot($projectId, $baseSnapshot, $active);
         $reader = new SnapshotGraphReader($this->pdo);
-        $was = $this->baseFigures($resolved['is_active'] ? $reader->active($projectId, $active) : $reader->archived((string) $resolved['archived']['payload_json'], $resolved['scan_id']));
+        $was = $this->baseFigures($resolved['is_active'] ? $reader->active($projectId, $active) : $reader->archivedById($resolved['scan_id']));
         unset($resolved['archived']);
         $facts = $reader->active($projectId, $active);
         $after = $this->snapshotAnalysis($facts);
-        $now = self::canonicalNames($facts);
+        $now = self::identityKeys($facts);
         $nodes = self::placedNodes($facts);
         unset($facts);
         $labels = BoundaryLabels::load($this->pdo, $projectId)->forProject($projectId);
@@ -322,30 +324,27 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             <=> [$b['source']['boundary'], $b['target']['boundary'], $b['source']['canonical_name'], $b['target']['canonical_name']]);
 
         $cycles = [];
-        foreach ($after['sccs'] as $members) {
-            $old = array_unique(array_map(static fn(string $m): int => $was['cycle_of'][$now[$m]] ?? -1, $members));
-            if (count($members) > 1 && (count($old) > 1 || $old[array_key_first($old)] < 0)) {
-                $sorted = $members;
-                usort($sorted, static fn(string $a, string $b): int => $now[$a] <=> $now[$b]);
-                $cycles[] = ['size' => count($members), 'members' => array_map($item, array_slice($sorted, 0, $limit))];
-            }
+        foreach (self::newCycles($was['cycle_of'], $after['sccs'], $now) as $members) {
+            $sorted = $members;
+            usort($sorted, static fn(string $a, string $b): int => [$nodes[$a]['canonical_name'], $now[$a]] <=> [$nodes[$b]['canonical_name'], $now[$b]]);
+            $cycles[] = ['size' => count($members), 'members' => array_map($item, array_slice($sorted, 0, $limit))];
         }
         usort($cycles, static fn(array $a, array $b): int => [$b['size'], $a['members'][0]['canonical_name']] <=> [$a['size'], $b['members'][0]['canonical_name']]);
 
         $idOf = array_flip($now);
         $grown = [];
-        foreach (self::inDegrees($after, $now) as $name => $degree) {
-            $previous = $was['in'][$name] ?? 0;
+        foreach (self::inDegrees($after, $now) as $key => $degree) {
+            $previous = $was['in'][$key] ?? 0;
             if ($degree >= self::HUB_MIN && $degree > $previous) {
-                $grown[] = ['component' => $item((string) $idOf[$name]), 'before' => $previous, 'after' => $degree];
+                $grown[] = ['component' => $item((string) $idOf[$key]), 'before' => $previous, 'after' => $degree];
             }
         }
         usort($grown, static fn(array $a, array $b): int => [$b['after'] - $b['before'], $b['after'], $a['component']['canonical_name']] <=> [$a['after'] - $a['before'], $a['after'], $b['component']['canonical_name']]);
 
         $dead = array_values(array_filter($after['unreferenced'], static fn(string $id): bool => !isset($was['dead'][$now[$id]])));
-        usort($dead, static fn(string $a, string $b): int => $now[$a] <=> $now[$b]);
+        usort($dead, static fn(string $a, string $b): int => [$nodes[$a]['canonical_name'], $now[$a]] <=> [$nodes[$b]['canonical_name'], $now[$b]]);
 
-        $violations = $this->newViolations($projectId, $policies, $was['edges'], $limit);
+        $violations = $this->newViolations($projectId, $policies, $was['edges'], $now, $limit);
         $listed = static fn(array $all): array => ['count' => count($all), 'items' => array_slice($all, 0, $limit)];
 
         return [
@@ -359,8 +358,8 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     }
 
     /**
-     * What a branch comparison asks of the base graph, by full name: its
-     * impact edges (`source\0target`), the cycle each member of one was in,
+     * What a branch comparison asks of the base graph, by identity key (see
+     * {@see self::identityKeys()}): its impact edges (`source\0target`), the cycle each member of one was in,
      * how many reportable components depended on each one, and the
      * unreferenced candidates.
      *
@@ -370,41 +369,91 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     private function baseFigures(array $facts): array
     {
         $before = $this->snapshotAnalysis($facts);
-        $names = self::canonicalNames($facts);
+        $names = self::identityKeys($facts);
         unset($facts);
+
+        return [
+            'edges' => self::edgePairs($before['adjacency'], $names),
+            'cycle_of' => self::cycleIndex($before['sccs'], $names),
+            'in' => self::inDegrees($before, $names),
+            'dead' => array_fill_keys(array_map(static fn(string $id): string => $names[$id], $before['unreferenced']), true),
+        ];
+    }
+
+    /**
+     * Which cycle each member of a cycle is in, by identity key.
+     *
+     * @param list<list<string>> $sccs
+     * @param array<string, string> $keys identity keys by id
+     * @return array<string, int>
+     */
+    private static function cycleIndex(array $sccs, array $keys): array
+    {
         $cycleOf = [];
-        foreach ($before['sccs'] as $index => $members) {
+        foreach ($sccs as $index => $members) {
             if (count($members) > 1) {
                 foreach ($members as $member) {
-                    $cycleOf[$names[$member]] = $index;
+                    $cycleOf[$keys[$member]] = $index;
                 }
             }
         }
 
-        return [
-            'edges' => self::edgePairs($before['adjacency'], $names),
-            'cycle_of' => $cycleOf,
-            'in' => self::inDegrees($before, $names),
-            'dead' => array_fill_keys(array_map(static fn(string $id): string => $names[$id], $before['unreferenced']), true),
-        ];
+        return $cycleOf;
+    }
+
+    /**
+     * The active graph's cycles that are new: a cycle is new unless all its
+     * members (by identity key) were in one baseline cycle.
+     *
+     * The quality gate counts these and the branch comparison lists them, so
+     * the two agree on what a new cycle is. A count difference, which the gate
+     * used before, read 0 when two cycles merged into one or when one cycle
+     * was broken while another was made.
+     *
+     * @param array<string, int> $baseCycleOf the baseline's cycle index ({@see self::cycleIndex()})
+     * @param list<list<string>> $afterSccs the active graph's strongly connected components
+     * @param array<string, string> $keysNow the active graph's identity keys by id
+     * @return list<list<string>> each new cycle's member ids
+     */
+    private static function newCycles(array $baseCycleOf, array $afterSccs, array $keysNow): array
+    {
+        $new = [];
+        foreach ($afterSccs as $members) {
+            if (count($members) < 2) {
+                continue;
+            }
+            $old = array_unique(array_map(static fn(string $member): int => $baseCycleOf[$keysNow[$member]] ?? -1, $members));
+            if (count($old) > 1 || $old[array_key_first($old)] < 0) {
+                $new[] = $members;
+            }
+        }
+
+        return $new;
     }
 
     /** The fewest components depending on one for it to count as a hub that grew. */
     private const HUB_MIN = 10;
 
     /**
-     * Each node's full name, by id.
+     * Each node's identity across two graphs, by id: `language\0kind\0canonical_name`.
+     *
+     * This is the tuple a node id is a hash of ({@see \Knossos\Store\StableId::symbol()},
+     * with the project), so it names the same component across two graphs
+     * that the id does, and can be printed and compared without the hash.
+     * The defect it replaces was keying by the full name alone: a module and
+     * a package, or a class and a function, can share one, and keying by it
+     * merged two components into one in every comparison.
      *
      * @param array<string, list<array<string, mixed>>> $facts
      * @return array<string, string>
      */
-    private static function canonicalNames(array $facts): array
+    private static function identityKeys(array $facts): array
     {
-        $names = [];
+        $keys = [];
         foreach ($facts['nodes'] ?? [] as $node) {
-            $names[(string) $node['id']] = (string) $node['canonical_name'];
+            $keys[(string) $node['id']] = (string) ($node['language'] ?? '') . "\0" . (string) $node['kind'] . "\0" . (string) $node['canonical_name'];
         }
-        return $names;
+        return $keys;
     }
 
     /**
@@ -430,7 +479,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     }
 
     /**
-     * The impact edges as pairs of full names, `source\0target`.
+     * The impact edges as pairs of identity keys, `source\0target`.
      *
      * @param array<string, list<string>> $adjacency
      * @param array<string, string> $names
@@ -448,7 +497,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     }
 
     /**
-     * How many reportable components depend on each reportable one, by full name.
+     * How many reportable components depend on each reportable one, by identity key.
      *
      * @param array{reportable: array<string, true>, reverse: array<string, list<string>>} $analysis
      * @param array<string, string> $names
@@ -471,10 +520,11 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
      * `truncated` when the check stopped early, so the count is a floor.
      *
      * @param list<array<string, mixed>> $policies
-     * @param array<string, true> $edgesBefore
+     * @param array<string, true> $edgesBefore the base graph's impact edges as identity-key pairs
+     * @param array<string, string> $keysNow the active graph's identity keys by id
      * @return array{count: int, items: list<array<string, mixed>>, truncated: bool}|null
      */
-    private function newViolations(string $projectId, array $policies, array $edgesBefore, int $limit): ?array
+    private function newViolations(string $projectId, array $policies, array $edgesBefore, array $keysNow, int $limit): ?array
     {
         if ($policies === []) {
             return null;
@@ -484,7 +534,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         } catch (InvalidArgumentException) {
             return null;
         }
-        $fresh = array_values(array_filter($check->data['violations'], static fn(array $v): bool => !isset($edgesBefore[$v['source']['canonical_name'] . "\0" . $v['target']['canonical_name']])));
+        $fresh = array_values(array_filter($check->data['violations'], static fn(array $v): bool => !isset($edgesBefore[($keysNow[$v['source']['id']] ?? '') . "\0" . ($keysNow[$v['target']['id']] ?? '')])));
         // The check's own order follows the graph's storage; the list is the same on every read only once sorted.
         usort($fresh, static fn(array $a, array $b): int => [$a['policy_id'], $a['source']['canonical_name'], $a['target']['canonical_name']] <=> [$b['policy_id'], $b['source']['canonical_name'], $b['target']['canonical_name']]);
 
@@ -516,21 +566,29 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         if (isset($budgets['boundary_violations']) && $policies === []) {
             throw new InvalidArgumentException('policies are required when boundary_violations is budgeted.');
         }
-        $baseline = $this->snapshotFacts($projectId, $baselineSnapshot, $project['active_scan_id'] ?? '');
-        $current = $this->snapshotFacts($projectId, 'active', $project['active_scan_id'] ?? '');
-        if ($baseline['metadata']['scan_id'] === $current['metadata']['scan_id']) {
+        $activeScan = (string) ($project['active_scan_id'] ?? '');
+        $baseline = $this->resolveSnapshot($projectId, $baselineSnapshot, $activeScan);
+        $current = $this->resolveSnapshot($projectId, 'active', $activeScan);
+        if ($baseline['scan_id'] === $current['scan_id']) {
             throw new InvalidArgumentException('baseline_snapshot must differ from the active snapshot.');
         }
-        $before = $this->snapshotQualityMetrics($baseline['facts']);
-        $after = $this->snapshotQualityMetrics($current['facts']);
+        // One graph at a time, through the reader's column list: the baseline
+        // is reduced to what the gate compares and let go before the active
+        // graph is read. Reading both whole (`SELECT *` with attributes and
+        // owners) and holding them to the end cost about 78 MB on a 20,001-edge
+        // graph.
+        $before = $this->gateFigures($this->readerFacts($projectId, $baseline));
+        unset($baseline['archived']);
+        $after = $this->gateFigures($this->readerFacts($projectId, $current), $before['cycle_of']);
         $actual = [
-            'new_cycles' => max(0, $after['cycles'] - $before['cycles']),
-            'error_diagnostics' => $after['error_diagnostics'],
-            'warning_diagnostics' => $after['warning_diagnostics'],
-            'hub_degree_growth' => max(0, $after['max_degree'] - $before['max_degree']),
-            'unreferenced_candidates' => $after['unreferenced_candidates'],
-            'public_surface_changes' => $this->publicSurfaceChanges($baseline['facts'], $current['facts']),
+            'new_cycles' => $after['new_cycles'],
+            'error_diagnostics' => $after['metrics']['error_diagnostics'],
+            'warning_diagnostics' => $after['metrics']['warning_diagnostics'],
+            'hub_degree_growth' => max(0, $after['metrics']['max_degree'] - $before['metrics']['max_degree']),
+            'unreferenced_candidates' => $after['metrics']['unreferenced_candidates'],
+            'public_surface_changes' => count(array_diff_key($before['surface'], $after['surface'])) + count(array_diff_key($after['surface'], $before['surface'])),
         ];
+        unset($before, $after);
         $policyResult = null;
         $boundaryIndeterminate = false;
         if ($policies !== []) {
@@ -564,7 +622,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             $checks[] = $check;
             $passed = $passed && $checkPassed;
         }
-        $data = ['passed' => $passed, 'baseline_snapshot' => $baseline['metadata']['scan_id'], 'active_snapshot' => $current['metadata']['scan_id'],
+        $data = ['passed' => $passed, 'baseline_snapshot' => $baseline['scan_id'], 'active_snapshot' => $current['scan_id'],
             'checks' => $checks, 'metrics' => $actual];
         if ($proposeBaseline) {
             $data['proposed_baseline'] = ['budgets' => $actual, 'requires_review' => true, 'applied' => false];
@@ -576,15 +634,14 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
                 $results[] = ['ruleId' => 'knossos.boundary', 'level' => 'error', 'message' => ['text' => 'Architecture boundary policy violation.'],
                     'locations' => [['physicalLocation' => ['artifactLocation' => ['uri' => $evidence['path']], 'region' => ['startLine' => $evidence['start_line'] ?? 1]]]]];
             }
-            foreach ($current['facts']['diagnostics'] ?? [] as $diagnostic) {
-                if (!in_array($diagnostic['severity'], ['warning', 'error'], true)) {
-                    continue;
-                }
+            // Read for SARIF alone, and only as many as the 200 results allow.
+            $diagnostics = $this->pdo->prepare("SELECT severity, code, message FROM diagnostics WHERE project_id = ? AND severity IN ('error', 'warning') ORDER BY +id LIMIT ?");
+            $diagnostics->bindValue(1, $projectId);
+            $diagnostics->bindValue(2, max(0, 200 - count($results)), PDO::PARAM_INT);
+            $diagnostics->execute();
+            while (($diagnostic = $diagnostics->fetch(PDO::FETCH_ASSOC)) !== false) {
                 $results[] = ['ruleId' => 'knossos.' . $diagnostic['code'], 'level' => $diagnostic['severity'],
                     'message' => ['text' => $diagnostic['message']]];
-                if (count($results) >= 200) {
-                    break;
-                }
             }
             $data['sarif'] = ['$schema' => 'https://json.schemastore.org/sarif-2.1.0.json', 'version' => '2.1.0',
                 'runs' => [['tool' => ['driver' => ['name' => 'Knossos', 'informationUri' => 'https://github.com/']], 'results' => $results]]];
@@ -619,7 +676,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             $archived = !$snapshot['active'] && $snapshot['complete_archive'] === true;
             $figures = $archived ? $cache->get($snapshot['scan_id'], (string) $snapshot['captured_at'], (int) $snapshot['byte_size']) : null;
             if ($figures === null) {
-                $figures = $this->snapshotFigures($this->snapshotFacts($projectId, $snapshot['scan_id'], $project['active_scan_id'] ?? '')['facts']);
+                $figures = $this->snapshotFigures($this->readerFacts($projectId, $this->resolveSnapshot($projectId, $snapshot['scan_id'], $project['active_scan_id'] ?? '')));
                 if ($archived) {
                     $cache->put($snapshot['scan_id'], (string) $snapshot['captured_at'], (int) $snapshot['byte_size'], $figures);
                 }
@@ -675,7 +732,8 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         if (!is_array($metadata)) {
             throw new InvalidArgumentException(sprintf('Unknown complete snapshot: %s', $scanId));
         }
-        $archive = $this->pdo->prepare('SELECT * FROM scan_snapshots WHERE scan_id = :scan AND project_id = :project');
+        // Never the payload: the reader fetches or streams it when it is read.
+        $archive = $this->pdo->prepare('SELECT scan_id, project_id, scanner_set_hash, config_hash, complete, fact_count, byte_size, captured_at FROM scan_snapshots WHERE scan_id = :scan AND project_id = :project');
         $archive->execute(['scan' => $scanId, 'project' => $projectId]);
         $archived = $archive->fetch();
         $isActive = $scanId === $activeScanId;
@@ -700,27 +758,39 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     }
 
     /**
-     * The stored fact set for a snapshot, decoded for comparison.
+     * A resolved snapshot's graph through {@see SnapshotGraphReader}: the active tables by column list, or the archive read as it inflates.
      *
-     * @return array{metadata: array<string, mixed>, facts: array<string, list<array<string, mixed>>>}
+     * @param array{scan_id: string, is_active: bool, archived: array<string, mixed>|null} $resolved
+     * @return array<string, list<array<string, mixed>>>
      */
-    private function snapshotFacts(string $projectId, string $identifier, string $activeScanId): array
+    private function readerFacts(string $projectId, array $resolved): array
     {
-        $resolved = $this->resolveSnapshot($projectId, $identifier, $activeScanId);
-        $scanId = $resolved['scan_id'];
-        if (!$resolved['is_active']) {
-            $payload = json_decode(SnapshotPayload::decode((string) $resolved['archived']['payload_json']), true, 512, JSON_THROW_ON_ERROR);
-            $facts = $payload['facts'] ?? null;
-            if (!is_array($facts)) {
-                throw new InvalidArgumentException(sprintf('Snapshot archive payload is invalid: %s', $scanId));
-            }
-        } else {
-            $facts = [];
-            foreach (['files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics'] as $table) {
-                $facts[$table] = $this->activeSnapshotRows($projectId, $scanId, $table);
-            }
-        }
-        return ['metadata' => $resolved['metadata'], 'facts' => $facts];
+        $reader = new SnapshotGraphReader($this->pdo);
+
+        return $resolved['is_active']
+            ? $reader->active($projectId, $resolved['scan_id'])
+            : $reader->archivedById($resolved['scan_id']);
+    }
+
+    /**
+     * What the quality gate compares of one graph: its metrics, its public
+     * surface, which cycle each cycle member is in (by identity key), and,
+     * given the baseline's, how many of its cycles are new.
+     *
+     * @param array<string, list<array<string, mixed>>> $facts
+     * @param array<string, int>|null $baseCycleOf the baseline's cycle index, for the active graph
+     * @return array{metrics: array<string, int>, surface: array<string, true>, cycle_of: array<string, int>, new_cycles: int}
+     */
+    private function gateFigures(array $facts, ?array $baseCycleOf = null): array
+    {
+        $analysis = $this->snapshotAnalysis($facts);
+        $keys = self::identityKeys($facts);
+
+        return [
+            'metrics' => self::qualityMetrics($analysis), 'surface' => self::surfaceIds($facts),
+            'cycle_of' => self::cycleIndex($analysis['sccs'], $keys),
+            'new_cycles' => $baseCycleOf === null ? 0 : count(self::newCycles($baseCycleOf, $analysis['sccs'], $keys)),
+        ];
     }
 
     /**
@@ -734,21 +804,18 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         $resolved = $this->resolveSnapshot($projectId, $identifier, $activeScanId);
         $scanId = $resolved['scan_id'];
         if (!$resolved['is_active']) {
-            // A single JSON blob can only be decoded once; cache it and hand out
-            // per-table slices, reusing the one decoded payload.
-            $archived = $resolved['archived'];
-            $decoded = null;
-            $load = static function (string $table) use (&$decoded, $archived, $scanId): array {
-                if ($decoded === null) {
-                    $payload = json_decode(SnapshotPayload::decode((string) $archived['payload_json']), true, 512, JSON_THROW_ON_ERROR);
-                    $facts = $payload['facts'] ?? null;
-                    if (!is_array($facts)) {
-                        throw new InvalidArgumentException(sprintf('Snapshot archive payload is invalid: %s', $scanId));
-                    }
-                    $decoded = $facts;
-                }
-                return $decoded[$table] ?? [];
-            };
+            // One table per read, inflated a few kilobytes at a time: decoding
+            // the payload whole once and handing out slices held its JSON and
+            // every table's rows beside the rows being compared. A payload
+            // that can only be decoded whole (plain JSON from an earlier
+            // version) is decoded once for every table, not once per table.
+            $reader = new SnapshotGraphReader($this->pdo);
+            if ($reader->isStreamable($scanId)) {
+                $load = static fn(string $table): array => $reader->archivedTablesById($scanId, [$table])[$table];
+            } else {
+                $all = $reader->archivedTablesById($scanId, ['files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics']);
+                $load = static fn(string $table): array => $all[$table] ?? [];
+            }
         } else {
             $load = fn(string $table): array => $this->activeSnapshotRows($projectId, $scanId, $table);
         }
@@ -974,18 +1041,18 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
                 'roles' => count($facts['classifications'] ?? []), 'boundaries' => count($facts['boundaries'] ?? []),
                 'diagnostics' => count($facts['diagnostics'] ?? []),
             ],
-            'metrics' => $this->snapshotQualityMetrics($facts),
+            'metrics' => self::qualityMetrics($this->snapshotAnalysis($facts)),
         ];
     }
 
     /**
-     * The metrics the quality gate compares: cycles, violations, diagnostics, hub degree.
+     * The metrics a snapshot reports: cycles, diagnostics, hub degree, unreferenced candidates.
      *
-     * @param array<string, list<array<string, mixed>>> $facts @return array<string, int>
+     * @param array{reportable: array<string, true>, degree: array<string, int>, sccs: list<list<string>>, errors: int, warnings: int, unreferenced: list<string>} $analysis
+     * @return array<string, int>
      */
-    private function snapshotQualityMetrics(array $facts): array
+    private static function qualityMetrics(array $analysis): array
     {
-        $analysis = $this->snapshotAnalysis($facts);
         $cycles = count(array_filter($analysis['sccs'], static fn(array $component): bool => count($component) > 1));
         // Hub size is likewise a statement about the architecture, so a test-only
         // hub must not move it: otherwise every commit that adds tests spends
@@ -1025,6 +1092,10 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         // degree, but it is what says which type a method belongs to — needed
         // below to tell a contract member from an orphan.
         $members = $contracts = $inheritanceInDegree = [];
+        // Erased type-only imports, counted per pair: they stay in the
+        // adjacency (reachability, degrees, crossings) but not in the cycle
+        // search, as in dependency_cycles.
+        $erased = [];
         foreach ($facts['edges'] ?? [] as $edge) {
             if (!isset($nodes[$edge['source_id']], $nodes[$edge['target_id']])) {
                 continue;
@@ -1041,6 +1112,9 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             }
             $adjacency[$edge['source_id']][] = $edge['target_id'];
             $reverse[$edge['target_id']][] = $edge['source_id'];
+            if (ErasedTypeEdge::matches($edge)) {
+                $erased[$edge['source_id']][$edge['target_id']] = ($erased[$edge['source_id']][$edge['target_id']] ?? 0) + 1;
+            }
             // Only a relationship between two reportable components is part of
             // the architecture this degree describes. Excluding test and vendor
             // components from BEING hubs was not enough on its own: a test
@@ -1070,7 +1144,9 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         }
         // Self-loops are ordinary recursion, not architectural cycles;
         // dependency_cycles excludes them by default, so mirror that here.
-        $sccs = $this->stronglyConnectedComponents($adjacency, $reverse)['components'];
+        $sccs = $erased === []
+            ? $this->stronglyConnectedComponents($adjacency, $reverse)['components']
+            : $this->stronglyConnectedComponents(...self::withoutErased($adjacency, $erased))['components'];
         $errors = $warnings = 0;
         foreach ($facts['diagnostics'] ?? [] as $diagnostic) {
             $errors += $diagnostic['severity'] === 'error' ? 1 : 0;
@@ -1122,28 +1198,52 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             'errors' => $errors, 'warnings' => $warnings, 'unreferenced' => $unreferenced];
     }
     /**
-     * Additions and removals in the public API surface, the changes most likely to break a consumer.
+     * The impact graph without its erased type-only edges, both ways, for the cycle search.
      *
-     * @param array<string, list<array<string, mixed>>> $before @param array<string, list<array<string, mixed>>> $after
+     * Built only when such edges exist, so a graph without them shares its
+     * adjacency with the analysis instead of holding a second copy.
+     *
+     * @param array<string, list<string>> $adjacency
+     * @param array<string, array<string, int>> $erased how many erased edges join each source and target
+     * @return array{0: array<string, list<string>>, 1: array<string, list<string>>}
      */
-    private function publicSurfaceChanges(array $before, array $after): int
+    private static function withoutErased(array $adjacency, array $erased): array
     {
-        $surface = static function (array $facts): array {
-            $ids = [];
-            foreach ($facts['nodes'] ?? [] as $node) {
-                if (in_array($node['kind'], ['route', 'command', 'endpoint', 'export'], true)) {
-                    $ids[$node['id']] = true;
+        $forward = $reverse = array_fill_keys(array_keys($adjacency), []);
+        foreach ($adjacency as $source => $targets) {
+            foreach ($targets as $target) {
+                if (($erased[$source][$target] ?? 0) > 0) {
+                    --$erased[$source][$target];
+                    continue;
                 }
+                $forward[$source][] = $target;
+                $reverse[$target][] = $source;
             }
-            foreach ($facts['classifications'] ?? [] as $role) {
-                if (str_contains($role['role'], 'entry_point') || str_contains($role['role'], 'public')) {
-                    $ids[$role['node_id']] = true;
-                }
+        }
+
+        return [$forward, $reverse];
+    }
+
+    /**
+     * The ids of a graph's public API surface, the components whose addition or removal is most likely to break a consumer.
+     *
+     * @param array<string, list<array<string, mixed>>> $facts
+     * @return array<string, true>
+     */
+    private static function surfaceIds(array $facts): array
+    {
+        $ids = [];
+        foreach ($facts['nodes'] ?? [] as $node) {
+            if (in_array($node['kind'], ['route', 'command', 'endpoint', 'export'], true)) {
+                $ids[(string) $node['id']] = true;
             }
-            return $ids;
-        };
-        $beforeIds = $surface($before);
-        $afterIds = $surface($after);
-        return count(array_diff_key($beforeIds, $afterIds)) + count(array_diff_key($afterIds, $beforeIds));
+        }
+        foreach ($facts['classifications'] ?? [] as $role) {
+            if (str_contains($role['role'], 'entry_point') || str_contains($role['role'], 'public')) {
+                $ids[(string) $role['node_id']] = true;
+            }
+        }
+
+        return $ids;
     }
 }

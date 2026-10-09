@@ -175,7 +175,10 @@ write access.
 Use `annotate_component` to record a durable judgment on a component and
 `list_annotations` to read it back. Annotations are the one part of the graph
 that comes from an agent and not from a scan. They sit in their own table,
-keyed by canonical name and not by node id.
+keyed by canonical name and not by node id. `component` must match exactly: a
+stable id, a canonical name or a display name. A name that only starts like a
+component's is recorded as given, with a warning that names the components it
+might have meant, so an annotation never lands on a different component.
 
 ```json
 {

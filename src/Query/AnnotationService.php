@@ -28,15 +28,20 @@ final readonly class AnnotationService extends AbstractArchitectureQueryService
         if (strlen($value) > 2000) {
             throw new InvalidArgumentException('value must not exceed 2000 bytes.');
         }
-        $matches = $this->resolve($projectId, $component);
+        // Exact matches only: a prefix match once turned `App\Invoice` into
+        // `App\InvoiceService` and wrote the annotation on the wrong component.
+        $matches = $this->resolveExact($projectId, $component);
         if (count($matches) > 1) {
             $names = array_slice(array_column($matches, 'canonical_name'), 0, 5);
             throw new InvalidArgumentException('Component is ambiguous; use a canonical name. Candidates: ' . implode(', ', $names) . '.');
         }
         $canonical = $matches === [] ? $component : (string) $matches[0]['canonical_name'];
-        $warnings = $matches === []
-            ? ['Component not found in the current graph; the annotation is kept anyway (dynamic or upcoming symbol?).']
-            : [];
+        $warnings = [];
+        if ($matches === []) {
+            $warning = 'Component not found in the current graph; the annotation is kept anyway (dynamic or upcoming symbol?).';
+            $near = array_slice(array_column($this->resolve($projectId, $component), 'canonical_name'), 0, 5);
+            $warnings[] = $near === [] ? $warning : $warning . ' Did you mean: ' . implode(', ', $near) . '?';
+        }
 
         $existing = $this->fetch($projectId, $canonical, $kind);
         $action = $remove ? 'remove' : 'upsert';

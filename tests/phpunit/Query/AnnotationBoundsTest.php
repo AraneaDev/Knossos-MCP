@@ -178,10 +178,11 @@ final class AnnotationBoundsTest extends KnossosTestCase
     /**
      * An ambiguous component names five candidates, whichever number matched.
      *
-     * Six components share the prefix, so the exact-match query finds nothing
-     * and the prefix fallback returns all six in canonical-name order. The
-     * message names the first five of them: enough to disambiguate by hand,
-     * short enough to read.
+     * Six components share the display name `Amb`, so the exact-match query
+     * returns all six in canonical-name order. The message names the first
+     * five of them: enough to disambiguate by hand, short enough to read.
+     * (A shared prefix no longer makes a write ambiguous: annotations match
+     * exactly, so this test once used a prefix and now uses a display name.)
      */
     #[Group('query')]
     public function testTheAmbiguityMessageNamesTheFirstFiveCandidates(): void
@@ -195,7 +196,7 @@ final class AnnotationBoundsTest extends KnossosTestCase
                 'php',
                 'class',
                 $name,
-                'Amb' . $index,
+                'Amb',
                 null,
                 $ids['file'],
                 10 + $index,
@@ -211,7 +212,7 @@ final class AnnotationBoundsTest extends KnossosTestCase
         $queries = new ArchitectureQueryService($pdo);
 
         $error = captureThrows(
-            fn() => $queries->annotateComponent($ids['project'], 'App\\Amb', 'note', 'x', execute: true),
+            fn() => $queries->annotateComponent($ids['project'], 'Amb', 'note', 'x', execute: true),
             InvalidArgumentException::class,
         );
 

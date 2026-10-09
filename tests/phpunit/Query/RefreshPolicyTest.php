@@ -307,6 +307,66 @@ final class RefreshPolicyTest extends KnossosTestCase
      *
      * @return array{0: PDO, 1: string}
      */
+    /** A one-file refresh was costed at 510 ms while every recent incremental scan took seconds. */
+    #[Group('query')]
+    public function testRecentIncrementalScansSetTheOverhead(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_000, files: 1000);
+        $this->seedIncrementalScans($pdo, $projectId, [5_200, 7_000, 9_000]);
+
+        $decision = (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(0, 1, 0));
+
+        self::assertFalse($decision->refresh);
+        self::assertStringContainsString('5210 ms', (string) $decision->reason);
+    }
+
+    /** Only the last ten incremental scans count, so an old fast one no longer sets the overhead. */
+    #[Group('query')]
+    public function testOnlyTheLastTenIncrementalScansCount(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_000, files: 1000);
+        $this->seedIncrementalScans($pdo, $projectId, [100, ...array_fill(0, 10, 6_000)]);
+
+        $decision = (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(0, 1, 0));
+
+        self::assertFalse($decision->refresh);
+        self::assertStringContainsString('6010 ms', (string) $decision->reason);
+    }
+
+    /** The floor stands when recent incremental scans were quicker than it. */
+    #[Group('query')]
+    public function testAFastIncrementalHistoryStillRefreshes(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_000, files: 1000);
+        $this->seedIncrementalScans($pdo, $projectId, [300, 900]);
+
+        $decision = (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(0, 1, 0));
+
+        self::assertTrue($decision->refresh);
+    }
+
+    /**
+     * Complete incremental scans with these durations, oldest first, plus one
+     * without a duration (the no-change fast path records none) that must not count.
+     *
+     * @param list<int> $durations
+     */
+    private function seedIncrementalScans(PDO $pdo, string $projectId, array $durations): void
+    {
+        $insert = $pdo->prepare(
+            'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at, duration_ms) ' .
+            "VALUES (:id, :project, 'incremental', 'complete', :hash, :started, :duration)",
+        );
+        foreach ([...$durations, null] as $index => $duration) {
+            $insert->bindValue(':id', 'scan_incremental_' . $index);
+            $insert->bindValue(':project', $projectId);
+            $insert->bindValue(':hash', hash('sha256', 'scanner-set'));
+            $insert->bindValue(':started', sprintf('2030-01-01T00:%02d:00Z', $index));
+            $insert->bindValue(':duration', $duration, $duration === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
+            $insert->execute();
+        }
+    }
+
     private function seedScanCosting(?int $durationMs, int $files): array
     {
         [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);

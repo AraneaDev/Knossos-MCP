@@ -44,8 +44,8 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
         if ($boundaryRows === []) {
             return $this->noBoundariesResult($projectId, $project, $featureDescription, $tokens, $rankingMode, $limit, $maxMembers, $maxEdges, $timeoutMs);
         }
-        [$memberRows, $membersByBoundary, $boundariesByNode, $roles] = $this->members($projectId, $maxMembers, $truncated, $truncationReasons);
-        [$edges, $cohesion] = $this->cohesion($projectId, array_column($boundaryRows, 'id'), $boundariesByNode, $maxEdges, $deadline, $truncated, $truncationReasons);
+        [$memberRows, $membersByBoundary, $boundariesByNode, $roles] = $this->members($projectId, $maxMembers, $deadline, $truncated, $truncationReasons);
+        [$edgesExamined, $cohesion] = $this->cohesion($projectId, array_column($boundaryRows, 'id'), $boundariesByNode, $maxEdges, $deadline, $truncated, $truncationReasons);
         $candidates = $this->rank($boundaryRows, $membersByBoundary, $roles, $tokens, $cohesion, $deadline, $truncated, $truncationReasons);
         $ranking = $this->applySemanticRanking($candidates, $featureDescription, $rankingMode, $deadline);
 
@@ -59,7 +59,7 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
             $membersByBoundary,
             ['limit' => $limit, 'max_members' => $maxMembers, 'max_edges' => $maxEdges, 'timeout_ms' => $timeoutMs],
             count($memberRows),
-            count($edges),
+            $edgesExamined,
             $truncated,
             $truncationReasons,
         );
@@ -126,11 +126,15 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
     /**
      * Boundary members, indexed both ways, with the roles ranking scores against.
      *
+     * Streamed and bounded by the deadline as well as by `max_members`: a
+     * fetchAll() of up to 50,000 rows finished before the deadline was first
+     * consulted.
+     *
      * @param list<string> $truncationReasons
      *
      * @return array{0: list<array<string, mixed>>, 1: array<string, list<array<string, mixed>>>, 2: array<string, list<string>>, 3: array<string, list<array<string, mixed>>>}
      */
-    private function members(string $projectId, int $maxMembers, bool &$truncated, array &$truncationReasons): array
+    private function members(string $projectId, int $maxMembers, int $deadline, bool &$truncated, array &$truncationReasons): array
     {
         $memberStatement = $this->pdo->prepare(
             'SELECT bm.boundary_id, n.id, n.kind, n.canonical_name, n.display_name, n.start_line, n.end_line, f.relative_path ' .
@@ -140,12 +144,16 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
         $memberStatement->bindValue(':project', $projectId);
         $memberStatement->bindValue(':limit', $maxMembers + 1, PDO::PARAM_INT);
         $memberStatement->execute();
-        $memberRows = $memberStatement->fetchAll();
-        if (count($memberRows) > $maxMembers) {
+        $memberRows = [];
+        $reasons = $this->streamBounded($memberStatement, $maxMembers, $deadline, static function (array $row) use (&$memberRows): bool {
+            $memberRows[] = $row;
+
+            return true;
+        }, 'member_limit');
+        if ($reasons !== []) {
             $truncated = true;
-            $truncationReasons[] = 'member_limit';
+            $truncationReasons = [...$truncationReasons, ...$reasons];
         }
-        $memberRows = array_slice($memberRows, 0, $maxMembers);
         $membersByBoundary = [];
         $boundariesByNode = [];
         foreach ($memberRows as $member) {
@@ -160,36 +168,36 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
     /**
      * How self-contained each boundary is: edges wholly inside it against edges touching it.
      *
+     * Only dependency relationships count ({@see self::IMPACT_EDGE_KINDS}).
+     * `contains` links every declaration to its own members, so counting it
+     * scored a boundary on how many declarations it held. The edges are
+     * streamed and counted as they arrive, never held.
+     *
      * @param list<string> $boundaryIds
      * @param array<string, list<string>> $boundariesByNode
      * @param list<string> $truncationReasons
      *
-     * @return array{0: list<array<string, mixed>>, 1: array<string, array{internal: int, incident: int}>}
+     * @return array{0: int, 1: array<string, array{internal: int, incident: int}>} edges examined, and the counters per boundary
      */
     private function cohesion(string $projectId, array $boundaryIds, array $boundariesByNode, int $maxEdges, int $deadline, bool &$truncated, array &$truncationReasons): array
     {
-        $edgeStatement = $this->pdo->prepare(
-            'SELECT source_id, target_id FROM edges WHERE project_id = :project ORDER BY source_id, target_id, id LIMIT :limit',
-        );
-        $edgeStatement->bindValue(':project', $projectId);
-        $edgeStatement->bindValue(':limit', $maxEdges + 1, PDO::PARAM_INT);
-        $edgeStatement->execute();
-        $edges = $edgeStatement->fetchAll();
-        if (count($edges) > $maxEdges) {
-            $truncated = true;
-            $truncationReasons[] = 'edge_limit';
+        $edgeStatement = $this->pdo->prepare(sprintf(
+            'SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN (%s) ORDER BY source_id, target_id, id LIMIT ?',
+            implode(',', array_fill(0, count(self::IMPACT_EDGE_KINDS), '?')),
+        ));
+        $position = 0;
+        foreach ([$projectId, ...self::IMPACT_EDGE_KINDS] as $value) {
+            $edgeStatement->bindValue(++$position, $value);
         }
-        $edges = array_slice($edges, 0, $maxEdges);
+        $edgeStatement->bindValue(++$position, $maxEdges + 1, PDO::PARAM_INT);
+        $edgeStatement->execute();
         $cohesion = [];
         foreach ($boundaryIds as $boundaryId) {
             $cohesion[$boundaryId] = ['internal' => 0, 'incident' => 0];
         }
-        foreach ($edges as $index => $edge) {
-            if (($index % 256) === 0 && $this->now() > $deadline) {
-                $truncated = true;
-                $truncationReasons[] = 'time_limit';
-                break;
-            }
+        $examined = 0;
+        $reasons = $this->streamBounded($edgeStatement, $maxEdges, $deadline, static function (array $edge) use (&$examined, &$cohesion, $boundariesByNode): bool {
+            ++$examined;
             $sourceBoundaries = $boundariesByNode[$edge['source_id']] ?? [];
             $targetBoundaries = $boundariesByNode[$edge['target_id']] ?? [];
             foreach (array_values(array_unique([...$sourceBoundaries, ...$targetBoundaries])) as $boundaryId) {
@@ -203,9 +211,15 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
                     ++$cohesion[$boundaryId]['internal'];
                 }
             }
+
+            return true;
+        }, 'edge_limit');
+        if ($reasons !== []) {
+            $truncated = true;
+            $truncationReasons = [...$truncationReasons, ...$reasons];
         }
 
-        return [$edges, $cohesion];
+        return [$examined, $cohesion];
     }
 
     /**
@@ -421,7 +435,8 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            sprintf('Ranked %d existing architecture location candidate%s.', count($candidates), count($candidates) === 1 ? '' : 's'),
+            sprintf('Ranked %d existing architecture location candidate%s.', count($candidates), count($candidates) === 1 ? '' : 's')
+                . ($truncationReasons === [] ? '' : sprintf(' The ranking was truncated (%s).', implode(', ', $truncationReasons))),
             [
                 'feature_description' => $featureDescription, 'tokens' => $tokens, 'ranking' => $ranking, 'candidates' => $candidates,
                 'bounds' => $bounds + [

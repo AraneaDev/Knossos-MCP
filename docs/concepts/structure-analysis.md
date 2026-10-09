@@ -39,7 +39,10 @@ checkable instead of asserted. Over MCP the default `compact` verbosity
 collapses `via` to the edge kind. Ask for `verbosity: "full"`, or use `--json`
 on the CLI, to get the whole edge. `counts` breaks the result down
 `by_distance` and `by_confidence`, and `entry_points` lists the ways into the
-system among the dependants.
+system among the dependants: routes, commands and endpoints, and classes
+classified as a controller, a command or an entry point. Test code is never an
+entry point. This is the same definition the agent brief and the session brief
+use, so all three name the same components.
 
 The result always carries the warning "Impact is a conservative static blast
 radius; it does not guarantee that a dependant will break." Reflection,
@@ -70,6 +73,15 @@ count (`routes_to`, `calls`, `dispatches`, `handles`, `listens_to`,
 
 A pair with no static path returns an empty `paths` list rather than an error.
 That is a real answer, though it proves nothing about the runtime.
+
+The search is bounded by `timeout_ms` and by 10,000 states queued, so one
+component with thousands of callees cannot exhaust it. A full queue accepts no
+new states but still searches the ones it holds. When a bound cuts the search,
+`truncated` is true, `bounds.truncation_reasons` names each bound met
+(`time_limit`, `queue_limit` and others), and the summary says the search was
+truncated. `bounds.visited_states` and `bounds.queued_states` say how far the
+search got. An empty `paths` list from a truncated search means none were found
+before that bound, not that none exist.
 
 ![A route from ServeCommand::run to ResultEnvelope: five routes found, the strongest drawn as boxes with the call and its file and line on each hop](../images/claude-code/route.png)
 
@@ -120,11 +132,20 @@ what was left out, so the filtering is auditable.
 knossos architecture-health project_... --limit=20 --json
 ```
 
-A hub's score is its degree, the number of edges in and out. A hotspot adds
+A hub's score is its degree, the number of edges in and out, counted over
+every selected relationship in the project. `max_nodes` keeps the components
+the ranking can list first (external and test components only after them,
+unless you include those), highest degree first, and drops the rest, so a cut
+node window never hides a hub or the callers it counts. The top `limit`
+components are always ranked, even when `timeout_ms` runs out while the
+degrees are counted; the summary then still says the ranking was truncated.
+A hotspot adds
 twice its cross-boundary degree, plus three if it takes part in a cycle.
 The cycle check runs with the same `max_nodes` (default 50,000) and
 `max_edges` as the rest of the call, inside what is left of `timeout_ms`;
-when it is cut short, `bounds.cycle_scan_truncated` says so.
+when it is cut short, `bounds.cycle_scan_truncated` says so, `cycle_scan` is
+added to `bounds.truncation_reasons`, the result is `truncated` and the
+summary names it, because a hotspot may then be missing its cycle bonus.
 Hotspots are static structural signals and predict neither change frequency nor defects. For that, read [change review](change-review.md).
 
 The dead-code half of the result is the subtlest thing Knossos reports. It
@@ -146,6 +167,12 @@ knossos suggest-location project_... "refund a completed checkout" --json
 Each candidate shows its `factors` (name, member and role relevance, and
 internal dependency cohesion) next to the score, so a ranking you disagree with
 can be argued with. The `ranking` block says which mode was applied.
+Cohesion counts dependency relationships only, the same kinds
+`impact_analysis` follows: `contains`, which links every declaration to its
+own members, is left out, so a boundary is not rewarded for how many
+declarations it holds. Members and relationships are read within
+`timeout_ms`, `max_members` and `max_edges`, and `bounds.truncation_reasons`
+names whichever cut the read.
 
 ### Optional semantic ranking
 

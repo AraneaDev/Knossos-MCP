@@ -9,6 +9,13 @@ namespace Knossos\Mcp;
  * lists, so hoist each into a one-time components legend keyed by canonical name
  * and leave the name string behind. Mirrors BoundaryLegend. Only maps that are
  * node descriptors (string id + kind + canonical_name/display_name) are rewritten.
+ *
+ * A canonical name is not unique (a module and a package can share one), so a
+ * key belongs to the first component registered under it, in the data's own
+ * order. Another component with that name gets `name (kind)`, and if that is
+ * held too, `name (kind)#<last 8 characters of its id>`; a disambiguated entry
+ * carries its `id`. Keying by name alone merged distinct components into the
+ * first one's descriptor.
  */
 final class ComponentLegend
 {
@@ -17,11 +24,10 @@ final class ComponentLegend
     private const IDENTITY_KEYS = ['id', 'kind', 'canonical_name', 'display_name', 'confidence', 'origin', 'roles', 'boundaries', 'attributes', 'scanner_local_id', 'scanner'];
 
     /**
-     * Same compression as compress(), but also returns the id -> canonical-name
+     * Same compression as compress(), but also returns the id -> legend-key
      * index built while hoisting node descriptors. Callers (ResultEnricher) use
-     * this to rewrite dangling `*_id` references in evidence entries -- ids that
-     * pointed at a node which has just been replaced by its name string in
-     * $data -- into name references under a de-`_id`'d key.
+     * this to add, beside each `*_id` reference in evidence, the legend key of
+     * the node it names under a de-`_id`'d key.
      *
      * @param array<string, mixed> $data
      * @return array{0: array<string, mixed>, 1: array<string, mixed>, 2: array<string, string>}
@@ -30,7 +36,8 @@ final class ComponentLegend
     {
         $legend = [];
         $idToName = [];
-        $compressed = self::walk($data, $legend, $idToName);
+        $owners = [];
+        $compressed = self::walk($data, $legend, $idToName, $owners);
         return [$compressed, $legend, $idToName];
     }
 
@@ -40,13 +47,14 @@ final class ComponentLegend
      * @param array<string, mixed> $value
      * @param array<string, array<string, mixed>> $legend
      * @param array<string, string>|null $idToName
+     * @param array<string, string> $owners legend key => the id that holds it
      * @return array<string, mixed>
      */
-    private static function walk(array $value, array &$legend, ?array &$idToName = null): array
+    private static function walk(array $value, array &$legend, ?array &$idToName = null, array &$owners = []): array
     {
         foreach ($value as $key => $item) {
             if (is_array($item) && self::isNodeDescriptor($item)) {
-                $value[$key] = self::register($item, $legend, $idToName);
+                $value[$key] = self::register($item, $legend, $idToName, $owners);
                 continue;
             }
             if ($key === 'via' && is_array($item) && self::isEdge($item)) {
@@ -54,7 +62,7 @@ final class ComponentLegend
                 continue;
             }
             if (is_array($item)) {
-                $value[$key] = self::walk($item, $legend, $idToName);
+                $value[$key] = self::walk($item, $legend, $idToName, $owners);
             }
         }
         return $value;
@@ -98,40 +106,66 @@ final class ComponentLegend
      * @param array<string, mixed> $node
      * @param array<string, array<string, mixed>> $legend
      * @param array<string, string>|null $idToName
+     * @param array<string, string> $owners legend key => the id that holds it
      */
-    private static function register(array $node, array &$legend, ?array &$idToName = null): string
+    private static function register(array $node, array &$legend, ?array &$idToName, array &$owners): string
     {
+        $id = (string) $node['id'];
         $name = is_string($node['canonical_name'] ?? null) && $node['canonical_name'] !== ''
             ? $node['canonical_name']
-            : ((string) ($node['display_name'] ?? 'unknown')) . '#' . substr((string) $node['id'], -8);
-        // First occurrence defines the descriptor; duplicates are byte-identical within a response.
-        if (!isset($legend[$name])) {
-            $descriptor = ['kind' => $node['kind']];
-            if (isset($node['confidence'])) {
-                $descriptor['confidence'] = $node['confidence'];
+            : ((string) ($node['display_name'] ?? 'unknown')) . '#' . substr($id, -8);
+        $qualified = $name . ' (' . $node['kind'] . ')';
+        $key = $name;
+        foreach ([$name, $qualified, $qualified . '#' . substr($id, -8)] as $candidate) {
+            $key = $candidate;
+            if (($owners[$candidate] ?? $id) === $id) {
+                break;
             }
-            if (isset($node['origin'])) {
-                $descriptor['origin'] = $node['origin'];
-            }
-            if (($node['boundaries'] ?? []) !== []) {
-                $descriptor['boundaries'] = $node['boundaries'];
-            }
-            $roles = self::roleNames($node['roles'] ?? []);
-            if ($roles !== []) {
-                $descriptor['roles'] = $roles;
-            }
-            // Keep attributes (visibility, static, abstract, extends, …) — they
-            // are IDENTITY_KEYS-allowlisted and agent-relevant, so hoisting a
-            // node must not silently drop them.
-            if (($node['attributes'] ?? []) !== []) {
-                $descriptor['attributes'] = $node['attributes'];
-            }
-            $legend[$name] = $descriptor;
         }
-        if ($idToName !== null && is_string($node['id'] ?? null)) {
-            $idToName[$node['id']] = $name;
+        // First occurrence defines the descriptor; the same id repeats byte-identical within a response.
+        if (!isset($legend[$key])) {
+            $owners[$key] = $id;
+            $legend[$key] = self::descriptor($node, $key !== $name);
         }
-        return $name;
+        if ($idToName !== null) {
+            $idToName[$id] = $key;
+        }
+        return $key;
+    }
+
+    /**
+     * The legend entry for a node; one under a disambiguated key carries the node's id.
+     *
+     * @param array<string, mixed> $node
+     * @return array<string, mixed>
+     */
+    private static function descriptor(array $node, bool $withId): array
+    {
+        $descriptor = ['kind' => $node['kind']];
+        if ($withId) {
+            $descriptor['id'] = $node['id'];
+        }
+        if (isset($node['confidence'])) {
+            $descriptor['confidence'] = $node['confidence'];
+        }
+        if (isset($node['origin'])) {
+            $descriptor['origin'] = $node['origin'];
+        }
+        if (($node['boundaries'] ?? []) !== []) {
+            $descriptor['boundaries'] = $node['boundaries'];
+        }
+        $roles = self::roleNames($node['roles'] ?? []);
+        if ($roles !== []) {
+            $descriptor['roles'] = $roles;
+        }
+        // Keep attributes (visibility, static, abstract, extends, ...): they
+        // are IDENTITY_KEYS-allowlisted and agent-relevant, so hoisting a
+        // node must not silently drop them.
+        if (($node['attributes'] ?? []) !== []) {
+            $descriptor['attributes'] = $node['attributes'];
+        }
+
+        return $descriptor;
     }
 
     /**

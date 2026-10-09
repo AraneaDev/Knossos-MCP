@@ -24,6 +24,13 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      */
     private const IN_DEGREE_FROM = [0, 1, 6, 21, 101];
 
+    /**
+     * States explain_flow may queue. It also bounds the states visited, since
+     * a state is visited at most once and only after it was queued, so no
+     * separate visit bound is needed.
+     */
+    private const MAX_FLOW_STATES = 10_000;
+
     /** Node, relationship, role, and language counts: the orientation query for an unfamiliar codebase. */
     public function architectureSummary(string $projectId, int $limit = 50): ResultEnvelope
     {
@@ -164,7 +171,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // roles and boundaries are loaded for the reported page alone. A full
         // row per node, with its roles and boundaries, needed more than 128 MB
         // well before the 50,000-node default.
-        $slice = $this->healthSlice($projectId, $maxNodes, $deadline);
+        $slice = $this->healthSlice($projectId, $edgeKinds, $confidenceRank[$minConfidence], ['nodes' => $maxNodes, 'page' => $limit, 'external' => $includeExternal, 'tests' => $includeTests], $deadline);
         $truncationReasons = $slice['truncation_reasons'];
         $truncated = $truncationReasons !== [];
 
@@ -201,6 +208,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $truncated = true;
             $truncationReasons[] = 'time_limit';
             $cycleScanTruncated = true;
+        }
+        if ($cycleScanTruncated) {
+            // Hotspots without their full cycle signal are a cut ranking too.
+            $truncated = true;
+            $truncationReasons[] = 'cycle_scan';
         }
 
         $ranked = $this->rankNodes($slice, $metrics, $cycleMembers, $includeExternal, $includeTests, $limit);
@@ -300,32 +312,78 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
 
 
     /**
-     * The nodes architecture_health ranks, as the three facts the ranking reads.
+     * The nodes architecture_health ranks, as the facts the ranking reads.
      *
-     * Each node in the slice is numbered in name order and keeps whether it is
-     * external, whether it is test code, and which boundaries it belongs to;
-     * nothing else about it is held. The boundaries are kept as one of a few
+     * Each node in the slice is numbered in rank order and keeps its in and
+     * out degree, whether it is external, whether it is test code, and which
+     * boundaries it belongs to; nothing else about it is held. Rank order puts
+     * the components the ranking keeps first (external and test ones last,
+     * unless the caller includes them), then the highest degree, then name.
+     * Degree is counted in SQL over every selected edge of the project, so a
+     * node's callers count whether or not they are in the slice, and
+     * `max_nodes` drops the lowest-ranked nodes, which cannot be hubs while
+     * the window holds a rankable one. The slice used to be the first
+     * `max_nodes` by name, which dropped a hub named late together with every
+     * edge from outside the window. The boundaries are kept as one of a few
      * distinct sets (most nodes share their set with many others), with the
      * repository-wide boundaries left out because they partition nothing.
      *
-     * @return array{ids: list<string>, index: array<string, int>, external: list<bool>, test: array<int, true>, boundary_set: array<int, int>, boundary_sets: list<list<string>>, truncation_reasons: list<string>}
+     * Degree is two grouped counts, one per end, so each reads a covering
+     * index (`edges_project_target_idx`, `edges_project_source_idx`) when no
+     * confidence filter is asked for. The counts finish before the first row
+     * arrives, so the first `page` rows (the hubs a caller asked for) are kept
+     * even when the deadline has passed by then; the deadline is honoured from
+     * the next row on, and still reported.
+     *
+     * @param list<string> $edgeKinds
+     * @param array{nodes: int, page: int, external: bool, tests: bool} $bounds max_nodes, the page size, and whether externals and tests are ranked
+     * @return array{ids: list<string>, index: array<string, int>, in: list<int>, out: list<int>, external: list<bool>, test: array<int, true>, boundary_set: array<int, int>, boundary_sets: list<list<string>>, truncation_reasons: list<string>}
      */
-    private function healthSlice(string $projectId, int $maxNodes, int $deadline): array
+    private function healthSlice(string $projectId, array $edgeKinds, int $minimumRank, array $bounds, int $deadline): array
     {
-        $slice = ['ids' => [], 'index' => [], 'external' => [], 'test' => [], 'boundary_set' => [], 'boundary_sets' => [], 'truncation_reasons' => []];
-        $statement = $this->pdo->prepare('SELECT n.id, n.kind, n.origin FROM nodes n WHERE n.project_id = :project ORDER BY n.canonical_name, n.id LIMIT :limit');
-        $statement->bindValue(':project', $projectId);
-        $statement->bindValue(':limit', $maxNodes + 1, PDO::PARAM_INT);
+        $slice = ['ids' => [], 'index' => [], 'in' => [], 'out' => [], 'external' => [], 'test' => [], 'boundary_set' => [], 'boundary_sets' => [], 'truncation_reasons' => []];
+        $filter = sprintf('project_id = ? AND kind IN (%s)', implode(',', array_fill(0, count($edgeKinds), '?')));
+        $filterValues = [$projectId, ...$edgeKinds];
+        if ($minimumRank > 1) {
+            $filter .= " AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER)";
+            $filterValues[] = $minimumRank;
+        }
+        $statement = $this->pdo->prepare(
+            'SELECT n.id, n.kind, n.origin, COALESCE(i.degree, 0) AS in_degree, COALESCE(o.degree, 0) AS out_degree FROM nodes n ' .
+            sprintf('LEFT JOIN (SELECT target_id AS node_id, COUNT(*) AS degree FROM edges WHERE %s GROUP BY target_id) i ON i.node_id = n.id ', $filter) .
+            sprintf('LEFT JOIN (SELECT source_id AS node_id, COUNT(*) AS degree FROM edges WHERE %s GROUP BY source_id) o ON o.node_id = n.id ', $filter) .
+            'WHERE n.project_id = ? ORDER BY CASE WHEN (? = 1 AND (substr(n.kind, 1, 9) = \'external_\' OR n.origin IN (\'external\', \'unresolved\'))) ' .
+            'OR (? = 1 AND n.id IN (SELECT node_id FROM classifications WHERE project_id = ? AND role = ?)) THEN 1 ELSE 0 END, ' .
+            'COALESCE(i.degree, 0) + COALESCE(o.degree, 0) DESC, n.canonical_name, n.id LIMIT ?',
+        );
+        $values = [...$filterValues, ...$filterValues, $projectId, $bounds['external'] ? 0 : 1, $bounds['tests'] ? 0 : 1, $projectId, ReportableComponent::TEST_ROLE];
+        foreach ($values as $position => $value) {
+            $statement->bindValue($position + 1, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $statement->bindValue(count($values) + 1, $bounds['nodes'] + 1, PDO::PARAM_INT);
         $statement->execute();
         // Streamed: max_nodes reaches 50,000 rows, and fetchAll() read every
         // one of them before the deadline was ever consulted.
-        $slice['truncation_reasons'] = $this->streamBounded($statement, $maxNodes, $deadline, static function (array $row) use (&$slice): bool {
-            $slice['index'][$row['id']] = count($slice['ids']);
-            $slice['ids'][] = (string) $row['id'];
-            $slice['external'][] = ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
-
-            return true;
-        }, 'node_limit');
+        $seen = 0;
+        try {
+            while (($row = $statement->fetch()) !== false) {
+                if (++$seen > $bounds['nodes']) {
+                    $slice['truncation_reasons'] = ['node_limit'];
+                    break;
+                }
+                if ($seen > $bounds['page'] && ($seen - $bounds['page']) % 64 === 1 && $this->now() > $deadline) {
+                    $slice['truncation_reasons'] = ['time_limit'];
+                    break;
+                }
+                $slice['index'][$row['id']] = count($slice['ids']);
+                $slice['ids'][] = (string) $row['id'];
+                $slice['in'][] = (int) $row['in_degree'];
+                $slice['out'][] = (int) $row['out_degree'];
+                $slice['external'][] = ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
+            }
+        } finally {
+            $statement->closeCursor();
+        }
 
         $tests = $this->pdo->prepare('SELECT DISTINCT node_id FROM classifications WHERE project_id = ? AND role = ?');
         $tests->execute([$projectId, ReportableComponent::TEST_ROLE]);
@@ -388,9 +446,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     }
 
     /**
-     * One streamed pass over the edge slice, producing the degrees the hub and
-     * hotspot rankings read: in/out degree, and the cross-boundary degree
-     * hotspots rank on. An edge counts only when both ends are in the node slice.
+     * One streamed pass over the edge slice, producing the cross-boundary
+     * degree hotspots rank on. In and out degree come from the slice, counted
+     * in SQL over every selected edge; they are passed through unchanged.
+     * Cross-boundary degree still needs both ends of an edge in the node slice
+     * (an edge to a node outside it has no boundary set to compare) and is
+     * read from the edge stream `max_edges` bounds.
      *
      * Extracted from architectureHealth because that method is up against the
      * repository's own function-length budget, and this is the seam that pays:
@@ -398,7 +459,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * here decides what any of it means. Dead-code candidates are decided over
      * the whole graph by DeadCodeCandidates, not from this slice.
      *
-     * @param array{index: array<string, int>, boundary_set: array<int, int>, boundary_sets: list<list<string>>} $slice
+     * @param array{index: array<string, int>, in: list<int>, out: list<int>, boundary_set: array<int, int>, boundary_sets: list<list<string>>} $slice
      * @return array{
      *     metrics: array{in: list<int>, out: list<int>, cross: list<int>},
      *     edges_examined: int,
@@ -408,7 +469,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     private function walkDegrees(PDOStatement $edges, array $slice, int $maxEdges, int $deadline): array
     {
         $count = count($slice['index']);
-        $metrics = ['in' => array_fill(0, $count, 0), 'out' => array_fill(0, $count, 0), 'cross' => array_fill(0, $count, 0)];
+        $metrics = ['in' => $slice['in'], 'out' => $slice['out'], 'cross' => array_fill(0, $count, 0)];
         $edgesExamined = 0;
         // Two nodes cross a boundary when both belong to some boundary and
         // they share none; decided once per pair of distinct sets.
@@ -420,8 +481,6 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             if ($source === null || $target === null) {
                 return true;
             }
-            ++$metrics['out'][$source];
-            ++$metrics['in'][$target];
             $a = $slice['boundary_set'][$source] ?? null;
             $b = $slice['boundary_set'][$target] ?? null;
             if ($a !== null && $b !== null && $a !== $b) {
@@ -446,8 +505,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * into the in-degree histogram, so a bucket says how many there are and
      * the ranking which few are listed.
      *
-     * Only the first `$limit` of each ranking are kept, by score and then by
-     * name, which is the slice's own order; the totals say how many there were.
+     * Only the first `$limit` of each ranking are kept, by score and then in
+     * the slice's own order (degree, then name); the totals say how many there were.
      * Dead-code candidates are not drawn from the slice; DeadCodeCandidates
      * finds them over the whole project. Nothing here reads the database.
      *
@@ -480,7 +539,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $hotspots[$index] = $degree + (2 * $metrics['cross'][$index]) + (isset($cycleMembers[$id]) ? 3 : 0);
             }
         }
-        // Stable: equal scores keep the slice's name order.
+        // Stable: equal scores keep the slice's order, degree then name.
         arsort($hubs);
         arsort($hotspots);
 
@@ -593,6 +652,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * enough of those to fill the limit on their own, every test_only finding
      * sits past the cut and a tally taken from the slice reads as zero while
      * the full list still has some.
+     *
+     * `cycle_scan` among the reasons means the cycle check was cut short
+     * (by its own bounds or by the deadline), so a hotspot may be missing the
+     * cycle-participant bonus it would otherwise carry.
      *
      * The hub walk's truncation and the candidate search's are reported
      * apart: the node bound limits the ranking only, and a candidate search
@@ -772,33 +835,49 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $sourceSet = $this->flowEndpointSet($projectId, $source, $endpointTruncated);
         $targetSet = $this->flowEndpointSet($projectId, $target, $endpointTruncated);
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
+        // A head index instead of array_shift, which re-indexes the whole queue
+        // on every pop; each popped slot is unset so its path copy is released.
         $queue = [];
+        $head = 0;
         foreach ($sourceSet as $start) {
             $queue[] = [[$start], [], [$start['id'] => true]];
         }
+        // Every queued state carries a copy of its path, so the visit bound
+        // alone let one wide node queue far more than it could ever visit.
+        $queued = count($queue);
         $paths = [];
         // Keyed by signature: the cap and the max_paths budget are both about
         // distinct ROUTES, and two call sites between the same pair of symbols
         // are one route written twice. Counting the copies let a hot pair spend
         // the whole search before any other route was reached.
         $visited = 0;
+        $queueFull = false;
         $truncated = false;
         $truncationReasons = [];
         $flowEdgesTruncated = false;
         $candidateCap = $maxPaths * 20;
-        while ($queue !== [] && count($paths) < $candidateCap) {
-            if ($this->now() > $deadline || $visited >= 10_000) {
+        while (isset($queue[$head]) && count($paths) < $candidateCap) {
+            if ($this->now() > $deadline) {
                 $truncated = true;
-                $truncationReasons[] = $visited >= 10_000 ? 'visit_limit' : 'time_limit';
+                $truncationReasons[] = 'time_limit';
                 break;
             }
-            [$nodes, $hops, $seen] = array_shift($queue);
+            [$nodes, $hops, $seen] = $queue[$head];
+            unset($queue[$head]);
+            ++$head;
             ++$visited;
             if (count($hops) >= $maxDepth) {
                 continue;
             }
             $last = $nodes[array_key_last($nodes)];
-            foreach ($this->flowEdges($projectId, $last['id'], $edgeKinds, $confidenceRank[$minConfidence], $flowEdgesTruncated) as $edge) {
+            foreach ($this->flowEdges($projectId, $last['id'], $edgeKinds, $confidenceRank[$minConfidence], $flowEdgesTruncated) as $index => $edge) {
+                // Up to 500 edges per node: the clock is read on the first and
+                // every 64th, so one wide node cannot run past the deadline.
+                if ($index % 64 === 0 && $this->now() > $deadline) {
+                    $truncated = true;
+                    $truncationReasons[] = 'time_limit';
+                    break 2;
+                }
                 // The goal may be reached even when it is already in $seen: the
                 // source is pre-seeded, so a self-flow (from == to) depends on
                 // matching the target before the visited-guard skips it.
@@ -806,10 +885,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 if (isset($seen[$edge['target_id']]) && !$isTarget) {
                     continue;
                 }
-                $next = $this->node($edge['target_id']);
-                if ($next === null) {
-                    continue;
-                }
+                // The edge query joins the target row, so a dangling target is
+                // already excluded and no lookup per edge is needed.
+                $next = [
+                    'id' => $edge['target_id'], 'kind' => $edge['target_kind'], 'canonical_name' => $edge['target_canonical_name'],
+                    'display_name' => $edge['target_display_name'], 'confidence' => $edge['target_confidence'],
+                ];
                 $newNodes = [...$nodes, $next];
                 $newHops = [...$hops, $edge];
                 if ($isTarget) {
@@ -829,9 +910,22 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     }
                     continue;
                 }
+                if ($queued >= self::MAX_FLOW_STATES) {
+                    // A full queue refuses new states but keeps searching the
+                    // ones it holds: they cost no more memory, and any of them
+                    // may be one hop from the target, as this edge's target
+                    // check above already allows.
+                    if (!$queueFull) {
+                        $queueFull = true;
+                        $truncated = true;
+                        $truncationReasons[] = 'queue_limit';
+                    }
+                    continue;
+                }
                 $newSeen = $seen;
                 $newSeen[$next['id']] = true;
                 $queue[] = [$newNodes, $newHops, $newSeen];
+                ++$queued;
             }
         }
         if ($flowEdgesTruncated) {
@@ -865,13 +959,17 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             }
         }
         $count = count($paths);
+        $summary = $count === 0 ? 'No supported static flow was found within the configured bounds.' : sprintf('Found %d plausible static flow%s.', $count, $count === 1 ? '' : 's');
+        if ($truncated) {
+            $summary .= sprintf(' The search was truncated (%s).', implode(', ', $truncationReasons));
+        }
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            $count === 0 ? 'No supported static flow was found within the configured bounds.' : sprintf('Found %d plausible static flow%s.', $count, $count === 1 ? '' : 's'),
+            $summary,
             [
                 'from' => $source, 'to' => $target, 'paths' => $paths,
-                'bounds' => ['max_depth' => $maxDepth, 'max_paths' => $maxPaths, 'timeout_ms' => $timeoutMs, 'visited_states' => $visited, 'truncation_reason' => $truncationReasons[0] ?? null, 'truncation_reasons' => $truncationReasons],
+                'bounds' => ['max_depth' => $maxDepth, 'max_paths' => $maxPaths, 'timeout_ms' => $timeoutMs, 'visited_states' => $visited, 'queued_states' => $queued, 'truncation_reason' => $truncationReasons[0] ?? null, 'truncation_reasons' => $truncationReasons],
             ],
             $evidence,
             ['Flows are plausible statically supported paths, not proof of runtime execution.'],
@@ -918,8 +1016,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // can pass one shared deadline so the whole request is bounded, instead
         // of each analysis resetting its own timeout.
         $deadline ??= $this->now() + ($timeoutMs * 1_000_000);
-        $queue = [[$target, 0, 3]];
+        $queue = [[$target, 0]];
         $seen = [$target['id'] => true];
+        // Best confidence rank found for each node at its shortest distance.
+        // Read at dequeue rather than carried in the queued tuple: every
+        // rediscovery at distance d+1 comes from a level-d node, and FIFO order
+        // dequeues all level-d nodes before any level-d+1 node, so by the time
+        // a node is dequeued no further upgrade of its rank is possible and the
+        // value read here is final.
+        $bestRank = [$target['id'] => 3];
         $dependants = [];
         $recordIndex = [];
         $truncated = false;
@@ -927,12 +1032,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $edgesTruncated = false;
         $visited = 0;
         while ($queue !== []) {
-            if ($this->now() > $deadline || $visited >= 10_000) {
+            // No visit bound: only accepted dependants are queued, and at most
+            // $limit (100) are accepted, so at most $limit + 1 states are visited.
+            if ($this->now() > $deadline) {
                 $truncated = true;
-                $truncationReason = $visited >= 10_000 ? 'visit_limit' : 'time_limit';
+                $truncationReason = 'time_limit';
                 break;
             }
-            [$current, $distance, $pathConfidence] = array_shift($queue);
+            [$current, $distance] = array_shift($queue);
+            $pathConfidence = $bestRank[$current['id']];
             ++$visited;
             if ($distance >= $maxDepth) {
                 continue;
@@ -946,8 +1054,13 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     $existingIndex = $recordIndex[$edge['source_id']] ?? null;
                     if ($existingIndex !== null && $dependants[$existingIndex]['distance'] === $distance + 1) {
                         $candidateRank = min($pathConfidence, $edgeConfidence);
-                        if ($candidateRank > $confidenceRank[$dependants[$existingIndex]['path_confidence']]) {
-                            $dependants[$existingIndex]['path_confidence'] = array_search($candidateRank, $confidenceRank, true);
+                        if ($candidateRank > $bestRank[$edge['source_id']]) {
+                            // Raise the record, the hop that justifies it (and
+                            // so its evidence), and the rank its own dependants
+                            // inherit together, so the three never disagree.
+                            $bestRank[$edge['source_id']] = $candidateRank;
+                            $dependants[$existingIndex]['path_confidence'] = self::rankName($candidateRank);
+                            $dependants[$existingIndex]['via'] = $this->impactHop($edge);
                         }
                     }
                     continue;
@@ -957,10 +1070,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     continue;
                 }
                 $seen[$node['id']] = true;
+                $bestRank[$node['id']] = min($pathConfidence, $edgeConfidence);
                 $dependants[] = [
                     'node' => $node,
                     'distance' => $distance + 1,
-                    'path_confidence' => array_search(min($pathConfidence, $edgeConfidence), $confidenceRank, true),
+                    'path_confidence' => self::rankName($bestRank[$node['id']]),
                     'via' => $this->impactHop($edge),
                 ];
                 // limit+1 semantics: keep exactly $limit, flag truncation only
@@ -972,7 +1086,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     break 2;
                 }
                 $recordIndex[$node['id']] = array_key_last($dependants);
-                $queue[] = [$node, $distance + 1, min($pathConfidence, $edgeConfidence)];
+                $queue[] = [$node, $distance + 1];
             }
         }
         if ($edgesTruncated) {
@@ -1134,7 +1248,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     {
         $placeholders = implode(',', array_fill(0, count($edgeKinds), '?'));
         $statement = $this->pdo->prepare(
-            'SELECT e.*, f.relative_path, source.display_name AS source_name, target.display_name AS target_name ' .
+            'SELECT e.*, f.relative_path, source.display_name AS source_name, target.display_name AS target_name, ' .
+            'target.kind AS target_kind, target.canonical_name AS target_canonical_name, ' .
+            'target.display_name AS target_display_name, target.confidence AS target_confidence ' .
             'FROM edges e JOIN nodes source ON source.id = e.source_id JOIN nodes target ON target.id = e.target_id ' .
             'LEFT JOIN files f ON f.id = e.file_id WHERE e.project_id = ? AND e.source_id = ? ' .
             sprintf('AND e.kind IN (%s) ', $placeholders) .
@@ -1191,26 +1307,24 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         ];
     }
     /**
-     * Whether a node is reachable from outside: a route, command, or listener.
+     * Whether a dependant is a way into the system, by the definition the briefs share.
      *
      * @param array<string, mixed> $record
      */
     private function isEntryPoint(array $record): bool
     {
-        if (in_array($record['node']['kind'], ['route', 'command'], true)) {
-            return true;
-        }
-        $entryRoles = [
-            'application.controller', 'application.command', 'laravel.controller', 'laravel.command',
-            'laravel.job', 'application.entry_point',
-        ];
-        foreach ($record['roles'] as $role) {
-            if (in_array($role['role'], $entryRoles, true)) {
-                return true;
-            }
-        }
-        return false;
+        return EntryPointCriteria::matches((string) $record['node']['kind'], array_column($record['roles'], 'role'));
     }
+    /**
+     * The confidence name for a rank in {@see self::CONFIDENCE_RANK}.
+     *
+     * @param int $rank 1 (possible) to 3 (certain)
+     */
+    private static function rankName(int $rank): string
+    {
+        return (string) array_search($rank, self::CONFIDENCE_RANK, true);
+    }
+
     /**
      * Rank one flow against another: strongest evidence first.
      *

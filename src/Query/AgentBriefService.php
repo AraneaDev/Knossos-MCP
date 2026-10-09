@@ -185,8 +185,16 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
         );
         return "\n## Entry points\n\n" . implode("\n", $lines) . "\n";
     }
-    /** The brief's hub section: the components a change is most likely to reach. */
-
+    /**
+     * The brief's hub section: the components a change is most likely to reach.
+     *
+     * Never labelled partial. No bound architecture_health reports can change
+     * which five hubs lead: the node slice keeps its first `limit` rows, which
+     * are those hubs, whatever the deadline; `node_limit` drops only
+     * lower-ranked components; `edge_limit` and a deadline met during the edge
+     * walk cut only the cross-boundary degree hotspots use; `cycle_scan`
+     * scores hotspots; and `result_limit` is the five asked for.
+     */
     private function hubsSection(string $projectId): ?string
     {
         $hubs = $this->topology->architectureHealth($projectId, limit: 5)->data['hubs'];

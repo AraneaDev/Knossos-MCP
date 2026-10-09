@@ -72,20 +72,31 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
         $policyCheck = ['status' => 'not_evaluated', 'reason' => $configReason ?? 'No boundary policies declared in knossos.json or supplied.'];
         if ($policies !== []) {
             try {
+                // Two checks: the whole project's for the total, and one scoped
+                // to edges touching the change for those violations. Both
+                // counts are the checks' exact `violation_count`, never the
+                // length of a 100-violation page, and the touching ones are not
+                // filtered out of the whole project's first page.
                 $check = $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, 100, ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, $timeoutMs);
-                $touchingViolations = array_values(array_filter(
-                    $check->data['violations'],
-                    static fn(array $violation): bool => isset($touched[$violation['source']['id']]) || isset($touched[$violation['target']['id']]),
-                ));
+                $touching = $touched === [] ? null : $this->policyQueries->checkArchitecture(
+                    $projectId,
+                    $policies,
+                    $minConfidence,
+                    100,
+                    ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES,
+                    $timeoutMs,
+                    touchingIds: array_map('strval', array_keys($touched)),
+                );
                 $policyCheck = [
                     'status' => 'evaluated',
                     'policies_evaluated' => count($check->data['policies_evaluated']),
-                    'total_violations' => count($check->data['violations']),
-                    'violations_touching_change' => $touchingViolations,
+                    'total_violations' => (int) ($check->data['bounds']['violation_count'] ?? count($check->data['violations'])),
+                    'touching_violation_count' => $touching === null ? 0 : (int) ($touching->data['bounds']['violation_count'] ?? count($touching->data['violations'])),
+                    'violations_touching_change' => $touching === null ? [] : $touching->data['violations'],
                 ];
-                $checkEvidence = $check->evidence;
-                $warnings = [...$warnings, ...$check->warnings];
-                $truncated = $truncated || $check->truncated;
+                $checkEvidence = $touching === null ? $check->evidence : $touching->evidence;
+                $warnings = [...$warnings, ...$check->warnings, ...($touching === null ? [] : $touching->warnings)];
+                $truncated = $truncated || $check->truncated || ($touching !== null && $touching->truncated);
             } catch (InvalidArgumentException $error) {
                 $policyCheck = ['status' => 'not_evaluated', 'reason' => 'Policy check failed: ' . $error->getMessage()];
             }
@@ -121,8 +132,11 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
             $touchingCycles = array_values(array_filter(
                 $cycleResult->data['cycles'],
                 static function (array $cycle) use ($touched): bool {
-                    foreach ($cycle['members'] as $member) {
-                        if (isset($touched[$member['id']])) {
+                    // member_ids is the whole cycle; `members` lists only its
+                    // first 100, so a larger cycle was missed when a change
+                    // touched a member past them.
+                    foreach ($cycle['member_ids'] as $memberId) {
+                        if (isset($touched[$memberId])) {
                             return true;
                         }
                     }
@@ -146,7 +160,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
             count($change->data['impacted_components']),
             count($change->data['impacted_components']) === 1 ? '' : 's',
             $policyCheck['status'] === 'evaluated'
-                ? sprintf('%d policy violation%s touching the change', count($policyCheck['violations_touching_change']), count($policyCheck['violations_touching_change']) === 1 ? '' : 's')
+                ? sprintf('%d policy violation%s touching the change', $policyCheck['touching_violation_count'], $policyCheck['touching_violation_count'] === 1 ? '' : 's')
                 : 'policies not evaluated',
             $qualityGate['status'] === 'evaluated' ? ($qualityGate['passed'] ? 'passed' : 'FAILED') : 'not evaluated',
         );

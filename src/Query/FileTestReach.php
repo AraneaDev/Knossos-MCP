@@ -108,7 +108,9 @@ final readonly class FileTestReach
                 $truncated = true;
                 break;
             }
-            $found = $queries->testImpact($projectId, $chunk, limit: $limit, timeoutMs: max(1, min(self::CHUNK_MS, $left)));
+            // test_impact accepts a limit of 1 to 100; this list is cut to
+            // $limit below either way, so a smaller or larger one is clamped.
+            $found = $queries->testImpact($projectId, $chunk, limit: max(1, min(100, $limit)), timeoutMs: max(1, min(self::CHUNK_MS, $left)));
             $truncated = $truncated || $found->truncated;
             foreach ($found->data['test_files'] ?? [] as $test) {
                 $path = (string) $test['path'];

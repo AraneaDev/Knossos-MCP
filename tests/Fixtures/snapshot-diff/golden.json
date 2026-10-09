@@ -1,0 +1,223 @@
+{
+    "summary": "Compared snapshots with 7 added, removed, changed, or moved facts.",
+    "truncated": false,
+    "warnings": [
+        "Rename candidates are conservative exact kind/display-name heuristics, not proven identity."
+    ],
+    "changes": {
+        "components": {
+            "added": [
+                {
+                    "id": "symbol_979c5d8261ee7b42abe08a148fe8da436baa5eadd4d0caa4a5afdba8588dc53f",
+                    "after": {
+                        "canonical_name": "App\\Added",
+                        "confidence": "certain",
+                        "display_name": "Added",
+                        "end_line": 65,
+                        "id": "symbol_979c5d8261ee7b42abe08a148fe8da436baa5eadd4d0caa4a5afdba8588dc53f",
+                        "kind": "class",
+                        "origin": "ast",
+                        "start_line": 60,
+                        "path": "src/Checkout.php"
+                    }
+                }
+            ],
+            "removed": [
+                {
+                    "id": "symbol_ba05f9ea1d5b1b5f8d7bddad867f434dabb0241e1adaa2ea9ba79a99ac9b2a6f",
+                    "before": {
+                        "canonical_name": "App\\Gone",
+                        "confidence": "certain",
+                        "display_name": "Gone",
+                        "end_line": 45,
+                        "id": "symbol_ba05f9ea1d5b1b5f8d7bddad867f434dabb0241e1adaa2ea9ba79a99ac9b2a6f",
+                        "kind": "class",
+                        "origin": "ast",
+                        "start_line": 40,
+                        "path": "src/Checkout.php"
+                    }
+                }
+            ],
+            "changed": [
+                {
+                    "id": "symbol_e2487f7422ce43e75e2bb2c3abb2650ecdf4f2c7023ee4bff9446a37d39c0e77",
+                    "before": {
+                        "canonical_name": "App\\Stays",
+                        "confidence": "certain",
+                        "display_name": "Stays",
+                        "end_line": 55,
+                        "id": "symbol_e2487f7422ce43e75e2bb2c3abb2650ecdf4f2c7023ee4bff9446a37d39c0e77",
+                        "kind": "class",
+                        "origin": "ast",
+                        "start_line": 50,
+                        "path": "src/Checkout.php"
+                    },
+                    "after": {
+                        "canonical_name": "App\\Stays",
+                        "confidence": "probable",
+                        "display_name": "Stays",
+                        "end_line": 55,
+                        "id": "symbol_e2487f7422ce43e75e2bb2c3abb2650ecdf4f2c7023ee4bff9446a37d39c0e77",
+                        "kind": "class",
+                        "origin": "ast",
+                        "start_line": 50,
+                        "path": "src/Checkout.php"
+                    },
+                    "changed_fields": [
+                        "confidence"
+                    ]
+                }
+            ],
+            "counts": {
+                "added": 1,
+                "removed": 1,
+                "changed": 1,
+                "moved": 1,
+                "rename_candidates": 0
+            },
+            "moved": [
+                {
+                    "id": "symbol_b73811ff6f1f7a2dddcf614633ee8188dbb47d9293f10777f59fac51deed5962",
+                    "before": {
+                        "canonical_name": "App\\InvoiceService",
+                        "confidence": "certain",
+                        "display_name": "InvoiceService",
+                        "end_line": 35,
+                        "id": "symbol_b73811ff6f1f7a2dddcf614633ee8188dbb47d9293f10777f59fac51deed5962",
+                        "kind": "class",
+                        "origin": "ast",
+                        "start_line": 21,
+                        "path": "src/Checkout.php"
+                    },
+                    "after": {
+                        "canonical_name": "App\\InvoiceService",
+                        "confidence": "certain",
+                        "display_name": "InvoiceService",
+                        "end_line": 17,
+                        "id": "symbol_b73811ff6f1f7a2dddcf614633ee8188dbb47d9293f10777f59fac51deed5962",
+                        "kind": "class",
+                        "origin": "ast",
+                        "start_line": 3,
+                        "path": "src/InvoiceService.php"
+                    },
+                    "changed_fields": [
+                        "end_line",
+                        "path",
+                        "start_line"
+                    ]
+                }
+            ],
+            "rename_candidates": []
+        },
+        "boundaries": {
+            "added": [],
+            "removed": [],
+            "changed": [],
+            "counts": {
+                "added": 0,
+                "removed": 0,
+                "changed": 0
+            }
+        },
+        "relationships": {
+            "added": [
+                {
+                    "id": "edge_4fab4fb5050707de1d316382285b805ae325faf03cf9b28a9722dffc44e0d4b9",
+                    "after": {
+                        "confidence": "certain",
+                        "id": "edge_4fab4fb5050707de1d316382285b805ae325faf03cf9b28a9722dffc44e0d4b9",
+                        "kind": "calls",
+                        "origin": "ast",
+                        "source_id": "symbol_e2487f7422ce43e75e2bb2c3abb2650ecdf4f2c7023ee4bff9446a37d39c0e77",
+                        "target_id": "symbol_b73811ff6f1f7a2dddcf614633ee8188dbb47d9293f10777f59fac51deed5962",
+                        "path": "src/Checkout.php"
+                    }
+                }
+            ],
+            "removed": [
+                {
+                    "id": "edge_4642a1ff693195da5b7360a9c83b6ab145cedee0ecf7697ff11efcbc317f3547",
+                    "before": {
+                        "confidence": "certain",
+                        "id": "edge_4642a1ff693195da5b7360a9c83b6ab145cedee0ecf7697ff11efcbc317f3547",
+                        "kind": "calls",
+                        "origin": "ast",
+                        "source_id": "symbol_e2487f7422ce43e75e2bb2c3abb2650ecdf4f2c7023ee4bff9446a37d39c0e77",
+                        "target_id": "symbol_ba05f9ea1d5b1b5f8d7bddad867f434dabb0241e1adaa2ea9ba79a99ac9b2a6f",
+                        "path": "src/Checkout.php"
+                    }
+                }
+            ],
+            "changed": [
+                {
+                    "id": "edge_9b6990e1cc2319453249f5a7197ab5f2a5fe5720cd9c74679a9f388ced16ac8e",
+                    "before": {
+                        "confidence": "certain",
+                        "id": "edge_9b6990e1cc2319453249f5a7197ab5f2a5fe5720cd9c74679a9f388ced16ac8e",
+                        "kind": "calls",
+                        "origin": "ast",
+                        "source_id": "symbol_e2487f7422ce43e75e2bb2c3abb2650ecdf4f2c7023ee4bff9446a37d39c0e77",
+                        "target_id": "symbol_96f69eeab45dbc624bf4d5cbaab985d9ad065663cd195c6ad17d8c488c3464dc",
+                        "path": "src/Checkout.php"
+                    },
+                    "after": {
+                        "confidence": "possible",
+                        "id": "edge_9b6990e1cc2319453249f5a7197ab5f2a5fe5720cd9c74679a9f388ced16ac8e",
+                        "kind": "calls",
+                        "origin": "ast",
+                        "source_id": "symbol_e2487f7422ce43e75e2bb2c3abb2650ecdf4f2c7023ee4bff9446a37d39c0e77",
+                        "target_id": "symbol_96f69eeab45dbc624bf4d5cbaab985d9ad065663cd195c6ad17d8c488c3464dc",
+                        "path": "src/Checkout.php"
+                    },
+                    "changed_fields": [
+                        "confidence"
+                    ]
+                }
+            ],
+            "counts": {
+                "added": 1,
+                "removed": 1,
+                "changed": 1
+            }
+        },
+        "roles": {
+            "added": [],
+            "removed": [],
+            "changed": [],
+            "counts": {
+                "added": 0,
+                "removed": 0,
+                "changed": 0
+            }
+        },
+        "boundary_memberships": {
+            "added": [],
+            "removed": [],
+            "changed": [],
+            "counts": {
+                "added": 0,
+                "removed": 0,
+                "changed": 0
+            }
+        },
+        "diagnostics": {
+            "added": [],
+            "removed": [],
+            "changed": [],
+            "counts": {
+                "added": 0,
+                "removed": 0,
+                "changed": 0
+            }
+        }
+    },
+    "confidence_changes": {
+        "raised": 0,
+        "lowered": 2
+    },
+    "bounds": {
+        "max_changes": 100,
+        "reported_changes": 7,
+        "total_changes": 7
+    }
+}

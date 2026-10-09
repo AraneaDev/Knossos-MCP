@@ -574,7 +574,9 @@ final class DashboardServiceTest extends KnossosTestCase
             };
             $tight = (new DashboardService($pdo, clock: $short, healthTimeoutMs: 1000))->dashboard($root);
             assertSame(true, $tight['hubs_truncated']);
-            assertSame(['time_limit'], $tight['hubs_truncation_reasons']);
+            // The deadline also skips the cycle check, which now counts as a
+            // cut of its own: hotspots lose their cycle signal.
+            assertSame(['time_limit', 'cycle_scan'], $tight['hubs_truncation_reasons']);
         } finally {
             $this->removeTempTree($root);
         }

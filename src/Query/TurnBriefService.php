@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Closure;
 use Knossos\Discovery\FileFingerprint;
 use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Scan\ProjectScanService;
@@ -46,6 +47,7 @@ final readonly class TurnBriefService
      * @param string $databasePath where $pdo lives; locates `roots.json`
      * @param int $policyTimeoutMs the time budget of each policy check, which walks only the edited files' edges
      * @param int $policyMaxEdges the edge budget of each policy check
+     * @param Closure|null $clock nanoseconds since some start, so `scan_ms` is testable; defaults to hrtime(true)
      */
     public function __construct(
         private PDO $pdo,
@@ -53,6 +55,7 @@ final readonly class TurnBriefService
         private string $installationRoot,
         private int $policyTimeoutMs = 5000,
         private int $policyMaxEdges = ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES,
+        private ?Closure $clock = null,
     ) {}
 
     /**
@@ -102,9 +105,13 @@ final readonly class TurnBriefService
             // Taken before the scan rewrites the graph: what the reported files already broke is not this turn's doing.
             [$baseline, $perFile] = $this->baseline($violations, $projectId, $policies, $reported, $absorbed);
             $before = self::rewound($current, $absorbed['before'] ?? []);
-            $started = hrtime(true);
+            $started = $this->now();
             try {
                 $scan = $lease === null ? null : (new ProjectScanService($this->pdo, $this->installationRoot, $allowed))->scan($root, mode: 'incremental', lease: $lease);
+                // Read the moment the scan returns: the ledger work and the test
+                // search that follow are not the scan, and the search alone can
+                // take seconds.
+                $scanMs = intdiv($this->now() - $started, 1_000_000);
             } catch (Throwable $failure) {
                 return ['status' => 'scan-failed', 'reason' => $failure->getMessage(), 'project_root' => $root] + $envelope;
             }
@@ -129,7 +136,7 @@ final readonly class TurnBriefService
             'project_id' => $projectId,
             'snapshot_id' => $scan === null ? $from : $scan->snapshotId,
             'scanned_at' => time(),
-            'scan_ms' => intdiv(hrtime(true) - $started, 1_000_000),
+            'scan_ms' => $scanMs,
             'scanned' => $scan !== null,
             'changed_files' => $changed,
             'added_files' => $added,
@@ -139,6 +146,12 @@ final readonly class TurnBriefService
             'tests_truncated' => $tests['truncated'],
             'policy' => self::policy($enforcePolicies, $edited, $baseline, $baseline === null ? null : $violations->inFiles($projectId, $policies, $edited)),
         ] + $envelope;
+    }
+
+    /** Nanoseconds since some start, from the injected clock or hrtime(true). */
+    private function now(): int
+    {
+        return $this->clock === null ? hrtime(true) : ($this->clock)();
     }
 
     /**

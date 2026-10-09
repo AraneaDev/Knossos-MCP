@@ -5,16 +5,22 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 /**
- * What counts as a way into the system, written once as a SQL predicate.
+ * What counts as a way into the system, written once as a SQL predicate and its PHP twin.
  *
- * Two briefs answer this question about the same graph: the agent brief
- * ({@see AgentBriefService::entryPointsSection()}), read once by a person, and
- * the session brief ({@see SessionBriefService::entryPoints()}), injected at
- * every session start. They drifted, and the drift was invisible: the session
+ * Three callers answer this question about the same graph: the agent brief
+ * ({@see AgentBriefService::entryPointsSection()}), read once by a person, the
+ * session brief ({@see SessionBriefService::entryPoints()}), injected at every
+ * session start, and impact analysis ({@see GraphTopologyQueryService::impactAnalysis()}),
+ * whose entry points `change_impact` and `changed_files_impact` report. The
+ * first two select with {@see self::sqlCondition()}; impact analysis already
+ * holds each dependant and its roles, so it asks {@see self::matches()}. Each
+ * drifted once, and the drift was invisible: the session
  * brief matched node kinds alone and so rendered no entry points at all for a
  * repository whose ways in are classified rather than kind-tagged, which is
- * every repository this scanner classifies. Nothing failed; a section simply
- * went missing. One predicate is the only way that stays fixed.
+ * every repository this scanner classifies, and impact analysis kept a list of
+ * its own that counted queued jobs, missed declared endpoints and admitted test
+ * code. Nothing failed; an answer simply changed shape. One definition is the
+ * only way that stays fixed.
  *
  * Two halves, both load-bearing:
  *
@@ -78,6 +84,20 @@ final readonly class EntryPointCriteria
             self::quoted(self::ROLES),
             self::quoted([ReportableComponent::TEST_ROLE]),
         );
+    }
+
+    /**
+     * The same judgement as {@see self::sqlCondition()}, for a node already in hand.
+     *
+     * @param string $kind the node's kind
+     * @param list<string> $roles every classification role the node carries
+     */
+    public static function matches(string $kind, array $roles): bool
+    {
+        if (in_array(ReportableComponent::TEST_ROLE, $roles, true)) {
+            return false;
+        }
+        return in_array($kind, self::KINDS, true) || array_intersect($roles, self::ROLES) !== [];
     }
 
     /**

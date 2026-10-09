@@ -39,8 +39,11 @@ final class AnnotationsTest extends KnossosTestCase
         assertSame([], $queries->listAnnotations($ids['project'])->data['annotations']);
 
         assertThrows(fn() => $queries->annotateComponent($ids['project'], 'App\\Checkout', 'bogus_kind', execute: true), InvalidArgumentException::class);
-        // Ambiguous prefix: both fixture classes match 'App\'.
-        assertThrows(fn() => $queries->annotateComponent($ids['project'], 'App\\', 'note', execute: true), InvalidArgumentException::class);
+        // A prefix both fixture classes share is not a match: annotations land
+        // only on an exact one, so it previews as not found and names them.
+        $prefix = $queries->annotateComponent($ids['project'], 'App\\', 'note');
+        assertSame('App\\', $prefix->data['component']);
+        assertSame(true, str_contains($prefix->warnings[0], 'Did you mean: App\\Checkout, App\\InvoiceService?'));
         // Unknown symbol: allowed, but warned.
         $unknown = $queries->annotateComponent($ids['project'], 'App\\Future', 'note', 'coming soon', execute: true);
         assertSame(true, str_contains(implode(' ', $unknown->warnings), 'not found'));
@@ -193,5 +196,35 @@ final class AnnotationsTest extends KnossosTestCase
 
         $inspect = $queries->inspectComponent($ids['project'], 'App\\Orphan')->data;
         assertSame('confirmed_dead', $inspect['component']['annotations'][0]['kind']);
+    }
+
+    /** A prefix match turned `App\\Invoice` into `App\\InvoiceService` and hid the service from dead-code reports. */
+    #[Group('query')]
+    public function testAnAnnotationNeverLandsOnAPrefixMatch(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        $result = $queries->annotateComponent($ids['project'], 'App\\Invoice', 'false_positive', execute: true);
+
+        self::assertSame('App\\Invoice', $result->data['component']);
+        self::assertStringContainsString('not found', implode(' ', $result->warnings));
+        self::assertStringContainsString('Did you mean: App\\InvoiceService', implode(' ', $result->warnings));
+        self::assertSame([], $queries->listAnnotations($ids['project'], 'App\\InvoiceService')->data['annotations']);
+        self::assertCount(1, $queries->listAnnotations($ids['project'], 'App\\Invoice')->data['annotations']);
+    }
+
+    /** An exact display name is still an exact match. */
+    #[Group('query')]
+    public function testAnExactDisplayNameStillResolves(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->annotateComponent($ids['project'], 'Checkout', 'note', 'entry', execute: true);
+
+        self::assertSame('App\\Checkout', $result->data['component']);
+        self::assertSame([], $result->warnings);
     }
 }

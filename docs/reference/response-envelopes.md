@@ -36,9 +36,13 @@ lossless superset: nothing is hoisted, trimmed, or shortened.
 
 - **Component legend.** Each node descriptor is registered once in
   `data.component_legend`, keyed by canonical name, and every place the
-  descriptor appeared becomes a plain name string. Because tools address
-  components by canonical name and never by `symbol_…`/`edge_…` id, those opaque
-  ids drop out of the payload as a side effect.
+  descriptor appeared becomes a plain name string. A canonical name is not
+  unique, so when a second component shares one, its key is `name (kind)`, and
+  `name (kind)#` plus the last eight characters of its id if that is taken too.
+  A legend entry under such a key carries the component's `id`. The first
+  component with a name keeps the bare name, in the order the data lists them.
+  Evidence keeps its `*_id` references and gains the legend key beside each one
+  (`dependant_id` gains `dependant`).
 - **Boundary legend.** The same treatment for repeated boundary objects, into
   `data.boundary_legend`. Ids that _are_ tool inputs (`boundary_…`, snapshot
   ids) are preserved wherever they are the answer.
@@ -203,9 +207,10 @@ rescan attempted.
 
 The rescan only runs when it is cheap enough to fit inside the call you are
 already waiting on. `RefreshPolicy` estimates the cost from the duration the
-project's own last scan recorded: a fixed overhead for the discovery, worker
-startup and reconciliation any rescan pays, plus that scan's per-file cost times
-the number of files that drifted. That estimate is capped at what the full scan
+project's own scans recorded: an overhead for the discovery, worker startup and
+reconciliation any rescan pays, plus the last scan's per-file cost times the
+number of files that drifted. The overhead is the fastest of the project's last
+ten incremental scans, and never less than 500 ms. That estimate is capped at what the full scan
 cost only when the drift is deletions alone, which is the one case where the old
 duration is a genuine upper bound: an added file was never in that scan, and a
 changed file may have grown since it was, so capping either against the old scan
