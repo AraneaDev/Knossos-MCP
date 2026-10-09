@@ -22,6 +22,7 @@ final readonly class ScannerManifest implements JsonSerializable
      * @param list<non-empty-string> $languages
      * @param list<non-empty-string> $fileExtensions
      * @param list<non-empty-string> $capabilities
+     * @param ?string $sourceHash hash of the source a compiled worker was built from, see {@see \Knossos\Runtime\WorkerSourceHash}
      */
     public function __construct(
         public string $id,
@@ -31,6 +32,7 @@ final readonly class ScannerManifest implements JsonSerializable
         public array $languages,
         public array $fileExtensions,
         public array $capabilities,
+        public ?string $sourceHash = null,
     ) {
         if ($id === '' || $version === '' || $protocolVersion === '' || $outputSchemaVersion === '') {
             throw new InvalidArgumentException('Scanner identity and version fields must not be empty.');
@@ -43,6 +45,9 @@ final readonly class ScannerManifest implements JsonSerializable
         self::assertNonEmptyStrings($languages, 'languages');
         self::assertNonEmptyStrings($fileExtensions, 'fileExtensions');
         self::assertNonEmptyStrings($capabilities, 'capabilities');
+        if ($sourceHash !== null && preg_match('/^[0-9a-f]{64}$/D', $sourceHash) !== 1) {
+            throw new InvalidArgumentException('Manifest field "source_hash" must be a lowercase hex SHA-256.');
+        }
     }
 
     /**
@@ -70,6 +75,10 @@ final readonly class ScannerManifest implements JsonSerializable
         $fileExtensions = $data['file_extensions'];
         /** @var list<string> $capabilities */
         $capabilities = $data['capabilities'];
+        $sourceHash = $data['source_hash'] ?? null;
+        if ($sourceHash !== null && !is_string($sourceHash)) {
+            throw new InvalidArgumentException('Manifest field "source_hash" must be a string.');
+        }
 
         return new self(
             $data['id'],
@@ -79,6 +88,7 @@ final readonly class ScannerManifest implements JsonSerializable
             $languages,
             $fileExtensions,
             $capabilities,
+            $sourceHash,
         );
     }
 
@@ -97,7 +107,7 @@ final readonly class ScannerManifest implements JsonSerializable
             'languages' => $this->languages,
             'file_extensions' => $this->fileExtensions,
             'capabilities' => $this->capabilities,
-        ];
+        ] + ($this->sourceHash === null ? [] : ['source_hash' => $this->sourceHash]);
     }
 
     /**

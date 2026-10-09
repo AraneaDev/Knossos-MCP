@@ -200,4 +200,43 @@ final class ScannerManifestTest extends TestCase
         assertSame(['php'], $json['file_extensions']);
         assertSame(['scan'], $json['capabilities']);
     }
+
+    // ----- source_hash -----
+
+    public function testSourceHashIsOptionalAndLeftOutOfTheWireShapeWhenAbsent(): void
+    {
+        $m = ScannerManifest::fromArray(self::minimalData());
+
+        assertSame(null, $m->sourceHash);
+        $this->assertArrayNotHasKey('source_hash', $m->jsonSerialize());
+    }
+
+    public function testSourceHashRoundTripsWhenTheWorkerSendsOne(): void
+    {
+        $hash = str_repeat('0123456789abcdef', 4);
+        $m = ScannerManifest::fromArray(self::minimalData() + ['source_hash' => $hash]);
+
+        assertSame($hash, $m->sourceHash);
+        assertSame($hash, $m->jsonSerialize()['source_hash']);
+    }
+
+    /** @return array<string, array{mixed}> */
+    public static function malformedSourceHashes(): array
+    {
+        return [
+            'not a string' => [42],
+            'too short' => ['abc123'],
+            'uppercase hex' => [str_repeat('0123456789ABCDEF', 4)],
+            'not hex' => [str_repeat('z', 64)],
+        ];
+    }
+
+    #[DataProvider('malformedSourceHashes')]
+    public function testAMalformedSourceHashIsRefused(mixed $hash): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('source_hash');
+
+        ScannerManifest::fromArray(self::minimalData() + ['source_hash' => $hash]);
+    }
 }

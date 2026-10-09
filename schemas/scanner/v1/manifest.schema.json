@@ -33,6 +33,11 @@
       "type": "array",
       "uniqueItems": true,
       "items": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]*$" }
+    },
+    "source_hash": {
+      "description": "Optional. Lowercase hex SHA-256 of the source a compiled worker was built from, so the core can report a binary older than the source beside it.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     }
   }
 }

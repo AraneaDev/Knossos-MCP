@@ -384,7 +384,7 @@ final readonly class ToolService
             'server',
             '',
             $result['ok']
-                ? sprintf('All %d runtime checks passed.', count($result['checks']))
+                ? sprintf('All %d runtime checks passed%s.', count($result['checks']), $result['warnings'] > 0 ? sprintf(', %d with a warning', $result['warnings']) : '')
                 : sprintf('%d of %d runtime checks failed.', count($failed), count($result['checks'])),
             $result,
             warnings: array_map(static fn(array $check): string => $check['name'] . ': ' . $check['detail'], $failed),

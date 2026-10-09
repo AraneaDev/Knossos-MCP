@@ -6,7 +6,9 @@ languages. The bundled worker parses `.rs` files with `syn` and never runs
 
 Rust is optional on a native install: without `cargo` on the machine there is no
 Rust worker, and `.rs` files are not scanned. The container image always has
-one. `knossos doctor` tells you which workers you have.
+one. `knossos doctor` tells you which workers you have, and warns when the Rust
+worker binary was built from other source than your checkout, for example after
+a `git pull`. Run `tools/install` to rebuild it.
 
 ## What the scanner reads
 

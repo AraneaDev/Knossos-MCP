@@ -21,6 +21,11 @@ serde_json = "1"
 sha2 = "0.10"
 syn = { version = "2", features = ["full", "visit", "extra-traits"] }
 
+[build-dependencies]
+# `build.rs` embeds the hash of this crate's source with the same SHA-256 the
+# worker uses, so `doctor` can tell a binary built from older source.
+sha2 = "0.10"
+
 [profile.release]
 opt-level = 2
 strip = true
