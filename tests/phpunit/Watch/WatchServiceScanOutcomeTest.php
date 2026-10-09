@@ -80,7 +80,7 @@ final class WatchServiceScanOutcomeTest extends KnossosTestCase
     /** The initial scan ran outside the attempt classifier: one transient fault killed the watcher before it had started. */
     public function testATransientInitialFailureIsRetriedAndReadyFollowsTheFirstSuccess(): void
     {
-        [$result, $events] = $this->watch(['fail', 'ok'], maxPolls: 200);
+        [$result, $events] = $this->watch(['fail', 'ok+change', 'ok'], maxPolls: 200);
 
         assertSame(['error', true, 1], [$events[0]['event'], $events[0]['retryable'], $events[0]['attempt']]);
         $names = array_column($events, 'event');
@@ -88,12 +88,16 @@ final class WatchServiceScanOutcomeTest extends KnossosTestCase
         assertSame(true, is_int($ready));
         assertSame(true, $events[$ready]['scanned']);
         assertSame('snapshot-2', $events[$ready]['snapshot_id']);
+        assertSame('watch-project', $events[$ready]['project_id']);
         assertSame('scan_completed', $names[$ready + 1]);
         assertSame(1, count(array_keys($names, 'ready', true)));
         // The retry announces itself only by `ready`, as the first attempt does: no scan_started before it.
         assertSame(false, in_array('scan_started', array_slice($names, 0, $ready), true));
-        assertSame([1, 1, 'poll_limit'], [$result->data['scans'], $result->data['scan_errors'], $result->data['stopped_reason']]);
-        assertSame('snapshot-2', $result->snapshotId);
+        // Once ready, the edit the initial scan made is scanned as any later change: announced, incremental, no second `ready`.
+        $later = array_slice($events, $ready + 2);
+        assertSame([['scan_started', 'incremental'], ['scan_completed', 'incremental']], array_map(static fn(array $e): array => [$e['event'], $e['mode'] ?? null], array_values(array_filter($later, static fn(array $e): bool => str_starts_with($e['event'], 'scan_')))));
+        assertSame([2, 1, 1, 'poll_limit'], [$result->data['scans'], $result->data['incremental_scans'], $result->data['scan_errors'], $result->data['stopped_reason']]);
+        assertSame('snapshot-3', $result->snapshotId);
     }
 
     public function testATerminalInitialFailureStopsWithAnErrorReason(): void
@@ -164,6 +168,16 @@ final class WatchServiceScanOutcomeTest extends KnossosTestCase
         assertSame('orphaned', $result->data['stopped_reason']);
     }
 
+    /** A scan that reports itself cancelled, with no token cancelled and no starter gone, still ends the watch at once, as cancelled. */
+    public function testAScanCancelledFromWithinStopsTheWatchAsCancelled(): void
+    {
+        [$result, $events] = $this->watch(['ok+change', 'cancelled'], maxPolls: 400);
+
+        assertSame(['event' => 'stopped', 'reason' => 'cancelled'], end($events));
+        assertSame(true, $result->data['polls'] < 400);
+        assertSame(0, $result->data['scan_errors']);
+    }
+
     /** A watch that took in another writer's graph, which has no snapshot yet, still returns a result. */
     public function testAWatchWithNoSnapshotKnownReturnsEmptyIds(): void
     {
@@ -180,8 +194,8 @@ final class WatchServiceScanOutcomeTest extends KnossosTestCase
     /**
      * Runs a watch whose scanner answers each call from `$script` in turn,
      * repeating the last entry: `ok`, `ok+change` (succeeds and edits a file,
-     * so another scan is due), `timeout`, `fail` (a retryable failure) or
-     * `error` (a terminal one).
+     * so another scan is due), `timeout`, `fail` (a retryable failure),
+     * `cancelled` (the scan says it was cancelled) or `error` (a terminal one).
      *
      * @param list<string> $script
      * @return array{0: ResultEnvelope, 1: list<array<string, mixed>>}
@@ -224,6 +238,7 @@ final class WatchServiceScanOutcomeTest extends KnossosTestCase
                 'ok', 'ok+change' => new ResultEnvelope('watch-project', 'snapshot-' . $calls, 'ok', ['parsed_files' => 1]),
                 'timeout' => throw new ScanTimeoutException('The scan ran past its 300 s limit and was stopped.'),
                 'fail' => throw new RuntimeException('The write lease is busy.'),
+                'cancelled' => throw new ScanCancelledException('The scan was cancelled.'),
                 default => throw new Error('A defect.'),
             };
         };

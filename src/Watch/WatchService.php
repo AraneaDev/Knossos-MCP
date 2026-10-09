@@ -124,6 +124,8 @@ final readonly class WatchService
             $cancellation->isCancelled() => 'cancelled',
             // A scan stopped because whoever started the watcher is gone ends it as orphaned, not at a limit.
             $hooks->alive !== null && !($hooks->alive)() => 'orphaned',
+            // A scan cancelled from within (no token, no starter gone) still stopped the watch: it was cancelled.
+            !$running => 'cancelled',
             default => 'poll_limit',
         };
         $emit(['event' => 'stopped', 'reason' => $reason]);
