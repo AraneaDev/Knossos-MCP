@@ -27,8 +27,9 @@ and assigns it, the code around it no longer knows that variable's type.
 
 PHP reads the names of namespaces, classes, interfaces, traits, enums, functions
 and methods without regard to case, so `new foo()` builds the `Foo` that another
-file declares. Knossos matches these names the same way. Property names stay
-case-sensitive, as PHP keeps them.
+file declares. Knossos matches these names the same way, including a class name built
+at runtime from a namespace literal and a method called on a receiver no scan
+could type. Property names stay case-sensitive, as PHP keeps them.
 
 A declared symbol keeps the name its declaration spells, and its ID with it:
 the graph does not lower-case names. A name written in another case is matched
