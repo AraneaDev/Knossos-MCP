@@ -918,8 +918,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // can pass one shared deadline so the whole request is bounded, instead
         // of each analysis resetting its own timeout.
         $deadline ??= $this->now() + ($timeoutMs * 1_000_000);
-        $queue = [[$target, 0, 3]];
+        $queue = [[$target, 0]];
         $seen = [$target['id'] => true];
+        // Best confidence rank found for each node at its shortest distance.
+        // Read at dequeue rather than carried in the queued tuple: every
+        // rediscovery at distance d+1 comes from a level-d node, and FIFO order
+        // dequeues all level-d nodes before any level-d+1 node, so by the time
+        // a node is dequeued no further upgrade of its rank is possible and the
+        // value read here is final.
+        $bestRank = [$target['id'] => 3];
         $dependants = [];
         $recordIndex = [];
         $truncated = false;
@@ -932,7 +939,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $truncationReason = $visited >= 10_000 ? 'visit_limit' : 'time_limit';
                 break;
             }
-            [$current, $distance, $pathConfidence] = array_shift($queue);
+            [$current, $distance] = array_shift($queue);
+            $pathConfidence = $bestRank[$current['id']];
             ++$visited;
             if ($distance >= $maxDepth) {
                 continue;
@@ -946,8 +954,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     $existingIndex = $recordIndex[$edge['source_id']] ?? null;
                     if ($existingIndex !== null && $dependants[$existingIndex]['distance'] === $distance + 1) {
                         $candidateRank = min($pathConfidence, $edgeConfidence);
-                        if ($candidateRank > $confidenceRank[$dependants[$existingIndex]['path_confidence']]) {
-                            $dependants[$existingIndex]['path_confidence'] = array_search($candidateRank, $confidenceRank, true);
+                        if ($candidateRank > $bestRank[$edge['source_id']]) {
+                            // Raise the record and the rank its own dependants
+                            // inherit together, so the two never disagree.
+                            $bestRank[$edge['source_id']] = $candidateRank;
+                            $dependants[$existingIndex]['path_confidence'] = self::rankName($candidateRank);
                         }
                     }
                     continue;
@@ -957,10 +968,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     continue;
                 }
                 $seen[$node['id']] = true;
+                $bestRank[$node['id']] = min($pathConfidence, $edgeConfidence);
                 $dependants[] = [
                     'node' => $node,
                     'distance' => $distance + 1,
-                    'path_confidence' => array_search(min($pathConfidence, $edgeConfidence), $confidenceRank, true),
+                    'path_confidence' => self::rankName($bestRank[$node['id']]),
                     'via' => $this->impactHop($edge),
                 ];
                 // limit+1 semantics: keep exactly $limit, flag truncation only
@@ -972,7 +984,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     break 2;
                 }
                 $recordIndex[$node['id']] = array_key_last($dependants);
-                $queue[] = [$node, $distance + 1, min($pathConfidence, $edgeConfidence)];
+                $queue[] = [$node, $distance + 1];
             }
         }
         if ($edgesTruncated) {
@@ -1211,6 +1223,16 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return false;
     }
+    /**
+     * The confidence name for a rank in {@see self::CONFIDENCE_RANK}.
+     *
+     * @param int $rank 1 (possible) to 3 (certain)
+     */
+    private static function rankName(int $rank): string
+    {
+        return (string) array_search($rank, self::CONFIDENCE_RANK, true);
+    }
+
     /**
      * Rank one flow against another: strongest evidence first.
      *
