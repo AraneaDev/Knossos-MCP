@@ -90,9 +90,34 @@ abstract readonly class AbstractArchitectureQueryService
     /**
      * Resolve a component reference to one node, reporting ambiguity rather than guessing.
      *
+     * Exact matches first ({@see self::resolveExact()}); only when there are
+     * none, the components whose canonical or display name starts with the
+     * query. A read answers with candidates either way; a write must use
+     * resolveExact() alone, or a prefix becomes a different component.
+     *
      * @return list<array<string, mixed>>
      */
     protected function resolve(string $projectId, string $query): array
+    {
+        $rows = $this->resolveExact($projectId, $query);
+        if ($rows !== []) {
+            return $rows;
+        }
+
+        $statement = $this->pdo->prepare(
+            'SELECT id, kind, canonical_name, display_name, confidence FROM nodes WHERE project_id = :project ' .
+            "AND (canonical_name LIKE :prefix ESCAPE '!' OR display_name LIKE :prefix ESCAPE '!') ORDER BY canonical_name LIMIT 21",
+        );
+        $statement->execute(['project' => $projectId, 'prefix' => self::like($query) . '%']);
+        return $statement->fetchAll();
+    }
+
+    /**
+     * The components a reference names exactly: a stable id, or a canonical or display name equal to it.
+     *
+     * @return list<array<string, mixed>>
+     */
+    protected function resolveExact(string $projectId, string $query): array
     {
         if (trim($query) === '') {
             throw new InvalidArgumentException('Flow endpoint must not be empty.');
@@ -109,16 +134,6 @@ abstract readonly class AbstractArchitectureQueryService
             'ORDER BY CASE WHEN canonical_name = :query THEN 0 ELSE 1 END, canonical_name LIMIT 21',
         );
         $statement->execute(['project' => $projectId, 'query' => $query]);
-        $rows = $statement->fetchAll();
-        if ($rows !== []) {
-            return $rows;
-        }
-
-        $statement = $this->pdo->prepare(
-            'SELECT id, kind, canonical_name, display_name, confidence FROM nodes WHERE project_id = :project ' .
-            "AND (canonical_name LIKE :prefix ESCAPE '!' OR display_name LIKE :prefix ESCAPE '!') ORDER BY canonical_name LIMIT 21",
-        );
-        $statement->execute(['project' => $projectId, 'prefix' => self::like($query) . '%']);
         return $statement->fetchAll();
     }
     /** Escape a value for a LIKE pattern so user input cannot inject wildcards. */
