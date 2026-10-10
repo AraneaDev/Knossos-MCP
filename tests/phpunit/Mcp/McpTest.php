@@ -191,7 +191,7 @@ final class McpTest extends KnossosTestCase
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
-        $env = $svc->call('impact_analysis', ['project_id' => $ids['project'], 'symbol' => 'InvoiceService'], new \Knossos\Scan\CancellationToken(static fn(): bool => false));
+        $env = $svc->call('impact_analysis', ['project_id' => $ids['project'], 'symbol' => 'InvoiceService'], new \Knossos\Cancellation\CancellationToken(static fn(): bool => false));
         $data = $env->jsonSerialize()['data'];
         assertSame(true, array_key_exists('dependants', $data));
         assertSame(true, array_key_exists('counts', $data));
@@ -430,7 +430,7 @@ final class McpTest extends KnossosTestCase
         // assertion set is sensitive to the actual reorder, not just to
         // components already being first.
         [$svc, $projectId, $fromSnap] = $this->twoSnapshotFixture();
-        $env = $svc->call('snapshot_diff', ['project_id' => $projectId, 'from_snapshot' => $fromSnap], new \Knossos\Scan\CancellationToken(static fn(): bool => false));
+        $env = $svc->call('snapshot_diff', ['project_id' => $projectId, 'from_snapshot' => $fromSnap], new \Knossos\Cancellation\CancellationToken(static fn(): bool => false));
         $envelope = $env->jsonSerialize();
         $data = $envelope['data'];
 
@@ -590,7 +590,7 @@ final class McpTest extends KnossosTestCase
                     ?int $maxFileBytes = null,
                     ?array $explicitBoundaries = null,
                     ?string $mode = null,
-                    ?\Knossos\Scan\CancellationToken $cancellation = null,
+                    ?\Knossos\Cancellation\CancellationToken $cancellation = null,
                     ?int $snapshotRetention = null,
                     ?int $workerTimeoutMs = null,
                     ?int $workerMemoryMb = null,

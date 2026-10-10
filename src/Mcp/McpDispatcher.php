@@ -6,11 +6,11 @@ namespace Knossos\Mcp;
 
 use Closure;
 use Knossos\Application;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Mcp\Protocol\ProtocolNegotiator;
 use Knossos\Mcp\Protocol\ProtocolProfile;
 use Knossos\Mcp\Protocol\UnsupportedProtocolVersionException;
-use Knossos\Scan\CancellationToken;
-use Knossos\Scan\ScanCancelledException;
 use Throwable;
 
 /**

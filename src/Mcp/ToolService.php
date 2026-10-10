@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Mcp;
 
 use InvalidArgumentException;
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Discovery\RootGuard;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Query\ArchitecturePolicyQueryService;
@@ -12,7 +13,6 @@ use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessSnapshot;
 use Knossos\Runtime\ServerEnvironment;
-use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanner;
 
 /**
@@ -288,7 +288,7 @@ final readonly class ToolService
         try {
             $this->scanner->scan($root, cancellation: $cancellation);
             return [[], null];
-        } catch (\Knossos\Scan\ScanCancelledException $cancelled) {
+        } catch (\Knossos\Cancellation\ScanCancelledException $cancelled) {
             // A client-requested cancellation is not a rescan failure to paper
             // over; propagate it so the transport can surface/suppress it.
             throw $cancelled;

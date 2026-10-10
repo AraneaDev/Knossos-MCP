@@ -6,9 +6,9 @@ namespace Knossos\Tests\Phpunit\Watch;
 
 use Closure;
 use Error;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Query\ResultEnvelope;
-use Knossos\Scan\CancellationToken;
-use Knossos\Scan\ScanCancelledException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Watch\ScanTimeoutException;
 use Knossos\Watch\WatchHooks;

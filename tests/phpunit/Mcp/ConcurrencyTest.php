@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Mcp;
 
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Query\ArchitectureQueryService;
-use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scan\ProjectWriterLock;
 use Knossos\Scan\ScanBusyException;
@@ -71,7 +71,7 @@ final class ConcurrencyTest extends KnossosTestCase
             $token->cancel();
             assertThrows(
                 fn() => (new ProjectScanService($writerPdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']))->scan(self::repositoryRoot() . '/tests/Fixtures/mixed', cancellation: $token),
-                \Knossos\Scan\ScanCancelledException::class,
+                \Knossos\Cancellation\ScanCancelledException::class,
             );
             assertSame($scan, (string) $writerPdo->query("SELECT active_scan_id FROM projects WHERE id = '$project'")->fetchColumn());
             assertSame(0, (int) $writerPdo->query('SELECT COUNT(*) FROM scan_locks')->fetchColumn());

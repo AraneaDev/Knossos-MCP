@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace Knossos\Watch;
 
 use Closure;
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Configuration\ProjectConfigurationLoader;
 use Knossos\Discovery\AllowedRoots;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Query\ScanLedger;
 use Knossos\Query\ScanTarget;
-use Knossos\Scan\CancellationToken;
 use PDO;
 use Throwable;
 

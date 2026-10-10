@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Knossos\Watch;
 
 use Closure;
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Query\ScanLedger;
-use Knossos\Scan\CancellationToken;
 
 /**
  * A session's stand-in while another session's watcher leads: it scans

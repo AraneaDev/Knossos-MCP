@@ -5,12 +5,11 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use InvalidArgumentException;
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Discovery\FileFingerprint;
 use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scanner\Protocol\{Diagnostic, Evidence, Protocol, ScanContribution, ScannerManifest};
-use Knossos\Scanner\Worker\ContributionDecoder;
-use Knossos\Scanner\Worker\WorkerException;
-use Knossos\Scanner\Worker\WorkerLimits;
+use Knossos\Scanner\Worker\{ContributionDecoder, WorkerException, WorkerLimits};
 use Knossos\Store\ChunkedInQuery;
 use PDO;
 use Throwable;

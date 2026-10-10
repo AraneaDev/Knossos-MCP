@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Knossos\Watch;
 
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Discovery\AllowedRoots;
 use Knossos\Query\ResultEnvelope;
-use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanner;
 use Throwable;
 

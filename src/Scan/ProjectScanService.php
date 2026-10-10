@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Git\DirtyPathResolver;
 use Knossos\Git\GitHeadResolver;
 use Knossos\Query\ResultEnvelope;

@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scan;
 
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Configuration\ProjectConfiguration;
 use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\DiscoveryResult;
 use Knossos\Discovery\ProjectUnit;
-use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\LanguageDescriptor;
 use Knossos\Scan\LanguageScanResult;

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Mcp;
 
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Mcp\ComponentLegend;
 use Knossos\Mcp\NextStepPlanner;
@@ -12,7 +13,6 @@ use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
-use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;

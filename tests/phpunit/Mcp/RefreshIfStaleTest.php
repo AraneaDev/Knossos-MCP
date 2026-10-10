@@ -770,7 +770,7 @@ final class RefreshIfStaleTest extends KnossosTestCase
                         ?int $maxFileBytes = null,
                         ?array $explicitBoundaries = null,
                         ?string $mode = null,
-                        ?\Knossos\Scan\CancellationToken $cancellation = null,
+                        ?\Knossos\Cancellation\CancellationToken $cancellation = null,
                         ?int $snapshotRetention = null,
                         ?int $workerTimeoutMs = null,
                         ?int $workerMemoryMb = null,

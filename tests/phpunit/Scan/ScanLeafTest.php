@@ -4,17 +4,17 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scan;
 
-use Knossos\Scan\CancellationToken;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Scan\ScanAnalysis;
 use Knossos\Scan\ScanBusyException;
-use Knossos\Scan\ScanCancelledException;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 
 /**
  * Direct tests for the 4 Scan module leaf-tier files:
  *
- *   - src/Scan/ScanCancelledException.php  (structural-infimum, extends
+ *   - src/Cancellation/ScanCancelledException.php  (structural-infimum, extends
  *                                          RuntimeException; the
  *                                          cancellation marker thrown by
  *                                          CancellationToken::throwIfCancelled
@@ -25,7 +25,7 @@ use RuntimeException;
  *                                          re-entered while another scan is
  *                                          already in progress on the same
  *                                          project).
- *   - src/Scan/CancellationToken.php      (mut-active; tracks cancellation
+ *   - src/Cancellation/CancellationToken.php      (mut-active; tracks cancellation
  *                                          state via internal $cancelled
  *                                          flag + optional poll closure;
  *                                          4 mut-active public methods).

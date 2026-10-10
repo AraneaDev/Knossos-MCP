@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Query\ResultEnvelope;
 
 /**

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Scanner\Worker\WorkerException;

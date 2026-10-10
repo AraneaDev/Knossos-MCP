@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scan;
 
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\FileFingerprint;
-use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scan\ScanSnapshotValidator;
