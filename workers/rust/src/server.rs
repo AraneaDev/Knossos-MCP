@@ -15,6 +15,7 @@ use crate::params::{
     DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES,
 };
 use crate::protocol::{Contribution, Manifest};
+use crate::source_hash::sha256_hex;
 use crate::visit::Declarations;
 
 /// Serialized bytes one `scan/input_hashes` notification carries at most, well
@@ -675,18 +676,6 @@ fn read_bounded(path: &Path, max_file_bytes: u64) -> std::io::Result<Vec<u8>> {
         .take(max_file_bytes.saturating_add(1))
         .read_to_end(&mut bytes)?;
     Ok(bytes)
-}
-
-/// Lowercase SHA-256 hex, the form discovery records in the core.
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    use std::fmt::Write;
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
 }
 
 /// The crate roots and names declared by the request's manifest `config_files`.
