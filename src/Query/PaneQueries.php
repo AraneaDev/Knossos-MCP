@@ -85,7 +85,7 @@ final readonly class PaneQueries
         try {
             $queries = new ArchitectureQueryService($this->pdo);
             $result = $remove
-                ? $queries->removeAnnotation($id, $component, $kind, $execute)
+                ? $queries->removeAnnotation($id, $component, $kind, $value, $execute)
                 : $queries->upsertAnnotation($id, $component, $kind, $value, $execute);
         } catch (InvalidArgumentException $refused) {
             return ['status' => 'refused', 'reason' => $refused->getMessage()] + $envelope;

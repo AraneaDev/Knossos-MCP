@@ -496,9 +496,9 @@ final readonly class ArchitectureQueryService
     }
 
     /** {@see AnnotationService::removeAnnotation()} */
-    public function removeAnnotation(string $projectId, string $component, string $kind, bool $execute = false): ResultEnvelope
+    public function removeAnnotation(string $projectId, string $component, string $kind, string $value = '', bool $execute = false): ResultEnvelope
     {
-        return $this->annotationQueries->removeAnnotation($projectId, $component, $kind, $execute);
+        return $this->annotationQueries->removeAnnotation($projectId, $component, $kind, $value, $execute);
     }
 
     /** {@see FileContextQueryService::fileContext()} */

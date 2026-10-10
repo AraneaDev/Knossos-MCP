@@ -441,7 +441,7 @@ final readonly class ToolService
         $execute = self::boolean($arguments, 'execute', false);
 
         return $remove
-            ? fn(): ResultEnvelope => $this->queries->removeAnnotation($projectId, $component, $kind, $execute)
+            ? fn(): ResultEnvelope => $this->queries->removeAnnotation($projectId, $component, $kind, $value, $execute)
             : fn(): ResultEnvelope => $this->queries->upsertAnnotation($projectId, $component, $kind, $value, $execute);
     }
 

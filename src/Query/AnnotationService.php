@@ -31,10 +31,16 @@ final readonly class AnnotationService extends AbstractArchitectureQueryService
         return $this->executed($projectId, $target, $kind, 'upsert', 'Recorded', $this->fetch($projectId, $target['canonical'], $kind));
     }
 
-    /** Remove a durable annotation, previewing unless executing. */
-    public function removeAnnotation(string $projectId, string $component, string $kind, bool $execute = false): ResultEnvelope
+    /**
+     * Remove a durable annotation, previewing unless executing.
+     *
+     * A value a caller passes along is checked as an upsert's would be and
+     * otherwise ignored: the write tools take one value argument for both
+     * actions, and an over-long one is refused whichever action it came with.
+     */
+    public function removeAnnotation(string $projectId, string $component, string $kind, string $value = '', bool $execute = false): ResultEnvelope
     {
-        $target = $this->target($projectId, $component, $kind);
+        $target = $this->target($projectId, $component, $kind, $value);
         if (!$execute) {
             return $this->preview($projectId, $target, $kind, 'remove', null);
         }

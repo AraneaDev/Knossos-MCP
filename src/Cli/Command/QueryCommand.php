@@ -493,10 +493,11 @@ final class QueryCommand implements CliCommand
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos annotate-component <path|project-id> <component> <kind> [value] [--remove] [--execute] [--json]'), $c);
         $component = $p[1] ?? throw new InvalidArgumentException('A component is required.');
         $kind = $p[2] ?? throw new InvalidArgumentException('A kind is required.');
+        $value = $p[3] ?? '';
         $execute = $c->options->flag($o, 'execute');
         $result = $c->options->flag($o, 'remove')
-            ? $this->queries($c)->removeAnnotation($project, $component, $kind, $execute)
-            : $this->queries($c)->upsertAnnotation($project, $component, $kind, $p[3] ?? '', $execute);
+            ? $this->queries($c)->removeAnnotation($project, $component, $kind, $value, $execute)
+            : $this->queries($c)->upsertAnnotation($project, $component, $kind, $value, $execute);
         return $this->result($result, $o, $c);
     }
 

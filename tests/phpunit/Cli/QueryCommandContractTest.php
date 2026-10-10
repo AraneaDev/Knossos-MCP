@@ -322,6 +322,23 @@ final class QueryCommandContractTest extends KnossosTestCase
         });
     }
 
+    /** A removal carrying an over-long value is refused before anything is resolved, as an upsert is. */
+    #[Group('cli')]
+    public function testRemoveRefusesAnOverLongValue(): void
+    {
+        $this->withScannedFixture(function (\Closure $run, string $project): void {
+            $run('annotate-component', [$project, 'Fixture\\CheckoutService', 'note', 'kept'], ['execute' => ['']]);
+            try {
+                $run('annotate-component', [$project, 'Fixture\\CheckoutService', 'note', str_repeat('x', 2001)], ['execute' => [''], 'remove' => ['']]);
+                self::fail('An over-long value must be refused on removal too.');
+            } catch (InvalidArgumentException $error) {
+                assertSame('value must not exceed 2000 characters.', $error->getMessage());
+            }
+
+            assertSame(['kept'], array_column($run('list-annotations', [$project], [])['data']['annotations'], 'value'));
+        });
+    }
+
     /** --working-tree=off read the working tree anyway, which with explicit files is refused. */
     #[Group('cli')]
     public function testWorkingTreeOffReadsTheGivenFiles(): void
