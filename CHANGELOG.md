@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/AraneaDev/knossos/compare/v0.22.0...v0.23.0) (2026-10-10)
+
+
+### Features
+
+* list the files a branch touched on the Branch tab, in place of the churn hotspots ([#209](https://github.com/AraneaDev/knossos/issues/209)) ([afbded9](https://github.com/AraneaDev/knossos/commit/afbded9e61f94425b948234e0c5d0f7306d03c69))
+
 ## [0.22.0](https://github.com/AraneaDev/knossos/compare/v0.21.3...v0.22.0) (2026-10-10)
 
 
