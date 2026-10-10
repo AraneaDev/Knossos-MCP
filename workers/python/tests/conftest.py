@@ -27,6 +27,20 @@ def _load_worker() -> ModuleType:
 import pytest  # noqa: E402
 
 
+def patch_everywhere(monkeypatch: pytest.MonkeyPatch, worker: ModuleType, name: str, value: object) -> None:
+    """Replace ``name`` in the worker and in every ``knossos_python`` module bound to the same object.
+
+    The worker's analysis lives in the package beside it, and each module binds
+    what it imports under its own name, so a stand-in set on the worker alone
+    would not reach a caller in another module.
+    """
+    original = getattr(worker, name)
+    package = [module for key, module in sys.modules.items() if key.split(".")[0] == "knossos_python"]
+    for module in [worker, *package]:
+        if getattr(module, name, None) is original:
+            monkeypatch.setattr(module, name, value)
+
+
 @pytest.fixture(scope="session")
 def worker() -> ModuleType:
     return _load_worker()
