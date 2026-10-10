@@ -116,7 +116,7 @@ FROM runtime_deps AS runtime
 # x-release-please-start-version
 LABEL org.opencontainers.image.title="Knossos" \
       org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
-      org.opencontainers.image.version="0.22.0"
+      org.opencontainers.image.version="0.23.0"
 # x-release-please-end
 
 COPY workers/php/src ./workers/php/src
@@ -362,7 +362,7 @@ FROM quality_tools AS quality
 # x-release-please-start-version
 LABEL org.opencontainers.image.title="Knossos" \
       org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
-      org.opencontainers.image.version="0.22.0"
+      org.opencontainers.image.version="0.23.0"
 # x-release-please-end
 
 COPY --chown=knossos:knossos workers/php/src ./workers/php/src
