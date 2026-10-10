@@ -1429,9 +1429,9 @@ describe('knossos mod', () => {
     await w.clock.settle()
     expect(w.calls.filter(c => c[2] === 'dashboard').length).toBe(before + 1)
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● fresh 1s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● fresh 1s {3}rescan$/)
     await w.clock.advance(5_000)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● fresh 6s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● fresh 6s {3}rescan$/)
     await ui.unmount()
   })
 
@@ -1443,7 +1443,7 @@ describe('knossos mod', () => {
     await slash($, '')
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● refresh failed 11s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● refresh failed 11s {3}rescan$/)
     await ui.press({ key: 'tab:hubs' })
     expect((await ui.find({ key: 'hub-0' }))?.text).toContain('Router')
     await ui.unmount()
@@ -1564,7 +1564,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
-      expect((await ui.find({ key: 'title' }))?.text).toMatch(/^ repo +● fresh 1s $/)
+      expect((await ui.find({ key: 'title' }))?.text).toMatch(/^ repo +● fresh 1s {3}rescan$/)
       // The header is two rows, the title and the tabs: no summary line under them.
       expect(await ui.find({ key: 'summary' })).toBeUndefined()
       // Narrow, the stat tiles are a line of figures under the tabs.
@@ -2185,8 +2185,8 @@ describe('knossos mod', () => {
         expect(w.scanRuns()[0]).toEqual(['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'scan', ROOT])
         expect(w.dashboardRuns().length).toBeGreaterThan(before)
       }
-      expect((await ui.find({ key: 'title' }))?.text).toMatch(/● fresh 1s $/)
-      expect(await ui.find({ key: 'rescan' })).toBeUndefined()
+      expect((await ui.find({ key: 'title' }))?.text).toMatch(/● fresh 1s {3}rescan$/)
+      expect((await ui.find({ key: 'rescan' }))?.props.hotkey).toBe('r')
       await ui.unmount()
     }
   })
@@ -2262,12 +2262,14 @@ describe('knossos mod', () => {
           await ui.press({ key: step })
           await w.clock.settle()
           const boxes = await ui.findAll({ type: 'Box' })
-          // A hidden tab twin draws nothing: its label is out of the strip's width.
-          const hidden = boxes.filter(b => b.props.display === 'none').reduce((n, b) => n + [...b.text].length, 0)
+          // A hidden twin draws nothing: its label is out of its row's width. The tabs carry
+          // one per tab, the title one for the rescan key when its label had no room.
+          const twins = boxes.filter(b => b.props.display === 'none')
+          const hiddenIn = (key: unknown) => twins.filter(b => (key === 'title' ? b.key === 'rescan' : b.key !== 'rescan')).reduce((n, b) => n + [...b.text].length, 0)
           const rows = boxes.filter(b => b.key !== 'pane' && b.key !== 'detail' && b.key !== 'bar' && b.props.display !== 'none')
           expect(rows.length).toBeGreaterThan(5)
           for (const row of rows) {
-            const width = [...drawn(row.text)].length + hotkeyPrefixes(row) - (row.key === 'tabs' ? hidden : 0)
+            const width = [...drawn(row.text)].length + hotkeyPrefixes(row) - (row.key === 'tabs' || row.key === 'title' ? hiddenIn(row.key) : 0)
             expect(width, `${surface} ${bodyColumns} ${step} ${String(row.key)}: ${row.text}`).toBeLessThanOrEqual(bodyColumns)
           }
           for (const grid of await ui.findAll({ type: 'Raster' })) {
@@ -3884,7 +3886,7 @@ describe('the live watcher', () => {
     expect(w.watcher.starts).toHaveLength(1)
     expect(w.watcher.starts[0]?.slice(2)).toEqual(['watch', ROOT, '--poll-ms=1000'])
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live · \d+s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live · \d+s {3}rescan$/)
     await ui.unmount()
     // Its own ready names the snapshot the dashboard already has: no second load.
     expect(w.dashboardRuns()).toHaveLength(1)
@@ -3902,7 +3904,7 @@ describe('the live watcher', () => {
     w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
     await w.clock.advance(100)
     expect(w.dashboardRuns()).toHaveLength(2)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live · \d+s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live · \d+s {3}rescan$/)
     await ui.unmount()
   })
 
@@ -3911,7 +3913,7 @@ describe('the live watcher', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● following · \d+s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● following · \d+s {3}rescan$/)
     w.watchSend({ event: 'snapshot', snapshot_id: 's9' })
     await w.clock.advance(100)
     expect(w.dashboardRuns()).toHaveLength(2)
@@ -4042,7 +4044,7 @@ describe('the live watcher', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live · \d+s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live · \d+s {3}rescan$/)
     await $.session.end({ reason: 'resume', sessionId: 'x', resume: { id: 'x' } } as never)
     await w.clock.settle()
     // Nothing watches now: the header says so at once, and a brief in the gap scans for itself.
@@ -4055,7 +4057,7 @@ describe('the live watcher', () => {
     // The resumed session is watched again, from the next tick.
     await w.clock.advance(1_100)
     expect(w.watcher.starts).toHaveLength(2)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live · \d+s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live · \d+s {3}rescan$/)
     await ui.unmount()
   })
 
@@ -4087,7 +4089,7 @@ describe('the live watcher', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live · \d+s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live · \d+s {3}rescan$/)
     await ui.unmount()
   })
 
@@ -4677,7 +4679,7 @@ describe("the pane's header, marked rows, hover cards and heat map cells", () =>
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await wide($, surface)
       const title = (await ui.find({ key: 'title' }))?.text ?? ''
-      expect(title).toMatch(/^ {2}repo {2}feat\/pane · 0123456 {3}PHP {3}TS +● fresh 1s $/)
+      expect(title).toMatch(/^ {2}repo {2}feat\/pane · 0123456 {3}PHP {3}TS +● fresh 1s {3}rescan$/)
       const pill = (await ui.findAll({ type: 'Text' })).find(t => t.text === ' ● fresh 1s ')
       expect(pill?.props).toMatchObject({ backgroundColor: 'success', color: 'inverseText', bold: true })
       await ui.unmount()
@@ -4729,11 +4731,11 @@ describe("the pane's header, marked rows, hover cards and heat map cells", () =>
     await $.session.start(START)
     await w.clock.settle()
     const ui = await wide($)
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/^ +repo +● fresh 1s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/^ +repo +● fresh 1s {3}rescan$/)
     await ui.press({ key: 'tab:hubs' })
     await ui.press({ key: 'open' })
     await w.clock.settle()
-    expect((await ui.find({ key: 'title' }))?.text).toMatch(/^ +repo › Hubs › Router +● fresh 1s $/)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/^ +repo › Hubs › Router +● fresh 1s {3}rescan$/)
     await ui.unmount()
   })
 

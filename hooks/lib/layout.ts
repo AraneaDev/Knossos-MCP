@@ -654,6 +654,9 @@ function pill(status: PaneStatus): Segment {
  */
 export function titleRow(input: PaneInput, columns: number, tier: Tier): Row {
   const rescan: Segment[] = input.canRescan ? [{ text: '  ' }, button('rescan', 'rescan', 'r', { dim: false })] : []
+  // Where the header is short of room the label goes before the reason does;
+  // the hotkey stays, on a twin drawn out of sight, as a tab's digit does.
+  const rescanKey: Segment[] = input.canRescan ? [{ text: '', hidden: true, press: { id: 'rescan', label: 'rescan', hotkey: 'r' } }] : []
   const note: Segment[] = input.status.note === undefined ? [] : [{ text: `${input.status.note}  `, dim: true }]
   const name: Segment = { text: input.project, bold: true, color: HEADING }
   const crumbs: Segment[] =
@@ -674,19 +677,22 @@ export function titleRow(input: PaneInput, columns: number, tier: Tier): Row {
     [[...crumbs, ...(away ? [] : where)], [...note, pill(input.status), ...rescan]],
     [[...crumbs, ...(!away && input.git?.branch ? [{ text: `  ${input.git.branch}`, dim: true }] : [])], [...note, pill(input.status), ...rescan]],
     [crumbs, [...note, pill(input.status), ...rescan]],
+    [crumbs, [...note, pill(input.status), ...rescanKey]],
     [crumbs, [pill(input.status), ...rescan]],
+    [crumbs, [pill(input.status), ...rescanKey]],
   ]
   for (const [left, right] of variants) {
     if (segmentsWidth(left) + 1 + segmentsWidth(right) <= columns) return spread('title', left, right, columns)
   }
   // Nothing fits whole: the right side first, then the way back cut from its middle, then the pill's words cut.
-  const right: Segment[] = [pill(input.status), ...rescan]
+  // The rescan label is the first thing given up; its hotkey stays.
+  const right: Segment[] = [pill(input.status), ...rescanKey]
   const room = columns - 1 - segmentsWidth(right)
   if (room >= Math.min(4, cells(input.project))) return spread('title', cutCrumbs(crumbs, room), right, columns)
-  const keep = Math.max(0, columns - 1 - segmentsWidth(rescan) - Math.min(4, cells(input.project)))
+  const keep = Math.max(0, columns - 1 - Math.min(4, cells(input.project)))
   const shortPill: Segment = { ...pill(input.status), text: fit(pill(input.status).text, keep) }
-  const left = cutCrumbs(crumbs, Math.max(0, columns - 1 - cells(shortPill.text) - segmentsWidth(rescan)))
-  return spread('title', left, keep >= 4 ? [shortPill, ...rescan] : clip(rescan.slice(1), columns), columns)
+  const left = cutCrumbs(crumbs, Math.max(0, columns - 1 - cells(shortPill.text)))
+  return spread('title', left, keep >= 4 ? [shortPill, ...rescanKey] : rescanKey, columns)
 }
 
 /** The header's left side cut to `room`: a detail's label first, then the tab between, then the project's name. */
