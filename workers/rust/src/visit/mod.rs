@@ -444,192 +444,217 @@ impl Walk<'_> {
                     item.span(),
                 );
             }
-            Item::Fn(node) => {
-                let name = ident_name(&node.sig.ident);
-                // A harness-invoked test has no caller in the graph, the same
-                // way a cfg(test) module has none.
-                let is_test = is_test_attribute(&node.attrs);
-                if is_test {
-                    self.facts.enter_test_scope();
-                }
-                let canonical =
-                    self.declare(container, container_kind, &name, "function", item.span());
-                // A crate-root `fn main` is what the runtime invokes — nothing
-                // calls or imports it, so without the executable mark the
-                // whole entry point reads as dead code.
-                if container == self.module && name == "main" {
-                    self.facts.mark_executable();
-                }
-                // Exported to a foreign caller: the host embedding the library
-                // calls it by its symbol, and nothing in Rust ever does.
-                if is_foreign_export(node) {
-                    self.facts.node_attribute(
-                        &canonical,
-                        "runtime_invoked",
-                        serde_json::Value::Bool(true),
+            Item::Fn(node) => self.walk_fn(container, container_kind, node, item.span()),
+            Item::Trait(node) => self.walk_trait(container, container_kind, node, item.span()),
+            Item::Impl(node) => self.walk_impl(container, container_kind, node, item.span()),
+            Item::Mod(node) => self.walk_mod(container, container_kind, node, item.span()),
+            _ => {}
+        }
+    }
+
+    /// Walk a free function: its node, its markers as a test, an entry point
+    /// or a foreign export, its attribute routes, and its body.
+    fn walk_fn(
+        &mut self,
+        container: &str,
+        container_kind: &str,
+        node: &syn::ItemFn,
+        span: proc_macro2::Span,
+    ) {
+        let name = ident_name(&node.sig.ident);
+        // A harness-invoked test has no caller in the graph, the same
+        // way a cfg(test) module has none.
+        let is_test = is_test_attribute(&node.attrs);
+        if is_test {
+            self.facts.enter_test_scope();
+        }
+        let canonical = self.declare(container, container_kind, &name, "function", span);
+        // A crate-root `fn main` is what the runtime invokes — nothing
+        // calls or imports it, so without the executable mark the
+        // whole entry point reads as dead code.
+        if container == self.module && name == "main" {
+            self.facts.mark_executable();
+        }
+        // Exported to a foreign caller: the host embedding the library
+        // calls it by its symbol, and nothing in Rust ever does.
+        if is_foreign_export(node) {
+            self.facts
+                .node_attribute(&canonical, "runtime_invoked", serde_json::Value::Bool(true));
+        }
+        self.attribute_routes(&canonical, &node.attrs);
+        self.walk_body(
+            &reference("function", &canonical),
+            container,
+            &node.sig,
+            &node.block,
+        );
+        if is_test {
+            self.facts.exit_test_scope();
+        }
+    }
+
+    /// Walk a trait: its node, the supertraits it extends, and each method it
+    /// declares, with the default body when it has one.
+    fn walk_trait(
+        &mut self,
+        container: &str,
+        container_kind: &str,
+        node: &syn::ItemTrait,
+        span: proc_macro2::Span,
+    ) {
+        let canonical = self.declare(
+            container,
+            container_kind,
+            &ident_name(&node.ident),
+            "interface",
+            span,
+        );
+        // A supertrait bound (`trait Named: Display`) names a trait the
+        // declared trait extends. Only a plain trait bound is handled;
+        // a lifetime bound (`trait Named: 'static`) names no node.
+        for supertrait in &node.supertraits {
+            if let syn::TypeParamBound::Trait(bound) = supertrait {
+                if let Some(target) = self.path_target(container, &bound.path) {
+                    self.facts.edge(
+                        "extends",
+                        &reference("interface", &canonical),
+                        &reference("interface", &target),
+                        "probable",
+                        span,
                     );
                 }
-                self.attribute_routes(&canonical, &node.attrs);
-                self.walk_body(
-                    &reference("function", &canonical),
-                    container,
-                    &node.sig,
-                    &node.block,
-                );
-                if is_test {
-                    self.facts.exit_test_scope();
-                }
             }
-            Item::Trait(node) => {
-                let canonical = self.declare(
+        }
+        for member in &node.items {
+            if let TraitItem::Fn(method) = member {
+                // A trait method with no default body has no block to
+                // walk: `default` is `None` for a signature-only member.
+                self.walk_member_fn(
+                    container,
+                    &canonical,
+                    "interface",
+                    &method.attrs,
+                    &method.sig,
+                    method.default.as_ref(),
+                    member.span(),
+                    |_, _| {},
+                );
+            }
+        }
+    }
+
+    /// Walk an `impl` block's methods onto the type it implements, with the
+    /// `implements` edge of a trait impl.
+    fn walk_impl(
+        &mut self,
+        container: &str,
+        container_kind: &str,
+        node: &syn::ItemImpl,
+        span: proc_macro2::Span,
+    ) {
+        // An `impl` block is not a node: it declares members of a type that
+        // is declared elsewhere, possibly in another file. Its methods are
+        // attached to the type's canonical path so both halves of a split
+        // definition land on the same node. When that type was not declared
+        // in this file, `Facts::finish` drops the resulting `contains` edge
+        // (its source was never emitted as a node here) while the method
+        // nodes themselves still stand.
+        let Some(target) = self.type_path(container, &node.self_ty) else {
+            return;
+        };
+        // A type from outside this crate can only take a trait impl
+        // (the orphan rule), and its path is a name the project does
+        // not own: attaching methods there declared `std::sync::Arc::x`
+        // with nothing tying them to the trait they implement. The
+        // block itself is the project's, so it becomes the container.
+        let root = self.crate_root().to_owned();
+        let target = match &node.trait_ {
+            Some((_, trait_path, _))
+                if target != root && !target.starts_with(&format!("{root}::")) =>
+            {
+                let trait_name = trait_path
+                    .segments
+                    .last()
+                    .map(|segment| ident_name(&segment.ident))
+                    .unwrap_or_default();
+                let type_name = target.rsplit("::").next().unwrap_or(&target).to_owned();
+                self.declare(
                     container,
                     container_kind,
-                    &ident_name(&node.ident),
-                    "interface",
-                    item.span(),
-                );
-                // A supertrait bound (`trait Named: Display`) names a trait the
-                // declared trait extends. Only a plain trait bound is handled;
-                // a lifetime bound (`trait Named: 'static`) names no node.
-                for supertrait in &node.supertraits {
-                    if let syn::TypeParamBound::Trait(bound) = supertrait {
-                        if let Some(target) = self.path_target(container, &bound.path) {
-                            self.facts.edge(
-                                "extends",
-                                &reference("interface", &canonical),
-                                &reference("interface", &target),
-                                "probable",
-                                item.span(),
-                            );
-                        }
-                    }
-                }
-                for member in &node.items {
-                    if let TraitItem::Fn(method) = member {
-                        // A member compiled only for tests is test code, as
-                        // a free function is (see `Walk::walk_items`).
-                        let is_test = is_cfg_test(&method.attrs);
-                        self.facts.enter_test_scope_if(is_test);
-                        let method_canonical = self.declare(
-                            &canonical,
-                            "interface",
-                            &ident_name(&method.sig.ident),
-                            "method",
-                            member.span(),
-                        );
-                        // A trait method with no default body has no block to
-                        // walk: `default` is `None` for a signature-only member.
-                        if let Some(block) = &method.default {
-                            self.walk_body(
-                                &reference("method", &method_canonical),
-                                container,
-                                &method.sig,
-                                block,
-                            );
-                        }
-                        self.facts.exit_test_scope_if(is_test);
-                    }
-                }
+                    &format!("<impl {trait_name} for {type_name}>"),
+                    "class",
+                    span,
+                )
             }
-            Item::Impl(node) => {
-                // An `impl` block is not a node: it declares members of a type that
-                // is declared elsewhere, possibly in another file. Its methods are
-                // attached to the type's canonical path so both halves of a split
-                // definition land on the same node. When that type was not declared
-                // in this file, `Facts::finish` drops the resulting `contains` edge
-                // (its source was never emitted as a node here) while the method
-                // nodes themselves still stand.
-                let Some(target) = self.type_path(container, &node.self_ty) else {
-                    return;
-                };
-                // A type from outside this crate can only take a trait impl
-                // (the orphan rule), and its path is a name the project does
-                // not own: attaching methods there declared `std::sync::Arc::x`
-                // with nothing tying them to the trait they implement. The
-                // block itself is the project's, so it becomes the container.
-                let root = self.crate_root().to_owned();
-                let target = match &node.trait_ {
-                    Some((_, trait_path, _))
-                        if target != root && !target.starts_with(&format!("{root}::")) =>
-                    {
-                        let trait_name = trait_path
-                            .segments
-                            .last()
-                            .map(|segment| ident_name(&segment.ident))
-                            .unwrap_or_default();
-                        let type_name = target.rsplit("::").next().unwrap_or(&target).to_owned();
-                        self.declare(
-                            container,
-                            container_kind,
-                            &format!("<impl {trait_name} for {type_name}>"),
-                            "class",
-                            item.span(),
-                        )
-                    }
-                    _ => target,
-                };
-                // The impl target may live in another file. Its `implements`
-                // and `contains` edges use it as their SOURCE, and a source
-                // the contribution never declared is normally filtered in
-                // `Facts::finish`; the crate-wide index vouching for it keeps
-                // those edges instead of orphaning the methods. The index is
-                // the only acceptable vouching: it holds only files the core
-                // discovered and this worker parsed, so a vouch also
-                // guarantees the declaring file has a contribution, in this
-                // request or cached, whose node will resolve. A target the
-                // index cannot place stays unvouched and the edges ride out
-                // the old drop, because a `contains` edge whose source names
-                // nothing would make reconciliation throw.
-                if self.declarations.get(&target).copied() == Some(1) {
-                    self.facts
-                        .external_unless_declared(&reference("class", &target));
-                }
-                let old_target = self.current_impl_target.replace(target.clone());
-                // `impl Trait for Type` names both endpoints explicitly, so the
-                // `implements` edge is `certain`. The trait name is resolved the
-                // same way any other path is, through `use` and the `self`/`super`/
-                // `crate` prefixes.
-                if let Some((_, trait_path, _)) = &node.trait_ {
-                    if let Some(interface) = self.path_target(container, trait_path) {
-                        self.facts.edge(
-                            "implements",
-                            &reference("class", &target),
-                            &reference("interface", &interface),
-                            "certain",
-                            item.span(),
-                        );
-                    }
-                }
-                // `impl Drop for T` is the one trait whose method the runtime
-                // calls: nothing in the graph names `drop`, so it reads as
-                // unreferenced however heavily the type is used. Marked here,
-                // on the trait rather than on the method name, so an ordinary
-                // inherent method that happens to be called `drop` keeps its
-                // reference check.
-                let drop_impl = node.trait_.as_ref().is_some_and(|(_, path, _)| {
-                    path.segments
-                        .last()
-                        .is_some_and(|segment| segment.ident == "Drop")
-                });
-                // `#[wasm_bindgen] impl T`: JavaScript calls what the bindings
-                // export, the public methods and the constructor, and nothing
-                // in Rust has to.
-                let exported_impl = node.attrs.iter().any(is_wasm_bindgen);
-                for member in &node.items {
-                    if let ImplItem::Fn(method) = member {
-                        let is_test = is_cfg_test(&method.attrs);
-                        self.facts.enter_test_scope_if(is_test);
-                        let name = ident_name(&method.sig.ident);
-                        let method_canonical =
-                            self.declare(&target, "class", &name, "method", member.span());
+            _ => target,
+        };
+        // The impl target may live in another file. Its `implements`
+        // and `contains` edges use it as their SOURCE, and a source
+        // the contribution never declared is normally filtered in
+        // `Facts::finish`; the crate-wide index vouching for it keeps
+        // those edges instead of orphaning the methods. The index is
+        // the only acceptable vouching: it holds only files the core
+        // discovered and this worker parsed, so a vouch also
+        // guarantees the declaring file has a contribution, in this
+        // request or cached, whose node will resolve. A target the
+        // index cannot place stays unvouched and the edges ride out
+        // the old drop, because a `contains` edge whose source names
+        // nothing would make reconciliation throw.
+        if self.declarations.get(&target).copied() == Some(1) {
+            self.facts
+                .external_unless_declared(&reference("class", &target));
+        }
+        let old_target = self.current_impl_target.replace(target.clone());
+        // `impl Trait for Type` names both endpoints explicitly, so the
+        // `implements` edge is `certain`. The trait name is resolved the
+        // same way any other path is, through `use` and the `self`/`super`/
+        // `crate` prefixes.
+        if let Some((_, trait_path, _)) = &node.trait_ {
+            if let Some(interface) = self.path_target(container, trait_path) {
+                self.facts.edge(
+                    "implements",
+                    &reference("class", &target),
+                    &reference("interface", &interface),
+                    "certain",
+                    span,
+                );
+            }
+        }
+        // `impl Drop for T` is the one trait whose method the runtime
+        // calls: nothing in the graph names `drop`, so it reads as
+        // unreferenced however heavily the type is used. Marked here,
+        // on the trait rather than on the method name, so an ordinary
+        // inherent method that happens to be called `drop` keeps its
+        // reference check.
+        let drop_impl = node.trait_.as_ref().is_some_and(|(_, path, _)| {
+            path.segments
+                .last()
+                .is_some_and(|segment| segment.ident == "Drop")
+        });
+        // `#[wasm_bindgen] impl T`: JavaScript calls what the bindings
+        // export, the public methods and the constructor, and nothing
+        // in Rust has to.
+        let exported_impl = node.attrs.iter().any(is_wasm_bindgen);
+        for member in &node.items {
+            if let ImplItem::Fn(method) = member {
+                let name = ident_name(&method.sig.ident);
+                self.walk_member_fn(
+                    container,
+                    &target,
+                    "class",
+                    &method.attrs,
+                    &method.sig,
+                    Some(&method.block),
+                    member.span(),
+                    |this, method_canonical| {
                         // The declared return type, which is what a call on the
                         // result resolves through in the core (`method_of_return`).
                         // Speculative: `String` or `Vec<T>` names nothing here.
                         if let syn::ReturnType::Type(_, returned) = &method.sig.output {
-                            if let Some(returned) = self.receiver_type(container, returned) {
-                                self.facts.speculative_edge(
+                            if let Some(returned) = this.receiver_type(container, returned) {
+                                this.facts.speculative_edge(
                                     "returns",
-                                    &reference("method", &method_canonical),
+                                    &reference("method", method_canonical),
                                     &reference("class", &returned),
                                     method.sig.output.span(),
                                 );
@@ -640,8 +665,8 @@ impl Walk<'_> {
                         // which may be a dependency's (`Default`, a visitor)
                         // whose members the graph cannot see.
                         if node.trait_.is_some() {
-                            self.facts.node_attribute(
-                                &method_canonical,
+                            this.facts.node_attribute(
+                                method_canonical,
                                 "overrides",
                                 serde_json::Value::Bool(true),
                             );
@@ -649,26 +674,56 @@ impl Walk<'_> {
                         if (drop_impl && name == "drop")
                             || (exported_impl && matches!(method.vis, syn::Visibility::Public(_)))
                         {
-                            self.facts.node_attribute(
-                                &method_canonical,
+                            this.facts.node_attribute(
+                                method_canonical,
                                 "runtime_invoked",
                                 serde_json::Value::Bool(true),
                             );
                         }
-                        self.walk_body(
-                            &reference("method", &method_canonical),
-                            container,
-                            &method.sig,
-                            &method.block,
-                        );
-                        self.facts.exit_test_scope_if(is_test);
-                    }
-                }
-                self.current_impl_target = old_target;
+                    },
+                );
             }
-            Item::Mod(node) => self.walk_mod(container, container_kind, node, item.span()),
-            _ => {}
         }
+        self.current_impl_target = old_target;
+    }
+
+    /// Declare one trait or impl method under `owner` and walk its body, when
+    /// it has one. A member compiled only for tests is test code, as a free
+    /// function is (see `Walk::walk_items`), so the whole member sits in a
+    /// test scope. `annotate` adds the facts only one kind of member carries,
+    /// given the method's canonical path, between declaring it and walking
+    /// its body.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_member_fn(
+        &mut self,
+        container: &str,
+        owner: &str,
+        owner_kind: &str,
+        attrs: &[syn::Attribute],
+        signature: &syn::Signature,
+        block: Option<&syn::Block>,
+        span: proc_macro2::Span,
+        annotate: impl FnOnce(&mut Self, &str),
+    ) {
+        let is_test = is_cfg_test(attrs);
+        self.facts.enter_test_scope_if(is_test);
+        let method_canonical = self.declare(
+            owner,
+            owner_kind,
+            &ident_name(&signature.ident),
+            "method",
+            span,
+        );
+        annotate(self, &method_canonical);
+        if let Some(block) = block {
+            self.walk_body(
+                &reference("method", &method_canonical),
+                container,
+                signature,
+                block,
+            );
+        }
+        self.facts.exit_test_scope_if(is_test);
     }
 
     /// Walk one `mod` item.
