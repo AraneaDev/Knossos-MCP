@@ -87,7 +87,7 @@ final readonly class QualityGateQueryService extends AbstractArchitectureQuerySe
         // graph.
         $before = $this->metrics->gateFigures($this->snapshots->facts($projectId, $baseline));
         unset($baseline['archived']);
-        $after = $this->metrics->gateFigures($this->snapshots->facts($projectId, $current), $before['cycle_of']);
+        $after = $this->metrics->gateFigures($this->snapshots->facts($projectId, $current), $before);
         $actual = [
             'new_cycles' => $after['new_cycles'],
             'error_diagnostics' => $after['metrics']['error_diagnostics'],
@@ -180,7 +180,8 @@ final readonly class QualityGateQueryService extends AbstractArchitectureQuerySe
      * is a hash of; a full name alone is not unique. A dependency is new when no
      * impact edge joined the same two components before;
      * boundaries are the active graph's labels ({@see BoundaryLabels}); a
-     * cycle is new unless all its members already formed one cycle; a hub
+     * cycle is new unless all its members, or the components they only moved
+     * from, already formed one cycle; a hub
      * has grown when at least {@see self::HUB_MIN} components depend on it
      * now and more than before.
      *
@@ -221,7 +222,7 @@ final readonly class QualityGateQueryService extends AbstractArchitectureQuerySe
             <=> [$b['source']['boundary'], $b['target']['boundary'], $b['source']['canonical_name'], $b['target']['canonical_name']]);
 
         $cycles = [];
-        foreach (SnapshotMetrics::newCycles($was['cycle_of'], $after['sccs'], $now) as $members) {
+        foreach (SnapshotMetrics::newCycles($was['cycle_of'], $after['sccs'], $now, $was['cycle_kin']) as $members) {
             $sorted = $members;
             usort($sorted, static fn(string $a, string $b): int => [$nodes[$a]['canonical_name'], $now[$a]] <=> [$nodes[$b]['canonical_name'], $now[$b]]);
             $cycles[] = ['size' => count($members), 'members' => array_map($item, array_slice($sorted, 0, $limit))];
