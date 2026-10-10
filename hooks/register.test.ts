@@ -2130,15 +2130,15 @@ describe('knossos mod', () => {
     await ui.unmount()
   })
 
-  test('the rescan action shows only for a stale or drifted snapshot', async ($, on) => {
+  test('the rescan action is always offered, a fresh snapshot included', async ($, on) => {
     const fresh = paneDashboard()
     const drifted = paneDashboard({ freshness: { state: 'fresh', age_seconds: 1, drift_files: 3 } })
     const stale = paneDashboard({ freshness: { state: 'stale', age_seconds: 7200, drift_files: 0 } })
-    const w = world(on, { dashboard: [{ stdout: fresh }, { stdout: drifted }, { stdout: stale }] })
+    const w = world(on, { dashboard: [{ stdout: fresh }, { stdout: drifted }, { stdout: stale }], scan: [{ stdout: '{"status":"ok"}' }] })
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect(await ui.find({ key: 'rescan' })).toBeUndefined()
+    expect((await ui.find({ key: 'rescan' }))?.props.hotkey).toBe('r')
     await slash($, '')
     await w.clock.settle()
     expect((await ui.find({ key: 'rescan' }))?.props.hotkey).toBe('r')
@@ -2147,6 +2147,17 @@ describe('knossos mod', () => {
     await w.clock.settle()
     expect((await ui.find({ key: 'title' }))?.text).toMatch(/● stale 2h {3}rescan$/)
     expect(w.scanRuns()).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a rescan on a fresh snapshot still runs a scan', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], scan: [{ stdout: '{"status":"ok"}' }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'rescan' })
+    await w.clock.settle()
+    expect(w.scanRuns()).toHaveLength(1)
     await ui.unmount()
   })
 

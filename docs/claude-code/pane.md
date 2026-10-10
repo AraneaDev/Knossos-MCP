@@ -94,7 +94,7 @@ at the right edge the status pill:
 | pill                  | meaning                                                                         |
 | --------------------- | ------------------------------------------------------------------------------- |
 | `● fresh 4s`          | the snapshot matches the files; the age is the snapshot's                       |
-| `● stale 38m`         | files changed since the snapshot; `r: rescan` appears beside it                 |
+| `● stale 38m`         | files changed since the snapshot                                                |
 | `● live · 7s`         | the live watcher keeps the graph current; the age is since the graph last moved |
 | `● following · 7s`    | another session's watcher leads for this project                                |
 | `● scanning…`         | a scan is under way                                                             |
@@ -165,7 +165,7 @@ a line:
 | `p`         | in a component's detail: draw a [route](#a-route-between-two-components) to another component          |
 | `m`         | in a component's detail: add a [note](#a-note-on-a-component)                                          |
 | `n` `s` `x` | on Hubs: narrow the list, sort by in, out or cross degree, clear the narrowing                         |
-| `r`         | rescan a stale snapshot                                                                                |
+| `r`         | rescan the project now, fresh or not                                                                   |
 | `a`         | allow a refused root (asks first)                                                                      |
 
 Escape cannot be caught by a pane (it hands the keyboard back to the prompt),
@@ -740,7 +740,8 @@ Drifted since the snapshot                                 3
    src/Query/DashboardService.php                  core
 ```
 
-`r` rescans: an incremental scan under the same rules as a turn's, with
+`r: rescan` sits beside the pill whenever no scan is running, whatever the
+pill says. It runs an incremental scan under the same rules as a turn's, with
 `scanning…` and the age of the figures on show meanwhile. A rescan that fails
 turns the pill to `● scan failed`, says why beside it, and keeps the figures.
 
