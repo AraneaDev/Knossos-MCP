@@ -7,6 +7,7 @@
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 
+mod cargo_manifest;
 pub mod facts;
 pub mod layout;
 mod nesting;
