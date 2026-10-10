@@ -31,6 +31,7 @@ final class EntryPointResolver
 
         return self::withGlobEntryPoints($units, $files);
     }
+
     /**
      * The sources a published build output is compiled from, when no tsconfig says.
      *
