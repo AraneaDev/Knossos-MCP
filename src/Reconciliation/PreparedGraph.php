@@ -8,7 +8,7 @@ namespace Knossos\Reconciliation;
  * A scan's graph resolved and ready to write, before the transaction opens.
  *
  * Everything here is computed from the request alone, so preparing it holds
- * no lock; the transaction that persists it does nothing but write.
+ * no lock; the transaction that persists it does no resolution.
  */
 final readonly class PreparedGraph
 {
@@ -31,6 +31,6 @@ final readonly class PreparedGraph
         public array $classifications,
         public array $boundaries,
         public array $warnings,
-        public int $externalNodes,
+        public int $unresolvedNodes,
     ) {}
 }

@@ -139,11 +139,12 @@ final class EdgeTargetResolver
         [$reference, $targetId] = $this->target($targetReference, $returned);
         if ($targetId === null && CaseInsensitiveReferences::applies($targetReference)) {
             $caseless = $this->caseless();
+            // Only target() is used on this instance, so it needs no contributions.
             $this->caselessTargets ??= new self(
                 $caseless->nodeMap(),
                 $caseless->returnTypes(),
                 $caseless->inheritanceSources(),
-                $this->contributions,
+                [],
             );
             $targetId = $this->caselessTargets->target(CaseInsensitiveReferences::fold($targetReference), $returned)[1];
         }

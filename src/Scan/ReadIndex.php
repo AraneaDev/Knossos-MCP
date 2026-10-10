@@ -44,7 +44,7 @@ final readonly class ReadIndex
      * @param array<string, string> $discovered every path discovery hashed, to its content hash
      * @param callable(string, ?string): bool $stillMatches whether an undiscovered path still matches a stored read
      * @param array<string, list<string>> $addedByScanner scanner id to the discovered paths of its languages it has no row for
-     * @param array<string, true> $addedFilesAffectAll scanner ids a deleted file of whose rebuilds all of their rows
+     * @param array<string, true> $addedFilesAffectAll scanner ids whose rows are all rebuilt when one of their files is deleted
      * @param array<string, string> $layoutMarkers scanner id to the pattern of the paths whose deletion rebuilds all of its rows
      */
     public static function build(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner, array $addedFilesAffectAll, array $layoutMarkers): self

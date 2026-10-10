@@ -69,7 +69,7 @@ final readonly class GraphReconciler
             count($graph->nodes),
             count($graph->edges),
             $diagnosticCount,
-            $graph->externalNodes,
+            $graph->unresolvedNodes,
             $timer->phases(),
         );
     }

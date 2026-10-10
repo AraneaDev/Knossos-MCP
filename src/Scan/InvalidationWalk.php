@@ -79,7 +79,7 @@ final class InvalidationWalk
      * Rebuilds the incomplete rows of every scanner that has rebuilt an
      * owner since the last call, each scanner once.
      */
-    public function fanOutIncomplete(): void
+    private function fanOutIncomplete(): void
     {
         while (($scanner = array_search(false, $this->incompleteDue, true)) !== false) {
             $this->incompleteDue[$scanner] = true;
