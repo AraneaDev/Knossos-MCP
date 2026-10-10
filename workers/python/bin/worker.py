@@ -1318,7 +1318,13 @@ def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
 
 
 def bound_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
-    """The names a function binds: its parameters, and every name it assigns."""
+    """The names a function binds: its parameters, and every name it assigns.
+
+    Assigning covers every binding form: `=`, `for`, `with ... as`, `:=` and
+    `except ... as`. An import inside the function is not counted: the import
+    aliases resolve it to what it names. A name the function declares
+    `global` is the module's however it is assigned.
+    """
     arguments = node.args
     names = {argument.arg for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]}
     for extra in (arguments.vararg, arguments.kwarg):
@@ -1327,7 +1333,22 @@ def bound_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
     for child in ast.walk(node):
         if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
             names.add(child.id)
-    return frozenset(names)
+        elif isinstance(child, ast.ExceptHandler) and child.name is not None:
+            names.add(child.name)
+    return frozenset(names - declared_global(node))
+
+
+def declared_global(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """The names ``node`` itself declares ``global``; a nested function's declarations are its own."""
+    names: set[str] = set()
+    pending: list[ast.AST] = list(node.body)
+    while pending:
+        child = pending.pop()
+        if isinstance(child, ast.Global):
+            names.update(child.names)
+        elif not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            pending.extend(ast.iter_child_nodes(child))
+    return names
 
 
 def ref(kind: str, canonical: str) -> str:
@@ -2495,7 +2516,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 (scope[node.id] for scope in reversed(self.local_function_scopes) if node.id in scope),
                 None,
             )
-            if target is None:
+            if target is None and not any(node.id in names for names in self.bound_names):
+                # A name this function, or one around it, binds is a local
+                # there, whatever the module declares under that name.
                 target = self.aliases.get(node.id) or self.index.module_declarations(self.name).get(node.id)
             if target is not None and target.startswith(("py:function:", "py:class:")) and target != self.current():
                 self.facts.add_edge("references", self.current(), target, node)
