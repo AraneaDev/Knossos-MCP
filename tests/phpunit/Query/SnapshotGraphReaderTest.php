@@ -42,6 +42,18 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
         return [$pdo, $root, (string) $row['project_id'], (string) $row['payload_json']];
     }
 
+    /**
+     * A payload's rows as the reader takes them apart, from a string the test
+     * holds rather than the store, so one reading can be compared across the
+     * ways a payload is laid out.
+     *
+     * @return array<string, list<array<string, mixed>>>
+     */
+    private static function archived(SnapshotGraphReader $reader, string $storedPayload, string $scanId): array
+    {
+        return (new \ReflectionMethod($reader, 'read'))->invoke($reader, $storedPayload, $scanId, SnapshotGraphReader::COLUMNS);
+    }
+
     #[Group('query')]
     public function testItReadsOnlyTheColumnsAComparisonUses(): void
     {
@@ -75,7 +87,7 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
             $slices = (new \ReflectionMethod($reader, 'slices'))->invoke(null, $stored);
             assertSame(true, is_array((new \ReflectionMethod($reader, 'streamed'))->invoke($reader, $slices, SnapshotGraphReader::COLUMNS)));
             foreach (['compressed' => $stored, 'plain' => $json, 'laid out otherwise' => SnapshotPayload::encode($pretty)] as $how => $payload) {
-                $archived = $reader->archived($payload, 'scan_test');
+                $archived = self::archived($reader, $payload, 'scan_test');
                 foreach (SnapshotGraphReader::COLUMNS as $table => $columns) {
                     $keyed = static fn(array $rows): array => array_map(static fn(array $row): array => array_merge(array_fill_keys($columns, null), $row), $rows);
                     assertSame($keyed($active[$table]), $keyed($archived[$table]), $how . ' ' . $table);
@@ -91,7 +103,7 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
     {
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('Snapshot archive payload is invalid: scan_x');
-        (new SnapshotGraphReader(new PDO('sqlite::memory:')))->archived(SnapshotPayload::encode('{"schema":1}'), 'scan_x');
+        self::archived(new SnapshotGraphReader(new PDO('sqlite::memory:')), SnapshotPayload::encode('{"schema":1}'), 'scan_x');
     }
 
     /**
@@ -116,7 +128,7 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
         $stored = (string) $pdo->query('SELECT payload_json FROM scan_snapshots ORDER BY rowid DESC LIMIT 1')->fetchColumn();
         $reader = new SnapshotGraphReader($pdo);
 
-        foreach (['active' => $reader->active($project, $ids['scan']), 'archived' => $reader->archived($stored, $ids['scan'])] as $how => $facts) {
+        foreach (['active' => $reader->active($project, $ids['scan']), 'archived' => self::archived($reader, $stored, $ids['scan'])] as $how => $facts) {
             $languages = array_column($facts['nodes'], 'language', 'id');
             assertSame('ts', $languages[$module], $how);
             assertSame('php', $languages[$ids['checkout']], $how);
@@ -173,7 +185,7 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
         gc_collect_cycles();
         memory_reset_peak_usage();
         $before = memory_get_usage();
-        $facts = $reader->archived($stored, $ids['scan']);
+        $facts = self::archived($reader, $stored, $ids['scan']);
         $used = memory_get_peak_usage() - $before;
 
         assertSame(20_002, count($facts['edges']));
@@ -193,7 +205,7 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
             $scan = (string) $pdo->query('SELECT scan_id FROM scan_snapshots ORDER BY rowid DESC LIMIT 1')->fetchColumn();
             $reader = new SnapshotGraphReader($pdo);
 
-            assertSame($reader->archived($stored, $scan), $reader->archivedById($scan));
+            assertSame(self::archived($reader, $stored, $scan), $reader->archivedById($scan));
             // The fetched-string source, forced so it runs on every runtime,
             // not only where there is no blob stream.
             $fetched = new SnapshotGraphReader($pdo, blobReads: false);
@@ -223,7 +235,7 @@ final class SnapshotGraphReaderTest extends KnossosTestCase
             assertSame(true, is_resource($blob), 'The blob stream is the byte source here.');
             fclose($blob);
 
-            assertSame($reader->archived($stored, $scan), $reader->archivedById($scan));
+            assertSame(self::archived($reader, $stored, $scan), $reader->archivedById($scan));
         } finally {
             $this->removeTempTree($root);
         }

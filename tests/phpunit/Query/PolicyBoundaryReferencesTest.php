@@ -7,7 +7,7 @@ namespace Knossos\Tests\Phpunit\Query;
 use InvalidArgumentException;
 use Knossos\Query\ArchitecturePolicyQueryService;
 use Knossos\Query\FileContextQueryService;
-use Knossos\Query\GraphTopologyQueryService;
+use Knossos\Query\GraphSummaryQuery;
 use Knossos\Query\LocationSuggestionService;
 use Knossos\Query\SessionBriefService;
 use Knossos\Scan\ProjectScanService;
@@ -127,7 +127,7 @@ final class PolicyBoundaryReferencesTest extends KnossosTestCase
         $pdo = $this->freshTestDatabase();
         $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root)->projectId;
 
-        $boundaries = (new GraphTopologyQueryService($pdo))->listBoundaries($projectId)->data['boundaries'];
+        $boundaries = (new GraphSummaryQuery($pdo))->listBoundaries($projectId)->data['boundaries'];
         $boundary = array_values(array_filter($boundaries, static fn(array $row): bool => $row['name'] === 'composer:acme/lib (+node:web)'))[0];
         assertSame([], array_values(array_filter($boundaries, static fn(array $row): bool => $row['name'] === 'module:src'))[0]['aliases']);
 

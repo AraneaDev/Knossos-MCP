@@ -194,10 +194,7 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
         if (!isset($confidenceRank[$minConfidence])) {
             throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
         }
-        $edgeKinds = $edgeKinds === [] ? self::IMPACT_EDGE_KINDS : array_values(array_unique($edgeKinds));
-        if (count($edgeKinds) > 20 || array_diff($edgeKinds, self::IMPACT_EDGE_KINDS) !== []) {
-            throw new InvalidArgumentException('edge_kinds contains an unsupported dependency relationship.');
-        }
+        $edgeKinds = self::selectedEdgeKinds($edgeKinds, self::IMPACT_EDGE_KINDS, 'dependency');
         $project = $this->project($projectId);
         $matches = $this->resolve($projectId, $symbol);
         if (count($matches) !== 1) {
