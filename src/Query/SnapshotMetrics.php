@@ -41,21 +41,24 @@ final readonly class SnapshotMetrics extends AbstractArchitectureQueryService
     /**
      * What a branch comparison asks of the base graph, by identity key (see
      * {@see self::identityKeys()}): its impact edges (`source\0target`), the cycle each member of one was in,
+     * the components a cycle member could have moved to ({@see self::cycleKin()}),
      * how many reportable components depended on each one, and the
      * unreferenced candidates.
      *
      * @param array<string, list<array<string, mixed>>> $facts
-     * @return array{edges: array<string, true>, cycle_of: array<string, int>, in: array<string, int>, dead: array<string, true>}
+     * @return array{edges: array<string, true>, cycle_of: array<string, int>, cycle_kin: array<string, list<string>>, in: array<string, int>, dead: array<string, true>}
      */
     public function baseFigures(array $facts): array
     {
         $before = $this->snapshotAnalysis($facts);
         $names = self::identityKeys($facts);
         unset($facts);
+        $cycleOf = self::cycleIndex($before['sccs'], $names);
 
         return [
             'edges' => self::edgePairs($before['adjacency'], $names),
-            'cycle_of' => self::cycleIndex($before['sccs'], $names),
+            'cycle_of' => $cycleOf,
+            'cycle_kin' => self::cycleKin($cycleOf, $names),
             'in' => self::inDegrees($before, $names),
             'dead' => array_fill_keys(array_map(static fn(string $id): string => $names[$id], $before['unreferenced']), true),
         ];
@@ -63,22 +66,24 @@ final readonly class SnapshotMetrics extends AbstractArchitectureQueryService
 
     /**
      * What the quality gate compares of one graph: its metrics, its public
-     * surface, which cycle each cycle member is in (by identity key), and,
-     * given the baseline's, how many of its cycles are new.
+     * surface, which cycle each cycle member is in (by identity key) and the
+     * components a member could have moved to, and, given the baseline's
+     * figures, how many of its cycles are new.
      *
      * @param array<string, list<array<string, mixed>>> $facts
-     * @param array<string, int>|null $baseCycleOf the baseline's cycle index, for the active graph
-     * @return array{metrics: array<string, int>, surface: array<string, true>, cycle_of: array<string, int>, new_cycles: int}
+     * @param array{cycle_of: array<string, int>, cycle_kin: array<string, list<string>>}|null $base the baseline's figures, for the active graph
+     * @return array{metrics: array<string, int>, surface: array<string, true>, cycle_of: array<string, int>, cycle_kin: array<string, list<string>>, new_cycles: int}
      */
-    public function gateFigures(array $facts, ?array $baseCycleOf = null): array
+    public function gateFigures(array $facts, ?array $base = null): array
     {
         $analysis = $this->snapshotAnalysis($facts);
         $keys = self::identityKeys($facts);
+        $cycleOf = self::cycleIndex($analysis['sccs'], $keys);
 
         return [
             'metrics' => self::qualityMetrics($analysis), 'surface' => self::surfaceIds($facts),
-            'cycle_of' => self::cycleIndex($analysis['sccs'], $keys),
-            'new_cycles' => $baseCycleOf === null ? 0 : count(self::newCycles($baseCycleOf, $analysis['sccs'], $keys)),
+            'cycle_of' => $cycleOf, 'cycle_kin' => self::cycleKin($cycleOf, $keys),
+            'new_cycles' => $base === null ? 0 : count(self::newCycles($base['cycle_of'], $analysis['sccs'], $keys, $base['cycle_kin'])),
         ];
     }
 
@@ -240,8 +245,46 @@ final readonly class SnapshotMetrics extends AbstractArchitectureQueryService
     }
 
     /**
+     * The baseline's components a cycle member could be told apart from after a
+     * move: every identity key sharing a cycle member's
+     * {@see RenameMatching::moveSignature()}, by that signature.
+     *
+     * {@see self::newCycles()} needs no more of the baseline than this to
+     * decide whether a moved member's source is unique and gone.
+     *
+     * @param array<string, int> $cycleOf a cycle index ({@see self::cycleIndex()})
+     * @param iterable<string> $keys every identity key of the same graph
+     * @return array<string, list<string>>
+     */
+    public static function cycleKin(array $cycleOf, iterable $keys): array
+    {
+        $signatures = [];
+        foreach (array_keys($cycleOf) as $key) {
+            $signatures[RenameMatching::moveSignature((string) $key)] = true;
+        }
+        $kin = [];
+        foreach ($keys as $key) {
+            $signature = RenameMatching::moveSignature($key);
+            if (isset($signatures[$signature])) {
+                $kin[$signature][] = $key;
+            }
+        }
+        return $kin;
+    }
+
+    /**
      * The active graph's cycles that are new: a cycle is new unless all its
      * members (by identity key) were in one baseline cycle.
+     *
+     * A member that only moved counts as the baseline component it moved
+     * from, so a refactor that moves a recursion to another module is not a
+     * new cycle. A member moved when its key is absent from the baseline, the
+     * key of exactly one baseline component of the same
+     * {@see RenameMatching::moveSignature()} is absent from the active graph,
+     * and no other active component of that signature is new
+     * ({@see RenameMatching::uniquePairs()}, unique on both sides). A
+     * component present in both graphs keeps its identity, and a cycle that
+     * gained a new member or joined two baseline cycles is still new.
      *
      * The quality gate counts these and the branch comparison lists them, so
      * the two agree on what a new cycle is. A count difference, which the gate
@@ -251,22 +294,52 @@ final readonly class SnapshotMetrics extends AbstractArchitectureQueryService
      * @param array<string, int> $baseCycleOf the baseline's cycle index ({@see self::cycleIndex()})
      * @param list<list<string>> $afterSccs the active graph's strongly connected components
      * @param array<string, string> $keysNow the active graph's identity keys by id
+     * @param array<string, list<string>> $baseCycleKin the baseline's {@see self::cycleKin()}; none follows no move
      * @return list<list<string>> each new cycle's member ids
      */
-    public static function newCycles(array $baseCycleOf, array $afterSccs, array $keysNow): array
+    public static function newCycles(array $baseCycleOf, array $afterSccs, array $keysNow, array $baseCycleKin = []): array
     {
+        $movedFrom = self::movedFrom($baseCycleKin, $keysNow);
         $new = [];
         foreach ($afterSccs as $members) {
             if (count($members) < 2) {
                 continue;
             }
-            $old = array_unique(array_map(static fn(string $member): int => $baseCycleOf[$keysNow[$member]] ?? -1, $members));
+            $old = array_unique(array_map(static function (string $member) use ($baseCycleOf, $keysNow, $movedFrom): int {
+                $key = $keysNow[$member];
+                return $baseCycleOf[$movedFrom[$key] ?? $key] ?? -1;
+            }, $members));
             if (count($old) > 1 || $old[array_key_first($old)] < 0) {
                 $new[] = $members;
             }
         }
 
         return $new;
+    }
+
+    /**
+     * The baseline key each active key moved from, for the signatures a
+     * baseline cycle member has: removed and added are the keys of that
+     * signature present in one graph only.
+     *
+     * @param array<string, list<string>> $baseCycleKin
+     * @param array<string, string> $keysNow
+     * @return array<string, string> baseline keys by active key
+     */
+    private static function movedFrom(array $baseCycleKin, array $keysNow): array
+    {
+        if ($baseCycleKin === []) {
+            return [];
+        }
+        $nowKin = self::cycleKin(array_fill_keys(array_merge(...array_values($baseCycleKin)), 0), $keysNow);
+        $removed = [];
+        $added = [];
+        foreach ($baseCycleKin as $signature => $was) {
+            $now = $nowKin[$signature] ?? [];
+            $removed += array_fill_keys(array_diff($was, $now), $signature);
+            $added += array_fill_keys(array_diff($now, $was), $signature);
+        }
+        return array_flip(RenameMatching::uniquePairs($removed, $added, true));
     }
 
     /**
