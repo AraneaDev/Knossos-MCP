@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.21.2](https://github.com/AraneaDev/knossos/compare/v0.21.1...v0.21.2) (2026-10-09)
+
+
+### Fixes
+
+* anchor build excludes, read every manifest, keep boundary names ([#184](https://github.com/AraneaDev/knossos/issues/184)) ([deb9e2c](https://github.com/AraneaDev/knossos/commit/deb9e2c6337e5808aba7322cc6f3b42c01f7fab1))
+* keep every discovered path out of a redacted bundle ([#183](https://github.com/AraneaDev/knossos/issues/183)) ([173767e](https://github.com/AraneaDev/knossos/commit/173767ec7ab231b97915b9fa3147112135ff57e5))
+* scope git to nested projects and let watch converge or stop ([#180](https://github.com/AraneaDev/knossos/issues/180)) ([6b25570](https://github.com/AraneaDev/knossos/commit/6b25570a082a5c18939829c3532c5c585f4234fc))
+
 ## [0.21.1](https://github.com/AraneaDev/knossos/compare/v0.21.0...v0.21.1) (2026-10-09)
 
 
