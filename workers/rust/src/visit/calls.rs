@@ -252,8 +252,9 @@ impl Calls<'_, '_> {
             let syn::Member::Named(name) = &field.member else {
                 return None;
             };
+            // A field access derefs a smart pointer to what it holds.
             let owner = self.receiver_owner(&field.base)?;
-            return self.walk.field_type(&owner, &ident_name(name));
+            return self.walk.field_type(pointee_of(&owner), &ident_name(name));
         }
         let syn::Expr::Path(path) = current else {
             return None;
@@ -264,9 +265,7 @@ impl Calls<'_, '_> {
         let mut owner = path.path.clone();
         owner.segments.pop();
         owner.segments.pop_punct();
-        self.walk
-            .resolve_path(&self.container, &owner)
-            .map(|(target, _)| target)
+        self.walk.stated_type(&self.container, &owner)
     }
 
     /// The bindings a struct pattern makes (`let Index { store, .. } = x;`),
@@ -310,6 +309,24 @@ impl Calls<'_, '_> {
         }
 
         nested
+    }
+
+    /// Walk an `if` or `while` condition, binding each `let` pattern of a
+    /// `&&` chain right after its scrutinee, so the conditions after it
+    /// (`if let Some(s) = o && s.go()`) see the new binding.
+    fn visit_condition(&mut self, condition: &syn::Expr) {
+        match condition {
+            syn::Expr::Let(binding) => {
+                self.visit_expr(&binding.expr);
+                self.visit_pat(&binding.pat);
+                self.bind_pattern(&binding.pat);
+            }
+            syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::And(_)) => {
+                self.visit_condition(&binary.left);
+                self.visit_condition(&binary.right);
+            }
+            other => self.visit_expr(other),
+        }
     }
 
     /// Every name a pattern binds, as a new binding: typed where the pattern
@@ -378,14 +395,18 @@ impl Calls<'_, '_> {
             syn::Expr::Paren(inner) => self.returning_call(&inner.expr),
             syn::Expr::Reference(reference) => self.returning_call(&reference.expr),
             syn::Expr::MethodCall(call) => {
-                let owner = self.receiver_owner(&call.receiver)?;
-                Some(format!("{owner}::{}", ident_name(&call.method)))
+                let method = ident_name(&call.method);
+                let owner = dispatch(&self.receiver_owner(&call.receiver)?, &method)?;
+                Some(format!("{owner}::{method}"))
             }
             syn::Expr::Call(call) => match call.func.as_ref() {
+                // `Vec::new()` names no type of this crate: a guess placed
+                // in the enclosing module is not an owner.
                 syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() >= 2 => {
-                    self.walk
-                        .resolve_path(&self.container, &path.path)
-                        .map(|(target, _)| target)
+                    match self.walk.resolve_path(&self.container, &path.path) {
+                        Some((target, false)) => Some(target),
+                        _ => None,
+                    }
                 }
                 _ => None,
             },
@@ -509,8 +530,12 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
                 node.method.span(),
             );
         }
-        if let Some(target) = self.receiver_owner(&node.receiver) {
-            let endpoint = reference("method", &format!("{target}::{}", ident_name(&node.method)));
+        let method = ident_name(&node.method);
+        let owner = self
+            .receiver_owner(&node.receiver)
+            .and_then(|owner| dispatch(&owner, &method));
+        if let Some(target) = owner {
+            let endpoint = reference("method", &format!("{target}::{method}"));
             self.walk.facts.speculative_edge(
                 "calls",
                 &self.enclosing,
@@ -549,8 +574,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
                 .init
                 .as_ref()
                 .and_then(|init| constructed_type(&init.expr))
-                .and_then(|path| self.walk.resolve_path(&self.container, &path))
-                .map(|(target, _)| target),
+                .and_then(|path| self.walk.stated_type(&self.container, &path)),
         };
         // A rebinding of unknown type shadows the old one, so its type is forgotten.
         match stated {
@@ -575,6 +599,13 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         self.receivers = saved;
     }
 
+    fn visit_block(&mut self, node: &syn::Block) {
+        // A `let` in a block, a loop body or an `unsafe` block ends with it.
+        let saved = self.receivers.clone();
+        syn::visit::visit_block(self, node);
+        self.receivers = saved;
+    }
+
     fn visit_arm(&mut self, node: &syn::Arm) {
         // An arm's bindings live for the arm only.
         let saved = self.receivers.clone();
@@ -586,10 +617,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
     fn visit_expr_if(&mut self, node: &syn::ExprIf) {
         // `if let` binds for the `then` block only, not the `else` branch.
         let saved = self.receivers.clone();
-        self.visit_expr(&node.cond);
-        for pattern in let_patterns(&node.cond) {
-            self.bind_pattern(pattern);
-        }
+        self.visit_condition(&node.cond);
         self.visit_block(&node.then_branch);
         self.receivers = saved;
         if let Some((_, otherwise)) = &node.else_branch {
@@ -599,10 +627,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
 
     fn visit_expr_while(&mut self, node: &syn::ExprWhile) {
         let saved = self.receivers.clone();
-        self.visit_expr(&node.cond);
-        for pattern in let_patterns(&node.cond) {
-            self.bind_pattern(pattern);
-        }
+        self.visit_condition(&node.cond);
         self.visit_block(&node.body);
         self.receivers = saved;
     }
@@ -745,19 +770,53 @@ pub(super) fn is_foreign_export(node: &syn::ItemFn) -> bool {
         })
 }
 
-/// The patterns the `let` conditions of an `if` or `while` bind, through a
-/// chain of `&&` (`if let Some(a) = x && let Ok(b) = y`).
-fn let_patterns(condition: &syn::Expr) -> Vec<&syn::Pat> {
-    match condition {
-        syn::Expr::Let(binding) => vec![binding.pat.as_ref()],
-        syn::Expr::Paren(inner) => let_patterns(&inner.expr),
-        syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::And(_)) => {
-            let mut patterns = let_patterns(&binary.left);
-            patterns.extend(let_patterns(&binary.right));
-            patterns
-        }
-        _ => Vec::new(),
-    }
+/// What a smart pointer receiver (see [`Walk::receiver_type`]) holds, or
+/// the type itself for any other receiver.
+///
+/// [`Walk::receiver_type`]: super::state::Walk::receiver_type
+pub(super) fn pointee_of(owner: &str) -> &str {
+    owner.strip_prefix(POINTER_MARK).unwrap_or(owner)
+}
+
+/// Marks a receiver type held behind `Box`, `Rc` or `Arc`: its own methods
+/// are the pointer's, and every other method derefs to the type.
+pub(super) const POINTER_MARK: &str = "*";
+
+/// The type a method call on a receiver of type `owner` resolves through:
+/// the type itself, or for a smart pointer what it holds, unless the
+/// pointer provides the method itself (`a.clone()` clones the `Arc`). Such
+/// a call is left untyped rather than guessed.
+fn dispatch(owner: &str, method: &str) -> Option<String> {
+    let Some(held) = owner.strip_prefix(POINTER_MARK) else {
+        return Some(owner.to_owned());
+    };
+    let pointer_own = matches!(
+        method,
+        "as_mut"
+            | "as_ptr"
+            | "as_ref"
+            | "borrow"
+            | "borrow_mut"
+            | "clone"
+            | "deref"
+            | "deref_mut"
+            | "downgrade"
+            | "get_mut"
+            | "into_inner"
+            | "into_pin"
+            | "into_raw"
+            | "leak"
+            | "make_mut"
+            | "ptr_eq"
+            | "strong_count"
+            | "to_owned"
+            | "try_unwrap"
+            | "type_id"
+            | "unwrap_or_clone"
+            | "weak_count"
+    );
+
+    (!pointer_own).then(|| held.to_owned())
 }
 
 /// The local a method call's receiver names, seen through `&` and parentheses.

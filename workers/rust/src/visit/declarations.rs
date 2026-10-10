@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{Item, Type};
 
+use super::paths::is_standard_type;
 use super::placement::mod_child;
 use crate::layout::Layout;
 use crate::resolve::ident_name;
@@ -289,7 +290,11 @@ fn collect_declaration_paths(module: &str, items: &[Item], out: &mut BTreeSet<St
                 // guessing `{module}::Facts` there would vouch for a path that
                 // does not exist. The walk resolves those through `use`
                 // aliases, which this collector does not have.
-                if let Some(name) = impl_target_name(&node.self_ty) {
+                // A trait impl for a primitive or prelude type
+                // (`impl Shout for str`) declares its methods on a block of
+                // its own, not on a type of this module (see `Walk::walk_impl`).
+                let foreign = |name: &str| node.trait_.is_some() && is_standard_type(name);
+                if let Some(name) = impl_target_name(&node.self_ty).filter(|name| !foreign(name)) {
                     let owner = format!("{module}::{name}");
                     for member in &node.items {
                         if let syn::ImplItem::Fn(method) = member {

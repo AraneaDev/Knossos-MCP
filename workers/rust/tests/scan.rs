@@ -2946,3 +2946,254 @@ fn a_prelude_trait_that_nothing_declares_is_the_standard_library_trait() {
         "{implements:?}"
     );
 }
+
+/// Every `calls` edge target of the contributions, from any source.
+fn all_call_targets(contributions: &[Value]) -> Vec<String> {
+    contributions
+        .iter()
+        .flat_map(|contribution| contribution["edges"].as_array().unwrap().clone())
+        .filter(|edge| edge["kind"] == "calls")
+        .map(|edge| edge["target"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_let_chain_binds_each_pattern_before_the_conditions_after_it() {
+    // In `if let Some(s) = o && s.go()`, the `s` the call names is the new
+    // binding, an `Other`, not the `Store` parameter it shadows.
+    let source = r#"
+pub struct Store;
+impl Store { pub fn go(&self) -> bool { true } }
+pub struct Other;
+pub fn in_if(s: Store, o: Option<Other>) { if let Some(s) = o && s.go() {} }
+pub fn in_while(s: Store, mut v: Vec<Other>) { while let Some(s) = v.pop() && s.go() {} }
+"#;
+    let contributions = scan_fixture("let-chain-scope", &[("src/lib.rs", source)]);
+
+    assert!(
+        !all_call_targets(&contributions).contains(&"rust:method:crate::Store::go".to_owned()),
+        "{:?}",
+        all_call_targets(&contributions)
+    );
+}
+
+#[test]
+fn a_chain_of_re_exports_through_a_same_named_module_reaches_the_item() {
+    // `crate::parse` re-exports `parse::parse`, which `parse` re-exports from
+    // its private `imp`: the function is `crate::parse::imp::parse`.
+    let files = [
+        (
+            "src/lib.rs",
+            "pub mod parse {\n    mod imp {\n        pub fn parse() {}\n    }\n    pub use imp::parse;\n}\npub use parse::parse;\npub mod user;\n",
+        ),
+        ("src/user.rs", "pub fn a() {\n    crate::parse();\n}\n"),
+    ];
+    let contributions = scan_fixture("re-export-multi-hop", &files);
+
+    assert!(
+        method_calls(&contributions, "rust:function:crate::user::a")
+            .iter()
+            .any(|(target, _)| target == "rust:function:crate::parse::imp::parse"),
+        "{:?}",
+        method_calls(&contributions, "rust:function:crate::user::a")
+    );
+}
+
+#[test]
+fn a_path_through_a_child_module_named_like_an_import_goes_through_the_module() {
+    // `parse::helper()` beside `mod parse; pub use parse::parse;` names the
+    // module's `helper`, not a `helper` under the function the import binds.
+    let files = [
+        ("src/lib.rs", "pub mod x;\n"),
+        (
+            "src/x.rs",
+            "pub mod parse;\npub use parse::parse;\npub fn local() {\n    parse::helper();\n}\n",
+        ),
+        ("src/x/parse.rs", "pub fn parse() {}\npub fn helper() {}\n"),
+    ];
+    let contributions = scan_fixture("alias-head-child-module", &files);
+    let calls = method_calls(&contributions, "rust:function:crate::x::local");
+
+    assert!(
+        calls
+            .iter()
+            .any(|(target, _)| target == "rust:function:crate::x::parse::helper"),
+        "{calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|(target, _)| target.contains("parse::parse::")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn a_let_inside_a_block_does_not_outlive_the_block() {
+    let source = r#"
+pub struct Store;
+impl Store { pub fn s_only(&self) {} }
+pub struct Other;
+impl Other { pub fn o_only(&self) {} pub fn s_only(&self) {} }
+pub fn block(s: Store) { { let s: Other = Other; s.o_only(); } s.s_only(); }
+pub fn in_loop(s: Store) { loop { let s: Other = Other; s.o_only(); break; } s.s_only(); }
+pub fn in_unsafe(s: Store) { unsafe { let s: Other = Other; s.o_only(); } s.s_only(); }
+"#;
+    let contributions = scan_fixture("block-scope", &[("src/lib.rs", source)]);
+
+    for function in ["block", "in_loop", "in_unsafe"] {
+        let calls = method_calls(&contributions, &format!("rust:function:crate::{function}"));
+        assert!(
+            calls.contains(&("rust:method:crate::Store::s_only".to_owned(), true)),
+            "{function}: {calls:?}"
+        );
+        assert!(
+            calls.contains(&("rust:method:crate::Other::o_only".to_owned(), true)),
+            "{function}: {calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|(target, _)| target == "rust:method:crate::Other::s_only"),
+            "{function}: {calls:?}"
+        );
+    }
+}
+
+#[test]
+fn a_method_the_smart_pointer_itself_has_is_not_the_pointees() {
+    // `a.clone()` on an `Arc<Store>` clones the `Arc`; `a.go()` derefs.
+    let source = r#"
+pub struct Store;
+impl Store {
+    pub fn go(&self) {}
+    pub fn clone(&self) -> Store { Store }
+    pub fn as_ref(&self) -> &Store { self }
+}
+pub fn run(a: std::sync::Arc<Store>, b: Box<Store>) {
+    a.clone();
+    b.as_ref();
+    a.go();
+}
+"#;
+    let contributions = scan_fixture("pointer-own-methods", &[("src/lib.rs", source)]);
+    let calls = method_calls(&contributions, "rust:function:crate::run");
+
+    assert!(
+        calls.contains(&("rust:method:crate::Store::go".to_owned(), true)),
+        "{calls:?}"
+    );
+    assert!(
+        !calls.iter().any(
+            |(target, _)| target.ends_with("Store::clone") || target.ends_with("Store::as_ref")
+        ),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn a_standard_type_named_bare_is_never_a_type_of_the_module() {
+    // `Vec<u8>`, `char` and `Option<Store>` name no type this crate declares:
+    // a call on one must not target `crate::Vec::len` and the like.
+    let source = r#"
+pub struct Store;
+pub struct Holder { items: Option<Store>, list: Vec<Store> }
+impl Holder {
+    pub fn run(&mut self, v: Vec<u8>, c: char) {
+        v.len();
+        c.is_alphabetic();
+        let w = Vec::new();
+        w.len();
+        let k = |c: char| c.is_ascii_digit();
+        self.items.take();
+        self.list.len();
+        String::new().len();
+    }
+}
+"#;
+    let contributions = scan_fixture("bare-standard-types", &[("src/lib.rs", source)]);
+    let targets = all_call_targets(&contributions);
+
+    assert!(
+        !targets
+            .iter()
+            .any(|target| ["::Vec::", "::Option::", "::char::", "::String::"]
+                .iter()
+                .any(|made_up| target.contains(made_up))),
+        "{targets:?}"
+    );
+}
+
+#[test]
+fn only_prelude_traits_are_taken_from_the_standard_library_by_bare_name() {
+    // `Clone` is in the prelude, so even a crate-root `trait Clone` is not
+    // in scope in `sub` without an import. `Display` is not in the prelude.
+    let files = [
+        ("src/lib.rs", "pub trait Clone {}\npub mod sub;\n"),
+        (
+            "src/sub.rs",
+            "pub struct S;\nimpl Clone for S {\n    fn clone(&self) -> Self {\n        S\n    }\n}\nimpl Display for S {}\n",
+        ),
+    ];
+    let contributions = scan_fixture("prelude-only", &files);
+    let implements: Vec<String> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["edges"].as_array().unwrap().clone())
+        .filter(|edge| edge["kind"] == "implements")
+        .map(|edge| edge["target"].as_str().unwrap().to_owned())
+        .collect();
+
+    assert!(
+        implements.contains(&"rust:interface:std::clone::Clone".to_owned()),
+        "{implements:?}"
+    );
+    assert!(
+        !implements.contains(&"rust:interface:std::fmt::Display".to_owned()),
+        "{implements:?}"
+    );
+}
+
+#[test]
+fn a_trait_impl_for_a_standard_type_named_bare_is_not_a_type_of_the_module() {
+    // `impl PartialEq<u8> for String` and `impl Shout for str` implement a
+    // trait for types the crate does not own, named without an import: the
+    // methods belong to the impl block, never to a made-up `crate::String`,
+    // and `self.as_str()` is no call into the crate. Neither is a receiver
+    // typed as a function the module happens to name like a primitive.
+    let source = r#"
+pub trait Shout { fn shout(&self); }
+impl PartialEq<u8> for String {
+    fn eq(&self, _: &u8) -> bool { self.as_str(); true }
+}
+impl Shout for str {
+    fn shout(&self) { self.to_owned(); }
+}
+pub fn char(s: &str) -> &str { s }
+pub fn trim(s: &str) -> &str { s.trim_start_matches(|c: char| c.is_whitespace()) }
+pub fn loud(s: &str) { str::shout(s); }
+"#;
+    let contributions = scan_fixture("trait-impl-standard-type", &[("src/lib.rs", source)]);
+    let nodes: Vec<String> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["nodes"].as_array().unwrap().clone())
+        .map(|node| node["canonical_name"].as_str().unwrap().to_owned())
+        .collect();
+    let targets = all_call_targets(&contributions);
+
+    assert!(
+        !nodes
+            .iter()
+            .any(|node| node.starts_with("crate::String") || node.starts_with("crate::str::")),
+        "{nodes:?}"
+    );
+    assert!(
+        !targets
+            .iter()
+            .any(|target| target.contains("String::as_str")
+                || target.contains("str::to_owned")
+                || target.contains("char::is_whitespace")
+                || target == "rust:function:crate::str::shout"
+                || target == "rust:method:crate::str::shout"),
+        "{targets:?}"
+    );
+}

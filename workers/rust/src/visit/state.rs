@@ -75,6 +75,11 @@ pub(super) struct Walk<'a> {
     /// [`Declarations::exported`]).
     /// `None` marks a name two `use` items bind to different paths.
     pub(super) exports: BTreeMap<String, Option<String>>,
+    /// Every path this file declares (see
+    /// [`declaration_paths`](super::declarations::declaration_paths)), which
+    /// confirms a type the file names unqualified in its own module whether
+    /// or not the index answers for the file.
+    pub(super) own_declarations: BTreeSet<String>,
 }
 
 /// A `syn` visitor that emits a `calls` edge for every resolvable call

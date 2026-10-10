@@ -93,12 +93,15 @@ These get an attribute, so they stay off the
 Some names could refer to a type the graph does not hold, such as `Vec` or
 `String`. For those the worker emits a `speculative` edge, and the core keeps it
 only if the target turns out to be a declared node. That is how a method call on
-a receiver of known type reaches its method: `self`, a typed parameter, a `let`
-with a type annotation, a `let` assigned from a struct literal or an
-associated call such as `Widget::make()`, or a binding a struct pattern takes
-from a field (`let Index { store, .. } = index;`), also in a `match` arm,
-`if let`, `while let` or `for` pattern, for that scope only. A type behind `&`,
-`&mut`, `Box<T>`, `Rc<T>` or `Arc<T>` is `T`. A call on what another call
+a receiver of known type reaches its method: `self`, a typed parameter or
+closure parameter (`|s: &Store|`), a `let` with a type annotation, a `let`
+assigned from a struct literal or an associated call such as `Widget::make()`,
+or a binding a struct pattern takes from a field
+(`let Index { store, .. } = index;`), also in a `match` arm, an `if let` or
+`while let` chain or a `for` pattern. Each binding lasts as long as its scope,
+a plain block included. A type behind `&`, `&mut`, `Box<T>`, `Rc<T>` or
+`Arc<T>` is `T`, except for a method the pointer itself has (`clone`, `as_ref`,
+`downgrade` and the like), which is left untyped. A call on what another call
 returns (`state.mode().label()`) resolves through the declared return type. A
 call through a field (`self.walk.facts.edge()`) resolves through the field's
 declared type, also when the struct, its `impl` block and the field's type sit
@@ -110,12 +113,20 @@ A path that reaches an item through a re-export (`crate::visit::collect()`
 under `pub use cfg::collect;` in `visit`) names the item where it is declared,
 `crate::visit::cfg::collect`, so the edge lands on the node the graph holds.
 Any visible `use` re-exports, `pub(crate)` and `pub(super)` included, and a
-chain of them is followed to its end. The `imports` edge still names the module
-the source wrote.
+chain of them is followed to its end, also through a module that re-exports an
+item under its own name (`pub use parse::parse;` beside `mod parse;`). A longer
+path through such a name (`parse::helper()`) goes through the module. The
+`imports` edge still names the module the source wrote.
 
-A standard trait named bare (`impl From<u8> for Str`, `trait Named: Display`)
-that nothing in scope declares or imports is the standard library's
-(`std::convert::From`), never a trait of the enclosing module.
+A prelude trait named bare (`impl From<u8> for Str`, `trait Named: Clone`)
+that the module neither declares nor imports is the standard library's
+(`std::convert::From`), never a trait of the enclosing module or the crate
+root. A trait outside the prelude (`Display`, `Hash`, `FromStr`) is in scope
+only through an import, which is how it resolves. Likewise a trait impl for a
+primitive or prelude type named bare (`impl PartialEq<u8> for String`,
+`impl Shout for str`) is a block of its own, `<impl PartialEq for String>`,
+since the crate does not own the type, never a `String` of the enclosing
+module.
 
 ## Frameworks
 
@@ -247,12 +258,17 @@ is read.
   an imported name through `super::name` is not followed to its declaration.
   A glob re-export (`pub use inner::*;`) is not followed either.
 - Re-exports and field types are resolved through the declaring file's own
-  `use` items and rooted paths only. A field type that file reaches through a
-  glob import (`use super::*;`) is placed in the file's own module, where the
-  graph usually declares nothing, so calls through that field produce no edge.
-- A field or parameter of a generic type other than `Box`, `Rc` and `Arc`
-  (`Option<T>`, `Vec<T>`, `Mutex<T>`) is that type, so a method called on what
-  it holds (`self.items[0].run()`, `self.lock.lock().run()`) is not resolved.
+  `use` items, its own declarations and rooted paths only. A field type that
+  file reaches through a glob import (`use super::*;`) gets no type, so calls
+  through that field produce no edge.
+- A type named bare that nothing in scope declares or imports (`Vec`,
+  `Option`, `String`, `char`, `u8`) types no receiver, so a method called on
+  one produces no edge rather than one to a made-up type of the module. A
+  generic other than `Box`, `Rc` and `Arc` (`Option<T>`, `Vec<T>`,
+  `Mutex<T>`) is not unwrapped, so a method called on what it holds
+  (`self.items[0].run()`, `self.lock.lock().run()`) is not resolved.
+- A `use` inside a function body is not read, so a name it brings into scope
+  (`use Kind::*;` before a `match`) resolves as if it were absent.
 - A bare `mod foo;` declaration emits only a containment edge. The module's own
   node comes from the file that defines it.
 - A `use` leaf whose parent is a type (`use crate::errors::Error::Io;`, or

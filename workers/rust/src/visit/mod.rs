@@ -28,6 +28,7 @@ use cfg::{is_cfg_test, is_test_attribute, item_attrs};
 pub use declarations::{
     declaration_paths, declared_renames, Declarations, ExportedNames, StructFields,
 };
+use paths::is_standard_type;
 use placement::mod_child;
 use state::{Calls, Walk};
 
@@ -50,6 +51,7 @@ pub fn walk(
         facts.enter_test_scope();
     }
     let mut walker = Walk::new(facts, module, frameworks, declarations, layout);
+    walker.own_declarations = declaration_paths(module, &file.items);
     walker.collect_uses(module, &file.items);
     walker.resolve_globs();
     walker.collect_struct_fields(module, &file.items);
@@ -81,6 +83,7 @@ pub fn index_facts(
     let mut facts = Facts::new(relative);
     let declarations = Declarations::new();
     let mut walker = Walk::new(&mut facts, module, &[], &declarations, layout);
+    walker.own_declarations = declaration_paths(module, items);
     walker.collect_uses(module, items);
     walker.collect_struct_fields(module, items);
 
@@ -126,6 +129,7 @@ impl<'a> Walk<'a> {
             crate_module,
             placed: BTreeSet::new(),
             exports: BTreeMap::new(),
+            own_declarations: BTreeSet::new(),
         }
     }
 }
@@ -329,10 +333,22 @@ impl Walk<'_> {
         // not own: attaching methods there declared `std::sync::Arc::x`
         // with nothing tying them to the trait they implement. The
         // block itself is the project's, so it becomes the container.
+        // So is a primitive or prelude type named bare that nothing in
+        // scope declares or imports (`impl PartialEq<u8> for String`,
+        // `impl Shout for str`), which the enclosing-module guess would
+        // otherwise make a type of this module.
         let root = self.crate_root().to_owned();
+        let unplaced = match node.self_ty.as_ref() {
+            Type::Path(path) if path.qself.is_none() && path.path.leading_colon.is_none() => {
+                path.path.segments.len() == 1
+                    && is_standard_type(&ident_name(&path.path.segments[0].ident))
+                    && self.stated_type(container, &path.path).is_none()
+            }
+            _ => false,
+        };
         let target = match &node.trait_ {
             Some((_, trait_path, _))
-                if target != root && !target.starts_with(&format!("{root}::")) =>
+                if unplaced || (target != root && !target.starts_with(&format!("{root}::"))) =>
             {
                 let trait_name = trait_path
                     .segments
@@ -417,7 +433,7 @@ impl Walk<'_> {
                                 this.facts.speculative_edge(
                                     "returns",
                                     &reference("method", method_canonical),
-                                    &reference("class", &returned),
+                                    &reference("class", calls::pointee_of(&returned)),
                                     method.sig.output.span(),
                                 );
                             }
