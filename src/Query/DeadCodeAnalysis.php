@@ -809,7 +809,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     }
 
     /**
-     * Whether an annotation excludes this component from dead-code reporting.
+     * Whether the project's `dead_code_suppressions` leave this component out of dead-code reporting.
      *
      * @param list<string> $suppressions
      */
