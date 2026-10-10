@@ -6,11 +6,11 @@ namespace Knossos\Tests\Phpunit\Mcp;
 
 use Knossos\Mcp\NextStepPlanner;
 use Knossos\Mcp\ResultEnricher;
-use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Tests\Phpunit\KnossosTestCase;
-use PHPUnit\Framework\Attributes\Group;
 use PDO;
+use PHPUnit\Framework\Attributes\Group;
 
 /**
  * The budget's edges: what happens at exactly max_chars, which collection pays

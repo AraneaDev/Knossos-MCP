@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Discovery;
 
 use Knossos\Classification\ToolConfigModuleRule;
+use Knossos\Scanner\Protocol\RelativePath;
 
 /**
  * Says what a path is from its name, and for an extensionless file from its
@@ -285,10 +286,11 @@ final class SourceClassifier
     /**
      * Whether a project-relative path can be carried through ids, protocol
      * messages and JSON results. Shared with the drift oracles so a name the
-     * walk skips is never reported as an addition.
+     * walk skips is never reported as an addition; see
+     * {@see RelativePath::isSupported()}.
      */
     public static function isSupportedPath(string $relative): bool
     {
-        return mb_check_encoding($relative, 'UTF-8') && preg_match('/[\x00-\x1f\x7f]/', $relative) !== 1;
+        return RelativePath::isSupported($relative);
     }
 }

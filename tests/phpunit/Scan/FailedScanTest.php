@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Scan;
 
 use InvalidArgumentException;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Maintenance\DatabaseMaintenanceService;
-use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanService;
-use Knossos\Scan\ScanCancelledException;
 use Knossos\Store\SqliteGraphRepository;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;

@@ -30,7 +30,7 @@ final class TestImpactReportTest extends KnossosTestCase
         [$pdo, $repository, $ids] = $this->storeFixture();
         self::addTestFile($repository, $ids, 'tests/OneTest.php', ['One']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         assertSame(
             '1 test file statically exercise the change.',
@@ -44,7 +44,7 @@ final class TestImpactReportTest extends KnossosTestCase
 
         assertSame(
             '2 test files statically exercise the change.',
-            (new ArchitectureQueryService($pdo))->testImpact($ids['project'], files: ['src/Checkout.php'])->summary,
+            ArchitectureQueryService::forDatabase($pdo)->testImpact($ids['project'], files: ['src/Checkout.php'])->summary,
         );
     }
 
@@ -60,7 +60,7 @@ final class TestImpactReportTest extends KnossosTestCase
         self::addTestFile($repository, $ids, 'tests/CrowdedTest.php', ['Delta', 'Bravo', 'Alpha', 'Charlie']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $file = (new ArchitectureQueryService($pdo))->testImpact($ids['project'], files: ['src/Checkout.php'])->data['test_files'][0];
+        $file = ArchitectureQueryService::forDatabase($pdo)->testImpact($ids['project'], files: ['src/Checkout.php'])->data['test_files'][0];
 
         assertSame(['Alpha', 'Bravo', 'Charlie'], $file['via'], 'Three names, in order, not the first three the walk met.');
     }
@@ -117,7 +117,7 @@ final class TestImpactReportTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $via = (new ArchitectureQueryService($pdo))->testImpact($ids['project'], files: ['src/Checkout.php'])->data['test_files'][0]['via'];
+        $via = ArchitectureQueryService::forDatabase($pdo)->testImpact($ids['project'], files: ['src/Checkout.php'])->data['test_files'][0]['via'];
 
         assertSame(['Alpha', 'Zulu'], $via, 'Sorted by display name, and the repeated name appears once.');
     }
@@ -139,7 +139,7 @@ final class TestImpactReportTest extends KnossosTestCase
         self::addTestFile($repository, $ids, 'tests/MiddleTest.php', ['Middle'], $ids['invoice']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $files = (new ArchitectureQueryService($pdo))->testImpact($ids['project'], files: ['src/Checkout.php'])->data['test_files'];
+        $files = ArchitectureQueryService::forDatabase($pdo)->testImpact($ids['project'], files: ['src/Checkout.php'])->data['test_files'];
 
         assertSame(
             ['tests/AlphaTest.php', 'tests/MiddleTest.php', 'tests/ZebraTest.php'],
@@ -156,7 +156,7 @@ final class TestImpactReportTest extends KnossosTestCase
         self::addTestFile($repository, $ids, 'tests/AlphaTest.php', ['Alpha']);
         self::addTestFile($repository, $ids, 'tests/BetaTest.php', ['Beta']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $atBound = $queries->testImpact($ids['project'], files: ['src/Checkout.php'], limit: 2);
         assertSame(2, count($atBound->data['test_files']));

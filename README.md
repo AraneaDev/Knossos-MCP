@@ -223,12 +223,12 @@ that bind the file arrive beside it, in `data.policies`):
 
 ```json
 {
-    "path": "src/Query/ResultEnvelope.php",
+    "path": "src/Result/ResultEnvelope.php",
     "boundary": "core",
     "dependents": {
         "count": 48,
         "top": [
-            "tests/phpunit/Query/ResultEnvelopeTest.php",
+            "tests/phpunit/Result/ResultEnvelopeTest.php",
             "src/Mcp/ToolService.php",
             "..."
         ]

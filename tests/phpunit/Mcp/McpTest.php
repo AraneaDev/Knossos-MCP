@@ -33,7 +33,7 @@ final class McpTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -92,7 +92,7 @@ final class McpTest extends KnossosTestCase
         [$pdo] = $this->storeFixture();
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -120,7 +120,7 @@ final class McpTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -187,11 +187,11 @@ final class McpTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $svc = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
-        $env = $svc->call('impact_analysis', ['project_id' => $ids['project'], 'symbol' => 'InvoiceService'], new \Knossos\Scan\CancellationToken(static fn(): bool => false));
+        $env = $svc->call('impact_analysis', ['project_id' => $ids['project'], 'symbol' => 'InvoiceService'], new \Knossos\Cancellation\CancellationToken(static fn(): bool => false));
         $data = $env->jsonSerialize()['data'];
         assertSame(true, array_key_exists('dependants', $data));
         assertSame(true, array_key_exists('counts', $data));
@@ -210,7 +210,7 @@ final class McpTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -243,7 +243,7 @@ final class McpTest extends KnossosTestCase
         [$pdo] = $this->storeFixture();
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -344,7 +344,7 @@ final class McpTest extends KnossosTestCase
         [$pdo] = $this->storeFixture();
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -430,7 +430,7 @@ final class McpTest extends KnossosTestCase
         // assertion set is sensitive to the actual reorder, not just to
         // components already being first.
         [$svc, $projectId, $fromSnap] = $this->twoSnapshotFixture();
-        $env = $svc->call('snapshot_diff', ['project_id' => $projectId, 'from_snapshot' => $fromSnap], new \Knossos\Scan\CancellationToken(static fn(): bool => false));
+        $env = $svc->call('snapshot_diff', ['project_id' => $projectId, 'from_snapshot' => $fromSnap], new \Knossos\Cancellation\CancellationToken(static fn(): bool => false));
         $envelope = $env->jsonSerialize();
         $data = $envelope['data'];
 
@@ -516,7 +516,7 @@ final class McpTest extends KnossosTestCase
         $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -590,15 +590,15 @@ final class McpTest extends KnossosTestCase
                     ?int $maxFileBytes = null,
                     ?array $explicitBoundaries = null,
                     ?string $mode = null,
-                    ?\Knossos\Scan\CancellationToken $cancellation = null,
+                    ?\Knossos\Cancellation\CancellationToken $cancellation = null,
                     ?int $snapshotRetention = null,
                     ?int $workerTimeoutMs = null,
                     ?int $workerMemoryMb = null,
-                ): \Knossos\Query\ResultEnvelope {
+                ): \Knossos\Result\ResultEnvelope {
                     throw \Knossos\Scan\ScanSnapshotChangedException::contentChanged('src/Checkout.php');
                 }
             },
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );

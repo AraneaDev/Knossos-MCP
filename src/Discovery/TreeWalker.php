@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Discovery;
 
 use DirectoryIterator;
-use Knossos\Scan\CancellationToken;
+use Knossos\Cancellation\CancellationToken;
 use RuntimeException;
 use SplFileInfo;
 

@@ -77,9 +77,10 @@ Claude Code mod is covered by its own suites (see
 [how the mod is built](mod-internals.md#the-tests)) and sits outside these
 gates.
 
-The only first-party exclusion is `src/Application.php`: it is a constant-only
-CLI composition/dispatch adapter, while its invoked commands and services are
-covered through the CLI, MCP, and service tests. Vendor code, installed
+The only first-party exclusions are `src/Application.php` and
+`src/Runtime/Version.php`. The first is a CLI composition/dispatch adapter whose
+invoked commands and services are covered through the CLI, MCP, and service
+tests; the second holds only the version constant release-please bumps. Vendor code, installed
 dependencies, generated reports, and test fixtures are outside the measured
 first-party source sets. New exclusions require a documented rationale and a
 reviewed configuration change.

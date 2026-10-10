@@ -4,16 +4,16 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scan;
 
-use Knossos\Reconciliation\ContributionCacheEntry;
-use Knossos\Scan\CancellationToken;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\PartitionContext;
-use Knossos\Scan\ScanCancelledException;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Store\ContributionCacheEntry;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 use stdClass;

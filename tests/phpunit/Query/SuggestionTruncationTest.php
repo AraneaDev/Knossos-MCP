@@ -84,6 +84,6 @@ final class SuggestionTruncationTest extends KnossosTestCase
         );
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        return [new ArchitectureQueryService($pdo), $ids['project']];
+        return [ArchitectureQueryService::forDatabase($pdo), $ids['project']];
     }
 }

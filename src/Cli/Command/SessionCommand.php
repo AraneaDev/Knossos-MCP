@@ -67,7 +67,7 @@ final class SessionCommand implements CliCommand
             // Neither may happen on a path that runs before a session starts,
             // so an absent database is answered from nothing at all.
             $brief = is_file($databasePath)
-                ? (new ArchitectureQueryService(SqliteConnection::open($databasePath)))->sessionBrief($path, $databasePath)
+                ? ArchitectureQueryService::forDatabase(SqliteConnection::open($databasePath))->sessionBrief($path, $databasePath)
                 : (new SessionBriefRenderer())->render(SessionBriefService::unscanned($path, $databasePath));
             $context->output(['brief' => $brief], $context->options->flag($options, 'json'), $brief);
         } catch (Throwable) {

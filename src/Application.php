@@ -8,6 +8,7 @@ use Knossos\Cli\CliCommandRouter;
 use Knossos\Cli\CliErrorRenderer;
 use Knossos\Cli\CliHelpRenderer;
 use Knossos\Cli\CliOptionParser;
+use Knossos\Runtime\Version;
 use Throwable;
 
 /**
@@ -18,7 +19,8 @@ use Throwable;
  */
 final class Application
 {
-    public const VERSION = '0.21.3'; // x-release-please-version
+    /** The installation's version; see {@see Version::CURRENT}. */
+    public const VERSION = Version::CURRENT;
 
     /** @var resource|null */
     private $errorStream;

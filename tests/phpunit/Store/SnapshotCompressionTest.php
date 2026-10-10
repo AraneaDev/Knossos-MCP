@@ -37,7 +37,7 @@ final class SnapshotCompressionTest extends KnossosTestCase
         $repository->createScan($next, $ids['project'], 'incremental', hash('sha256', 'scanner-set'));
         $repository->completeScan($ids['project'], $next);
 
-        $diff = (new ArchitectureQueryService($pdo))->snapshotDiff($ids['project'], $ids['scan']);
+        $diff = ArchitectureQueryService::forDatabase($pdo)->snapshotDiff($ids['project'], $ids['scan']);
 
         assertSame($ids['scan'], $diff->data['from']['scan_id']);
         // The graph did not change between the two scans, which is only

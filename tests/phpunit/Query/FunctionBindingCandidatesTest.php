@@ -22,7 +22,7 @@ final class FunctionBindingCandidatesTest extends KnossosTestCase
         $pdo = $this->freshTestDatabase();
         $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full')->projectId;
 
-        $data = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 100)->data;
+        $data = ArchitectureQueryService::forDatabase($pdo)->architectureHealth($projectId, limit: 100)->data;
 
         $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
         self::assertContains('src/bindings.ts#unusedArrow', $names);

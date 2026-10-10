@@ -24,7 +24,7 @@ final class ListUsagesTest extends KnossosTestCase
         $contains = StableId::edge($ids['project'], 'contains', $ids['checkout'], $ids['invoice'], 'c:1');
         $repository->saveEdge($contains, $ids['project'], 'contains', $ids['checkout'], $ids['invoice'], $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $result = $queries->listUsages($ids['project'], 'App\\InvoiceService');
         assertSame('App\\InvoiceService', $result->data['target']['canonical_name']);
@@ -56,7 +56,7 @@ final class ListUsagesTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $missing = $queries->listUsages($ids['project'], 'App\\Nothing');
         assertSame(false, array_key_exists('target', $missing->data));
@@ -75,7 +75,7 @@ final class ListUsagesTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $tools = new \Knossos\Mcp\ToolService(
             new \Knossos\Scan\ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new \Knossos\Maintenance\DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );

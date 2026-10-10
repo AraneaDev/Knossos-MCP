@@ -25,7 +25,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
     {
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
-            $server = new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
+            $server = new McpDispatcher($tools, resources: new ResourceService(ArchitectureQueryService::forDatabase($pdo)));
             $init = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
             assertSame(['subscribe' => false, 'listChanged' => false], $init['result']['capabilities']['resources']);
             $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
@@ -64,7 +64,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
         try {
             $pdo->prepare('UPDATE projects SET name = :name WHERE id = :project')
                 ->execute(['name' => "shop/\xff", 'project' => $projectId]);
-            $server = new StdioServer(new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService($pdo))));
+            $server = new StdioServer(new McpDispatcher($tools, resources: new ResourceService(ArchitectureQueryService::forDatabase($pdo))));
 
             $read = $this->runFrames($server, $this->readSession("knossos://{$projectId}/summary"))[1];
 
@@ -86,7 +86,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
             $pdo->exec('ALTER TABLE projects RENAME TO projects_unreadable');
-            $server = new StdioServer(new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService($pdo))));
+            $server = new StdioServer(new McpDispatcher($tools, resources: new ResourceService(ArchitectureQueryService::forDatabase($pdo))));
 
             $read = $this->runFrames($server, $this->readSession("knossos://{$projectId}/summary"))[1];
 
@@ -286,7 +286,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
     {
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
-            $service = new ResourceService(new ArchitectureQueryService($pdo));
+            $service = new ResourceService(ArchitectureQueryService::forDatabase($pdo));
 
             assertSame(null, $service->read('not-a-valid-uri'));
 
@@ -338,7 +338,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
 
     private function initializedResourceServer(ToolService $tools, \PDO $pdo): McpDispatcher
     {
-        $server = new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
+        $server = new McpDispatcher($tools, resources: new ResourceService(ArchitectureQueryService::forDatabase($pdo)));
         $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
 

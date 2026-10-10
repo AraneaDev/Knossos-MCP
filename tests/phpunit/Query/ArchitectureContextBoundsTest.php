@@ -116,6 +116,6 @@ final class ArchitectureContextBoundsTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $this->project = $ids['project'];
 
-        return new ArchitectureQueryService($pdo);
+        return ArchitectureQueryService::forDatabase($pdo);
     }
 }

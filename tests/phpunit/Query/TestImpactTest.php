@@ -26,7 +26,7 @@ final class TestImpactTest extends KnossosTestCase
         $repository->saveEdge(StableId::edge($ids['project'], 'calls', $testClass, $ids['checkout'], 'tests/CheckoutTest.php:12'), $ids['project'], 'calls', $testClass, $ids['checkout'], $testFile, 12, 12, 'ast', 'certain', [], $owner, $ids['scan']);
         // An unrelated production caller (must NOT appear in test_files).
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $result = $queries->testImpact($ids['project'], files: ['src/Checkout.php']);
         assertSame(['src/Checkout.php'], $result->data['changed_files']);
@@ -49,7 +49,7 @@ final class TestImpactTest extends KnossosTestCase
         $repository->saveClassification(StableId::classification($ids['project'], $testClass, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $testClass, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $testFile, 3, 20, [], $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->testImpact($ids['project'], files: ['tests/InvoiceTest.php']);
+        $result = ArchitectureQueryService::forDatabase($pdo)->testImpact($ids['project'], files: ['tests/InvoiceTest.php']);
         assertSame('tests/InvoiceTest.php', $result->data['test_files'][0]['path']);
         assertSame(0, $result->data['test_files'][0]['distance']);
     }
@@ -84,7 +84,7 @@ final class TestImpactTest extends KnossosTestCase
         $repository->saveClassification(StableId::classification($ids['project'], $testClass, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $testClass, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $testFile, 5, 30, [], $ids['scan']);
         $repository->saveEdge(StableId::edge($ids['project'], 'calls', $testClass, $ids['checkout'], 'tests/ZebraTest.php:12'), $ids['project'], 'calls', $testClass, $ids['checkout'], $testFile, 12, 12, 'ast', 'certain', [], $owner, $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $result = $queries->testImpact($ids['project'], files: ['src/Checkout.php'], limit: 2);
 
@@ -113,7 +113,7 @@ final class TestImpactTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->testImpact($ids['project'], files: ['src/Checkout.php'], limit: 2);
+        $result = ArchitectureQueryService::forDatabase($pdo)->testImpact($ids['project'], files: ['src/Checkout.php'], limit: 2);
 
         assertSame(['tests/AlphaTest.php', 'tests/BetaTest.php'], array_column($result->data['test_files'], 'path'));
         assertSame(true, $result->truncated);
@@ -126,7 +126,7 @@ final class TestImpactTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $tools = new \Knossos\Mcp\ToolService(
             new \Knossos\Scan\ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new \Knossos\Maintenance\DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -144,7 +144,7 @@ final class TestImpactTest extends KnossosTestCase
         [$pdo, $repository, $ids] = $this->storeFixture();
         $this->hubWithATestBehindIt($repository, $ids);
 
-        $result = (new ArchitectureQueryService($pdo))->testImpact($ids['project'], files: ['src/Checkout.php']);
+        $result = ArchitectureQueryService::forDatabase($pdo)->testImpact($ids['project'], files: ['src/Checkout.php']);
 
         self::assertSame([['path' => 'tests/HubTest.php', 'distance' => 2, 'via' => ['HubTest']]], $result->data['test_files']);
         self::assertFalse($result->truncated);
@@ -170,7 +170,7 @@ final class TestImpactTest extends KnossosTestCase
             return ++$ticks * 2_000_000;
         };
 
-        $result = (new ArchitectureQueryService($pdo, $clock))->testImpact($ids['project'], files: ['src/Checkout.php'], timeoutMs: 1);
+        $result = ArchitectureQueryService::forDatabase($pdo, $clock)->testImpact($ids['project'], files: ['src/Checkout.php'], timeoutMs: 1);
 
         self::assertTrue($result->truncated);
         self::assertContains('time_limit', $result->data['bounds']['truncation_reasons']);
@@ -187,7 +187,7 @@ final class TestImpactTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->testImpact($ids['project'], files: ['src/Checkout.php'], limit: 2);
+        $result = ArchitectureQueryService::forDatabase($pdo)->testImpact($ids['project'], files: ['src/Checkout.php'], limit: 2);
 
         self::assertCount(2, $result->data['test_files']);
         self::assertSame(3, $result->data['bounds']['test_files_found']);
@@ -204,7 +204,7 @@ final class TestImpactTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
         $cases = [
             'max_depth must be between 1 and 8.' => static fn() => $queries->testImpact($ids['project'], files: ['src/Checkout.php'], maxDepth: 9),
             'Limit must be between 1 and 100.' => static fn() => $queries->testImpact($ids['project'], files: ['src/Checkout.php'], limit: 0),

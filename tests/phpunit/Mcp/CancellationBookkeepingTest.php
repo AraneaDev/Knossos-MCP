@@ -91,7 +91,7 @@ final class CancellationBookkeepingTest extends KnossosTestCase
     {
         [$tools] = $this->toolServiceWithScannedFixture();
         // Resources over an unmigrated database: reading one throws.
-        $server = new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService(SqliteConnection::open(':memory:'))));
+        $server = new McpDispatcher($tools, resources: new ResourceService(ArchitectureQueryService::forDatabase(SqliteConnection::open(':memory:'))));
         $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
         $this->cancel($server, 4);

@@ -112,6 +112,6 @@ final class SuggestionArgumentsTest extends KnossosTestCase
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        return [new ArchitectureQueryService($pdo), $ids['project']];
+        return [ArchitectureQueryService::forDatabase($pdo), $ids['project']];
     }
 }

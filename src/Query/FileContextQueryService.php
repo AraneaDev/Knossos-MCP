@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use InvalidArgumentException;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * The `file_context` tool: {@see FileContextService} addressed by project id

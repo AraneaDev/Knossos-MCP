@@ -37,7 +37,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         $this->classify($repository, $ids, $controller, 'laravel.controller');
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
 
         // App\Checkout is called by nothing either, so the reportable set is it
@@ -61,7 +61,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         $this->addNode($repository, $ids, 'module', 'src/orphan.ts', 'orphan.ts');
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
 
         // App\Checkout from the baseline plus the orphan module — never the script.
@@ -88,7 +88,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         $this->addNode($repository, $ids, 'module', 'scripts/color-debt.mjs', 'color-debt.mjs');
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
 
         // App\Checkout from the baseline plus the .mjs — neither declaration node.
@@ -110,7 +110,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         $this->addNode($repository, $ids, 'class', 'App\\Orphan', 'Orphan', attributes: ['executable' => true]);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
 
         // App\Checkout from the baseline plus the class: only a module can be a script.
@@ -146,7 +146,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['hub_degree_growth' => 0]);
 
         // The production graph's busiest node still has degree 1 (Checkout ->
@@ -181,7 +181,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['hub_degree_growth' => 0]);
 
         assertSame(
@@ -207,7 +207,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         $this->addNode($repository, $ids, 'method', 'workers.python.Collector.__init__', '__init__');
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
 
         // Only App\Checkout from the fixture, which nothing calls. Neither
@@ -245,7 +245,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         $this->edge($repository, $ids, 'constructs', $ids['invoice'], $sql);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
 
         // Only App\Checkout, which nothing calls. SqlRepo::save is reached
@@ -271,7 +271,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         $this->edge($repository, $ids, 'constructs', $ids['invoice'], $sql);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
 
         // App\Checkout, App\Repo::save and App\SqlRepo::save. App\Repo itself
@@ -321,7 +321,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         $this->addNode($repository, $ids, 'method', 'App\\Cache::drop', 'drop');
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
 
         // App\Checkout from the fixture, plus the unmarked App\Cache::drop.
@@ -341,7 +341,7 @@ final class QualityGateMetricsTest extends KnossosTestCase
         $this->addNode($repository, $ids, 'method', 'App\\Visitor::helper', 'helper');
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $gate = (new ArchitectureQueryService($pdo))
+        $gate = ArchitectureQueryService::forDatabase($pdo)
             ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
 
         // App\Checkout from the fixture, plus the unmarked App\Visitor::helper.

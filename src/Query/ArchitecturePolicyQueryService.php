@@ -6,6 +6,7 @@ namespace Knossos\Query;
 
 use InvalidArgumentException;
 use Knossos\Configuration\ProjectConfigurationLoader;
+use Knossos\Result\ResultEnvelope;
 use Throwable;
 
 /**

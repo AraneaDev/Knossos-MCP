@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Tests\Phpunit\Reconciliation;
+namespace Knossos\Tests\Phpunit\Store;
 
 use InvalidArgumentException;
-use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scanner\Protocol\ScanContribution;
+use Knossos\Store\ContributionCacheEntry;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;

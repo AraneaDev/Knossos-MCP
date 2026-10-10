@@ -29,7 +29,7 @@
       "extra-files": [
         {
           "type": "generic",
-          "path": "src/Application.php"
+          "path": "src/Runtime/Version.php"
         },
         {
           "type": "generic",

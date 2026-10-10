@@ -24,7 +24,7 @@ final class RelativePath
             throw new InvalidArgumentException(sprintf('%s must be a normalized project-relative path.', $field));
         }
 
-        if (!mb_check_encoding($path, 'UTF-8') || preg_match('/[\x00-\x1f\x7f]/', $path) === 1) {
+        if (!self::isSupported($path)) {
             throw new InvalidArgumentException(sprintf('%s must be valid UTF-8 without control characters.', $field));
         }
 
@@ -37,5 +37,14 @@ final class RelativePath
                 throw new InvalidArgumentException(sprintf('%s contains an invalid path segment.', $field));
             }
         }
+    }
+
+    /**
+     * Whether a path's name can be carried through ids, protocol messages and
+     * JSON results: valid UTF-8 without control characters.
+     */
+    public static function isSupported(string $path): bool
+    {
+        return mb_check_encoding($path, 'UTF-8') && preg_match('/[\x00-\x1f\x7f]/', $path) !== 1;
     }
 }

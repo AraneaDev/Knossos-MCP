@@ -12,7 +12,7 @@ use Knossos\Git\ProcessGitHistoryProvider;
 use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Query\ArchitecturePolicyQueryService;
 use Knossos\Query\ArchitectureQueryService;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * Every read-only query as a CLI command.
@@ -338,7 +338,7 @@ final class QueryCommand implements CliCommand
     {
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos change-impact <path|project-id> <symbol> [options]'), $c);
         $symbol = $p[1] ?? throw new InvalidArgumentException('An impact target is required.');
-        $queries = new ArchitectureQueryService($c->database(), gitHistory: new ProcessGitHistoryProvider());
+        $queries = ArchitectureQueryService::forDatabase($c->database(), gitHistory: new ProcessGitHistoryProvider());
         $result = $queries->changeImpact($project, $symbol, $c->options->integer($o, 'since-days', 90, 1, 3650), $c->options->integer($o, 'max-commits', 500, 1, 5000), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $c->options->values($o, 'edge-kind'), $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
         return $this->result($result, $o, $c);
     }
@@ -351,7 +351,7 @@ final class QueryCommand implements CliCommand
     private function changedFilesImpact(array $p, array $o, CliCommandContext $c): int
     {
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos changed-files-impact <path|project-id> [files...] [options]'), $c);
-        $queries = new ArchitectureQueryService($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
+        $queries = ArchitectureQueryService::forDatabase($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
         $result = $queries->changedFilesImpact($project, array_slice($p, 1), $c->options->flag($o, 'working-tree'), $c->options->single($o, 'base-ref'), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $c->options->values($o, 'edge-kind'), $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
         return $this->result($result, $o, $c);
     }
@@ -364,7 +364,7 @@ final class QueryCommand implements CliCommand
     private function testImpact(array $p, array $o, CliCommandContext $c): int
     {
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos test-impact <path|project-id> [files...] [options]'), $c);
-        $queries = new ArchitectureQueryService($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
+        $queries = ArchitectureQueryService::forDatabase($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
         $result = $queries->testImpact($project, array_slice($p, 1), $c->options->flag($o, 'working-tree'), $c->options->single($o, 'base-ref'), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $c->options->values($o, 'edge-kind'), $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
         return $this->result($result, $o, $c);
     }
@@ -379,7 +379,7 @@ final class QueryCommand implements CliCommand
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos review-diff <path|project-id> [FILE...] [options]'), $c);
         $policies = $c->options->single($o, 'policies');
         $budgets = $c->options->single($o, 'budgets');
-        $queries = new ArchitectureQueryService($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
+        $queries = ArchitectureQueryService::forDatabase($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
         $result = $queries->reviewDiff(
             $project,
             $c->options->single($o, 'base-ref'),
@@ -521,7 +521,7 @@ final class QueryCommand implements CliCommand
     /** The query facade for this invocation. */
     private function queries(CliCommandContext $context): ArchitectureQueryService
     {
-        return new ArchitectureQueryService($context->database());
+        return ArchitectureQueryService::forDatabase($context->database());
     }
 
     /**

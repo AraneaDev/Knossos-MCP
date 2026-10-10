@@ -16,7 +16,7 @@ $runtime = new RuntimeFactory($root);
 $pdo = $runtime->database(':memory:');
 $tools = new ToolService(
     new ProjectScanService($pdo, $root, [$root]),
-    new ArchitectureQueryService($pdo),
+    ArchitectureQueryService::forDatabase($pdo),
     new DatabaseMaintenanceService($pdo, ':memory:'),
     new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
     // Wired so the reference documents the full surface. A ToolService without

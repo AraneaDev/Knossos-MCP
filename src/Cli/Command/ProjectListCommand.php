@@ -112,7 +112,7 @@ final class ProjectListCommand implements CliCommand
      */
     private function diagnostics(string $projectId, array $options, CliCommandContext $context): int
     {
-        $queries = new ArchitectureQueryService($context->database());
+        $queries = ArchitectureQueryService::forDatabase($context->database());
         $severity = $context->options->single($options, 'severity');
         $prefix = $context->options->single($options, 'path');
         $items = [];
@@ -150,7 +150,7 @@ final class ProjectListCommand implements CliCommand
             throw new InvalidArgumentException('--reachability must be unreferenced or test-only.');
         }
         $budget = $context->options->integer($options, 'candidate-timeout', self::CANDIDATE_TIMEOUT_MS, 1, 600_000);
-        $queries = new ArchitectureQueryService($context->database(), $this->clock);
+        $queries = ArchitectureQueryService::forDatabase($context->database(), $this->clock);
         // One budget for the whole list: each page searches again, so a per-page limit would multiply.
         $deadline = $this->now() + $budget * 1_000_000;
         $candidates = [];

@@ -57,7 +57,7 @@ final readonly class FileTestReach
      */
     public function reach(string $projectId, array $files): array
     {
-        $queries = new ArchitectureQueryService($this->pdo);
+        $queries = ArchitectureQueryService::forDatabase($this->pdo);
         $now = $this->clock ?? static fn(): float => microtime(true) * 1000;
         $until = $now() + self::DEADLINE_MS;
         $counts = [];

@@ -165,7 +165,7 @@ final class BundleTest extends KnossosTestCase
             $pdo = SqliteConnection::open($database);
             (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
             $scan = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, 'Metrics Source');
-            $queries = new ArchitectureQueryService($pdo);
+            $queries = ArchitectureQueryService::forDatabase($pdo);
 
             $ranked = $queries->fileMetrics($scan->projectId);
             $byPath = [];

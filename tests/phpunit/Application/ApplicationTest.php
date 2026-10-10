@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Application;
 
 use Knossos\Application;
+use Knossos\Runtime\Version;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -27,11 +28,17 @@ final class ApplicationTest extends TestCase
 
         $this->assertIsString($constant);
         // version.txt and the x-release-please-version sentinel in
-        // src/Application.php are bumped together by release-please; pinning a
+        // src/Runtime/Version.php are bumped together by release-please; pinning a
         // literal here failed every release build, so assert consistency with
         // the managed file instead.
         $this->assertSame(trim((string) file_get_contents(dirname(__DIR__, 3) . '/version.txt')), $constant);
         $this->assertMatchesRegularExpression('/^\d+\.\d+\.\d+$/', $constant);
+    }
+
+    public function testVersionIsTheRuntimeVersion(): void
+    {
+        // release-please bumps Runtime\Version; the entry point re-exports it.
+        $this->assertSame(Version::CURRENT, Application::VERSION);
     }
 
     public function testRunIsAPublicInstanceMethodReturningInteger(): void

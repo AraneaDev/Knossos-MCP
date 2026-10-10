@@ -76,7 +76,7 @@ final class GitTest extends KnossosTestCase
                 ], 'commits_examined' => 6, 'truncated' => false];
             }
         };
-        $query = new ArchitectureQueryService($pdo, gitHistory: $historyProvider);
+        $query = ArchitectureQueryService::forDatabase($pdo, gitHistory: $historyProvider);
         $result = $query->changeImpact($ids['project'], $ids['invoice']);
         assertSame(true, $result->data['git']['available']);
         assertSame(6, $result->data['git']['commits_examined']);
@@ -85,7 +85,7 @@ final class GitTest extends KnossosTestCase
         assertSame(5, $result->data['risk_ranking'][0]['change_signals']['commit_count']);
         assertContains('not proof of risk', $result->warnings[array_key_last($result->warnings)]);
 
-        $fallback = (new ArchitectureQueryService($pdo))->changeImpact($ids['project'], $ids['invoice']);
+        $fallback = ArchitectureQueryService::forDatabase($pdo)->changeImpact($ids['project'], $ids['invoice']);
         assertSame(false, $fallback->data['git']['available']);
         assertSame(0, $fallback->data['risk_ranking'][0]['change_signals']['commit_count']);
         assertContains('provider_unavailable', implode(' ', $fallback->warnings));
@@ -160,7 +160,7 @@ final class GitTest extends KnossosTestCase
                 ], 'truncated' => false];
             }
         };
-        $query = new ArchitectureQueryService($pdo, gitWorkingTree: $workingTree);
+        $query = ArchitectureQueryService::forDatabase($pdo, gitWorkingTree: $workingTree);
         assertThrows(fn() => $query->changedFilesImpact($ids['project'], ['some.php'], baseRef: 'main'), InvalidArgumentException::class);
         $explicit = $query->changedFilesImpact($ids['project'], ['src/Checkout.php', 'src/missing.php']);
         assertSame(2, count($explicit->data['direct_components']));
@@ -176,6 +176,6 @@ final class GitTest extends KnossosTestCase
         assertThrows(fn() => $query->changedFilesImpact($ids['project'], ['src/Checkout.php'], workingTree: true), InvalidArgumentException::class);
         assertThrows(fn() => $query->changedFilesImpact($ids['project'], array_fill(0, 51, 'x.php')), InvalidArgumentException::class);
         assertThrows(fn() => $query->changedFilesImpact($ids['project'], [1, 2, 3]), InvalidArgumentException::class);
-        assertThrows(fn() => (new ArchitectureQueryService($pdo))->changedFilesImpact($ids['project'], [], true), InvalidArgumentException::class);
+        assertThrows(fn() => ArchitectureQueryService::forDatabase($pdo)->changedFilesImpact($ids['project'], [], true), InvalidArgumentException::class);
     }
 }

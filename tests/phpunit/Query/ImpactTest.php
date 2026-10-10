@@ -65,7 +65,7 @@ final class ImpactTest extends KnossosTestCase
         );
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $impact = $query->impactAnalysis($ids['project'], $ids['invoice']);
         $dependants = $impact->data['dependants'];
         assertSame(2, count($dependants));
@@ -94,7 +94,7 @@ final class ImpactTest extends KnossosTestCase
         assertSame([], $ambiguous->data['counts']['by_distance']);
 
         $time = 0;
-        $timedQuery = new ArchitectureQueryService($pdo, function () use (&$time): int {
+        $timedQuery = ArchitectureQueryService::forDatabase($pdo, function () use (&$time): int {
             $time += 2_000_000;
             return $time;
         });
@@ -119,7 +119,7 @@ final class ImpactTest extends KnossosTestCase
         $billing = StableId::symbol($ids['project'], 'php', 'class', 'App\\Billing\\InvoiceService');
         $repository->saveNode($billing, $ids['project'], 'php', 'class', 'App\\Billing\\InvoiceService', 'InvoiceService', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Billing/InvoiceService.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
 
         $missing = $query->impactAnalysis($ids['project'], 'NoSuchService');
         assertSame([], $missing->data['candidates']);

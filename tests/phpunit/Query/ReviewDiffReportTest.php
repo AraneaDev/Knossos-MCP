@@ -60,7 +60,7 @@ final class ReviewDiffReportTest extends KnossosTestCase
         $repository->createScan($second, $ids['project'], 'full', hash('sha256', 'scanner-set'));
         $repository->completeScan($ids['project'], $second);
 
-        $result = (new ArchitectureQueryService($pdo))->reviewDiff(
+        $result = ArchitectureQueryService::forDatabase($pdo)->reviewDiff(
             $ids['project'],
             files: ['src/Checkout.php'],
             budgets: ['new_cycles' => 0],
@@ -119,7 +119,7 @@ final class ReviewDiffReportTest extends KnossosTestCase
         $repository->completeScan($project, $ids['scan']);
         $policies = [['id' => 'left-not-right', 'from_boundary' => 'Left', 'deny_targets' => ['Right']]];
 
-        $review = (new ArchitectureQueryService($pdo))->reviewDiff($project, files: ['src/Checkout.php'], policies: $policies);
+        $review = ArchitectureQueryService::forDatabase($pdo)->reviewDiff($project, files: ['src/Checkout.php'], policies: $policies);
 
         assertSame(151, $review->data['policy_check']['total_violations']);
         assertSame(1, $review->data['policy_check']['touching_violation_count']);
@@ -145,7 +145,7 @@ final class ReviewDiffReportTest extends KnossosTestCase
             $this->calls($repository, $ids, $node, $ring[($index + 1) % 150]);
         }
         $repository->completeScan($project, $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
         $cycle = $queries->dependencyCycles($project, [], 'possible', 100, 50_000, 100_000, 1000)->data['cycles'][0];
         $shown = array_fill_keys(array_column($cycle['members'], 'id'), true);
         // A member that is not listed and whose dependants within the review's
@@ -192,6 +192,6 @@ final class ReviewDiffReportTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $this->project = $ids['project'];
 
-        return new ArchitectureQueryService($pdo);
+        return ArchitectureQueryService::forDatabase($pdo);
     }
 }

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Watch;
+namespace Knossos\Scan;
 
 use Closure;
 use Knossos\Configuration\ProjectConfigurationLoader;

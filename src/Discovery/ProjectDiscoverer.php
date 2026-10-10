@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Discovery;
 
-use Knossos\Scan\CancellationToken;
+use Knossos\Cancellation\CancellationToken;
 
 /**
  * Discovers a project: the files worth analysing and the units that configure

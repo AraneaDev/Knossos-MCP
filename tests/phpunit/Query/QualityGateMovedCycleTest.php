@@ -33,7 +33,7 @@ final class QualityGateMovedCycleTest extends KnossosTestCase
             unlink($root . '/src/Old/Walk.php');
             file_put_contents($root . '/src/New/Walk.php', self::walker('App\\New'));
             $scanner->scan($root, mode: 'full');
-            $queries = new ArchitectureQueryService($pdo);
+            $queries = ArchitectureQueryService::forDatabase($pdo);
 
             $gate = $queries->qualityGate($project, $baseline->snapshotId, ['new_cycles' => 0]);
 

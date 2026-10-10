@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Knossos\Scanner\Worker;
 
 use InvalidArgumentException;
-use Knossos\Discovery\ProjectDiscoverer;
 use Knossos\Scanner\Protocol\RelativePath;
 
 /**
@@ -34,7 +33,7 @@ final class ReadsMap
         $reads = [];
         foreach ($value as $key => $hash) {
             $path = (string) $key;
-            if (!ProjectDiscoverer::isSupportedPath($path)) {
+            if (!RelativePath::isSupported($path)) {
                 continue;
             }
             try {

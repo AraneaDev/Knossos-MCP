@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Tests\Phpunit\Watch;
+namespace Knossos\Tests\Phpunit\Scan;
 
 use Knossos\Discovery\AllowedRoots;
+use Knossos\Scan\TreeFingerprint;
 use Knossos\Tests\Phpunit\KnossosTestCase;
-use Knossos\Watch\TreeFingerprint;
 use PHPUnit\Framework\Attributes\Group;
 
 /** What one walk of a tree tells the watcher: the fingerprint, the directories it opened, and when it began. */

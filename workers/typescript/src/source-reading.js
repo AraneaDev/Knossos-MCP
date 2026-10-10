@@ -113,7 +113,7 @@ function decodeLikeTypeScript(buffer) {
  * bounded to one byte past the cap for the same reason: whatever it opens, it
  * never reads more than a file the host would accept.
  *
- * @param {InputReadRecorder} reads the request's recorder
+ * @param {import("./input-reads.js").InputReadRecorder} reads the request's recorder
  */
 export function readHashedSourceFile(
     root,

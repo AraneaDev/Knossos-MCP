@@ -6,6 +6,7 @@ namespace Knossos\Tests\Phpunit\Cli;
 
 use InvalidArgumentException;
 use JsonException;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\CliErrorRenderer;
 use Knossos\Cli\CliHelpRenderer;
@@ -14,9 +15,8 @@ use Knossos\Cli\CliOptionParser;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Runtime\RuntimeFactory;
-use Knossos\Scan\ScanBusyException;
-use Knossos\Scan\ScanCancelledException;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Store\ScanBusyException;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 
@@ -603,7 +603,7 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
             ':memory:',
         );
         $token = $context->cancellationToken();
-        assertSame(true, $token instanceof \Knossos\Scan\CancellationToken);
+        assertSame(true, $token instanceof \Knossos\Cancellation\CancellationToken);
     }
 
     public function testCommandContextCancellationTokenWithHandleTermination(): void
@@ -623,7 +623,7 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
             ':memory:',
         );
         $token = $context->cancellationToken(true);
-        assertSame(true, $token instanceof \Knossos\Scan\CancellationToken);
+        assertSame(true, $token instanceof \Knossos\Cancellation\CancellationToken);
         assertSame(false, $token->isCancelled());
     }
 }

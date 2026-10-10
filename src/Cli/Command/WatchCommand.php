@@ -8,7 +8,7 @@ use InvalidArgumentException;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\ProjectDatabaseLocator;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Runtime\RuntimeFactory;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Watch\SharedWatch;

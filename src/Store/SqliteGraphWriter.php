@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Knossos\Store;
 
 use InvalidArgumentException;
-use Knossos\Reconciliation\ContributionCacheEntry;
 use PDO;
 
 /**

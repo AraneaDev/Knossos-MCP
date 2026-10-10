@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scan;
 
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Discovery\DiscoveredFile;
 use Knossos\Scan\CachedReads;
-use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\ContributionPartition;
 use Knossos\Scan\PartitionContext;
-use Knossos\Scan\ScanCancelledException;
 use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Protocol\{Confidence, Diagnostic, Evidence, NodeFact, Origin};
 use Knossos\Scanner\Protocol\ScanContribution;
