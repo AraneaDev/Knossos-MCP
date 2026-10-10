@@ -10,9 +10,11 @@ from .ast_helpers import (
     bound_names,
     declared_protocols,
     dotted,
+    is_none,
     is_protocol_base,
     is_type_checking_guard,
     names_main_guard,
+    optional_inner,
     ref,
 )
 from .frameworks import DjangoFactEnricher, FastApiFactEnricher, FlaskFactEnricher, PythonFrameworkRoleEnricher
@@ -574,7 +576,12 @@ class PythonAstFactCollector(ast.NodeVisitor):
     def held_class(self, value: ast.AST | None, annotation: ast.AST | None = None) -> str | None:
         """The class reference an assigned value or annotation names, if any."""
 
-        for candidate in (annotation, value.func if isinstance(value, ast.Call) else None):
+        if isinstance(value, ast.BoolOp) and isinstance(value.op, ast.Or):
+            # `injected or Default()`: the attribute holds one class when every
+            # side that can be truthy names the same one.
+            sides = {self.held_class(side) for side in value.values if not is_none(side)}
+            return sides.pop() if len(sides) == 1 else None
+        for candidate in (optional_inner(annotation), value.func if isinstance(value, ast.Call) else None):
             name = dotted(candidate) if candidate is not None else None
             resolved = self.resolve_name(name, "class") if name else None
             if resolved and resolved.startswith("py:class:"):

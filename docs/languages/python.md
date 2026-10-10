@@ -67,6 +67,11 @@ decorator names are kept as node attributes. A reference to a function or class
 that is not a call, such as one passed as an argument, becomes a `references`
 edge.
 
+A call is attributed to a class when its receiver's class is known: a
+parameter or attribute annotated with the class, including `Cls | None`,
+`Optional[Cls]` and either written as a string, or a value built as `Cls()`,
+including the default in `self.x = injected or Cls()`.
+
 A cross-file reference resolves when the declaration is in the same scan
 request. Anything else stays an explicit unresolved or external fact.
 
