@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Mcp;
 
 use Knossos\Maintenance\DatabaseMaintenanceService;
+use Knossos\Mcp\McpDispatcher;
 use Knossos\Mcp\NextStepPlanner;
 use Knossos\Mcp\ResultEnricher;
 use Knossos\Mcp\StdioServer;
@@ -56,7 +57,7 @@ final class JsonRpcConformanceTest extends KnossosTestCase
     #[Group('mcp')]
     public function testAnOversizedFrameIsRejectedAndTheSessionCarriesOn(): void
     {
-        $initialize = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]], JSON_THROW_ON_ERROR);
+        $initialize = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]], JSON_THROW_ON_ERROR);
 
         $frames = $this->frames([str_repeat('x', 4096) . "\n", $initialize . "\n"], maxLineBytes: 2048);
 
@@ -146,7 +147,7 @@ final class JsonRpcConformanceTest extends KnossosTestCase
     public function testAFrameSpanningSeveralReadsIsAnswered(): void
     {
         $initialize = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
-            'protocolVersion' => StdioServer::PROTOCOL_VERSION,
+            'protocolVersion' => McpDispatcher::PROTOCOL_VERSION,
             'clientInfo' => ['name' => str_repeat('c', 20_000), 'version' => '1'],
         ]], JSON_THROW_ON_ERROR);
 
@@ -176,7 +177,7 @@ final class JsonRpcConformanceTest extends KnossosTestCase
     #[Group('mcp')]
     public function testAResponseOverTheByteLimitIsReplacedByAnError(): void
     {
-        $initialize = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]], JSON_THROW_ON_ERROR);
+        $initialize = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]], JSON_THROW_ON_ERROR);
 
         $frames = $this->frames([$initialize . "\n"], maxResponseBytes: 100);
 
@@ -232,7 +233,7 @@ final class JsonRpcConformanceTest extends KnossosTestCase
     #[Group('mcp')]
     public function testTheServerDeclaresItsToolListStatic(): void
     {
-        $response = $this->server()->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $response = $this->server()->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
 
         assertSame(false, $response['result']['capabilities']['tools']['listChanged']);
     }
@@ -245,7 +246,7 @@ final class JsonRpcConformanceTest extends KnossosTestCase
      */
     private function frames(array $lines, int $maxLineBytes = 1_048_576, int $maxResponseBytes = 16_000_000): array
     {
-        return $this->runFrames(new StdioServer($this->tools(), maxLineBytes: $maxLineBytes, maxResponseBytes: $maxResponseBytes), $lines);
+        return $this->runFrames(new StdioServer(new McpDispatcher($this->tools()), maxLineBytes: $maxLineBytes, maxResponseBytes: $maxResponseBytes), $lines);
     }
 
     /**
@@ -256,7 +257,7 @@ final class JsonRpcConformanceTest extends KnossosTestCase
     private function pipelinedPair(): array
     {
         $initialize = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
-            'protocolVersion' => StdioServer::PROTOCOL_VERSION,
+            'protocolVersion' => McpDispatcher::PROTOCOL_VERSION,
             'clientInfo' => ['name' => str_repeat('c', 3000), 'version' => '1'],
         ]], JSON_THROW_ON_ERROR);
         $ping = json_encode(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping'], JSON_THROW_ON_ERROR);
@@ -264,18 +265,18 @@ final class JsonRpcConformanceTest extends KnossosTestCase
         return [$initialize, $ping];
     }
 
-    private function initialized(): StdioServer
+    private function initialized(): McpDispatcher
     {
         $server = $this->server();
-        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
 
         return $server;
     }
 
-    private function server(): StdioServer
+    private function server(): McpDispatcher
     {
-        return new StdioServer($this->tools());
+        return new McpDispatcher($this->tools());
     }
 
     private function tools(): ToolService

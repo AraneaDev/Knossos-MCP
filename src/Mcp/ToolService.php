@@ -88,7 +88,7 @@ final readonly class ToolService
             // Through the same normalisation every other literal string
             // argument gets: whitespace is invisible in a JSON payload, and
             // this value is then matched literally against the allowed set.
-            $verbosity = self::normalized($arguments['verbosity']);
+            $verbosity = ToolArguments::normalized($arguments['verbosity']);
             unset($arguments['verbosity']);
             if ($verbosity !== 'compact' && $verbosity !== 'full') {
                 throw new ToolInputException('verbosity must be "compact" or "full".');
@@ -200,7 +200,7 @@ final readonly class ToolService
         }
         $readsDisk = in_array($name, self::DISK_TOOLS, true)
             || ($name === 'architecture_context' && ($arguments['include_source'] ?? false) === true);
-        $projectId = self::normalized($arguments['project_id'] ?? null);
+        $projectId = ToolArguments::normalized($arguments['project_id'] ?? null);
         if (!$readsDisk || $projectId === '') {
             return;
         }
@@ -237,7 +237,7 @@ final readonly class ToolService
         // Normalised for the same reason string() normalises: a padded id looks
         // up no project, and silently skipping the refresh would leave the
         // caller with a stale answer their refresh_if_stale asked to avoid.
-        $projectId = self::normalized($arguments['project_id'] ?? null);
+        $projectId = ToolArguments::normalized($arguments['project_id'] ?? null);
         if ($projectId === '') {
             return [[], null];
         }
@@ -432,13 +432,13 @@ final readonly class ToolService
     private function annotateComponent(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'component'),
-            self::string($arguments, 'kind'),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'component'),
+            ToolArguments::string($arguments, 'kind'),
             // Stored as given: a note's whitespace is content.
-            self::text($arguments, 'value', 2000, allowEmpty: true, default: '', trim: false),
-            self::boolean($arguments, 'remove', false),
-            self::boolean($arguments, 'execute', false),
+            ToolArguments::text($arguments, 'value', 2000, allowEmpty: true, default: '', trim: false),
+            ToolArguments::boolean($arguments, 'remove', false),
+            ToolArguments::boolean($arguments, 'execute', false),
         ];
 
         return fn(): ResultEnvelope => $this->queries->annotateComponent(...$args);
@@ -453,8 +453,8 @@ final readonly class ToolService
     private function removeProject(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::boolean($arguments, 'execute', false),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::boolean($arguments, 'execute', false),
         ];
 
         return fn(): ResultEnvelope => $this->maintenance->removeProject(...$args);
@@ -469,9 +469,9 @@ final readonly class ToolService
     private function cleanupStaleScans(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::integer($arguments, 'older_than_hours', 24, 1, 8760),
-            self::boolean($arguments, 'execute', false),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::integer($arguments, 'older_than_hours', 24, 1, 8760),
+            ToolArguments::boolean($arguments, 'execute', false),
         ];
 
         return fn(): ResultEnvelope => $this->maintenance->cleanupStaleScans(...$args);
@@ -486,9 +486,9 @@ final readonly class ToolService
     private function maintainDatabase(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'action'),
-            self::boolean($arguments, 'execute', false),
-            array_key_exists('backup_name', $arguments) ? self::text($arguments, 'backup_name', 127) : null,
+            ToolArguments::string($arguments, 'action'),
+            ToolArguments::boolean($arguments, 'execute', false),
+            array_key_exists('backup_name', $arguments) ? ToolArguments::text($arguments, 'backup_name', 127) : null,
         ];
 
         return fn(): ResultEnvelope => $this->maintenance->maintain(...$args);
@@ -503,9 +503,9 @@ final readonly class ToolService
     private function projects(array $arguments): \Closure
     {
         $args = [
-            self::integer($arguments, 'limit', 50, 1, 100),
-            self::integer($arguments, 'offset', 0, 0, 100_000),
-            self::boolean($arguments, 'include_roots', false),
+            ToolArguments::integer($arguments, 'limit', 50, 1, 100),
+            ToolArguments::integer($arguments, 'offset', 0, 0, 100_000),
+            ToolArguments::boolean($arguments, 'include_roots', false),
         ];
 
         return fn(): ResultEnvelope => $this->queries->listProjects(...$args);
@@ -520,9 +520,9 @@ final readonly class ToolService
     private function snapshots(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::integer($arguments, 'limit', 20, 1, 100),
-            self::integer($arguments, 'offset', 0, 0, 100_000),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::integer($arguments, 'limit', 20, 1, 100),
+            ToolArguments::integer($arguments, 'offset', 0, 0, 100_000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->listSnapshots(...$args);
@@ -537,10 +537,10 @@ final readonly class ToolService
     private function snapshotDiff(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'from_snapshot'),
-            array_key_exists('to_snapshot', $arguments) ? self::string($arguments, 'to_snapshot') : 'active',
-            self::integer($arguments, 'max_changes', 25, 1, 1000),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'from_snapshot'),
+            array_key_exists('to_snapshot', $arguments) ? ToolArguments::string($arguments, 'to_snapshot') : 'active',
+            ToolArguments::integer($arguments, 'max_changes', 25, 1, 1000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->snapshotDiff(...$args);
@@ -562,12 +562,12 @@ final readonly class ToolService
             throw new InvalidArgumentException('budgets must be an object and policies must be a list.');
         }
         $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'baseline_snapshot'),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'baseline_snapshot'),
             $budgets,
             $policies,
-            self::boolean($arguments, 'sarif', false),
-            self::boolean($arguments, 'propose_baseline', false),
+            ToolArguments::boolean($arguments, 'sarif', false),
+            ToolArguments::boolean($arguments, 'propose_baseline', false),
         ];
 
         return fn(): ResultEnvelope => $this->queries->qualityGate(...$args);
@@ -582,9 +582,9 @@ final readonly class ToolService
     private function architectureTrends(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::integer($arguments, 'limit', 10, 2, 20),
-            array_key_exists('release_from', $arguments) ? self::string($arguments, 'release_from') : null,
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::integer($arguments, 'limit', 10, 2, 20),
+            array_key_exists('release_from', $arguments) ? ToolArguments::string($arguments, 'release_from') : null,
         ];
 
         return fn(): ResultEnvelope => $this->queries->architectureTrends(...$args);
@@ -598,21 +598,21 @@ final readonly class ToolService
      */
     private function scan(array $arguments, ?CancellationToken $cancellation): \Closure
     {
-        $path = self::string($arguments, 'path');
-        $name = array_key_exists('name', $arguments) ? self::string($arguments, 'name') : null;
-        $maxFiles = array_key_exists('max_files', $arguments) ? self::integer($arguments, 'max_files', 100_000, 1, 100_000) : null;
-        $maxBytes = array_key_exists('max_file_bytes', $arguments) ? self::integer($arguments, 'max_file_bytes', 2_000_000, 1, 100_000_000) : null;
+        $path = ToolArguments::string($arguments, 'path');
+        $name = array_key_exists('name', $arguments) ? ToolArguments::string($arguments, 'name') : null;
+        $maxFiles = array_key_exists('max_files', $arguments) ? ToolArguments::integer($arguments, 'max_files', 100_000, 1, 100_000) : null;
+        $maxBytes = array_key_exists('max_file_bytes', $arguments) ? ToolArguments::integer($arguments, 'max_file_bytes', 2_000_000, 1, 100_000_000) : null;
 
         $args = [
             $path,
             $name,
             $maxFiles,
             $maxBytes,
-            array_key_exists('boundaries', $arguments) ? self::boundariesArgument($arguments) : null,
-            array_key_exists('mode', $arguments) ? self::string($arguments, 'mode') : null,
+            array_key_exists('boundaries', $arguments) ? ToolArguments::boundariesArgument($arguments) : null,
+            array_key_exists('mode', $arguments) ? ToolArguments::string($arguments, 'mode') : null,
             $cancellation,
-            array_key_exists('snapshot_retention', $arguments) ? self::integer($arguments, 'snapshot_retention', 5, 0, 20) : null,
-            array_key_exists('worker_timeout_ms', $arguments) ? self::integer($arguments, 'worker_timeout_ms', 30_000, 1_000, 120_000) : null,
+            array_key_exists('snapshot_retention', $arguments) ? ToolArguments::integer($arguments, 'snapshot_retention', 5, 0, 20) : null,
+            array_key_exists('worker_timeout_ms', $arguments) ? ToolArguments::integer($arguments, 'worker_timeout_ms', 30_000, 1_000, 120_000) : null,
         ];
 
         return fn(): ResultEnvelope => $this->scanner->scan(...$args);
@@ -627,9 +627,9 @@ final readonly class ToolService
     private function find(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'name'),
-            self::integer($arguments, 'limit', 20, 1, 100),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'name'),
+            ToolArguments::integer($arguments, 'limit', 20, 1, 100),
         ];
 
         return fn(): ResultEnvelope => $this->queries->findComponent(...$args);
@@ -644,11 +644,11 @@ final readonly class ToolService
     private function inspect(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'component'),
-            self::integer($arguments, 'max_relationships', 25, 1, 100),
-            self::integer($arguments, 'max_children', 25, 1, 100),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'component'),
+            ToolArguments::integer($arguments, 'max_relationships', 25, 1, 100),
+            ToolArguments::integer($arguments, 'max_children', 25, 1, 100),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
         ];
 
         return fn(): ResultEnvelope => $this->queries->inspectComponent(...$args);
@@ -663,11 +663,11 @@ final readonly class ToolService
     private function listUsages(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'symbol'),
-            self::strings($arguments, 'edge_kinds'),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            self::integer($arguments, 'limit', 100, 1, 500),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'symbol'),
+            ToolArguments::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'limit', 100, 1, 500),
         ];
 
         return fn(): ResultEnvelope => $this->queries->listUsages(...$args);
@@ -682,8 +682,8 @@ final readonly class ToolService
     private function summary(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::integer($arguments, 'limit', 50, 1, 100),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::integer($arguments, 'limit', 50, 1, 100),
         ];
 
         return fn(): ResultEnvelope => $this->queries->architectureSummary(...$args);
@@ -698,8 +698,8 @@ final readonly class ToolService
     private function exportAgentBrief(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::integer($arguments, 'max_chars', 4000, 1000, 20_000),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::integer($arguments, 'max_chars', 4000, 1000, 20_000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->exportAgentBrief(...$args);
@@ -714,13 +714,13 @@ final readonly class ToolService
     private function fileMetrics(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            array_key_exists('path_contains', $arguments) ? self::text($arguments, 'path_contains', 1000) : null,
-            array_key_exists('language', $arguments) ? self::text($arguments, 'language', 100) : null,
-            array_key_exists('sort_by', $arguments) ? self::string($arguments, 'sort_by') : 'line_count',
-            array_key_exists('order', $arguments) ? self::string($arguments, 'order') : 'desc',
-            self::integer($arguments, 'limit', 50, 1, 100),
-            self::integer($arguments, 'offset', 0, 0, 100_000),
+            ToolArguments::string($arguments, 'project_id'),
+            array_key_exists('path_contains', $arguments) ? ToolArguments::text($arguments, 'path_contains', 1000) : null,
+            array_key_exists('language', $arguments) ? ToolArguments::text($arguments, 'language', 100) : null,
+            array_key_exists('sort_by', $arguments) ? ToolArguments::string($arguments, 'sort_by') : 'line_count',
+            array_key_exists('order', $arguments) ? ToolArguments::string($arguments, 'order') : 'desc',
+            ToolArguments::integer($arguments, 'limit', 50, 1, 100),
+            ToolArguments::integer($arguments, 'offset', 0, 0, 100_000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->fileMetrics(...$args);
@@ -735,11 +735,11 @@ final readonly class ToolService
     private function listDiagnostics(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            array_key_exists('severity', $arguments) ? self::string($arguments, 'severity') : null,
-            array_key_exists('path_prefix', $arguments) ? self::string($arguments, 'path_prefix') : null,
-            self::integer($arguments, 'limit', 100, 1, 100),
-            self::integer($arguments, 'offset', 0, 0, 100_000),
+            ToolArguments::string($arguments, 'project_id'),
+            array_key_exists('severity', $arguments) ? ToolArguments::string($arguments, 'severity') : null,
+            array_key_exists('path_prefix', $arguments) ? ToolArguments::string($arguments, 'path_prefix') : null,
+            ToolArguments::integer($arguments, 'limit', 100, 1, 100),
+            ToolArguments::integer($arguments, 'offset', 0, 0, 100_000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->listDiagnostics(...$args);
@@ -753,7 +753,7 @@ final readonly class ToolService
      */
     private function fileContext(array $arguments): \Closure
     {
-        $args = [self::string($arguments, 'project_id'), self::string($arguments, 'path')];
+        $args = [ToolArguments::string($arguments, 'project_id'), ToolArguments::string($arguments, 'path')];
 
         return fn(): ResultEnvelope => $this->queries->fileContext(...$args);
     }
@@ -767,14 +767,14 @@ final readonly class ToolService
     private function flow(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'from'),
-            self::string($arguments, 'to'),
-            self::integer($arguments, 'max_depth', 6, 1, 8),
-            self::integer($arguments, 'max_paths', 5, 1, 20),
-            self::strings($arguments, 'edge_kinds'),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'from'),
+            ToolArguments::string($arguments, 'to'),
+            ToolArguments::integer($arguments, 'max_depth', 6, 1, 8),
+            ToolArguments::integer($arguments, 'max_paths', 5, 1, 20),
+            ToolArguments::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->explainFlow(...$args);
@@ -789,13 +789,13 @@ final readonly class ToolService
     private function impact(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'symbol'),
-            self::integer($arguments, 'max_depth', 4, 1, 8),
-            self::integer($arguments, 'limit', 100, 1, 100),
-            self::strings($arguments, 'edge_kinds'),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'symbol'),
+            ToolArguments::integer($arguments, 'max_depth', 4, 1, 8),
+            ToolArguments::integer($arguments, 'limit', 100, 1, 100),
+            ToolArguments::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->impactAnalysis(...$args);
@@ -810,14 +810,14 @@ final readonly class ToolService
     private function cycles(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::strings($arguments, 'edge_kinds'),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            self::integer($arguments, 'limit', 20, 1, 100),
-            self::integer($arguments, 'max_nodes', 50_000, 1, 50_000),
-            self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
-            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
-            self::boolean($arguments, 'include_self_loops', false),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'limit', 20, 1, 100),
+            ToolArguments::integer($arguments, 'max_nodes', 50_000, 1, 50_000),
+            ToolArguments::integer($arguments, 'max_edges', 100_000, 1, 100_000),
+            ToolArguments::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            ToolArguments::boolean($arguments, 'include_self_loops', false),
         ];
 
         return fn(): ResultEnvelope => $this->queries->dependencyCycles(...$args);
@@ -832,18 +832,18 @@ final readonly class ToolService
     private function health(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::strings($arguments, 'edge_kinds'),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            self::integer($arguments, 'limit', 20, 1, 100),
-            self::integer($arguments, 'max_nodes', 50_000, 1, 50_000),
-            self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
-            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
-            self::boolean($arguments, 'include_external', false),
-            self::boolean($arguments, 'include_tests', false),
-            array_key_exists('candidate_confidence', $arguments) ? self::string($arguments, 'candidate_confidence') : 'possible',
-            self::integer($arguments, 'candidate_offset', 0, 0, 100_000),
-            self::integer($arguments, 'candidate_timeout_ms', 5000, 1, 60_000),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'limit', 20, 1, 100),
+            ToolArguments::integer($arguments, 'max_nodes', 50_000, 1, 50_000),
+            ToolArguments::integer($arguments, 'max_edges', 100_000, 1, 100_000),
+            ToolArguments::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            ToolArguments::boolean($arguments, 'include_external', false),
+            ToolArguments::boolean($arguments, 'include_tests', false),
+            array_key_exists('candidate_confidence', $arguments) ? ToolArguments::string($arguments, 'candidate_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'candidate_offset', 0, 0, 100_000),
+            ToolArguments::integer($arguments, 'candidate_timeout_ms', 5000, 1, 60_000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->architectureHealth(...$args);
@@ -863,12 +863,12 @@ final readonly class ToolService
             throw new InvalidArgumentException('policies must be a list.');
         }
         $args = [
-            self::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'project_id'),
             $policies,
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            self::integer($arguments, 'limit', 100, 1, 100),
-            self::integer($arguments, 'max_edges', ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, 1, 100_000),
-            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'limit', 100, 1, 100),
+            ToolArguments::integer($arguments, 'max_edges', ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, 1, 100_000),
+            ToolArguments::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->checkArchitecture(...$args);
@@ -883,13 +883,13 @@ final readonly class ToolService
     private function suggest(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::text($arguments, 'feature_description', 2000),
-            self::integer($arguments, 'limit', 5, 1, 20),
-            self::integer($arguments, 'max_members', 20_000, 1, 50_000),
-            self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
-            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
-            array_key_exists('ranking_mode', $arguments) ? self::string($arguments, 'ranking_mode') : 'deterministic',
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::text($arguments, 'feature_description', 2000),
+            ToolArguments::integer($arguments, 'limit', 5, 1, 20),
+            ToolArguments::integer($arguments, 'max_members', 20_000, 1, 50_000),
+            ToolArguments::integer($arguments, 'max_edges', 100_000, 1, 100_000),
+            ToolArguments::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            array_key_exists('ranking_mode', $arguments) ? ToolArguments::string($arguments, 'ranking_mode') : 'deterministic',
         ];
 
         return fn(): ResultEnvelope => $this->queries->suggestLocation(...$args);
@@ -904,15 +904,15 @@ final readonly class ToolService
     private function changeImpact(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'symbol'),
-            self::integer($arguments, 'since_days', 90, 1, 3650),
-            self::integer($arguments, 'max_commits', 500, 1, 5000),
-            self::integer($arguments, 'max_depth', 4, 1, 8),
-            self::integer($arguments, 'limit', 100, 1, 100),
-            self::strings($arguments, 'edge_kinds'),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'symbol'),
+            ToolArguments::integer($arguments, 'since_days', 90, 1, 3650),
+            ToolArguments::integer($arguments, 'max_commits', 500, 1, 5000),
+            ToolArguments::integer($arguments, 'max_depth', 4, 1, 8),
+            ToolArguments::integer($arguments, 'limit', 100, 1, 100),
+            ToolArguments::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->changeImpact(...$args);
@@ -927,15 +927,15 @@ final readonly class ToolService
     private function changedFilesImpact(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::strings($arguments, 'files', 50),
-            self::boolean($arguments, 'working_tree', false),
-            array_key_exists('base_ref', $arguments) ? self::text($arguments, 'base_ref', 200) : null,
-            self::integer($arguments, 'max_depth', 4, 1, 8),
-            self::integer($arguments, 'limit', 100, 1, 100),
-            self::strings($arguments, 'edge_kinds'),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::strings($arguments, 'files', 50),
+            ToolArguments::boolean($arguments, 'working_tree', false),
+            array_key_exists('base_ref', $arguments) ? ToolArguments::text($arguments, 'base_ref', 200) : null,
+            ToolArguments::integer($arguments, 'max_depth', 4, 1, 8),
+            ToolArguments::integer($arguments, 'limit', 100, 1, 100),
+            ToolArguments::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->changedFilesImpact(...$args);
@@ -950,15 +950,15 @@ final readonly class ToolService
     private function testImpact(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::strings($arguments, 'files', 50),
-            self::boolean($arguments, 'working_tree', false),
-            array_key_exists('base_ref', $arguments) ? self::text($arguments, 'base_ref', 200) : null,
-            self::integer($arguments, 'max_depth', 4, 1, 8),
-            self::integer($arguments, 'limit', 100, 1, 100),
-            self::strings($arguments, 'edge_kinds'),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::strings($arguments, 'files', 50),
+            ToolArguments::boolean($arguments, 'working_tree', false),
+            array_key_exists('base_ref', $arguments) ? ToolArguments::text($arguments, 'base_ref', 200) : null,
+            ToolArguments::integer($arguments, 'max_depth', 4, 1, 8),
+            ToolArguments::integer($arguments, 'limit', 100, 1, 100),
+            ToolArguments::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->testImpact(...$args);
@@ -981,16 +981,16 @@ final readonly class ToolService
             throw new InvalidArgumentException('budgets must be an object.');
         }
         $args = [
-            self::string($arguments, 'project_id'),
-            array_key_exists('base_ref', $arguments) ? self::text($arguments, 'base_ref', 200) : null,
-            self::strings($arguments, 'files', 50),
+            ToolArguments::string($arguments, 'project_id'),
+            array_key_exists('base_ref', $arguments) ? ToolArguments::text($arguments, 'base_ref', 200) : null,
+            ToolArguments::strings($arguments, 'files', 50),
             $policies,
             $budgets,
-            array_key_exists('baseline_snapshot', $arguments) ? self::string($arguments, 'baseline_snapshot') : null,
-            self::integer($arguments, 'max_depth', 4, 1, 8),
-            self::integer($arguments, 'limit', 100, 1, 100),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            array_key_exists('baseline_snapshot', $arguments) ? ToolArguments::string($arguments, 'baseline_snapshot') : null,
+            ToolArguments::integer($arguments, 'max_depth', 4, 1, 8),
+            ToolArguments::integer($arguments, 'limit', 100, 1, 100),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            ToolArguments::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->reviewDiff(...$args);
@@ -1005,12 +1005,12 @@ final readonly class ToolService
     private function architectureContext(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::text($arguments, 'task_description', 2000, allowEmpty: true, default: ''),
-            self::strings($arguments, 'files', 50),
-            self::integer($arguments, 'max_chars', 30_000, 4000, 100_000),
-            self::integer($arguments, 'timeout_ms', 1500, 1, 5000),
-            self::boolean($arguments, 'include_source', false),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::text($arguments, 'task_description', 2000, allowEmpty: true, default: ''),
+            ToolArguments::strings($arguments, 'files', 50),
+            ToolArguments::integer($arguments, 'max_chars', 30_000, 4000, 100_000),
+            ToolArguments::integer($arguments, 'timeout_ms', 1500, 1, 5000),
+            ToolArguments::boolean($arguments, 'include_source', false),
         ];
 
         return fn(): ResultEnvelope => $this->queries->architectureContext(...$args);
@@ -1025,14 +1025,14 @@ final readonly class ToolService
     private function diagram(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            array_key_exists('format', $arguments) ? self::string($arguments, 'format') : 'mermaid',
-            array_key_exists('boundary', $arguments) ? self::string($arguments, 'boundary') : null,
-            self::strings($arguments, 'edge_kinds'),
-            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
-            array_key_exists('direction', $arguments) ? self::string($arguments, 'direction') : 'LR',
-            self::integer($arguments, 'max_nodes', 200, 1, 400),
-            self::integer($arguments, 'max_edges', 500, 1, 1000),
+            ToolArguments::string($arguments, 'project_id'),
+            array_key_exists('format', $arguments) ? ToolArguments::string($arguments, 'format') : 'mermaid',
+            array_key_exists('boundary', $arguments) ? ToolArguments::string($arguments, 'boundary') : null,
+            ToolArguments::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? ToolArguments::string($arguments, 'min_confidence') : 'possible',
+            array_key_exists('direction', $arguments) ? ToolArguments::string($arguments, 'direction') : 'LR',
+            ToolArguments::integer($arguments, 'max_nodes', 200, 1, 400),
+            ToolArguments::integer($arguments, 'max_edges', 500, 1, 1000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->exportDiagram(...$args);
@@ -1047,10 +1047,10 @@ final readonly class ToolService
     private function boundaries(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            array_key_exists('source', $arguments) ? self::string($arguments, 'source') : null,
-            self::integer($arguments, 'limit', 50, 1, 100),
-            self::integer($arguments, 'offset', 0, 0, 100_000),
+            ToolArguments::string($arguments, 'project_id'),
+            array_key_exists('source', $arguments) ? ToolArguments::string($arguments, 'source') : null,
+            ToolArguments::integer($arguments, 'limit', 50, 1, 100),
+            ToolArguments::integer($arguments, 'offset', 0, 0, 100_000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->listBoundaries(...$args);
@@ -1065,14 +1065,14 @@ final readonly class ToolService
     private function search(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'query'),
-            self::strings($arguments, 'kinds'),
-            self::strings($arguments, 'roles'),
-            self::strings($arguments, 'boundary_ids'),
-            self::strings($arguments, 'confidences'),
-            self::integer($arguments, 'limit', 20, 1, 100),
-            self::integer($arguments, 'offset', 0, 0, 100_000),
+            ToolArguments::string($arguments, 'project_id'),
+            ToolArguments::string($arguments, 'query'),
+            ToolArguments::strings($arguments, 'kinds'),
+            ToolArguments::strings($arguments, 'roles'),
+            ToolArguments::strings($arguments, 'boundary_ids'),
+            ToolArguments::strings($arguments, 'confidences'),
+            ToolArguments::integer($arguments, 'limit', 20, 1, 100),
+            ToolArguments::integer($arguments, 'offset', 0, 0, 100_000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->searchArchitecture(...$args);
@@ -1087,178 +1087,13 @@ final readonly class ToolService
     private function listAnnotations(array $arguments): \Closure
     {
         $args = [
-            self::string($arguments, 'project_id'),
-            array_key_exists('component', $arguments) ? self::string($arguments, 'component') : null,
-            array_key_exists('kind', $arguments) ? self::string($arguments, 'kind') : null,
-            self::integer($arguments, 'limit', 100, 1, 100),
-            self::integer($arguments, 'offset', 0, 0, 100_000),
+            ToolArguments::string($arguments, 'project_id'),
+            array_key_exists('component', $arguments) ? ToolArguments::string($arguments, 'component') : null,
+            array_key_exists('kind', $arguments) ? ToolArguments::string($arguments, 'kind') : null,
+            ToolArguments::integer($arguments, 'limit', 100, 1, 100),
+            ToolArguments::integer($arguments, 'offset', 0, 0, 100_000),
         ];
 
         return fn(): ResultEnvelope => $this->queries->listAnnotations(...$args);
-    }
-
-    /**
-     * Reject unknown or missing keys in a nested object argument. The top-level
-     * argument check lives in {@see validateKeys()}, driven by ToolCatalog; this
-     * is for shapes the catalog does not describe, such as a boundary entry.
-     *
-     * @param array<string, mixed> $arguments @param list<string> $required @param list<string> $optional
-     */
-    private static function keys(array $arguments, array $required, array $optional): void
-    {
-        foreach ($required as $key) {
-            if (!array_key_exists($key, $arguments)) {
-                throw new InvalidArgumentException(sprintf('Missing required argument: %s', $key));
-            }
-        }
-        $unknown = array_diff(array_keys($arguments), [...$required, ...$optional]);
-        if ($unknown !== []) {
-            throw new InvalidArgumentException(sprintf('Unknown argument: %s', reset($unknown)));
-        }
-    }
-
-    /**
-     * A required string argument, rejecting an empty value rather than treating
-     * it as absent, and returning it trimmed — surrounding whitespace matched
-     * no id in the database and surfaced as "not found" rather than "invalid".
-     *
-     * @param array<string, mixed> $arguments
-     */
-    private static function string(array $arguments, string $key): string
-    {
-        $value = self::normalized($arguments[$key] ?? null);
-        if ($value === '') {
-            throw new InvalidArgumentException(sprintf('%s must be a non-empty string.', $key));
-        }
-        return $value;
-    }
-
-    /**
-     * A string argument with an advertised maxLength, counted in characters as
-     * JSON Schema counts them (the limit used to be checked in bytes, or not at
-     * all). Absent, it is $default when one is given. Trimmed like
-     * {@see string()} unless $trim is false, for a value whose whitespace is
-     * content.
-     *
-     * @param array<string, mixed> $arguments
-     */
-    private static function text(array $arguments, string $key, int $maxLength, bool $allowEmpty = false, ?string $default = null, bool $trim = true): string
-    {
-        // array_key_exists, not ??: an explicit null is a value of the wrong
-        // type, not an absent key that takes the default.
-        $value = array_key_exists($key, $arguments) ? $arguments[$key] : $default;
-        if (!is_string($value) || mb_strlen($value) > $maxLength) {
-            throw new InvalidArgumentException(sprintf('%s must be a string of at most %d characters.', $key, $maxLength));
-        }
-        $value = $trim ? trim($value) : $value;
-        if (!$allowEmpty && $value === '') {
-            throw new InvalidArgumentException(sprintf('%s must be a non-empty string.', $key));
-        }
-
-        return $value;
-    }
-
-    /**
-     * The one place an incoming string argument is normalised.
-     *
-     * Every helper here routes through this rather than spelling out its own
-     * trim(): surrounding whitespace is invisible in a JSON payload, and every
-     * value these helpers produce is then matched literally — an id looked up
-     * in the database, an enum value, a path prefix — so ' proj_1' matched
-     * nothing and surfaced as "not found" rather than "invalid". The rule had
-     * been written out at four separate sites, with nothing structural stopping
-     * a fifth helper from omitting it.
-     *
-     * A non-string collapses to the empty string so each caller rejects it with
-     * its own message, which is what they did with the type check inline.
-     */
-    private static function normalized(mixed $value): string
-    {
-        return is_string($value) ? trim($value) : '';
-    }
-
-    /**
-     * An integer argument within its declared bounds, rejecting anything outside them.
-     *
-     * @param array<string, mixed> $arguments
-     */
-    private static function integer(array $arguments, string $key, int $default, int $minimum, int $maximum): int
-    {
-        $value = $arguments[$key] ?? $default;
-        if (!is_int($value) || $value < $minimum || $value > $maximum) {
-            throw new InvalidArgumentException(sprintf('%s must be an integer between %d and %d.', $key, $minimum, $maximum));
-        }
-        return $value;
-    }
-
-    /**
-     * A boolean argument, rejecting a truthy string rather than coercing it.
-     *
-     * @param array<string, mixed> $arguments
-     */
-    private static function boolean(array $arguments, string $key, bool $default): bool
-    {
-        $value = $arguments[$key] ?? $default;
-        if (!is_bool($value)) {
-            throw new InvalidArgumentException(sprintf('%s must be a boolean.', $key));
-        }
-        return $value;
-    }
-
-    /**
-     * A list-of-strings argument, rejecting a bare string so a caller cannot
-     * pass one by mistake. Entries are trimmed for the same reason {@see string()}
-     * trims: every list here holds enum values, ids, or paths matched literally,
-     * so a padded entry silently matched nothing instead of being rejected.
-     *
-     * @param array<string, mixed> $arguments @return list<string>
-     */
-    private static function strings(array $arguments, string $key, int $maximum = 20): array
-    {
-        $value = $arguments[$key] ?? [];
-        if (!is_array($value) || !array_is_list($value) || count($value) > $maximum) {
-            throw new InvalidArgumentException(sprintf('%s must be a list of at most %d strings.', $key, $maximum));
-        }
-        $trimmed = [];
-        foreach ($value as $item) {
-            $entry = self::normalized($item);
-            if ($entry === '') {
-                throw new InvalidArgumentException(sprintf('%s must contain non-empty strings.', $key));
-            }
-            $trimmed[] = $entry;
-        }
-        return $trimmed;
-    }
-
-    /**
-     * Boundary definitions from the scan arguments, validated into the shape the
-     * planner expects. The validated strings are written back rather than
-     * discarded: BoundaryInference matches a prefix literally, so a padded
-     * path_prefix would define a boundary that matches nothing.
-     *
-     * @param array<string, mixed> $arguments @return list<array<string, mixed>>
-     */
-    private static function boundariesArgument(array $arguments): array
-    {
-        $values = $arguments['boundaries'] ?? [];
-        if (!is_array($values) || !array_is_list($values) || count($values) > 50) {
-            throw new InvalidArgumentException('boundaries must be a list of at most 50 objects.');
-        }
-        $normalized = [];
-        foreach ($values as $value) {
-            if (!is_array($value) || array_is_list($value)) {
-                throw new InvalidArgumentException('Each boundary must be an object.');
-            }
-            self::keys($value, ['name'], ['path_prefix', 'namespace_prefix']);
-            $value['name'] = self::string($value, 'name');
-            $matchers = (int) array_key_exists('path_prefix', $value) + (int) array_key_exists('namespace_prefix', $value);
-            if ($matchers !== 1) {
-                throw new InvalidArgumentException('Each boundary requires exactly one matcher.');
-            }
-            $matcher = array_key_exists('path_prefix', $value) ? 'path_prefix' : 'namespace_prefix';
-            $value[$matcher] = self::string($value, $matcher);
-            $normalized[] = $value;
-        }
-        return $normalized;
     }
 }
