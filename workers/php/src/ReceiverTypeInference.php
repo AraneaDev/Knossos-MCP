@@ -152,6 +152,9 @@ final class ReceiverTypeInference
 
             return;
         }
+        if ($this->propertyAssignment($node->var->name, $node->expr, $class)) {
+            return;
+        }
         $callee = $this->calleeReference($node->expr, $class);
         if ($callee !== null) {
             // The receiver is whatever that call returns, and the declaration
@@ -185,7 +188,8 @@ final class ReceiverTypeInference
             ? $this->resolvedClassNameIn($node->expr->class, $class)
             : $this->returnedType($node->expr, $class);
         $held = $this->variables->type($node->var->name);
-        if ($assigned !== null && ($held === null || $held === $assigned) && $this->variables->returnSource($node->var->name) === null) {
+        if ($assigned !== null && ($held === null || $held === $assigned) && $this->variables->returnSource($node->var->name) === null
+            && $this->variables->propertySource($node->var->name) === null) {
             $this->variables->set($node->var->name, $assigned, 'probable');
 
             return;
@@ -296,6 +300,39 @@ final class ReceiverTypeInference
     }
 
     /**
+     * A receiver read through properties of a typed root, as the path the
+     * reconciler resolves: `Type::$a::$b` for `$x->a->b`, where `$x` is
+     * `$this`, a variable of a known type, or a variable that holds what such
+     * a path held. Null when the root's type is unknown or a step is not a
+     * plain property name.
+     *
+     * @param array{name: string, parent: ?string, properties: array<string, string>}|null $class
+     */
+    public function propertyPath(Expr $receiver, ?array $class): ?string
+    {
+        if ($receiver instanceof Expr\Variable && is_string($receiver->name) && $receiver->name !== 'this') {
+            // `$request = $graph->request; $request->m()`: the variable stands
+            // for the path it was read from.
+            return $this->variables->propertySource($receiver->name);
+        }
+        if ((!$receiver instanceof Expr\PropertyFetch && !$receiver instanceof Expr\NullsafePropertyFetch)
+            || !$receiver->name instanceof Identifier) {
+            return null;
+        }
+        $property = '$' . $receiver->name->toString();
+        $root = $receiver->var;
+        if ($root instanceof Expr\Variable && is_string($root->name)) {
+            $type = $root->name === 'this' ? ($class['name'] ?? null) : $this->variables->type($root->name);
+            if ($type !== null) {
+                return $type . '::' . $property;
+            }
+        }
+        $inner = $this->propertyPath($root, $class);
+
+        return $inner === null ? null : $inner . '::' . $property;
+    }
+
+    /**
      * The namespace a concatenation builds a class name in, when it starts with
      * one written out: `'App\\Cards\\' . $name` is `App\\Cards`. A separator
      * written after a runtime part (`'App\\Cards\\' . $segment . '\\' . $name`)
@@ -359,6 +396,36 @@ final class ReceiverTypeInference
         $key = $this->calledMethodKey($expression, $class);
 
         return $key === null ? null : ($this->closureReturns[$key] ?? null);
+    }
+
+    /**
+     * Track `$x = $typed->property`, the property read into a local first.
+     *
+     * A property this file types (`$this->parser`) types the variable; any
+     * other is declared in whatever file declares the receiver's type, so the
+     * variable keeps the path for the reconciler to finish. Either binding is
+     * local flow, so it stays probable. False when the value is no such read.
+     *
+     * @param array{name: string, parent: ?string, properties: array<string, string>}|null $class
+     */
+    private function propertyAssignment(string $variable, Expr $expression, ?array $class): bool
+    {
+        if (!$expression instanceof Expr\PropertyFetch && !$expression instanceof Expr\NullsafePropertyFetch) {
+            return false;
+        }
+        $declared = $this->declaredReceiverType($expression, $class);
+        if ($declared !== null) {
+            $this->variables->set($variable, $declared, 'probable');
+
+            return true;
+        }
+        $path = $this->propertyPath($expression, $class);
+        if ($path === null) {
+            return false;
+        }
+        $this->variables->setPropertySource($variable, $path);
+
+        return true;
     }
 
     /**

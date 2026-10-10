@@ -147,4 +147,96 @@ final class PropertyReceiverTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * `$request = $graph->request; $request->dirtyPaths?->encode();` reaches
+     * the same collaborator through a local variable: the property it was
+     * read from, and the property after it, are declared in other files.
+     */
+    #[Group('php-scanner')]
+    public function testACallOnAVariableAssignedFromATypedPropertyResolvesToTheDeclaringMethod(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-property-variable-' . bin2hex(random_bytes(6));
+        if (!mkdir($root . '/src', 0o755, true)) {
+            throw new \RuntimeException('Unable to create fixture tree.');
+        }
+        try {
+            file_put_contents($root . '/composer.json', json_encode(['name' => 'fixture/property-variable'], JSON_THROW_ON_ERROR));
+            file_put_contents($root . '/src/Paths.php', <<<'PHP'
+                <?php
+
+                namespace Fixture;
+
+                final class Paths
+                {
+                    public function encode(): string
+                    {
+                        return '';
+                    }
+                }
+                PHP);
+            file_put_contents($root . '/src/Request.php', <<<'PHP'
+                <?php
+
+                namespace Fixture;
+
+                final readonly class Request
+                {
+                    public function __construct(public ?Paths $dirtyPaths = null) {}
+
+                    public function root(): string
+                    {
+                        return '';
+                    }
+                }
+                PHP);
+            file_put_contents($root . '/src/Graph.php', <<<'PHP'
+                <?php
+
+                namespace Fixture;
+
+                final readonly class Graph
+                {
+                    public function __construct(public Request $request) {}
+                }
+                PHP);
+            file_put_contents($root . '/src/Reconciler.php', <<<'PHP'
+                <?php
+
+                namespace Fixture;
+
+                final class Reconciler
+                {
+                    public function open(Graph $graph): string
+                    {
+                        $request = $graph->request;
+                        $request->root();
+
+                        return $request->dirtyPaths?->encode() ?? '';
+                    }
+                }
+                PHP);
+            $pdo = SqliteConnection::open($root . '/graph.sqlite');
+            (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+
+            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full');
+
+            $calls = $pdo->query(
+                "SELECT s.canonical_name AS source, t.canonical_name AS target FROM edges e " .
+                "JOIN nodes s ON s.id = e.source_id JOIN nodes t ON t.id = e.target_id " .
+                "WHERE e.kind = 'calls' AND t.kind = 'method' ORDER BY s.canonical_name, t.canonical_name",
+            )->fetchAll();
+
+            assertSame(
+                [
+                    ['source' => 'Fixture\\Reconciler::open', 'target' => 'Fixture\\Paths::encode'],
+                    ['source' => 'Fixture\\Reconciler::open', 'target' => 'Fixture\\Request::root'],
+                ],
+                array_map(static fn(array $row): array => ['source' => $row['source'], 'target' => $row['target']], $calls),
+            );
+        } finally {
+            unset($pdo);
+            $this->removeTempTree($root);
+        }
+    }
 }

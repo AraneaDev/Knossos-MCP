@@ -650,7 +650,7 @@ final class FactCollector extends NodeVisitorAbstract
 
             return;
         }
-        $path = $this->propertyPath($node->var);
+        $path = $this->receivers->propertyPath($node->var, $this->currentClass());
         if ($path !== null) {
             // A property of a typed receiver (`$context->options->flag()`),
             // declared in whatever file declares that type, often as a
@@ -685,30 +685,6 @@ final class FactCollector extends NodeVisitorAbstract
         // Nothing types the receiver. A method by this name may be what the
         // call reaches, so the caller records it for dead-code confidence.
         $this->untypedCalls[$source][$node->name->toString()] = true;
-    }
-
-    /**
-     * A receiver read through properties of a typed root, as the path the
-     * reconciler resolves: `Type::$a::$b` for `$x->a->b`, where `$x` is
-     * `$this` or a variable of a known type. Null when the root's type is
-     * unknown or a step is not a plain property name.
-     */
-    private function propertyPath(Expr $receiver): ?string
-    {
-        if ((!$receiver instanceof Expr\PropertyFetch && !$receiver instanceof Expr\NullsafePropertyFetch)
-            || !$receiver->name instanceof Identifier) {
-            return null;
-        }
-        $property = '$' . $receiver->name->toString();
-        $root = $receiver->var;
-        if ($root instanceof Expr\Variable && is_string($root->name)) {
-            $type = $root->name === 'this' ? ($this->currentClass()['name'] ?? null) : $this->variables->type($root->name);
-
-            return $type === null ? null : $type . '::' . $property;
-        }
-        $inner = $this->propertyPath($root);
-
-        return $inner === null ? null : $inner . '::' . $property;
     }
 
     /** The call a receiver's value came from, whether held in a variable or used inline. */
