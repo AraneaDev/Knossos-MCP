@@ -7,7 +7,7 @@
 //! this file confirms it. The file's own `use` lines are read here first,
 //! since they are what every later path resolves through.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use syn::spanned::Spanned;
 use syn::{Item, Type};
@@ -17,7 +17,7 @@ use super::placement::mod_child;
 use super::state::Walk;
 use crate::facts::reference;
 use crate::resolve::{
-    flatten_use, glob_prefixes, ident_name, is_primitive, parent_module, rebase, Aliases,
+    flatten_use, glob_prefixes, ident_name, is_primitive, parent_module, rebase, Aliases, UseLeaf,
 };
 
 impl Walk<'_> {
@@ -99,53 +99,14 @@ impl Walk<'_> {
         }
         self.module_children
             .insert(container.to_owned(), children.clone());
+        let mut written: Vec<((UseLeaf, bool), &syn::ItemUse, proc_macro2::Span)> = Vec::new();
         for item in items {
             match item {
                 Item::Use(node) => {
                     let mut leaves = Vec::new();
                     flatten_use(&node.tree, "", &mut leaves);
-                    let source = reference("module", &self.module);
                     for leaf in leaves {
-                        let Some(full) = self.imported_path(
-                            container,
-                            &children,
-                            node.leading_colon.is_none(),
-                            &leaf.full,
-                        ) else {
-                            continue;
-                        };
-                        let module = if leaf.names_module {
-                            full.clone()
-                        } else {
-                            parent_module(&full).to_owned()
-                        };
-                        // The import names the module the source wrote; the
-                        // alias, what that name is declared as.
-                        self.import(&source, &module, item.span());
-                        if !matches!(node.vis, syn::Visibility::Inherited) && leaf.alias != "_" {
-                            let name = format!("{container}::{}", leaf.alias);
-                            match self.exports.get(&name) {
-                                Some(Some(existing)) if *existing != full => {
-                                    self.exports.insert(name, None);
-                                }
-                                Some(_) => {}
-                                None => {
-                                    self.exports.insert(name, Some(full.clone()));
-                                }
-                            }
-                        }
-                        let full = self.exported(full);
-                        let key = (container.to_owned(), leaf.alias.clone());
-                        match self.module_aliases.get(&key) {
-                            Some(Some(existing)) if existing != &full => {
-                                self.module_aliases.insert(key, None);
-                            }
-                            Some(_) => {}
-                            None => {
-                                self.module_aliases.insert(key, Some(full.clone()));
-                            }
-                        }
-                        self.aliases.insert(leaf.alias, full);
+                        written.push(((leaf, node.leading_colon.is_none()), node, item.span()));
                     }
                     let mut globs = Vec::new();
                     glob_prefixes(&node.tree, "", &mut globs);
@@ -173,6 +134,169 @@ impl Walk<'_> {
                 _ => {}
             }
         }
+        let leaves: Vec<(UseLeaf, bool)> = written
+            .iter()
+            .map(|((leaf, unrooted), _, _)| (leaf.clone(), *unrooted))
+            .collect();
+        let placed = self.place_scope_leaves(&leaves, |leaf, unrooted| {
+            let head = leaf.full.split("::").next().unwrap_or(&leaf.full);
+            let own = format!("{container}::{head}");
+            if unrooted
+                && !is_root(head)
+                && !children.contains_key(head)
+                && self.own_declarations.contains(&own)
+            {
+                return self.renamed(format!("{container}::{}", leaf.full));
+            }
+            self.imported_path(container, &children, unrooted, &leaf.full)
+        });
+        let source = reference("module", &self.module);
+        for (((leaf, _), node, span), full) in written.into_iter().zip(placed) {
+            let Some(full) = full else {
+                continue;
+            };
+            self.bind_module_leaf(container, &source, node, span, leaf, full);
+        }
+    }
+
+    /// Record one module-level `use` leaf `container` imports `full` by:
+    /// its `imports` edge, its re-export when the `use` is visible, and the
+    /// name it binds.
+    fn bind_module_leaf(
+        &mut self,
+        container: &str,
+        source: &str,
+        node: &syn::ItemUse,
+        span: proc_macro2::Span,
+        leaf: UseLeaf,
+        full: String,
+    ) {
+        let module = if leaf.names_module {
+            full.clone()
+        } else {
+            parent_module(&full).to_owned()
+        };
+        // The import names the module the source wrote; the alias, what that
+        // name is declared as. A leaf naming an item of `container` itself
+        // (`pub use LazyCell as LazyLock;`) imports no other module.
+        if module != container {
+            self.import(source, &module, span);
+        }
+        // A name `container` declares an item by as well as imports belongs
+        // to `#[cfg]` alternatives (`pub use LazyCell as LazyLock;` beside a
+        // `struct LazyLock` under another `cfg`): which one compiles is
+        // unknown, so the name re-exports nothing and keeps naming the item
+        // declared here.
+        let name = format!("{container}::{}", leaf.alias);
+        if self.own_declarations.contains(&name) {
+            self.exports.insert(name, None);
+            return;
+        }
+        if !matches!(node.vis, syn::Visibility::Inherited) && leaf.alias != "_" {
+            match self.exports.get(&name) {
+                Some(Some(existing)) if *existing != full => {
+                    self.exports.insert(name, None);
+                }
+                Some(_) => {}
+                None => {
+                    self.exports.insert(name, Some(full.clone()));
+                }
+            }
+        }
+        let full = self.exported(full);
+        let key = (container.to_owned(), leaf.alias.clone());
+        match self.module_aliases.get(&key) {
+            Some(Some(existing)) if existing != &full => {
+                self.module_aliases.insert(key, None);
+            }
+            Some(_) => {}
+            None => {
+                self.module_aliases.insert(key, Some(full.clone()));
+            }
+        }
+        self.aliases.insert(leaf.alias, full);
+    }
+
+    /// Where each `use` leaf of one scope (a module's items, or a block's)
+    /// imports from, given with whether its path is unrooted.
+    ///
+    /// Since the 2018 edition a path's first segment may be any name in
+    /// scope, another `use` of the same scope included, whichever line
+    /// comes first: `use m::W;` beside `use crate::m;` names `crate::m::W`.
+    /// A leaf whose unrooted head another leaf of the scope binds is
+    /// expanded through what that leaf imports, once that is known, so the
+    /// leaves are placed in a fixpoint bounded by their number. Every other
+    /// leaf is placed by `place`. A leaf whose own path starts from the name
+    /// it binds (`alloc` in `use alloc::alloc::{alloc, dealloc};`) binds no
+    /// other leaf's head: that head is the outer name its own path starts
+    /// from. A head two leaves bind apart, or a chain of leaves that never
+    /// settles, places nothing.
+    fn place_scope_leaves(
+        &self,
+        leaves: &[(UseLeaf, bool)],
+        mut place: impl FnMut(&UseLeaf, bool) -> Option<String>,
+    ) -> Vec<Option<String>> {
+        let binders: Vec<Vec<usize>> = leaves
+            .iter()
+            .enumerate()
+            .map(|(index, (leaf, unrooted))| {
+                let head = leaf.full.split("::").next().unwrap_or(&leaf.full);
+                if !unrooted || is_root(head) {
+                    return Vec::new();
+                }
+                leaves
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, (binder, _))| {
+                        *other != index
+                            && binder.alias == head
+                            && binder.full.split("::").next() != Some(head)
+                    })
+                    .map(|(other, _)| other)
+                    .collect()
+            })
+            .collect();
+        let mut placed: Vec<Option<Option<String>>> = leaves
+            .iter()
+            .zip(&binders)
+            .map(|((leaf, unrooted), binders)| binders.is_empty().then(|| place(leaf, *unrooted)))
+            .collect();
+        for _ in 0..leaves.len() {
+            let mut progress = false;
+            for index in 0..leaves.len() {
+                if placed[index].is_some()
+                    || binders[index]
+                        .iter()
+                        .any(|&binder| placed[binder].is_none())
+                {
+                    continue;
+                }
+                let mut meanings = binders[index].iter().map(|&binder| {
+                    placed[binder]
+                        .clone()
+                        .flatten()
+                        .map(|full| self.exported(full))
+                });
+                let first = meanings.next().flatten();
+                let bound =
+                    first.filter(|first| meanings.all(|other| other.as_ref() == Some(first)));
+                let full = &leaves[index].0.full;
+                placed[index] = Some(
+                    bound
+                        .map(|bound| match full.split_once("::") {
+                            Some((_, rest)) => format!("{bound}::{rest}"),
+                            None => bound,
+                        })
+                        .and_then(|path| self.renamed(path)),
+                );
+                progress = true;
+            }
+            if !progress {
+                break;
+            }
+        }
+
+        placed.into_iter().map(Option::flatten).collect()
     }
 
     /// The path one `use` leaf written in `container` imports, before
@@ -229,38 +353,56 @@ impl Walk<'_> {
             .get(container)
             .cloned()
             .unwrap_or_default();
-        let source = reference("module", &self.module);
-        let mut bound: BTreeMap<String, Option<String>> = BTreeMap::new();
+        // Items the block declares besides its `use` items: a path through
+        // one names something local to the body, which the graph does not
+        // hold, so a leaf starting from one binds its name to nothing.
+        let local: BTreeSet<String> = statements
+            .iter()
+            .filter_map(|statement| match statement {
+                syn::Stmt::Item(item) => block_item_name(item),
+                _ => None,
+            })
+            .collect();
+        let mut written: Vec<((UseLeaf, bool), proc_macro2::Span)> = Vec::new();
         for node in uses {
             let mut leaves = Vec::new();
             flatten_use(&node.tree, "", &mut leaves);
             for leaf in leaves {
-                let Some(full) = self.block_use_path(
-                    container,
-                    &children,
-                    node.leading_colon.is_none(),
-                    &leaf.full,
-                ) else {
-                    continue;
-                };
+                written.push(((leaf, node.leading_colon.is_none()), node.span()));
+            }
+        }
+        let leaves: Vec<(UseLeaf, bool)> = written.iter().map(|(leaf, _)| leaf.clone()).collect();
+        let placed = self.place_scope_leaves(&leaves, |leaf, unrooted| {
+            let head = leaf.full.split("::").next().unwrap_or(&leaf.full);
+            if unrooted && !is_root(head) && local.contains(head) {
+                return None;
+            }
+            self.block_use_path(container, &children, unrooted, &leaf.full)
+        });
+        let source = reference("module", &self.module);
+        let mut bound: BTreeMap<String, Option<String>> = BTreeMap::new();
+        for (((leaf, _), span), full) in written.into_iter().zip(placed) {
+            // A leaf that places nothing still shadows the outer binding of
+            // its name, which it hides in this block.
+            let full = full.map(|full| {
                 let module = if leaf.names_module {
                     full.clone()
                 } else {
                     parent_module(&full).to_owned()
                 };
-                self.import(&source, &module, node.span());
-                if leaf.alias == "_" {
-                    continue;
+                self.import(&source, &module, span);
+                self.exported(full)
+            });
+            if leaf.alias == "_" {
+                continue;
+            }
+            match (bound.get(&leaf.alias), full) {
+                (Some(Some(existing)), Some(full)) if *existing == full => {}
+                (Some(_), _) | (None, None) => {
+                    bound.insert(leaf.alias, None);
                 }
-                let full = self.exported(full);
-                match bound.get(&leaf.alias) {
-                    Some(Some(existing)) if *existing != full => {
-                        bound.insert(leaf.alias, None);
-                    }
-                    Some(_) => {}
-                    None => {
-                        bound.insert(leaf.alias, Some(full));
-                    }
+                (None, Some(full)) => {
+                    bound.insert(leaf.alias, Some(full));
                 }
             }
         }
@@ -285,8 +427,7 @@ impl Walk<'_> {
         written: &str,
     ) -> Option<String> {
         let head = written.split("::").next().unwrap_or(written);
-        let rooted = matches!(head, "crate" | "self" | "super" | "Self");
-        if unrooted && !rooted && !children.contains_key(head) {
+        if unrooted && !is_root(head) && !children.contains_key(head) {
             if let Some(expanded) = self.aliases.expand(written) {
                 return Some(expanded);
             }
@@ -468,6 +609,18 @@ impl Walk<'_> {
             Some(_) => return None,
             None => {}
         }
+        // A type the module declares itself shadows any a glob brings in,
+        // so a path below it (`Widget::new`) stays in the module, to be
+        // confirmed by this file like any other guess there.
+        if !single_segment {
+            let head = rendered.split("::").next().unwrap_or(&rendered);
+            let own_head = format!("{container}::{head}");
+            if self.own_declarations.contains(&own_head)
+                || self.declarations.get(&own_head).is_some()
+            {
+                return Some((own, true));
+            }
+        }
         match self.through_globs(&self.glob_sources(container), &rendered) {
             Globbed::One(target) => return Some((target, false)),
             Globbed::Ambiguous => return None,
@@ -569,6 +722,14 @@ impl Walk<'_> {
                 {
                     Some(Some(full)) if rest.is_empty() => full.clone(),
                     Some(Some(full)) => format!("{full}::{rest}"),
+                    // `use Kind::*;` beside `enum Kind` names this module's.
+                    None if !is_root(head)
+                        && self
+                            .own_declarations
+                            .contains(&format!("{container}::{head}")) =>
+                    {
+                        format!("{container}::{written}")
+                    }
                     _ => written.clone(),
                 }
             };
@@ -730,7 +891,7 @@ impl Walk<'_> {
                         return None;
                     }
                     let name = ident_name(&path.segments[0].ident);
-                    if is_primitive(&name) || name == "Self" {
+                    if is_primitive(&name) || name == "Self" || self.type_params.contains(&name) {
                         return None;
                     }
                     match self.resolve_written(container, path)? {
@@ -787,12 +948,14 @@ impl Walk<'_> {
     /// What an unqualified `rendered` path names through glob imports from
     /// `sources`, asked of the whole index.
     ///
-    /// A source provides the path's head when a file declares it there, or
-    /// a visible `use` there re-exports it (followed to where it is
-    /// declared); a path below a type an `impl` there declares a method of
-    /// is provided too. One target is the answer. Several different ones
-    /// are ambiguous, as Rust holds two globs naming one item apart, so
-    /// none of them is guessed. A source providing nothing by that name,
+    /// A source provides the path when exactly one file declares the whole
+    /// path there, when a file declares its head there, or when a visible
+    /// `use` there re-exports its head (followed to where it is declared).
+    /// A source the index knows as a type (`use Kind::*;`) is skipped: it
+    /// brings in variants, which are not indexed, and never the type's
+    /// associated functions. One target is the answer. Several different
+    /// ones are ambiguous, as Rust holds two globs naming one item apart,
+    /// so none of them is guessed. A source providing nothing by that name,
     /// such as one that does not declare `Vec`, adds nothing, so a standard
     /// name never becomes a made-up path inside the source. Each source is
     /// taken through the project's renamed `mod` declarations first, which
@@ -804,6 +967,9 @@ impl Walk<'_> {
             let Some(source) = self.renamed(source.clone()) else {
                 continue;
             };
+            if self.declarations.get(&source).is_some() {
+                continue;
+            }
             let full = format!("{source}::{rendered}");
             let named = format!("{source}::{head}");
             let provided = match self.declarations.get(&full) {
@@ -878,12 +1044,13 @@ impl Walk<'_> {
     /// `String`) names no type of this crate, so it gives none.
     pub(super) fn stated_type(&self, container: &str, path: &syn::Path) -> Option<String> {
         // A primitive is never a type of this crate, whatever a module
-        // declares by that name in the value namespace (`fn char()`).
-        if path.leading_colon.is_none()
-            && path.segments.len() == 1
-            && is_primitive(&ident_name(&path.segments[0].ident))
-        {
-            return None;
+        // declares by that name in the value namespace (`fn char()`), and a
+        // generic type parameter in scope shadows any type of its name.
+        if path.leading_colon.is_none() && path.segments.len() == 1 {
+            let name = ident_name(&path.segments[0].ident);
+            if is_primitive(&name) || self.type_params.contains(&name) {
+                return None;
+            }
         }
         // `Self` is the impl's type, however `resolve_path` flags it for calls.
         let is_self = path.is_ident("Self");
@@ -898,6 +1065,28 @@ impl Walk<'_> {
             (target, _) => Some(target),
         }
     }
+}
+
+/// Whether a path's first segment roots it (`crate`, `self`, `super`,
+/// `Self`) rather than naming something in scope.
+fn is_root(head: &str) -> bool {
+    matches!(head, "crate" | "self" | "super" | "Self")
+}
+
+/// The name an item declared in a block binds in the type namespace a path
+/// can start from, or None for an item that binds none (`use`, `impl`).
+fn block_item_name(item: &Item) -> Option<String> {
+    let ident = match item {
+        Item::Struct(node) => &node.ident,
+        Item::Enum(node) => &node.ident,
+        Item::Union(node) => &node.ident,
+        Item::Trait(node) => &node.ident,
+        Item::Mod(node) => &node.ident,
+        Item::Type(node) => &node.ident,
+        _ => return None,
+    };
+
+    Some(ident_name(ident))
 }
 
 /// What glob imports bring in under one name (see [`Walk::through_globs`]).

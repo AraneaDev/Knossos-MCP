@@ -120,6 +120,7 @@ impl<'a> Walk<'a> {
             pending_globs: Vec::new(),
             module_aliases: BTreeMap::new(),
             module_children: BTreeMap::new(),
+            type_params: BTreeSet::new(),
             current_impl_target: None,
             frameworks,
             declarations,
@@ -251,12 +252,14 @@ impl Walk<'_> {
                 .node_attribute(&canonical, "runtime_invoked", serde_json::Value::Bool(true));
         }
         self.attribute_routes(&canonical, &node.attrs);
+        let outer = self.enter_type_params(&node.sig.generics);
         self.walk_body(
             &reference("function", &canonical),
             container,
             &node.sig,
             &node.block,
         );
+        self.type_params = outer;
         if is_test {
             self.facts.exit_test_scope();
         }
@@ -294,6 +297,7 @@ impl Walk<'_> {
                 }
             }
         }
+        let outer = self.enter_type_params(&node.generics);
         for member in &node.items {
             if let TraitItem::Fn(method) = member {
                 // A trait method with no default body has no block to
@@ -310,6 +314,7 @@ impl Walk<'_> {
                 );
             }
         }
+        self.type_params = outer;
     }
 
     /// Walk an `impl` block's methods onto the type it implements, with the
@@ -416,6 +421,7 @@ impl Walk<'_> {
         // export, the public methods and the constructor, and nothing
         // in Rust has to.
         let exported_impl = node.attrs.iter().any(is_wasm_bindgen);
+        let outer = self.enter_type_params(&node.generics);
         for member in &node.items {
             if let ImplItem::Fn(method) = member {
                 let name = ident_name(&method.sig.ident);
@@ -465,6 +471,7 @@ impl Walk<'_> {
                 );
             }
         }
+        self.type_params = outer;
         self.current_impl_target = old_target;
     }
 
@@ -495,6 +502,7 @@ impl Walk<'_> {
             "method",
             span,
         );
+        let outer = self.enter_type_params(&signature.generics);
         annotate(self, &method_canonical);
         if let Some(block) = block {
             self.walk_body(
@@ -504,6 +512,7 @@ impl Walk<'_> {
                 block,
             );
         }
+        self.type_params = outer;
         self.facts.exit_test_scope_if(is_test);
     }
 
@@ -676,6 +685,7 @@ impl Walk<'_> {
         for item in items {
             match item {
                 Item::Struct(node) => {
+                    let outer = self.enter_type_params(&node.generics);
                     let mut fields = BTreeMap::new();
                     for field in &node.fields {
                         if let Some(ident) = &field.ident {
@@ -684,6 +694,7 @@ impl Walk<'_> {
                             }
                         }
                     }
+                    self.type_params = outer;
                     // A struct with no typed field is recorded too, and `#[cfg]`
                     // alternatives of one struct keep only the fields they
                     // agree on: which one compiles is unknown.
@@ -708,6 +719,15 @@ impl Walk<'_> {
                 _ => {}
             }
         }
+    }
+
+    /// Bring the type parameters `generics` declares into scope, returning
+    /// the ones in scope before, for the caller to restore.
+    fn enter_type_params(&mut self, generics: &syn::Generics) -> BTreeSet<String> {
+        let outer = self.type_params.clone();
+        self.type_params
+            .extend(generics.type_params().map(|param| ident_name(&param.ident)));
+        outer
     }
 
     /// The receiver types a signature states: `self` as the `impl` block's

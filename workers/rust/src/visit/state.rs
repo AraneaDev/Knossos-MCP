@@ -38,6 +38,10 @@ pub(super) struct Walk<'a> {
     /// what a `use` inside a body of that module reaches a child through.
     /// `None` marks a name two declarations send to two modules.
     pub(super) module_children: BTreeMap<String, BTreeMap<String, Option<String>>>,
+    /// The generic type parameters in scope (`T` of `impl<T>`, `fn f<T>`,
+    /// `struct S<T>`), which shadow any type of that name: a receiver of
+    /// one has no type the walk can name.
+    pub(super) type_params: BTreeSet<String>,
     /// Target type of the current impl block, for resolving `Self`.
     pub(super) current_impl_target: Option<String>,
     /// Frameworks the scan request asked this worker to enrich, by short name

@@ -234,7 +234,7 @@ impl Aliases {
 }
 
 /// One leaf of a flattened `use` tree: a single name the line brings into scope.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UseLeaf {
     /// The local name this file can write to mean [`UseLeaf::full`].
     pub alias: String,
