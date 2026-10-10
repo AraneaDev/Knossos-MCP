@@ -489,10 +489,16 @@ final readonly class ArchitectureQueryService
         return $this->componentQueries->searchArchitecture($projectId, $query, $kinds, $roles, $boundaryIds, $confidences, $limit, $offset);
     }
 
-    /** {@see AnnotationService::annotateComponent()} */
-    public function annotateComponent(string $projectId, string $component, string $kind, string $value = '', bool $remove = false, bool $execute = false): ResultEnvelope
+    /** {@see AnnotationService::upsertAnnotation()} */
+    public function upsertAnnotation(string $projectId, string $component, string $kind, string $value = '', bool $execute = false): ResultEnvelope
     {
-        return $this->annotationQueries->annotateComponent($projectId, $component, $kind, $value, $remove, $execute);
+        return $this->annotationQueries->upsertAnnotation($projectId, $component, $kind, $value, $execute);
+    }
+
+    /** {@see AnnotationService::removeAnnotation()} */
+    public function removeAnnotation(string $projectId, string $component, string $kind, bool $execute = false): ResultEnvelope
+    {
+        return $this->annotationQueries->removeAnnotation($projectId, $component, $kind, $execute);
     }
 
     /** {@see FileContextQueryService::fileContext()} */

@@ -424,24 +424,25 @@ final readonly class ToolService
     }
 
     /**
-     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::annotateComponent()}.
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::removeAnnotation()}
+     * when `remove` is set, else to {@see ArchitectureQueryService::upsertAnnotation()}.
      *
      * @param array<string, mixed> $arguments
      * @return \Closure(): ResultEnvelope
      */
     private function annotateComponent(array $arguments): \Closure
     {
-        $args = [
-            self::string($arguments, 'project_id'),
-            self::string($arguments, 'component'),
-            self::string($arguments, 'kind'),
-            // Stored as given: a note's whitespace is content.
-            self::text($arguments, 'value', 2000, allowEmpty: true, default: '', trim: false),
-            self::boolean($arguments, 'remove', false),
-            self::boolean($arguments, 'execute', false),
-        ];
+        $projectId = self::string($arguments, 'project_id');
+        $component = self::string($arguments, 'component');
+        $kind = self::string($arguments, 'kind');
+        // Stored as given: a note's whitespace is content.
+        $value = self::text($arguments, 'value', 2000, allowEmpty: true, default: '', trim: false);
+        $remove = self::boolean($arguments, 'remove', false);
+        $execute = self::boolean($arguments, 'execute', false);
 
-        return fn(): ResultEnvelope => $this->queries->annotateComponent(...$args);
+        return $remove
+            ? fn(): ResultEnvelope => $this->queries->removeAnnotation($projectId, $component, $kind, $execute)
+            : fn(): ResultEnvelope => $this->queries->upsertAnnotation($projectId, $component, $kind, $value, $execute);
     }
 
     /**

@@ -483,7 +483,8 @@ final class QueryCommand implements CliCommand
     }
 
     /**
-     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::annotateComponent()}.
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::removeAnnotation()}
+     * under `--remove`, else {@see \Knossos\Query\ArchitectureQueryService::upsertAnnotation()}.
      *
      * @param list<string> $p @param array<string, list<string>> $o
      */
@@ -492,7 +493,10 @@ final class QueryCommand implements CliCommand
         $project = $this->project($p[0] ?? throw new InvalidArgumentException('Usage: knossos annotate-component <path|project-id> <component> <kind> [value] [--remove] [--execute] [--json]'), $c);
         $component = $p[1] ?? throw new InvalidArgumentException('A component is required.');
         $kind = $p[2] ?? throw new InvalidArgumentException('A kind is required.');
-        $result = $this->queries($c)->annotateComponent($project, $component, $kind, $p[3] ?? '', $c->options->flag($o, 'remove'), $c->options->flag($o, 'execute'));
+        $execute = $c->options->flag($o, 'execute');
+        $result = $c->options->flag($o, 'remove')
+            ? $this->queries($c)->removeAnnotation($project, $component, $kind, $execute)
+            : $this->queries($c)->upsertAnnotation($project, $component, $kind, $p[3] ?? '', $execute);
         return $this->result($result, $o, $c);
     }
 

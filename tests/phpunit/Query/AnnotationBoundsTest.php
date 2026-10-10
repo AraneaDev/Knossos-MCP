@@ -27,12 +27,12 @@ final class AnnotationBoundsTest extends KnossosTestCase
     {
         $queries = $this->queries();
 
-        $written = $queries->annotateComponent($this->project, 'App\\Checkout', 'note', str_repeat('x', 2000), execute: true);
+        $written = $queries->upsertAnnotation($this->project, 'App\\Checkout', 'note', str_repeat('x', 2000), execute: true);
 
         assertSame(true, $written->data['executed']);
         assertSame(2000, strlen($written->data['annotation']['value']));
         assertThrows(
-            fn() => $queries->annotateComponent($this->project, 'App\\Checkout', 'note', str_repeat('x', 2001), execute: true),
+            fn() => $queries->upsertAnnotation($this->project, 'App\\Checkout', 'note', str_repeat('x', 2001), execute: true),
             InvalidArgumentException::class,
         );
     }
@@ -53,7 +53,7 @@ final class AnnotationBoundsTest extends KnossosTestCase
 
         foreach (['', '   ', "\t\n"] as $blank) {
             $error = captureThrows(
-                fn() => $queries->annotateComponent($this->project, $blank, 'note', 'x', execute: true),
+                fn() => $queries->upsertAnnotation($this->project, $blank, 'note', 'x', execute: true),
                 InvalidArgumentException::class,
             );
 
@@ -72,7 +72,7 @@ final class AnnotationBoundsTest extends KnossosTestCase
     {
         [$pdo, $queries] = $this->connectedQueries();
 
-        $preview = $queries->annotateComponent($this->project, 'App\\Checkout', 'note', 'core flow');
+        $preview = $queries->upsertAnnotation($this->project, 'App\\Checkout', 'note', 'core flow');
 
         assertSame(['component', 'kind', 'action', 'executed', 'previous', 'annotation'], array_keys($preview->data));
         assertSame('upsert', $preview->data['action']);
@@ -82,7 +82,7 @@ final class AnnotationBoundsTest extends KnossosTestCase
         assertSame('Set execute=true to apply the change.', $preview->warnings[count($preview->warnings) - 1]);
         assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM annotations')->fetchColumn());
 
-        $removal = $queries->annotateComponent($this->project, 'App\\Checkout', 'note', 'core flow', remove: true);
+        $removal = $queries->removeAnnotation($this->project, 'App\\Checkout', 'note');
 
         assertSame('remove', $removal->data['action']);
         assertSame(null, $removal->data['annotation'], 'A removal previews no surviving annotation.');
@@ -94,10 +94,10 @@ final class AnnotationBoundsTest extends KnossosTestCase
     {
         $queries = $this->queries();
 
-        $recorded = $queries->annotateComponent($this->project, 'App\\Checkout', 'note', 'core flow', execute: true);
+        $recorded = $queries->upsertAnnotation($this->project, 'App\\Checkout', 'note', 'core flow', execute: true);
         assertSame('Recorded note annotation on App\\Checkout.', $recorded->summary);
 
-        $removed = $queries->annotateComponent($this->project, 'App\\Checkout', 'note', remove: true, execute: true);
+        $removed = $queries->removeAnnotation($this->project, 'App\\Checkout', 'note', execute: true);
         assertSame('Removed note annotation on App\\Checkout.', $removed->summary);
         assertSame(null, $removed->data['annotation']);
         assertSame('core flow', $removed->data['previous']['value'], 'What was there is reported, because it is gone now.');
@@ -112,7 +112,7 @@ final class AnnotationBoundsTest extends KnossosTestCase
     {
         $queries = $this->queries();
         foreach (['App\\Alpha', 'App\\Beta', 'App\\Gamma'] as $name) {
-            $queries->annotateComponent($this->project, $name, 'note', 'x', execute: true);
+            $queries->upsertAnnotation($this->project, $name, 'note', 'x', execute: true);
         }
 
         $page = $queries->listAnnotations($this->project, limit: 2);
@@ -142,7 +142,7 @@ final class AnnotationBoundsTest extends KnossosTestCase
     {
         $queries = $this->queries();
         foreach (['App\\Alpha', 'App\\Beta', 'App\\Gamma'] as $name) {
-            $queries->annotateComponent($this->project, $name, 'note', 'x', execute: true);
+            $queries->upsertAnnotation($this->project, $name, 'note', 'x', execute: true);
         }
 
         $next = $queries->listAnnotations($this->project, limit: 2, offset: 2);
@@ -212,7 +212,7 @@ final class AnnotationBoundsTest extends KnossosTestCase
         $queries = new ArchitectureQueryService($pdo);
 
         $error = captureThrows(
-            fn() => $queries->annotateComponent($ids['project'], 'Amb', 'note', 'x', execute: true),
+            fn() => $queries->upsertAnnotation($ids['project'], 'Amb', 'note', 'x', execute: true),
             InvalidArgumentException::class,
         );
 

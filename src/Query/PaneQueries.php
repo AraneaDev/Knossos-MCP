@@ -83,7 +83,10 @@ final readonly class PaneQueries
         $id = (string) $project['id'];
         $envelope = ['project_id' => $id, 'snapshot_id' => $project['active_scan_id']] + $envelope;
         try {
-            $result = (new ArchitectureQueryService($this->pdo))->annotateComponent($id, $component, $kind, $value, $remove, $execute);
+            $queries = new ArchitectureQueryService($this->pdo);
+            $result = $remove
+                ? $queries->removeAnnotation($id, $component, $kind, $execute)
+                : $queries->upsertAnnotation($id, $component, $kind, $value, $execute);
         } catch (InvalidArgumentException $refused) {
             return ['status' => 'refused', 'reason' => $refused->getMessage()] + $envelope;
         }
