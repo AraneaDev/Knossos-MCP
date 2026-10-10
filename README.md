@@ -186,7 +186,7 @@ Cycles: each dependency cycle drawn as boxes, from its first member back to the 
 Changes: every file changed since the session began, its dependents, the tests that reach it,
 and its diff.
 
-![The Branch tab: what this checkout added against its merge base with main, as new cross-boundary dependencies, hubs that grew, new dead code and churn hotspots](docs/images/claude-code/branch.png)
+![The Branch tab: what this checkout added against its merge base with main, as new cross-boundary dependencies, hubs that grew, new dead code and the files the branch touched](docs/images/claude-code/branch.png)
 
 Branch: what this branch added against its merge base, from new boundary crossings to new dead
 code.

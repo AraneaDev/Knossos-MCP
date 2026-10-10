@@ -504,7 +504,7 @@ process the earlier ones read `outside`.
 
 ## Branch
 
-![The Branch tab: what this checkout added against its merge base with main, as new cross-boundary dependencies, hubs that grew, new dead code and churn hotspots](../images/claude-code/branch.png)
+![The Branch tab: what this checkout added against its merge base with main, as new cross-boundary dependencies, hubs that grew, new dead code and the files the branch touched](../images/claude-code/branch.png)
 
 Branch compares the checked-out branch with the snapshot taken where it left
 its default branch.
@@ -533,7 +533,13 @@ Each card counts all it found and names the first eight, then `+267 not
 listed`. Every row opens its component. The comparison is read when the tab
 opens and again for each new snapshot.
 
-On a tall pane, the rows left over go to the churn hotspots (see Churn).
+**Files this branch touched** lists what the branch's commits changed since
+the merge base, the files most depended on first, each with the lines it added
+and deleted and its dependents (`+41 −1  2 deps`). It counts every touched
+file but lists only those the graph holds, so docs and deleted files count
+without a row. It needs no snapshot, so it still lists when the comparison
+cannot be made. Uncommitted edits are not in it: the Changes tab has those.
+Every row opens its file.
 
 ## Churn
 
