@@ -271,9 +271,11 @@ impl Calls<'_, '_> {
 
     /// The bindings a struct pattern makes (`let Index { store, .. } = x;`),
     /// each with the type of the field it takes, when the struct's
-    /// declaration states one. Every other binding of the pattern shadows
-    /// an outer one of unknown type.
-    fn destructured_receivers(&mut self, pattern: &syn::PatStruct) {
+    /// declaration states one. The field patterns that are not a plain name
+    /// (`inner: Inner { store }`, `pair: (a, b)`) are returned for the caller
+    /// to bind, see [`Calls::bind_pattern`].
+    fn destructured_receivers<'p>(&mut self, pattern: &'p syn::PatStruct) -> Vec<&'p syn::Pat> {
+        let mut nested = Vec::new();
         let owner = if pattern.qself.is_none() {
             self.walk
                 .resolve_path(&self.container, &pattern.path)
@@ -283,13 +285,11 @@ impl Calls<'_, '_> {
         };
         for field in &pattern.fields {
             let syn::Pat::Ident(binding) = field.pat.as_ref() else {
-                // `inner: Inner { store }` or `pair: (a, b)` binds its own
-                // names, which a nested struct pattern types.
-                self.bind_pattern(&field.pat);
+                nested.push(field.pat.as_ref());
                 continue;
             };
             if binding.subpat.is_some() {
-                self.bind_pattern(&field.pat);
+                nested.push(field.pat.as_ref());
                 continue;
             }
             let name = ident_name(&binding.ident);
@@ -308,6 +308,8 @@ impl Calls<'_, '_> {
                 }
             }
         }
+
+        nested
     }
 
     /// Every name a pattern binds, as a new binding: typed where the pattern
@@ -336,7 +338,11 @@ impl Calls<'_, '_> {
                 }
                 inner => self.bind_pattern(inner),
             },
-            syn::Pat::Struct(inner) => self.destructured_receivers(inner),
+            syn::Pat::Struct(inner) => {
+                for nested in self.destructured_receivers(inner) {
+                    self.bind_pattern(nested);
+                }
+            }
             syn::Pat::Tuple(inner) => inner.elems.iter().for_each(|e| self.bind_pattern(e)),
             syn::Pat::TupleStruct(inner) => inner.elems.iter().for_each(|e| self.bind_pattern(e)),
             syn::Pat::Slice(inner) => inner.elems.iter().for_each(|e| self.bind_pattern(e)),
