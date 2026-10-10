@@ -15,7 +15,7 @@ use syn::{Item, Type};
 use super::placement::mod_child;
 use super::state::Walk;
 use crate::facts::reference;
-use crate::resolve::{flatten_use, glob_prefixes, ident_name, parent_module, rebase};
+use crate::resolve::{flatten_use, glob_prefixes, ident_name, is_primitive, parent_module, rebase};
 
 impl Walk<'_> {
     /// Record every `use` in this item list, emitting one `imports` edge each.
@@ -120,7 +120,22 @@ impl Walk<'_> {
                         } else {
                             parent_module(&full).to_owned()
                         };
+                        // The import names the module the source wrote; the
+                        // alias, what that name is declared as.
                         self.import(&source, &module, item.span());
+                        if !matches!(node.vis, syn::Visibility::Inherited) && leaf.alias != "_" {
+                            let name = format!("{container}::{}", leaf.alias);
+                            match self.exports.get(&name) {
+                                Some(Some(existing)) if *existing != full => {
+                                    self.exports.insert(name, None);
+                                }
+                                Some(_) => {}
+                                None => {
+                                    self.exports.insert(name, Some(full.clone()));
+                                }
+                            }
+                        }
+                        let full = self.exported(full);
                         let key = (container.to_owned(), leaf.alias.clone());
                         match self.module_aliases.get(&key) {
                             Some(Some(existing)) if existing != &full => {
@@ -239,7 +254,18 @@ impl Walk<'_> {
     /// target reaches the reconciler as-is, and an unconfirmed target that names
     /// nothing becomes a fabricated external node. See
     /// [`Calls::visit_call`](super::state::Calls::visit_call).
+    ///
+    /// A path a visible `use` re-exports (`crate::visit::go` under `pub use
+    /// cfg::go;`) names the item it imports, which is where the graph
+    /// declares it (see [`Walk::exported`]).
     pub(super) fn resolve_path(&self, container: &str, path: &syn::Path) -> Option<(String, bool)> {
+        self.resolve_written(container, path)
+            .map(|(target, unconfirmed)| (self.exported(target), unconfirmed))
+    }
+
+    /// [`Walk::resolve_path`] before re-exports are followed: the path as
+    /// the file's imports, roots and `mod` declarations place it.
+    fn resolve_written(&self, container: &str, path: &syn::Path) -> Option<(String, bool)> {
         let rendered = path
             .segments
             .iter()
@@ -279,6 +305,9 @@ impl Walk<'_> {
         if let Some(answer) = self.through_renamed_child(container, &rendered) {
             return answer;
         }
+        if let Some(answer) = self.through_child_module(container, &rendered) {
+            return answer;
+        }
         if let Some(expanded) = self.aliases.expand(&rendered) {
             return Some((expanded, false));
         }
@@ -299,7 +328,21 @@ impl Walk<'_> {
         // own container. Unlike the container-relative fallback below, an
         // index hit is trusted outright: the node it names exists in the
         // graph, even when the declaring file is not this one.
-        for candidate in self.index_candidates(container, &rendered) {
+        // A prelude trait is in scope everywhere, while a crate-root item
+        // of that name is in scope only in the crate root: past the module's
+        // own declarations and its globs, the prelude wins.
+        let mut candidates = self.index_candidates(container, &rendered);
+        if single_segment && standard_trait(&rendered).is_some() {
+            let own = format!("{container}::{rendered}");
+            let globbed: Vec<String> = self
+                .globs
+                .iter()
+                .filter(|(declared_in, _)| declared_in == container)
+                .map(|(_, glob)| format!("{glob}::{rendered}"))
+                .collect();
+            candidates.retain(|candidate| *candidate == own || globbed.contains(candidate));
+        }
+        for candidate in candidates {
             match self.declarations.get(&candidate) {
                 Some(1) => return Some((candidate, false)),
                 // Ambiguous across files: guessing would silently prefer one
@@ -307,6 +350,16 @@ impl Walk<'_> {
                 // fall through to a weaker candidate.
                 Some(_) => return None,
                 None => {}
+            }
+        }
+
+        // A standard trait named bare that nothing in scope declares or
+        // imports is the standard library's: `impl From<u8> for Str` in
+        // `crate::util` implements `std::convert::From`, never a
+        // `crate::util::From` the fallback below would guess.
+        if single_segment {
+            if let Some(standard) = standard_trait(&rendered) {
+                return Some((standard.to_owned(), false));
             }
         }
 
@@ -339,6 +392,29 @@ impl Walk<'_> {
             Some(_) => None,
             None => Some((target, true)),
         })
+    }
+
+    /// A multi-segment path whose head is both an import and a child module
+    /// the import reaches into: `parse::helper()` beside `mod parse;` and
+    /// `pub use parse::parse;` names the module's `helper`, since only a
+    /// module has items below it. `None` for any other path.
+    #[allow(clippy::option_option)]
+    fn through_child_module(
+        &self,
+        container: &str,
+        rendered: &str,
+    ) -> Option<Option<(String, bool)>> {
+        let (head, rest) = rendered.split_once("::")?;
+        let module = format!("{container}::{head}");
+        let imported = self.aliases.expand(head)?;
+        if !imported.starts_with(&format!("{module}::")) {
+            return None;
+        }
+
+        Some(
+            self.renamed(format!("{module}::{rest}"))
+                .map(|target| (target, false)),
+        )
     }
 
     /// Resolve the glob imports [`Walk::collect_uses`] set aside, now that
@@ -403,17 +479,71 @@ impl Walk<'_> {
     /// one of those is ambiguous.
     /// A path outside the project is returned unchanged and asks nothing.
     pub(super) fn renamed(&self, path: String) -> Option<String> {
-        let head = path.split("::").next().unwrap_or(&path);
-        if head != self.crate_root()
-            && head != self.crate_module.split("::").next().unwrap_or("")
-            && !self.layout.is_project_root(head)
-        {
+        if !self.in_project(&path) {
             return Some(path);
         }
         match self.declarations.renamed(&path) {
             Some(placed) => placed,
             None => Some(path),
         }
+    }
+
+    /// A path inside the project, followed through every visible `use` that
+    /// re-exports it or a module above it (see
+    /// [`Declarations::exported`](super::declarations::Declarations::exported)),
+    /// to the path the graph declares the item at: `crate::visit::go` under
+    /// `pub use cfg::go;` is `crate::visit::cfg::go`. A chain of re-exports
+    /// is followed to its end, within a bound a cycle cannot outrun. A path
+    /// outside the project, or one nothing re-exports, is returned unchanged.
+    pub(super) fn exported(&self, path: String) -> String {
+        /// Re-exports followed for one path at most.
+        const MAX_HOPS: usize = 8;
+        // `Declarations::exported` never rewrites a path through a prefix
+        // whose re-export targets something below it, so a path cannot grow
+        // by matching one re-export again; the visited set and the bound
+        // end a cycle of re-exports.
+        let mut current = path;
+        let mut visited = std::collections::BTreeSet::new();
+        for _ in 0..MAX_HOPS {
+            if !self.in_project(&current) || !visited.insert(current.clone()) {
+                break;
+            }
+            let Some(next) = self.declarations.exported(&current) else {
+                break;
+            };
+            match self.renamed(next) {
+                Some(next) if next != current => current = next,
+                _ => break,
+            }
+        }
+
+        current
+    }
+
+    /// Whether `path` is rooted in this project: at this file's crate root,
+    /// its target root's crate, or a workspace member's crate.
+    fn in_project(&self, path: &str) -> bool {
+        let head = path.split("::").next().unwrap_or(path);
+        head == self.crate_root()
+            || head == self.crate_module.split("::").next().unwrap_or("")
+            || self.layout.is_project_root(head)
+    }
+
+    /// The declared type of `owner`'s field `field`: from this file when it
+    /// declares the struct, else from the declaration index, which holds
+    /// what the declaring file's own imports resolved it to.
+    pub(super) fn field_type(&self, owner: &str, field: &str) -> Option<String> {
+        if let Some(fields) = self.struct_fields.get(owner) {
+            return fields.get(field).cloned();
+        }
+        let declared = self.declarations.field_type(owner, field)?;
+        let (mark, held) = match declared.strip_prefix(POINTER_MARK) {
+            Some(held) => (POINTER_MARK, held.to_owned()),
+            None => ("", declared),
+        };
+
+        self.renamed(held)
+            .map(|target| format!("{mark}{}", self.exported(target)))
     }
 
     /// A path headed by the crate name of one of the project's libraries,
@@ -482,17 +612,117 @@ impl Walk<'_> {
     }
 
     /// The canonical path of a type a receiver holds, seen through `&`,
-    /// `&mut` and parentheses, or None for anything that is not a plain path.
+    /// `&mut`, parentheses and the smart pointers that dereference to what
+    /// they hold (`Box<T>`, `Rc<T>`, `Arc<T>`), or None for anything that is
+    /// not a plain path. Any other generic (`Option<T>`, `Vec<T>`) is the
+    /// type itself, whose methods are not `T`'s.
     pub(super) fn receiver_type(&self, container: &str, ty: &Type) -> Option<String> {
         match ty {
             Type::Reference(reference) => self.receiver_type(container, &reference.elem),
             Type::Paren(inner) => self.receiver_type(container, &inner.elem),
-            Type::Path(path) if path.qself.is_none() => self
-                .resolve_path(container, &path.path)
-                .map(|(target, _)| target),
+            Type::Path(path) if path.qself.is_none() => match pointee(&path.path) {
+                Some(inner) => self
+                    .receiver_type(container, inner)
+                    .map(|held| format!("{POINTER_MARK}{}", pointee_of(&held))),
+                None => self.stated_type(container, &path.path),
+            },
             _ => None,
         }
     }
+
+    /// The canonical path of the type a path names, when something vouches
+    /// for it: rooted, imported, or declared where it could be named. A lone
+    /// name only the enclosing-module guess places (`Vec`, `Option`, `char`,
+    /// `String`) names no type of this crate, so it gives none.
+    pub(super) fn stated_type(&self, container: &str, path: &syn::Path) -> Option<String> {
+        // A primitive is never a type of this crate, whatever a module
+        // declares by that name in the value namespace (`fn char()`).
+        if path.leading_colon.is_none()
+            && path.segments.len() == 1
+            && is_primitive(&ident_name(&path.segments[0].ident))
+        {
+            return None;
+        }
+        // `Self` is the impl's type, however `resolve_path` flags it for calls.
+        let is_self = path.is_ident("Self");
+        match self.resolve_path(container, path)? {
+            (target, true)
+                if path.segments.len() == 1
+                    && !is_self
+                    && !self.own_declarations.contains(&target) =>
+            {
+                None
+            }
+            (target, _) => Some(target),
+        }
+    }
+}
+
+/// The standard library path of a trait the Rust 2021 prelude brings into
+/// every module, by its bare name. A trait outside the prelude (`Display`,
+/// `Hash`) is in scope only through an import, which resolves it.
+fn standard_trait(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "AsMut" => "std::convert::AsMut",
+        "AsRef" => "std::convert::AsRef",
+        "From" => "std::convert::From",
+        "Into" => "std::convert::Into",
+        "TryFrom" => "std::convert::TryFrom",
+        "TryInto" => "std::convert::TryInto",
+        "Clone" => "std::clone::Clone",
+        "Copy" => "std::marker::Copy",
+        "Send" => "std::marker::Send",
+        "Sized" => "std::marker::Sized",
+        "Sync" => "std::marker::Sync",
+        "Unpin" => "std::marker::Unpin",
+        "Default" => "std::default::Default",
+        "Eq" => "std::cmp::Eq",
+        "Ord" => "std::cmp::Ord",
+        "PartialEq" => "std::cmp::PartialEq",
+        "PartialOrd" => "std::cmp::PartialOrd",
+        "DoubleEndedIterator" => "std::iter::DoubleEndedIterator",
+        "ExactSizeIterator" => "std::iter::ExactSizeIterator",
+        "Extend" => "std::iter::Extend",
+        "FromIterator" => "std::iter::FromIterator",
+        "IntoIterator" => "std::iter::IntoIterator",
+        "Iterator" => "std::iter::Iterator",
+        "Drop" => "std::ops::Drop",
+        "Fn" => "std::ops::Fn",
+        "FnMut" => "std::ops::FnMut",
+        "FnOnce" => "std::ops::FnOnce",
+        "ToOwned" => "std::borrow::ToOwned",
+        "ToString" => "std::string::ToString",
+        _ => return None,
+    })
+}
+
+/// What a smart pointer receiver (see [`Walk::receiver_type`]) holds, or
+/// the type itself for any other receiver.
+pub(super) fn pointee_of(owner: &str) -> &str {
+    owner.strip_prefix(POINTER_MARK).unwrap_or(owner)
+}
+
+/// Marks a receiver type held behind `Box`, `Rc` or `Arc`: its own methods
+/// are the pointer's, and every other method derefs to the type.
+pub(super) const POINTER_MARK: &str = "*";
+
+/// The type a `Box<T>`, `Rc<T>` or `Arc<T>` holds, however its path is
+/// qualified (`std::sync::Arc<T>`), or None for any other type.
+fn pointee(path: &syn::Path) -> Option<&Type> {
+    let last = path.segments.last()?;
+    if !matches!(ident_name(&last.ident).as_str(), "Box" | "Rc" | "Arc") {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &last.arguments else {
+        return None;
+    };
+    let mut types = arguments.args.iter().filter_map(|argument| match argument {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    });
+    let inner = types.next()?;
+
+    types.next().is_none().then_some(inner)
 }
 
 /// A `use` path whose head names a `mod` of the module it is written in,

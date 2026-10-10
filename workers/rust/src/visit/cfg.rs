@@ -23,7 +23,8 @@ use crate::layout::{modules_above, Layout};
 pub type TestModules = BTreeSet<String>;
 
 /// Whether `module`, or any module above it, was declared `#[cfg(test)]`.
-pub(super) fn is_test_module_path(module: &str, test_modules: &TestModules) -> bool {
+#[must_use]
+pub fn is_test_module_path(module: &str, test_modules: &TestModules) -> bool {
     if test_modules.contains(module) {
         return true;
     }

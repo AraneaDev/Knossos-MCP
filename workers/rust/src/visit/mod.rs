@@ -12,7 +12,7 @@ use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
 use crate::layout::Layout;
-use crate::resolve::{ident_name, Aliases};
+use crate::resolve::{ident_name, is_standard_type, Aliases};
 
 mod calls;
 mod cfg;
@@ -23,9 +23,11 @@ mod routes;
 mod state;
 
 use calls::{is_foreign_export, is_wasm_bindgen};
-pub use cfg::{collect_test_modules, TestModules};
-use cfg::{is_cfg_test, is_test_attribute, is_test_module_path, item_attrs};
-pub use declarations::{declaration_paths, declared_renames, Declarations};
+pub use cfg::{collect_test_modules, is_test_module_path, TestModules};
+use cfg::{is_cfg_test, is_test_attribute, item_attrs};
+pub use declarations::{
+    declaration_paths, declared_renames, Declarations, ExportedNames, StructFields,
+};
 use placement::mod_child;
 use state::{Calls, Walk};
 
@@ -47,32 +49,8 @@ pub fn walk(
     if file_is_test {
         facts.enter_test_scope();
     }
-    let relative = facts.relative().to_owned();
-    let root = module.split("::").next().unwrap_or("crate").to_owned();
-    let crate_module = if layout.is_target_root(&relative) {
-        module.to_owned()
-    } else {
-        root
-    };
-    let mut walker = Walk {
-        facts,
-        module: module.to_owned(),
-        aliases: Aliases::default(),
-        globs: Vec::new(),
-        pending_globs: Vec::new(),
-        module_aliases: BTreeMap::new(),
-        current_impl_target: None,
-        frameworks,
-        declarations,
-        routes: Vec::new(),
-        role_marks: Vec::new(),
-        struct_fields: BTreeMap::new(),
-        layout,
-        relative,
-        renamed_children: BTreeMap::new(),
-        crate_module,
-        placed: BTreeSet::new(),
-    };
+    let mut walker = Walk::new(facts, module, frameworks, declarations, layout);
+    walker.own_declarations = declaration_paths(module, &file.items);
     walker.collect_uses(module, &file.items);
     walker.resolve_globs();
     walker.collect_struct_fields(module, &file.items);
@@ -84,6 +62,75 @@ pub fn walk(
     }
 
     placed
+}
+
+/// What one file tells the declaration index beyond the paths it declares:
+/// the names its visible `use` items re-export and the field types of its
+/// structs, each resolved through the file's own imports as its walk would
+/// resolve them, before any other file is known. See [`ExportedNames`] and
+/// [`StructFields`].
+#[must_use]
+pub fn index_facts(
+    relative: &str,
+    module: &str,
+    items: &[Item],
+    layout: &Layout,
+) -> (ExportedNames, StructFields) {
+    // Nothing here is emitted: the facts and the empty index only satisfy
+    // the walk's resolution, which falls back on neither for a path the
+    // file roots or imports.
+    let mut facts = Facts::new(relative);
+    let declarations = Declarations::new();
+    let mut walker = Walk::new(&mut facts, module, &[], &declarations, layout);
+    walker.own_declarations = declaration_paths(module, items);
+    walker.collect_uses(module, items);
+    walker.collect_struct_fields(module, items);
+
+    (
+        std::mem::take(&mut walker.exports),
+        std::mem::take(&mut walker.struct_fields),
+    )
+}
+
+impl<'a> Walk<'a> {
+    /// A walk of the file `facts` is for, placed in `module`, with nothing
+    /// collected yet.
+    fn new(
+        facts: &'a mut Facts,
+        module: &str,
+        frameworks: &'a [String],
+        declarations: &'a Declarations,
+        layout: &'a Layout,
+    ) -> Self {
+        let relative = facts.relative().to_owned();
+        let root = module.split("::").next().unwrap_or("crate").to_owned();
+        let crate_module = if layout.is_target_root(&relative) {
+            module.to_owned()
+        } else {
+            root
+        };
+        Walk {
+            facts,
+            module: module.to_owned(),
+            aliases: Aliases::default(),
+            globs: Vec::new(),
+            pending_globs: Vec::new(),
+            module_aliases: BTreeMap::new(),
+            current_impl_target: None,
+            frameworks,
+            declarations,
+            routes: Vec::new(),
+            role_marks: Vec::new(),
+            struct_fields: BTreeMap::new(),
+            layout,
+            relative,
+            renamed_children: BTreeMap::new(),
+            crate_module,
+            placed: BTreeSet::new(),
+            exports: BTreeMap::new(),
+            own_declarations: BTreeSet::new(),
+        }
+    }
 }
 
 impl Walk<'_> {
@@ -285,10 +332,22 @@ impl Walk<'_> {
         // not own: attaching methods there declared `std::sync::Arc::x`
         // with nothing tying them to the trait they implement. The
         // block itself is the project's, so it becomes the container.
+        // So is a primitive or prelude type named bare that nothing in
+        // scope declares or imports (`impl PartialEq<u8> for String`,
+        // `impl Shout for str`), which the enclosing-module guess would
+        // otherwise make a type of this module.
         let root = self.crate_root().to_owned();
+        let unplaced = match node.self_ty.as_ref() {
+            Type::Path(path) if path.qself.is_none() && path.path.leading_colon.is_none() => {
+                path.path.segments.len() == 1
+                    && is_standard_type(&ident_name(&path.path.segments[0].ident))
+                    && self.stated_type(container, &path.path).is_none()
+            }
+            _ => false,
+        };
         let target = match &node.trait_ {
             Some((_, trait_path, _))
-                if target != root && !target.starts_with(&format!("{root}::")) =>
+                if unplaced || (target != root && !target.starts_with(&format!("{root}::"))) =>
             {
                 let trait_name = trait_path
                     .segments
@@ -373,7 +432,7 @@ impl Walk<'_> {
                                 this.facts.speculative_edge(
                                     "returns",
                                     &reference("method", method_canonical),
-                                    &reference("class", &returned),
+                                    &reference("class", paths::pointee_of(&returned)),
                                     method.sig.output.span(),
                                 );
                             }
@@ -618,9 +677,17 @@ impl Walk<'_> {
                             }
                         }
                     }
-                    if !fields.is_empty() {
-                        self.struct_fields
-                            .insert(format!("{container}::{}", ident_name(&node.ident)), fields);
+                    // A struct with no typed field is recorded too, and `#[cfg]`
+                    // alternatives of one struct keep only the fields they
+                    // agree on: which one compiles is unknown.
+                    let owner = format!("{container}::{}", ident_name(&node.ident));
+                    match self.struct_fields.get_mut(&owner) {
+                        Some(known) => {
+                            known.retain(|name, target| fields.get(name) == Some(target));
+                        }
+                        None => {
+                            self.struct_fields.insert(owner, fields);
+                        }
                     }
                 }
                 Item::Mod(node) => {

@@ -12,7 +12,7 @@ use syn::{Item, Type};
 
 use super::placement::mod_child;
 use crate::layout::Layout;
-use crate::resolve::ident_name;
+use crate::resolve::{ident_name, is_standard_type};
 
 /// Canonical name of every top-level and inline-module declaration of the
 /// project's Rust files, mapped to how many files declared it. The crate-wide
@@ -35,7 +35,30 @@ pub struct Declarations {
     /// when two declarations send one path to two modules. See
     /// [`declared_renames`].
     renames: BTreeMap<String, Option<String>>,
+    /// Each name a visible `use` makes a path of its module, mapped to the
+    /// path it imports; `None` when two files map one name apart. See
+    /// [`ExportedNames`].
+    exports: BTreeMap<String, Option<String>>,
+    /// The field types of every struct, by struct then field; `None` for a
+    /// struct two files declare, whose fields cannot be told apart. See
+    /// [`StructFields`].
+    fields: BTreeMap<String, Option<BTreeMap<String, String>>>,
 }
+
+/// The names one file's visible `use` items (`pub use cfg::collect;`,
+/// `pub(crate) use self::a as b;`) add to the module they are written in, by
+/// that path, mapped to the path each imports, as the file's own imports
+/// resolve it. A glob re-export names nothing and is not here.
+///
+/// `None` marks a name two `use` items of the file bind to different paths,
+/// such as `#[cfg]` alternatives: which one compiles is unknown.
+pub type ExportedNames = BTreeMap<String, Option<String>>;
+
+/// The declared type of each named field of one file's structs, by the
+/// struct's canonical path then field name, resolved through the file's own
+/// imports: what a method call through `self.field` in another file's
+/// `impl` block resolves through.
+pub type StructFields = BTreeMap<String, BTreeMap<String, String>>;
 
 impl Declarations {
     /// An empty index.
@@ -63,6 +86,72 @@ impl Declarations {
         for (declared, placed) in renames {
             merge_rename(&mut self.renames, declared, placed.clone());
         }
+    }
+
+    /// Record one file's re-exported names, as
+    /// [`index_facts`](super::index_facts) returned them; a name two files
+    /// map apart resolves to nothing.
+    pub fn add_exports(&mut self, exports: &ExportedNames) {
+        for (name, target) in exports {
+            merge_rename(&mut self.exports, name, target.clone());
+        }
+    }
+
+    /// Record one file's struct field types, as
+    /// [`index_facts`](super::index_facts) returned them. A struct another
+    /// file declares too keeps no fields: which declaration a receiver holds
+    /// is unknown.
+    pub fn add_fields(&mut self, fields: &StructFields) {
+        for (owner, types) in fields {
+            match self.fields.get(owner) {
+                Some(_) => {
+                    self.fields.insert(owner.clone(), None);
+                }
+                None => {
+                    self.fields.insert(owner.clone(), Some(types.clone()));
+                }
+            }
+        }
+    }
+
+    /// `path` with its longest prefix that a visible `use` re-exports
+    /// rewritten onto the path that `use` imports, once: `crate::visit::go`
+    /// under `pub use cfg::go;` in `crate::visit` is `crate::visit::cfg::go`.
+    /// `None` when no prefix is re-exported, or when the one that is maps
+    /// apart. The path is remembered as a lookup: the re-exporting file sits
+    /// in a module above it.
+    ///
+    /// A re-export whose target lies below the re-exported name itself
+    /// (`pub use parse::parse;` beside `mod parse;`) binds that name only
+    /// in the namespace of the item it imports, a function here, so a
+    /// longer path through it (`crate::x::parse::helper`) goes through the
+    /// module and is not rewritten. Rewriting it would also match again on
+    /// the result, growing the path on every hop.
+    pub fn exported(&self, path: &str) -> Option<String> {
+        self.lookups.borrow_mut().insert(path.to_owned());
+        let (prefix, target) = std::iter::successors(Some(path), |prefix| {
+            prefix.rsplit_once("::").map(|(head, _)| head)
+        })
+        .find_map(|prefix| {
+            let target = self.exports.get(prefix)?;
+            let through_module = prefix.len() < path.len()
+                && target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with(&format!("{prefix}::")));
+            (!through_module).then_some((prefix, target))
+        })?;
+
+        target
+            .as_ref()
+            .map(|target| format!("{target}{}", &path[prefix.len()..]))
+    }
+
+    /// The declared type of `owner`'s field `field`, as the struct's own
+    /// file resolved it, remembering that `owner` was asked about: the file
+    /// declaring it sits in a module above it.
+    pub fn field_type(&self, owner: &str, field: &str) -> Option<String> {
+        self.lookups.borrow_mut().insert(owner.to_owned());
+        self.fields.get(owner)?.as_ref()?.get(field).cloned()
     }
 
     /// `path` with its longest prefix that a `mod` declaration renamed
@@ -200,7 +289,11 @@ fn collect_declaration_paths(module: &str, items: &[Item], out: &mut BTreeSet<St
                 // guessing `{module}::Facts` there would vouch for a path that
                 // does not exist. The walk resolves those through `use`
                 // aliases, which this collector does not have.
-                if let Some(name) = impl_target_name(&node.self_ty) {
+                // A trait impl for a primitive or prelude type
+                // (`impl Shout for str`) declares its methods on a block of
+                // its own, not on a type of this module (see `Walk::walk_impl`).
+                let foreign = |name: &str| node.trait_.is_some() && is_standard_type(name);
+                if let Some(name) = impl_target_name(&node.self_ty).filter(|name| !foreign(name)) {
                     let owner = format!("{module}::{name}");
                     for member in &node.items {
                         if let syn::ImplItem::Fn(method) = member {

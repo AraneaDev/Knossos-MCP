@@ -337,6 +337,38 @@ pub fn glob_prefixes(tree: &syn::UseTree, prefix: &str, out: &mut Vec<String>) {
     }
 }
 
+/// Whether a bare name is a primitive type or a type the prelude brings
+/// into every module (`String`, `Vec`, `Option`, `Result`, `Box`).
+#[must_use]
+pub fn is_standard_type(name: &str) -> bool {
+    is_primitive(name) || matches!(name, "Box" | "Option" | "Result" | "String" | "Vec")
+}
+
+/// Whether a bare name is one of Rust's primitive types.
+#[must_use]
+pub fn is_primitive(name: &str) -> bool {
+    matches!(
+        name,
+        "bool"
+            | "char"
+            | "str"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

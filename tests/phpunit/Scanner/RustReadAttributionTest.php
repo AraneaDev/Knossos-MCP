@@ -401,6 +401,48 @@ final class RustReadAttributionTest extends KnossosTestCase
 
     private const APP = "use crate::engine::inner::*;\nuse crate::engine::sign::*;\nuse crate::engine::sign::Signer;\n\nimpl Signer {\n    pub fn extra(&self) -> u32 {\n        any() + deep()\n    }\n}\n";
 
+    /**
+     * `c.rs` calls `record()` through a field of a struct `d.rs` declares,
+     * whose type only `d.rs` states: changing it reaches `c.rs`.
+     */
+    public function testEditingAFieldTypeRescansTheFilesThatCalledThroughIt(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod a;\npub mod b;\npub mod c;\npub mod d;\n");
+        $this->write('src/b.rs', "pub struct Ledger;\n\nimpl Ledger {\n    pub fn record(&self) {}\n}\n\npub struct Store;\n\nimpl Store {\n    pub fn record(&self) {}\n}\n");
+        $this->write('src/d.rs', "use crate::b::Ledger;\n\npub struct Inner {\n    pub(crate) ledger: Ledger,\n}\n");
+        $this->write('src/a.rs', "use crate::d::Inner;\n\npub struct Holder {\n    pub(crate) inner: Inner,\n}\n");
+        $this->write('src/c.rs', "use crate::a::Holder;\n\nimpl Holder {\n    pub fn save(&self) {\n        self.inner.ledger.record();\n    }\n}\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('src/d.rs', "use crate::b::Store;\n\npub struct Inner {\n    pub(crate) ledger: Store,\n}\n");
+        $this->scan($pdo);
+        self::assertContains('src/c.rs', $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
+    /**
+     * `user.rs` calls `crate::a::thing()`, which `a.rs` re-exports from `b`,
+     * which re-exports it from `c`: retargeting the middle `pub use` to `d`
+     * reaches `user.rs`, though it never names `b`.
+     */
+    public function testRetargetingTheMiddleOfAReExportChainRescansTheCaller(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod a;\npub mod b;\npub mod c;\npub mod d;\npub mod user;\n");
+        $this->write('src/a.rs', "pub use crate::b::thing;\n");
+        $this->write('src/b.rs', "pub use crate::c::thing;\n");
+        $this->write('src/c.rs', "pub fn thing() {}\n");
+        $this->write('src/d.rs', "pub fn thing() {}\n");
+        $this->write('src/user.rs', "pub fn go() {\n    crate::a::thing();\n}\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('src/b.rs', "pub use crate::d::thing;\n");
+        $this->scan($pdo);
+        self::assertContains('src/user.rs', $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     private function writeCrate(): void
     {
         $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");

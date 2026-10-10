@@ -124,6 +124,10 @@ final class RustModuleIdentityTest extends KnossosTestCase
         $tests = $this->testNodes($pdo);
         self::assertContains('crate::checks::check', $tests);
         self::assertContains('crate::lib_tests::probe', $tests);
+        // The module node of the file is test code too, or the module reads
+        // as unreferenced production code.
+        self::assertContains('crate::checks', $tests);
+        self::assertContains('crate::lib_tests', $tests);
         self::assertNotContains('crate::cli::start', $tests);
         self::assertNotContains('crate::renamed_impl::go', $tests);
     }
@@ -295,6 +299,43 @@ final class RustModuleIdentityTest extends KnossosTestCase
         self::assertContains('crate::T::probe', $tests);
         self::assertNotContains('crate::S::always', $tests);
         self::assertNotContains('crate::T::shipped', $tests);
+    }
+
+    /**
+     * `self.inner.ledger.record()` in an `impl` block whose struct, and whose
+     * field's struct, are declared in other files reaches `Ledger::record`.
+     */
+    public function testACallThroughFieldsDeclaredInOtherFilesReachesTheMethod(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod a;\npub mod b;\npub mod c;\npub mod d;\n");
+        $this->write('src/b.rs', "pub struct Ledger;\n\nimpl Ledger {\n    pub fn record(&self) {}\n}\n");
+        $this->write('src/d.rs', "use crate::b::Ledger;\n\npub struct Inner {\n    pub(crate) ledger: Ledger,\n}\n");
+        $this->write('src/a.rs', "use crate::d::Inner;\n\npub struct Holder {\n    pub(crate) inner: Inner,\n}\n");
+        $this->write('src/c.rs', "use crate::a::Holder;\n\nimpl Holder {\n    pub fn save(&self) {\n        self.inner.ledger.record();\n    }\n}\n");
+        $pdo = $this->scanned();
+
+        self::assertContains('calls crate::a::Holder::save -> crate::b::Ledger::record', $this->edges($pdo));
+    }
+
+    /**
+     * `crate::visit::collect()` names what `visit` re-exports with `pub use`,
+     * declared in its child `cfg`; no node is invented at the re-exported path.
+     */
+    public function testAPathThroughAPubUseReachesTheDefiningItem(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod index;\npub mod visit;\n");
+        $this->write('src/visit/mod.rs', "mod cfg;\n\npub use cfg::{collect, Store};\n");
+        $this->write('src/visit/cfg.rs', "pub fn collect() {}\n\npub struct Store;\n\nimpl Store {\n    pub fn new() -> Self {\n        Store\n    }\n\n    pub fn add(&self) {}\n}\n");
+        $this->write('src/index.rs', "use crate::visit::Store;\n\npub fn go() {\n    crate::visit::collect();\n    let store = Store::new();\n    store.add();\n}\n");
+        $pdo = $this->scanned();
+
+        $edges = $this->edges($pdo);
+        self::assertContains('calls crate::index::go -> crate::visit::cfg::collect', $edges);
+        self::assertContains('calls crate::index::go -> crate::visit::cfg::Store::new', $edges);
+        self::assertContains('calls crate::index::go -> crate::visit::cfg::Store::add', $edges);
+        self::assertSame([], $this->nodesStartingWith($pdo, 'crate::visit::collect'));
     }
 
     /** `use crate::errors::Error::Io;` imports a variant of a type, not a module. */

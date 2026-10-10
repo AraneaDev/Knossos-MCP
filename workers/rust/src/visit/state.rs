@@ -69,6 +69,17 @@ pub(super) struct Walk<'a> {
     /// The files this file's `mod` declarations load, whose own placement
     /// decided the module each declaration names.
     pub(super) placed: BTreeSet<String>,
+    /// Every name a visible `use` (`pub use`, `pub(crate) use`) makes a
+    /// path of the module it is written in, mapped to the path it imports:
+    /// what the declaration index follows a re-exported path through (see
+    /// [`Declarations::exported`]).
+    /// `None` marks a name two `use` items bind to different paths.
+    pub(super) exports: BTreeMap<String, Option<String>>,
+    /// Every path this file declares (see
+    /// [`declaration_paths`](super::declarations::declaration_paths)), which
+    /// confirms a type the file names unqualified in its own module whether
+    /// or not the index answers for the file.
+    pub(super) own_declarations: BTreeSet<String>,
 }
 
 /// A `syn` visitor that emits a `calls` edge for every resolvable call

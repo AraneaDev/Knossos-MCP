@@ -93,10 +93,40 @@ These get an attribute, so they stay off the
 Some names could refer to a type the graph does not hold, such as `Vec` or
 `String`. For those the worker emits a `speculative` edge, and the core keeps it
 only if the target turns out to be a declared node. That is how a method call on
-a receiver of known type reaches its method: `self`, a typed parameter, a `let`
-with a type annotation, or a `let` assigned from a struct literal or an
-associated call such as `Widget::make()`. A call on what another call returns
-(`state.mode().label()`) resolves through the declared return type.
+a receiver of known type reaches its method: `self`, a typed parameter or
+closure parameter (`|s: &Store|`), a `let` with a type annotation, a `let`
+assigned from a struct literal or an associated call such as `Widget::make()`,
+or a binding a struct pattern takes from a field
+(`let Index { store, .. } = index;`), also in a `match` arm, an `if let` or
+`while let` chain or a `for` pattern. Each binding lasts as long as its scope,
+a plain block included. A type behind `&`, `&mut`, `Box<T>`, `Rc<T>` or
+`Arc<T>` is `T`, except for a method the pointer itself has (`clone`, `as_ref`,
+`downgrade` and the like), which is left untyped. A call on what another call
+returns (`state.mode().label()`) resolves through the declared return type. A
+call through a field (`self.walk.facts.edge()`) resolves through the field's
+declared type, also when the struct, its `impl` block and the field's type sit
+in three different files: the declaration index holds every struct's field
+types as the declaring file's own imports resolve them. `#[cfg]` alternatives
+of one struct keep only the field types they agree on.
+
+A path that reaches an item through a re-export (`crate::visit::collect()`
+under `pub use cfg::collect;` in `visit`) names the item where it is declared,
+`crate::visit::cfg::collect`, so the edge lands on the node the graph holds.
+Any visible `use` re-exports, `pub(crate)` and `pub(super)` included, and a
+chain of them is followed to its end, also through a module that re-exports an
+item under its own name (`pub use parse::parse;` beside `mod parse;`). A longer
+path through such a name (`parse::helper()`) goes through the module. The
+`imports` edge still names the module the source wrote.
+
+A prelude trait named bare (`impl From<u8> for Str`, `trait Named: Clone`)
+that the module neither declares nor imports is the standard library's
+(`std::convert::From`), never a trait of the enclosing module or the crate
+root. A trait outside the prelude (`Display`, `Hash`, `FromStr`) is in scope
+only through an import, which is how it resolves. Likewise a trait impl for a
+primitive or prelude type named bare (`impl PartialEq<u8> for String`,
+`impl Shout for str`) is a block of its own, `<impl PartialEq for String>`,
+since the crate does not own the type, never a `String` of the enclosing
+module.
 
 ## Frameworks
 
@@ -166,13 +196,14 @@ Each binary in `src/bin/`, integration test, example and benchmark is a crate
 of its own, and its `crate::` names that crate, whose root is the file itself:
 `crate::own` in `src/bin/tool.rs` is the `crate::bin::tool::own` it declares,
 and through its `mod helper;`, `crate::helper` is `crate::bin::helper`
-(`src/bin/helper.rs`); `crate::common` in `tests/it.rs` is `tests::common`. Only the target's root
-file knows this; a module file below `src/bin/<name>/` could belong to that
-binary or to another, so its own `crate::` paths still start at the package's
-`crate`. An out-of-line `#[cfg(test)] mod name;`
-marks the file it loads as test code when the declaring file sits in a module
-above it, or is the crate root; a `#[path]` that sends a test module to a
-sibling (`src/net.rs` loading `src/net_tests.rs`) is not marked.
+(`src/bin/helper.rs`); `crate::common` in `tests/it.rs` is `tests::common`.
+Only the target's root file knows this; a module file below `src/bin/<name>/`
+could belong to that binary or to another, so its own `crate::` paths still
+start at the package's `crate`. An out-of-line `#[cfg(test)] mod name;` marks
+the file it loads as test code, its module node included, when the declaring
+file sits in a module above it, or is the crate root; a `#[path]` that sends a
+test module to a sibling (`src/net.rs` loading `src/net_tests.rs`) is not
+marked.
 
 ### What an incremental scan rescans
 
@@ -196,8 +227,12 @@ looked up below the crate root, so editing `src/lib.rs`, or adding a
 the files read, not from a rule. A file that does not parse has no facts and
 reads nothing beyond itself, so it stays an ordinary attributed row and is
 rescanned only when it changes. Editing a `Cargo.toml` rescans every Rust file.
-A rebuilt file reaches its readers only when its own bytes changed: a `pub use`
-adds nothing to the index, so no file's facts depend on what another file read.
+A rebuilt file reaches its readers only when its own bytes changed: what a file
+gives the index (its declarations, the names its `pub use` items re-export and
+its structs' field types) follows from its own bytes and the package layout, so
+no file's facts depend on what another file read. A name followed through a
+re-export or a field type is a lookup like any other, so the file declaring it
+is read.
 
 ## Limits
 
@@ -218,6 +253,22 @@ adds nothing to the index, so no file's facts depend on what another file read.
   convention can produce a target that matches no declared node; inside your
   own crates that edge is dropped.
 - An import name bound to two different paths in one file resolves to nothing.
+  So does a name two `#[cfg]` alternatives re-export from different paths.
+- A private `use` re-exports nothing to the index, so a child module reaching
+  an imported name through `super::name` is not followed to its declaration.
+  A glob re-export (`pub use inner::*;`) is not followed either.
+- Re-exports and field types are resolved through the declaring file's own
+  `use` items, its own declarations and rooted paths only. A field type that
+  file reaches through a glob import (`use super::*;`) gets no type, so calls
+  through that field produce no edge.
+- A type named bare that nothing in scope declares or imports (`Vec`,
+  `Option`, `String`, `char`, `u8`) types no receiver, so a method called on
+  one produces no edge rather than one to a made-up type of the module. A
+  generic other than `Box`, `Rc` and `Arc` (`Option<T>`, `Vec<T>`,
+  `Mutex<T>`) is not unwrapped, so a method called on what it holds
+  (`self.items[0].run()`, `self.lock.lock().run()`) is not resolved.
+- A `use` inside a function body is not read, so a name it brings into scope
+  (`use Kind::*;` before a `match`) resolves as if it were absent.
 - A bare `mod foo;` declaration emits only a containment edge. The module's own
   node comes from the file that defines it.
 - A `use` leaf whose parent is a type (`use crate::errors::Error::Io;`, or
