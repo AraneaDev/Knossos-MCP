@@ -59,7 +59,8 @@ describe('the Churn tab', () => {
     expect(rawText(rows[10]!)).toMatch(/0 +commits → +30$/)
   })
 
-  it('fits every width and height, empty or full', () => {
+  // A sweep over every width and height: seconds under coverage, so it gets its own bound rather than the default 5 s.
+  it('fits every width and height, empty or full', { timeout: 30_000 }, () => {
     for (const s of [null, state(answer(40)), state(answer(0)), state({ status: 'no-git', files: [] })]) {
       for (const columns of [40, 60, 80, 100, 130, 140, 200]) {
         for (const height of [24, 40, 60]) {

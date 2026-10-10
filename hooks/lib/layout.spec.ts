@@ -1278,7 +1278,8 @@ describe('the pane at every width and height, with a large project', () => {
     }
   }
 
-  it('lists follow the height on every tier: a taller pane shows more of the long lists', () => {
+  // A sweep over every width and height: seconds under coverage, so it gets its own bound rather than the default 5 s.
+  it('lists follow the height on every tier: a taller pane shows more of the long lists', { timeout: 30_000 }, () => {
     for (const columns of WIDTHS) {
       const hubs = HEIGHTS.map(h => shown(paneRows(at({ tab: 'hubs' }), columns, h), 'hub'))
       expect(hubs[1], `${columns}`).toBeGreaterThan(hubs[0]!)

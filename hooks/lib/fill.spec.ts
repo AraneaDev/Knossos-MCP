@@ -74,7 +74,8 @@ function trailing(body: Row[]): number {
 }
 
 describe('cards fill the height without gaps', () => {
-  it('never leaves blank rows between collapsed cards and the cards after them, on any tab', () => {
+  // A sweep over every width and height: seconds under coverage, so it gets its own bound rather than the default 5 s.
+  it('never leaves blank rows between collapsed cards and the cards after them, on any tab', { timeout: 30_000 }, () => {
     for (const tab of ['overview', 'hubs', 'boundaries', 'cycles', 'issues', 'changes', 'branch', 'churn'] as PaneTab[]) {
       for (const b of [branch(0), branch(2), branch(12)]) {
         for (const columns of [40, 60, 80, 100, 130, 140, 200]) {

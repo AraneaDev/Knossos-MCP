@@ -373,7 +373,8 @@ describe('drawPane: the tree budget', () => {
         expect(logs).toHaveLength(1)
     })
 
-    it('never hands the engine a tree past its 100,000 serialized characters', async () => {
+    // A sweep over every width and height: seconds under coverage, so it gets its own bound rather than the default 5 s.
+    it('never hands the engine a tree past its 100,000 serialized characters', { timeout: 30_000 }, async () => {
         const many = dashboard({ hubs: hubs(400) })
         const cases: [string, Record<string, unknown>, number, number][] = [
             ['desktop', { dashboard: many }, 120, 200],

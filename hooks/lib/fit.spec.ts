@@ -75,7 +75,8 @@ function misfits(rows: Row[], columns: number): string[] {
 }
 
 describe('every row draws as laid out', () => {
-  it('keeps every tab within the pane, and every Button to its text, at every width and height', () => {
+  // A sweep over every width and height: seconds under coverage, so it gets its own bound rather than the default 5 s.
+  it('keeps every tab within the pane, and every Button to its text, at every width and height', { timeout: 30_000 }, () => {
     for (const tab of TABS) {
       for (const columns of [40, 60, 80, 100, 130, 140, 200]) {
         for (const height of [24, 40, 60]) {
