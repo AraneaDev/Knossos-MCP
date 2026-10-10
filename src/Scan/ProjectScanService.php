@@ -111,6 +111,12 @@ final class ProjectScanService implements ProjectScanner
             $lease = (new ProjectWriterLock($this->pdo))->acquire($projectId);
         }
         $effectiveMode = 'full';
+        // One repository for the whole scan, built per scan rather than held by
+        // the service: a service lives across scans (a watcher, the MCP server),
+        // and the repository caches every statement it prepares, including
+        // pruning deletes whose SQL varies with the batch, so a held one would
+        // keep them all for the life of the process.
+        $repository = new SqliteGraphRepository($this->pdo);
         try {
             $plan = $this->planner->finalize($preparation);
             $effectiveMode = $plan->effectiveMode;
@@ -122,33 +128,7 @@ final class ProjectScanService implements ProjectScanner
             // Cancellation wins over fidelity reporting: an abandoned scan
             // must surface ScanCancelledException, not a worker degradation.
             $cancellation->throwIfCancelled();
-            // A rescan must never reconcile away a failed language's facts,
-            // whatever its mode: doing so prunes the last good facts for a
-            // worker that failed and can replace a healthy graph with an empty
-            // one. That holds for a requested full rescan as much as an
-            // incremental one, so such a scan fails closed and the caller can
-            // repair the worker and retry without data loss. A full rescan
-            // whose failed languages hold no facts in the graph has nothing to
-            // lose, and degrades per language as a first scan does; refusing it
-            // would leave no way to update the other languages until the
-            // broken worker is repaired.
-            if ($plan->hadActiveScan && $language->workerDiagnostics !== []) {
-                $owners = array_values(array_unique(array_map(
-                    static fn(array $diagnostic): string => (string) ($diagnostic['owner'] ?? 'unknown'),
-                    $language->workerDiagnostics,
-                )));
-                if ($plan->effectiveMode !== 'full' || $this->graphHoldsFactsOf($projectId, $owners)) {
-                    $failed = array_map(
-                        static fn(array $diagnostic): string => ($diagnostic['owner'] ?? 'unknown') . ': ' . ($diagnostic['code'] ?? 'WORKER_FAILED'),
-                        $language->workerDiagnostics,
-                    );
-                    throw new WorkerException(
-                        'WORKER_DEGRADED_INCREMENTAL',
-                        'Scan aborted to preserve the last good graph. Failed workers: ' . implode(', ', $failed)
-                            . '. Fix the worker (run `knossos doctor`) and rescan; the graph is unchanged.',
-                    );
-                }
-            }
+            $this->refuseDegradedRescan($plan, $language, $projectId);
             // The workers read every file themselves, so their facts descend
             // from bytes this process never hashed. Discovery's own files are
             // checked before analysis; undiscovered worker inputs are checked at
@@ -174,7 +154,7 @@ final class ProjectScanService implements ProjectScanner
 
             $reconciliationStarted = hrtime(true);
             $projectConfig = $this->projectConfig($preparation);
-            $fastPath = $this->noChangeFastPath($plan, $language, $preparation, $projectConfig, $name, $verifyUndiscovered);
+            $fastPath = $this->noChangeFastPath($plan, $language, $preparation, $projectConfig, $name, $verifyUndiscovered, $repository);
             if ($fastPath !== null) {
                 $stageMilliseconds['reconciliation'] = self::elapsedMilliseconds($reconciliationStarted);
                 return $this->resultFactory->create($plan, $language, $fastPath, $startedAt, $stageMilliseconds, 'no_change');
@@ -186,25 +166,10 @@ final class ProjectScanService implements ProjectScanner
             if (!$lease->renew()) {
                 throw new ScanBusyException(sprintf('The writer lease for project %s was lost during the scan; another writer took over.', $projectId));
             }
-            $result = (new GraphReconciler(new SqliteGraphRepository($this->pdo)))->reconcile(new FullScanRequest(
-                'root:' . $preparation->discovery->rootRealpath,
-                $name ?? basename($preparation->discovery->rootRealpath),
-                $preparation->discovery,
-                $language->manifests,
-                $language->contributions,
-                $projectConfig,
-                $analysis->classifications,
-                $analysis->boundaries,
-                $plan->effectiveMode,
-                $language->cacheEntries,
-                $language->workerDiagnostics,
-                // Captured before discovery walked the tree, so the commit the
-                // scan records is one its own bytes cannot predate.
-                $preparation->gitHead,
-                $preparation->dirtyPaths,
-                self::workerInputs($language, $plan, $preparation->discovery->hashedPaths()),
-                $language->readGroups,
-            ), $verifyUndiscovered);
+            $result = (new GraphReconciler($repository))->reconcile(
+                self::fullScanRequest($preparation, $plan, $language, $analysis, $projectConfig, $name),
+                $verifyUndiscovered,
+            );
             foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
                 $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;
             }
@@ -214,7 +179,7 @@ final class ProjectScanService implements ProjectScanner
             // completes the scan row but sees neither discovery nor analysis.
             // RefreshPolicy reads it to decide whether repeating the work fits
             // inside a query the caller is already waiting on.
-            (new SqliteGraphRepository($this->pdo))->recordScanDuration(
+            $repository->recordScanDuration(
                 $result->projectId,
                 $result->scanId,
                 (int) round(self::elapsedMilliseconds($startedAt)),
@@ -222,21 +187,7 @@ final class ProjectScanService implements ProjectScanner
 
             return $this->resultFactory->create($plan, $language, $result, $startedAt, $stageMilliseconds);
         } catch (\Throwable $error) {
-            // Persist the terminal attempt so it is observable and reapable by
-            // stale-scan cleanup. Best-effort: never let bookkeeping mask the
-            // original failure, and never record for a project that reconcile
-            // never created (recordFailedScan no-ops when the project is absent).
-            $status = $error instanceof ScanCancelledException ? 'cancelled' : 'failed';
-            try {
-                (new SqliteGraphRepository($this->pdo))->recordFailedScan(
-                    \Knossos\Store\StableId::scan($projectId, bin2hex(random_bytes(16))),
-                    $projectId,
-                    $effectiveMode,
-                    $status,
-                );
-            } catch (\Throwable) {
-                // Ignore: the original failure below is what matters.
-            }
+            self::recordFailedScan($repository, $projectId, $effectiveMode, $error);
             throw $error;
         } finally {
             if (!$held && $lease->release() === 0) {
@@ -244,6 +195,95 @@ final class ProjectScanService implements ProjectScanner
             }
         }
     }
+    /**
+     * Refuse a rescan that would reconcile away a failed language's facts.
+     *
+     * A rescan must never do so, whatever its mode: doing so prunes the last
+     * good facts for a worker that failed and can replace a healthy graph with
+     * an empty one. That holds for a requested full rescan as much as an
+     * incremental one, so such a scan fails closed and the caller can repair
+     * the worker and retry without data loss. A full rescan whose failed
+     * languages hold no facts in the graph has nothing to lose, and degrades
+     * per language as a first scan does; refusing it would leave no way to
+     * update the other languages until the broken worker is repaired.
+     */
+    private function refuseDegradedRescan(ScanPlan $plan, LanguageScanResult $language, string $projectId): void
+    {
+        if (!$plan->hadActiveScan || $language->workerDiagnostics === []) {
+            return;
+        }
+        $owners = array_values(array_unique(array_map(
+            static fn(array $diagnostic): string => (string) ($diagnostic['owner'] ?? 'unknown'),
+            $language->workerDiagnostics,
+        )));
+        if ($plan->effectiveMode !== 'full' || $this->graphHoldsFactsOf($projectId, $owners)) {
+            $failed = array_map(
+                static fn(array $diagnostic): string => ($diagnostic['owner'] ?? 'unknown') . ': ' . ($diagnostic['code'] ?? 'WORKER_FAILED'),
+                $language->workerDiagnostics,
+            );
+            throw new WorkerException(
+                'WORKER_DEGRADED_INCREMENTAL',
+                'Scan aborted to preserve the last good graph. Failed workers: ' . implode(', ', $failed)
+                    . '. Fix the worker (run `knossos doctor`) and rescan; the graph is unchanged.',
+            );
+        }
+    }
+
+    /**
+     * What reconciliation is asked to write for this scan.
+     *
+     * @param array<string, mixed> $projectConfig
+     */
+    private static function fullScanRequest(
+        ScanPreparation $preparation,
+        ScanPlan $plan,
+        LanguageScanResult $language,
+        ScanAnalysis $analysis,
+        array $projectConfig,
+        ?string $name,
+    ): FullScanRequest {
+        return new FullScanRequest(
+            'root:' . $preparation->discovery->rootRealpath,
+            $name ?? basename($preparation->discovery->rootRealpath),
+            $preparation->discovery,
+            $language->manifests,
+            $language->contributions,
+            $projectConfig,
+            $analysis->classifications,
+            $analysis->boundaries,
+            $plan->effectiveMode,
+            $language->cacheEntries,
+            $language->workerDiagnostics,
+            // Captured before discovery walked the tree, so the commit the
+            // scan records is one its own bytes cannot predate.
+            $preparation->gitHead,
+            $preparation->dirtyPaths,
+            self::workerInputs($language, $plan, $preparation->discovery->hashedPaths()),
+            $language->readGroups,
+        );
+    }
+
+    /**
+     * Persist the terminal attempt so it is observable and reapable by
+     * stale-scan cleanup. Best-effort: never let bookkeeping mask the
+     * original failure, and never record for a project that reconcile
+     * never created (recordFailedScan no-ops when the project is absent).
+     */
+    private static function recordFailedScan(SqliteGraphRepository $repository, string $projectId, string $effectiveMode, \Throwable $error): void
+    {
+        $status = $error instanceof ScanCancelledException ? 'cancelled' : 'failed';
+        try {
+            $repository->recordFailedScan(
+                \Knossos\Store\StableId::scan($projectId, bin2hex(random_bytes(16))),
+                $projectId,
+                $effectiveMode,
+                $status,
+            );
+        } catch (\Throwable) {
+            // Ignore: the original failure is what matters.
+        }
+    }
+
     /** Milliseconds since a hrtime() mark, for the stage timings. */
 
     private static function elapsedMilliseconds(int $startedAt): float
@@ -357,7 +397,7 @@ final class ProjectScanService implements ProjectScanner
      * @param array<string, mixed> $projectConfig
      * @param callable(): void $verifyUndiscovered
      */
-    private function noChangeFastPath(ScanPlan $plan, LanguageScanResult $language, ScanPreparation $preparation, array $projectConfig, ?string $name, callable $verifyUndiscovered): ?ReconciliationResult
+    private function noChangeFastPath(ScanPlan $plan, LanguageScanResult $language, ScanPreparation $preparation, array $projectConfig, ?string $name, callable $verifyUndiscovered, SqliteGraphRepository $repository): ?ReconciliationResult
     {
         // A degraded language contributes nothing to added/changed, so those tallies
         // cannot see it, and the scanner-set hash only differs when the failed
@@ -399,7 +439,7 @@ final class ProjectScanService implements ProjectScanner
             return null;
         }
         $verifyUndiscovered();
-        $this->recordVerifiedGraph($plan->projectId, (string) $row['active_scan_id'], $preparation->discovery->files);
+        $this->recordVerifiedGraph($repository, $plan->projectId, (string) $row['active_scan_id'], $preparation->discovery->files);
         return $this->currentGraphCounts($plan->projectId, (string) $row['active_scan_id']);
     }
 
@@ -422,9 +462,8 @@ final class ProjectScanService implements ProjectScanner
      *
      * @param list<\Knossos\Discovery\DiscoveredFile> $files
      */
-    private function recordVerifiedGraph(string $projectId, string $activeScanId, array $files): void
+    private function recordVerifiedGraph(SqliteGraphRepository $repository, string $projectId, string $activeScanId, array $files): void
     {
-        $repository = new SqliteGraphRepository($this->pdo);
         $repository->transaction(function () use ($repository, $projectId, $activeScanId, $files): void {
             // Positional params: the mtime value is used twice (SET and guard).
             $update = $this->pdo->prepare(

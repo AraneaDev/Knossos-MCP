@@ -10,6 +10,7 @@ use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\DiscoveryDiagnostic;
 use Knossos\Discovery\DiscoveryResult;
 use Knossos\Reconciliation\ContributionCacheEntry;
+use Knossos\Reconciliation\EdgeTargetResolver;
 use Knossos\Reconciliation\FullScanRequest;
 use Knossos\Reconciliation\GraphReconciler;
 use Knossos\Reconciliation\NodeReferenceIndex;
@@ -2475,7 +2476,7 @@ final class GraphReconcilerTest extends TestCase
      */
     public function testADirectoryImportExpandsToTheModulesItsPatternMatches(): void
     {
-        $targets = new \ReflectionMethod(GraphReconciler::class, 'contextTargets');
+        $targets = new \ReflectionMethod(EdgeTargetResolver::class, 'contextTargets');
         $nodeMap = [
             'ts:module:js/store/modules/auth.js' => 'n1',
             'ts:module:js/store/modules/nested/deep.js' => 'n2',

@@ -61,184 +61,26 @@ final class ReadSetInvalidator
      */
     public static function invalidated(CachedReads $cached, array $discovered, callable $stillMatches, array $addedByScanner = [], array $addedFilesAffectAll = [], array $forced = [], array $layoutMarkers = [], array $directReads = []): array
     {
-        $memo = [];
-        $unchanged = static function (string $path, ?string $stored) use ($discovered, $stillMatches, &$memo): bool {
-            if (array_key_exists($path, $discovered)) {
-                return $discovered[$path] === $stored;
-            }
-            $key = $path . "\0" . ($stored ?? '');
-
-            return $memo[$key] ??= (bool) $stillMatches($path, $stored);
-        };
-
-        $changed = [];
-        // Path to the owners that read it themselves, path to the groups that
-        // hold it, group to its owners. A group is expanded only when the walk
-        // reaches it: copying its owners onto every path it holds made memory
-        // grow with owners times reads.
-        $readersOf = [];
-        $groupsOf = [];
-        $ownersOfGroup = [];
-        $ownersOfFile = [];
-        $rowsOfScanner = [];
-        $unattributed = [];
-        $incompleteOf = [];
-        $deletedFrom = [];
-        foreach ($cached->rows as $owner => $row) {
-            $owner = (string) $owner;
-            $marker = $layoutMarkers[$row['scanner_id']] ?? null;
-            if (!array_key_exists($row['file_path'], $discovered) && (isset($addedFilesAffectAll[$row['scanner_id']]) || ($marker !== null && preg_match($marker, $row['file_path']) === 1))) {
-                $deletedFrom[$row['scanner_id']] = true;
-            }
-            if (($discovered[$row['file_path']] ?? null) !== $row['content_hash']) {
-                $changed[$row['file_path']] = true;
-            }
-            $ownersOfFile[$row['file_path']][$owner] = true;
-            $rowsOfScanner[$row['scanner_id']][] = $owner;
-            if (!$row['read_attribution']) {
-                $unattributed[$row['scanner_id']] = true;
-            } elseif ($row['reads_incomplete'] ?? false) {
-                $incompleteOf[$row['scanner_id']][] = $owner;
-            }
-            $reads = $cached->ownerReads[$owner] ?? [];
-            self::collectChanged($reads, $unchanged, $changed);
-            foreach ($reads as $path => $hash) {
-                $readersOf[(string) $path][$owner] = true;
-            }
-            if ($row['read_group'] !== null) {
-                $ownersOfGroup[$row['read_group']][$owner] = true;
-                // A group the store no longer holds leaves nothing to compare
-                // the owner's shared reads against, so it cannot be current.
-                if (!isset($cached->groupReads[$row['read_group']])) {
-                    $changed[$row['file_path']] = true;
-                }
-            }
-        }
-        foreach ($cached->groupReads as $group => $reads) {
-            $group = (string) $group;
-            if (!isset($ownersOfGroup[$group])) {
-                continue;
-            }
-            self::collectChanged($reads, $unchanged, $changed);
-            foreach ($reads as $path => $hash) {
-                $groupsOf[(string) $path][$group] = true;
-            }
-        }
-
-        // A file discovery hashes for the first time was, to every owner
-        // that read it, a file discovery left out: read by its bytes, but
-        // never one with a contribution of its own, as the Rust index never
-        // holds one. Those bytes may be the same now, and the reader is
-        // still stale.
-        foreach ($addedByScanner as $paths) {
-            foreach ($paths as $path) {
-                if (isset($readersOf[$path]) || isset($groupsOf[$path])) {
-                    $changed[$path] = true;
-                }
-            }
-        }
-
-        $invalidated = [];
-        $expandedGroups = [];
-        $rebuiltScanners = [];
-        $queue = array_map('strval', array_keys($changed));
-        // The first owner a scanner rebuilds also rebuilds its rows whose
-        // reads are incomplete, once per scanner, so their readers are
-        // reached in turn.
-        $incompleteDue = [];
-        $invalidate = static function (string $owner) use ($cached, $incompleteOf, $directReads, &$invalidated, &$changed, &$queue, &$incompleteDue): bool {
-            if (isset($invalidated[$owner])) {
-                return false;
-            }
-            $invalidated[$owner] = true;
-            $ownPath = $cached->rows[$owner]['file_path'];
-            $scanner = $cached->rows[$owner]['scanner_id'];
-            if (!isset($changed[$ownPath]) && !isset($directReads[$scanner])) {
-                $changed[$ownPath] = true;
-                $queue[] = $ownPath;
-            }
-            if (isset($incompleteOf[$scanner]) && !array_key_exists($scanner, $incompleteDue)) {
-                $incompleteDue[$scanner] = false;
-            }
-
-            return true;
-        };
-        // Rebuilds the incomplete rows of every scanner that has rebuilt an
-        // owner since the last call, each scanner once.
-        $fanOut = static function () use ($incompleteOf, $invalidate, &$incompleteDue): void {
-            while (($scanner = array_search(false, $incompleteDue, true)) !== false) {
-                $incompleteDue[$scanner] = true;
-                foreach ($incompleteOf[$scanner] as $incomplete) {
-                    $invalidate($incomplete);
-                }
-            }
-        };
-        // A scanner that does not attribute reads is rebuilt whole as soon as
-        // any of its files is, and every file it rebuilds is a change its
-        // readers in other scanners see.
-        $rebuildScanner = static function (string $scanner) use ($rowsOfScanner, $invalidate, &$rebuiltScanners): void {
-            if (isset($rebuiltScanners[$scanner])) {
-                return;
-            }
-            $rebuiltScanners[$scanner] = true;
-            foreach ($rowsOfScanner[$scanner] ?? [] as $owner) {
-                $invalidate($owner);
-            }
-        };
+        $index = ReadIndex::build($cached, $discovered, $stillMatches, $addedByScanner, $addedFilesAffectAll, $layoutMarkers);
+        $walk = new InvalidationWalk($cached, $index, $directReads);
         foreach ($addedByScanner as $scanner => $paths) {
-            if ($paths !== [] && (isset($unattributed[(string) $scanner]) || isset($addedFilesAffectAll[(string) $scanner]))) {
-                $rebuildScanner((string) $scanner);
+            if ($paths !== [] && (isset($index->unattributed[(string) $scanner]) || isset($addedFilesAffectAll[(string) $scanner]))) {
+                $walk->rebuildScanner((string) $scanner);
             }
-            if ($paths !== [] && isset($incompleteOf[(string) $scanner])) {
-                $incompleteDue[(string) $scanner] ??= false;
+            if ($paths !== []) {
+                $walk->dueIncomplete((string) $scanner);
             }
         }
-        foreach ($deletedFrom as $scanner => $true) {
-            $rebuildScanner((string) $scanner);
+        foreach ($index->deletedFrom as $scanner => $true) {
+            $walk->rebuildScanner((string) $scanner);
         }
         foreach ($forced as $owner => $true) {
             if (isset($cached->rows[(string) $owner])) {
-                $invalidate((string) $owner);
+                $walk->invalidate((string) $owner);
             }
         }
-        do {
-            $fanOut();
-            $path = array_pop($queue);
-            if ($path === null) {
-                break;
-            }
-            $owners = ($ownersOfFile[$path] ?? []) + ($readersOf[$path] ?? []);
-            foreach ($groupsOf[$path] ?? [] as $group => $true) {
-                if (!isset($expandedGroups[$group])) {
-                    $expandedGroups[$group] = true;
-                    $owners += $ownersOfGroup[(string) $group];
-                }
-            }
-            foreach ($owners as $owner => $true) {
-                $owner = (string) $owner;
-                if ($invalidate($owner) && isset($unattributed[$cached->rows[$owner]['scanner_id']])) {
-                    $rebuildScanner($cached->rows[$owner]['scanner_id']);
-                }
-            }
-        } while (true);
+        $walk->drain();
 
-        return $invalidated;
-    }
-
-    /**
-     * Add every read that no longer matches the stored one.
-     *
-     * @param array<string, ?string> $reads
-     * @param callable(string, ?string): bool $unchanged
-     * @param array<string, true> $changed
-     */
-    private static function collectChanged(array $reads, callable $unchanged, array &$changed): void
-    {
-        foreach ($reads as $path => $hash) {
-            $path = (string) $path;
-            if (!isset($changed[$path]) && !$unchanged($path, $hash)) {
-                $changed[$path] = true;
-            }
-        }
+        return $walk->invalidated();
     }
 }
