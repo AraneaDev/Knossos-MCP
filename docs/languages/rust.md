@@ -58,6 +58,14 @@ different items is ambiguous and resolves to nothing. A glob source that
 provides no such name adds nothing, so `Vec` through `use crate::prelude::*;`
 stays the standard library's.
 
+A `use` inside a function body, or inside any block in it, imports for that
+block only. Its names are in scope in the whole block, as Rust has it, over a
+module-level `use` of the same name, and nothing after the block sees them.
+Its path may start from a name the module imports (`use Kind::{Big, Small};`
+under `use crate::model::Kind;`). Paths, constructors and receiver types inside
+the block resolve through it, and it emits the same `imports` edge a
+module-level `use` does.
+
 A call whose callee is named in UpperCamelCase builds a value: `Wrapper(1)`
 constructs a tuple struct and `Error::Io(e)` an enum variant. Neither is a
 `calls` edge; each is a `references` edge to the type it builds. A call into
@@ -276,8 +284,8 @@ is read.
   generic other than `Box`, `Rc` and `Arc` (`Option<T>`, `Vec<T>`,
   `Mutex<T>`) is not unwrapped, so a method called on what it holds
   (`self.items[0].run()`, `self.lock.lock().run()`) is not resolved.
-- A `use` inside a function body is not read, so a name it brings into scope
-  (`use Kind::*;` before a `match`) resolves as if it were absent.
+- A glob `use` inside a function body (`use Kind::*;` before a `match`) is not
+  read, so a name it brings into scope resolves as if it were absent.
 - A bare `mod foo;` declaration emits only a containment edge. The module's own
   node comes from the file that defines it.
 - A `use` leaf whose parent is a type (`use crate::errors::Error::Io;`, or

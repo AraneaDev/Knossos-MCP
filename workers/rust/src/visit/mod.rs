@@ -119,6 +119,7 @@ impl<'a> Walk<'a> {
             globs: Vec::new(),
             pending_globs: Vec::new(),
             module_aliases: BTreeMap::new(),
+            module_children: BTreeMap::new(),
             current_impl_target: None,
             frameworks,
             declarations,
@@ -618,9 +619,11 @@ impl Walk<'_> {
             receivers,
         };
         visitor.visit_signature(signature);
+        let outer = visitor.walk.enter_block_uses(container, &block.stmts);
         for statement in &block.stmts {
             visitor.visit_stmt(statement);
         }
+        visitor.walk.leave_block_uses(outer);
     }
 
     /// Walk what a type declaration names outside any body: its fields'

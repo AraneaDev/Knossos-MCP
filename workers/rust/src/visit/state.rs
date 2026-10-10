@@ -33,6 +33,11 @@ pub(super) struct Walk<'a> {
     /// is scoped to the module that declares it, so sibling modules may bind
     /// one alias to different paths. `None` marks a name bound twice.
     pub(super) module_aliases: BTreeMap<(String, String), Option<String>>,
+    /// Each module's `mod` declarations, by module then name, mapped to the
+    /// module each loads (see [`mod_child`](super::placement::mod_child)):
+    /// what a `use` inside a body of that module reaches a child through.
+    /// `None` marks a name two declarations send to two modules.
+    pub(super) module_children: BTreeMap<String, BTreeMap<String, Option<String>>>,
     /// Target type of the current impl block, for resolving `Self`.
     pub(super) current_impl_target: Option<String>,
     /// Frameworks the scan request asked this worker to enrich, by short name

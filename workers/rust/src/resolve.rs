@@ -153,7 +153,7 @@ use std::collections::BTreeMap;
 /// Re-inserting the *same* full path under a key is not a collision — that
 /// happens legitimately when the same `use` line is collected from two
 /// nested modules — so it stays resolvable.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Aliases {
     /// Local name to fully qualified path, or `None` when the local name is
     /// poisoned: two different full paths were imported under it.
@@ -177,6 +177,14 @@ impl Aliases {
                 self.entries.insert(alias, Some(full_path));
             }
         }
+    }
+
+    /// Bind `alias` in an inner scope, over whatever an outer scope bound
+    /// it to: to `full`, or poisoned when `full` is `None` (the inner scope
+    /// itself binds it twice apart). The caller restores the outer binding
+    /// when the scope ends.
+    pub fn shadow(&mut self, alias: String, full: Option<String>) {
+        self.entries.insert(alias, full);
     }
 
     /// The full path a local name stands for.

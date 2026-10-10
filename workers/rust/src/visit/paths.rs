@@ -16,7 +16,9 @@ use super::declarations::FieldType;
 use super::placement::mod_child;
 use super::state::Walk;
 use crate::facts::reference;
-use crate::resolve::{flatten_use, glob_prefixes, ident_name, is_primitive, parent_module, rebase};
+use crate::resolve::{
+    flatten_use, glob_prefixes, ident_name, is_primitive, parent_module, rebase, Aliases,
+};
 
 impl Walk<'_> {
     /// Record every `use` in this item list, emitting one `imports` edge each.
@@ -95,6 +97,8 @@ impl Walk<'_> {
                     .insert((container.to_owned(), name.clone()), child.clone());
             }
         }
+        self.module_children
+            .insert(container.to_owned(), children.clone());
         for item in items {
             match item {
                 Item::Use(node) => {
@@ -102,18 +106,12 @@ impl Walk<'_> {
                     flatten_use(&node.tree, "", &mut leaves);
                     let source = reference("module", &self.module);
                     for leaf in leaves {
-                        let written = match through_child(
+                        let Some(full) = self.imported_path(
+                            container,
                             &children,
                             node.leading_colon.is_none(),
                             &leaf.full,
-                        ) {
-                            Some(Some(written)) => written,
-                            Some(None) => continue,
-                            None => leaf.full.clone(),
-                        };
-                        let Some(full) = rebase(container, &self.anchor_crate(&written))
-                            .and_then(|full| self.renamed(full))
-                        else {
+                        ) else {
                             continue;
                         };
                         let module = if leaf.names_module {
@@ -174,6 +172,137 @@ impl Walk<'_> {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// The path one `use` leaf written in `container` imports, before
+    /// re-exports are followed: through a `mod` of `container` (`children`,
+    /// unless the path is rooted at `::`), the `crate`, `self` and `super`
+    /// roots and the project's renamed `mod` declarations. `None` when a
+    /// child or a rename is ambiguous, or a `super` chain runs out.
+    fn imported_path(
+        &self,
+        container: &str,
+        children: &BTreeMap<String, Option<String>>,
+        unrooted: bool,
+        written: &str,
+    ) -> Option<String> {
+        let written = match through_child(children, unrooted, written) {
+            Some(Some(written)) => written,
+            Some(None) => return None,
+            None => written.to_owned(),
+        };
+
+        rebase(container, &self.anchor_crate(&written)).and_then(|full| self.renamed(full))
+    }
+
+    /// Bring what the `use` items among a block's `statements` import into
+    /// scope, over the file's own imports of the same names, returning the
+    /// imports to restore when the block ends (see
+    /// [`Walk::leave_block_uses`]); `None` when the block has no `use`.
+    ///
+    /// An item in a block is in scope in the whole block, so the `use`
+    /// items are read before its first statement. `container` is the module
+    /// the body is declared in, which a `self` or `super` path and a child
+    /// module's name resolve against. Each leaf emits the `imports` edge a
+    /// module-level `use` does. Two leaves of one block binding a name to
+    /// different paths leave it bound to nothing there. A glob `use` in a
+    /// block is not read.
+    pub(super) fn enter_block_uses(
+        &mut self,
+        container: &str,
+        statements: &[syn::Stmt],
+    ) -> Option<Aliases> {
+        let uses: Vec<&syn::ItemUse> = statements
+            .iter()
+            .filter_map(|statement| match statement {
+                syn::Stmt::Item(Item::Use(node)) => Some(node),
+                _ => None,
+            })
+            .collect();
+        if uses.is_empty() {
+            return None;
+        }
+        let outer = self.aliases.clone();
+        let children = self
+            .module_children
+            .get(container)
+            .cloned()
+            .unwrap_or_default();
+        let source = reference("module", &self.module);
+        let mut bound: BTreeMap<String, Option<String>> = BTreeMap::new();
+        for node in uses {
+            let mut leaves = Vec::new();
+            flatten_use(&node.tree, "", &mut leaves);
+            for leaf in leaves {
+                let Some(full) = self.block_use_path(
+                    container,
+                    &children,
+                    node.leading_colon.is_none(),
+                    &leaf.full,
+                ) else {
+                    continue;
+                };
+                let module = if leaf.names_module {
+                    full.clone()
+                } else {
+                    parent_module(&full).to_owned()
+                };
+                self.import(&source, &module, node.span());
+                if leaf.alias == "_" {
+                    continue;
+                }
+                let full = self.exported(full);
+                match bound.get(&leaf.alias) {
+                    Some(Some(existing)) if *existing != full => {
+                        bound.insert(leaf.alias, None);
+                    }
+                    Some(_) => {}
+                    None => {
+                        bound.insert(leaf.alias, Some(full));
+                    }
+                }
+            }
+        }
+        for (alias, full) in bound {
+            self.aliases.shadow(alias, full);
+        }
+
+        Some(outer)
+    }
+
+    /// The path one leaf of a `use` in a block imports. Its first segment
+    /// may be any name in scope there, as since the 2018 edition: one the
+    /// module or an enclosing block imports stands for what it imports,
+    /// while a child module, a rooted path or any other name is taken as
+    /// [`Walk::imported_path`] takes a module-level leaf. `None` when that
+    /// name was imported ambiguously.
+    fn block_use_path(
+        &self,
+        container: &str,
+        children: &BTreeMap<String, Option<String>>,
+        unrooted: bool,
+        written: &str,
+    ) -> Option<String> {
+        let head = written.split("::").next().unwrap_or(written);
+        let rooted = matches!(head, "crate" | "self" | "super" | "Self");
+        if unrooted && !rooted && !children.contains_key(head) {
+            if let Some(expanded) = self.aliases.expand(written) {
+                return Some(expanded);
+            }
+            if self.aliases.is_ambiguous(head) {
+                return None;
+            }
+        }
+
+        self.imported_path(container, children, unrooted, written)
+    }
+
+    /// End the scope [`Walk::enter_block_uses`] opened, restoring the
+    /// imports it returned.
+    pub(super) fn leave_block_uses(&mut self, outer: Option<Aliases>) {
+        if let Some(outer) = outer {
+            self.aliases = outer;
         }
     }
 

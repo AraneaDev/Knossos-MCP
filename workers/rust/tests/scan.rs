@@ -3317,3 +3317,79 @@ fn a_name_two_glob_sources_provide_stays_unresolved() {
         );
     }
 }
+
+#[test]
+fn a_use_in_a_function_body_applies_to_its_block_only() {
+    // A `use` inside a body brings its names into that block: it shadows
+    // the module's own `use` of the same name there, and nothing after the
+    // block sees it.
+    let declares = "pub struct Y;\nimpl Y {\n    pub fn new() -> Self {\n        Y\n    }\n    pub fn go(&self) {}\n}\npub fn helper() {}\n";
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod b;\npub mod user;\n"),
+        ("src/a.rs", declares),
+        ("src/b.rs", declares),
+        (
+            "src/user.rs",
+            "use crate::b::Y;\npub fn scoped() {\n    {\n        use crate::a::{helper, Y};\n        let y = Y::new();\n        y.go();\n        helper();\n    }\n    let z = Y::new();\n    z.go();\n}\npub fn top() {\n    use crate::a::helper;\n    helper();\n}\npub fn after() {\n    helper();\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("body-use-scope", &files);
+
+    assert_eq!(
+        vec![
+            ("rust:function:crate::a::helper".to_owned(), true),
+            ("rust:method:crate::a::Y::go".to_owned(), true),
+            ("rust:method:crate::a::Y::new".to_owned(), true),
+            ("rust:method:crate::b::Y::go".to_owned(), true),
+            ("rust:method:crate::b::Y::new".to_owned(), true),
+        ],
+        method_calls(&contributions, "rust:function:crate::user::scoped")
+    );
+    assert_eq!(
+        vec![("rust:function:crate::a::helper".to_owned(), true)],
+        method_calls(&contributions, "rust:function:crate::user::top")
+    );
+    assert_eq!(
+        Vec::<(String, bool)>::new(),
+        method_calls(&contributions, "rust:function:crate::user::after")
+    );
+}
+
+#[test]
+fn a_use_in_a_function_body_starts_from_a_name_in_scope() {
+    // `use Kind::{Big, Small};` in a body names the `Kind` the module
+    // imports, as any path may since the 2018 edition, not a crate `Kind`.
+    let files = [
+        ("src/lib.rs", "pub mod model;\npub mod user;\n"),
+        (
+            "src/model.rs",
+            "pub enum Kind {\n    Big(u8),\n    Small(u8),\n}\npub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n}\n",
+        ),
+        (
+            "src/user.rs",
+            "use crate::model;\nuse crate::model::Kind;\npub fn pick(kind: Kind) -> u8 {\n    use model::Store;\n    use Kind::{Big, Small};\n    let store: Store = Store;\n    store.put();\n    match kind {\n        Big(n) | Small(n) => n,\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("body-use-in-scope-head", &files);
+    let targets: Vec<String> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["edges"].as_array().unwrap().clone())
+        .filter(|edge| edge["source"] == "rust:function:crate::user::pick")
+        .map(|edge| edge["target"].as_str().unwrap().to_owned())
+        .collect();
+
+    assert!(
+        targets.contains(&"rust:class:crate::model::Kind::Big".to_owned()),
+        "{targets:?}"
+    );
+    assert!(
+        targets.contains(&"rust:method:crate::model::Store::put".to_owned()),
+        "{targets:?}"
+    );
+    assert!(
+        !targets
+            .iter()
+            .any(|target| target.contains(":Kind::") && !target.contains("crate::model::Kind")),
+        "{targets:?}"
+    );
+}
