@@ -17,7 +17,10 @@ never imports or runs your project.
   dependencies outside `pyproject.toml`
 - `.py` source files and `.pyi` stubs
 - packages, identified by `__init__.py`
-- ordinary and relative imports, with their aliases
+- ordinary and relative imports, with their aliases. An import under
+  `if TYPE_CHECKING:` is type-only: it runs for the type checker only, so a
+  cycle closed by nothing but such imports is not reported, unless the same
+  module is also imported at runtime
 - the source roots your packages live in: `src/` when it holds no
   `__init__.py`, and the directories `pyproject.toml` declares through
   setuptools (`packages.find.where`, the `""` entry of `package-dir`), Poetry
