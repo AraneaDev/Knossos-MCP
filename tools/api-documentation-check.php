@@ -86,7 +86,9 @@ foreach ([
     }
 }
 
-$python = (string) file_get_contents($root . '/workers/python/bin/worker.py');
+// The worker script keeps the protocol (`scan`, `handle`); the collector it
+// drives lives in the package beside it.
+$python = (string) file_get_contents($root . '/workers/python/bin/worker.py') . (string) file_get_contents($root . '/workers/python/bin/knossos_python/collector.py');
 foreach (['PythonAstFactCollector' => 'class', 'scan' => 'def', 'handle' => 'def'] as $symbol => $kind) {
     $pattern = '/^' . $kind . '\s+' . preg_quote($symbol, '/') . '\b[^\n]*:\n\s+"""[^"\n]+"""/m';
     if (preg_match($pattern, $python) !== 1) {

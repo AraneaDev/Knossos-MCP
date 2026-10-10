@@ -485,9 +485,10 @@ impl Walk<'_> {
     /// The edge points at the MODULE the imported name lives in, not at the
     /// name itself: `use a::b::C;` emits `imports` to `rust:module:a::b`, and
     /// `C` goes into the alias map, exactly as `visit_ImportFrom` in
-    /// `workers/python/bin/worker.py` splits the two. A `use` overwhelmingly
-    /// names a struct, trait, or function, whose real node kind is `class`,
-    /// `interface`, or `function`, so targeting `rust:module:a::b::C` resolved
+    /// `workers/python/bin/knossos_python/collector.py` splits the two. A
+    /// `use` overwhelmingly names a struct, trait, or function, whose real
+    /// node kind is `class`, `interface`, or `function`, so targeting
+    /// `rust:module:a::b::C` resolved
     /// against nothing and made the reconciler synthesise an external module
     /// that shadowed the very symbol the file had already declared. The module
     /// is a node the graph genuinely holds. Two shapes need no truncation: a
