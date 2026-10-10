@@ -8,7 +8,7 @@ use Knossos\Configuration\ProjectConfigurationLoader;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\JsonConfig;
 use Knossos\Maintenance\DatabaseMaintenanceService;
-use Knossos\Mcp\StdioServer;
+use Knossos\Mcp\McpDispatcher;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Scan\ProjectScanService;
@@ -120,7 +120,7 @@ final class PropertyTest extends KnossosTestCase
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
-        $server = new StdioServer($tools, maxResponseBytes: 4096);
+        $server = new McpDispatcher($tools);
         $templates = [
             [],
             ['jsonrpc' => '1.0', 'id' => 1, 'method' => 'ping'],

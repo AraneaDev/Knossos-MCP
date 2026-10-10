@@ -94,7 +94,9 @@ foreach ($interfaces as $interface) {
 }
 
 $javascript = (string) file_get_contents($root . '/workers/typescript/src/scanner.js');
-$python = (string) file_get_contents($root . '/workers/python/bin/worker.py');
+// The worker script keeps the protocol (`scan`, `handle`); the collector it
+// drives lives in the package beside it.
+$python = (string) file_get_contents($root . '/workers/python/bin/worker.py') . (string) file_get_contents($root . '/workers/python/bin/knossos_python/collector.py');
 $api .= "## Isolated worker APIs\n\n| Runtime | Contract | Responsibility |\n| --- | --- | --- |\n";
 // Each capture is bounded to a single docblock: `.*?` alone starts at the FIRST
 // `/**` in the file and swallows everything up to the declaration, so every row

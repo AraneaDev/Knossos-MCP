@@ -19,7 +19,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from conftest import WORKER_PATH
+from conftest import WORKER_PATH, patch_everywhere
 
 
 def _sha(data: bytes) -> str:
@@ -74,7 +74,7 @@ def test_a_failed_index_read_is_reported_as_null(monkeypatch, worker: ModuleType
             raise OSError("vanished mid-read")
         return real_read(path, max_bytes)
 
-    monkeypatch.setattr(worker, "read_bounded", failing)
+    patch_everywhere(monkeypatch, worker, "read_bounded", failing)
     discovery = _discovered(root)
     result, _ = _scan(worker, root, ["pkg/a.py"])
 
@@ -100,7 +100,7 @@ def _serve(monkeypatch, worker: ModuleType, name: str, outcomes: list[bytes | No
             raise OSError("unreadable on this read")
         return outcome
 
-    monkeypatch.setattr(worker, "read_bounded", served)
+    patch_everywhere(monkeypatch, worker, "read_bounded", served)
     return reads
 
 
@@ -187,7 +187,7 @@ def _no_reads(monkeypatch, worker: ModuleType) -> list[str]:
         reads.append(path.name)
         return real_read(path, max_bytes)
 
-    monkeypatch.setattr(worker, "read_bounded", spying)
+    patch_everywhere(monkeypatch, worker, "read_bounded", spying)
     return reads
 
 
@@ -304,7 +304,7 @@ def test_an_unreadable_requested_file_is_null_and_an_empty_request_reports_an_em
             raise OSError("deleted after discovery")
         return real_read(path, max_bytes)
 
-    monkeypatch.setattr(worker, "read_bounded", failing)
+    patch_everywhere(monkeypatch, worker, "read_bounded", failing)
     result, contributions = _scan(worker, root, ["gone.py"])
     assert contributions["gone.py"]["diagnostics"][0]["code"] == "PY_UNSCANNABLE_FILE"
     assert result["input_hashes"] == {"gone.py": None, "pyproject.toml": None}
@@ -362,7 +362,7 @@ def test_a_requested_file_that_grows_past_the_cap_before_its_read_is_null_and_no
         sizes.append(len(data))
         return data
 
-    monkeypatch.setattr(worker, "read_bounded", grown)
+    patch_everywhere(monkeypatch, worker, "read_bounded", grown)
     result, contributions = _scan_limited(worker, root, ["grows.py"], 50)
 
     assert sizes == [51]
@@ -382,7 +382,7 @@ def test_a_module_that_grows_past_the_cap_before_the_index_reads_it_is_null(
             path.write_bytes(DECLARES + b"#" * 10_000)
         return real_read(path, max_bytes)
 
-    monkeypatch.setattr(worker, "read_bounded", grown)
+    patch_everywhere(monkeypatch, worker, "read_bounded", grown)
     index = worker.ProjectModuleIndex(root, 100)
 
     assert index.module_declarations("pkg.b") == {}
@@ -1042,7 +1042,7 @@ def test_a_python_script_swapped_around_the_shebang_probe_fails_verification(
             absolute.write_text(python, encoding="utf-8")
         return bool(verdict)
 
-    monkeypatch.setattr(worker, "names_python_in_shebang", swapped)
+    patch_everywhere(monkeypatch, worker, "names_python_in_shebang", swapped)
     result, contributions = _scan(worker, root, ["bin/tool"])
     (root / "bin/tool").write_text(python, encoding="utf-8")
 
@@ -1093,7 +1093,7 @@ def test_a_bounded_read_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
     os.mkfifo(fifo)
 
     child = subprocess.run(
-        [sys.executable, "-c", _READ_A_FIFO, str(WORKER_PATH), str(fifo)],
+        [sys.executable, "-I", "-B", "-c", _READ_A_FIFO, str(WORKER_PATH), str(fifo)],
         capture_output=True,
         text=True,
         timeout=20,

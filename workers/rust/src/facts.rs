@@ -9,12 +9,13 @@ use crate::protocol::{Contribution, Diagnostic, Edge, Evidence, Node};
 
 /// Build a language-namespaced reference for one node: `rust:<kind>:<canonical>`.
 ///
-/// Mirrors the Python worker's `ref(kind, canonical)` (`workers/python/bin/worker.py`)
-/// and the shape the TypeScript worker already emits. `GraphReconciler::collectNodes`
-/// (`src/Reconciliation/GraphReconciler.php`) calls `languageFromReference` on every
-/// node's `local_id`, and that function throws if the reference has no `<lang>:`
-/// prefix — so every node's `local_id` and every edge endpoint must be built
-/// through this function, never a bare canonical name.
+/// Mirrors the Python worker's `ref(kind, canonical)`
+/// (`workers/python/bin/knossos_python/ast_helpers.py`) and the shape the
+/// TypeScript worker already emits. `GraphReconciler::collectNodes`
+/// (`src/Reconciliation/GraphReconciler.php`) calls `languageFromReference` on
+/// every node's `local_id`, and that function throws if the reference has no
+/// `<lang>:` prefix — so every node's `local_id` and every edge endpoint must
+/// be built through this function, never a bare canonical name.
 #[must_use]
 pub fn reference(kind: &str, canonical: &str) -> String {
     format!("rust:{kind}:{canonical}")
@@ -359,9 +360,9 @@ impl Facts {
 
     /// The finished contribution, with edges in a stable order.
     ///
-    /// Sorting matches `workers/python/bin/worker.py`, so re-scanning an
-    /// unchanged file produces byte-identical output and reconciliation sees no
-    /// churn.
+    /// Sorting matches `workers/python/bin/knossos_python/collector.py`, so
+    /// re-scanning an unchanged file produces byte-identical output and
+    /// reconciliation sees no churn.
     ///
     /// Edges whose `source` this contribution never declared as a node are
     /// dropped first. A missing target is left alone: the reconciler tolerates
@@ -379,12 +380,13 @@ impl Facts {
     /// Edges are then collapsed to the persistence identity the scanner SDK
     /// states (`docs/reference/scanner-sdk.md`): one row per
     /// kind/source/target within one owner, the same collapse `add_edge` in
-    /// `workers/python/bin/worker.py` performs by keying its edge map. A module
-    /// importing many symbols from one module, a function calling the same
-    /// target from three branches, and a `use` group repeated across nested
-    /// `mod` blocks all render the identical row otherwise. The collapse runs
-    /// after the sort, so the surviving row is always the one with the earliest
-    /// evidence line rather than whichever the walk happened to reach first.
+    /// `workers/python/bin/knossos_python/collector.py` performs by keying its
+    /// edge map. A module importing many symbols from one module, a function
+    /// calling the same target from three branches, and a `use` group repeated
+    /// across nested `mod` blocks all render the identical row otherwise. The
+    /// collapse runs after the sort, so the surviving row is always the one
+    /// with the earliest evidence line rather than whichever the walk happened
+    /// to reach first.
     #[must_use]
     pub fn finish(mut self) -> Contribution {
         let declared = self.declared;

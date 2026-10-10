@@ -693,8 +693,8 @@ fn use_declarations_become_import_edges_pointing_at_the_containing_module() {
     // reconciler synthesise an external module twinning the very symbol the
     // project had already declared. The edge points at the module that holds
     // the symbol instead, which is a node the graph really has, and the symbol
-    // keeps going into the alias map. `workers/python/bin/worker.py` splits the
-    // two the same way.
+    // keeps going into the alias map, the same split the Python worker makes
+    // in `workers/python/bin/knossos_python/collector.py`.
     let source = r#"
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize as De};

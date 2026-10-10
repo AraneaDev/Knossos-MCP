@@ -133,8 +133,8 @@ fn limit_of(limits: Option<&Value>, key: &str, fallback: u64) -> Result<u64, Str
 /// walking `Path::components()`: that iterator silently collapses a leading
 /// `./` and a doubled `/` before a `.` or empty segment would ever be seen,
 /// which would let `./x` and `x//y` slip past unnoticed. This mirrors
-/// `assert_scannable_path` in `workers/python/bin/worker.py`: the two workers
-/// must refuse exactly the same shapes.
+/// `assert_scannable_path` in `workers/python/bin/knossos_python/safe_io.py`:
+/// the two workers must refuse exactly the same shapes.
 fn assert_scannable_path(value: &Value) -> Result<String, String> {
     let raw = value
         .as_str()
