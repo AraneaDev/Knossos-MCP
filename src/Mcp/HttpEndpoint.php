@@ -43,6 +43,9 @@ final readonly class HttpEndpoint
     ) {}
 
     /**
+     * Answer one HTTP request: transport checks, then the envelope, then the
+     * revision's own path. Each step either refuses the request or hands on.
+     *
      * @param array<string, string> $headers
      * @param string|null $peer Remote address of the caller (e.g. REMOTE_ADDR); used to keep
      *                          an unauthenticated endpoint loopback-only. null skips the check.
@@ -52,6 +55,61 @@ final readonly class HttpEndpoint
     {
         $headers = array_change_key_case($headers, CASE_LOWER);
         $baseHeaders = ['Cache-Control' => 'no-store', 'X-Content-Type-Options' => 'nosniff'];
+        $refusal = $this->rejectTransport($headers, $peer, $baseHeaders);
+        if ($refusal !== null) {
+            return $refusal;
+        }
+        // `2026-07-28` removed sessions and the GET stream, so a caller that
+        // declares it gets 405 for both rather than the legacy machinery.
+        $protocol = $headers['mcp-protocol-version'] ?? null;
+        $modern = $protocol === Profile20260728::VERSION;
+        if ($modern && ($method === 'GET' || $method === 'DELETE')) {
+            return $this->problem(405, 'This protocol version supports POST only.', $baseHeaders + ['Allow' => 'POST']);
+        }
+        if ($method === 'DELETE') {
+            return $this->handleDelete($headers['mcp-session-id'] ?? '', $baseHeaders);
+        }
+        if ($method !== 'POST') {
+            return $this->problem(405, 'Only POST and session DELETE are supported.', $baseHeaders + ['Allow' => 'POST, DELETE']);
+        }
+        $message = [];
+        $refusal = $this->rejectEnvelope($headers, $body, $baseHeaders, $message);
+        if ($refusal !== null) {
+            return $refusal;
+        }
+        $rpcMethod = $message['method'] ?? null;
+        if ($modern) {
+            return $this->handleModern($message, $headers, $baseHeaders);
+        }
+        if ($rpcMethod !== 'initialize' && $protocol === null) {
+            return $this->problem(400, 'MCP-Protocol-Version is required after initialization.', $baseHeaders);
+        }
+        $session = $headers['mcp-session-id'] ?? null;
+        if ($rpcMethod === 'initialize') {
+            return $this->handleInitialize($message, $session, $baseHeaders);
+        }
+        $refusal = $this->requireLiveSession($session, $rpcMethod, $baseHeaders);
+        if ($refusal !== null) {
+            return $refusal;
+        }
+        if (!array_key_exists('id', $message)) {
+            // Stateless PHP HTTP workers cannot interrupt an already-running request;
+            // cancellation notifications are accepted for protocol compatibility.
+            return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
+        }
+        return $this->serveSessionRequest($message, (string) $protocol, $headers, $baseHeaders);
+    }
+
+    /**
+     * The refusal for a caller this endpoint does not serve, or null: Host, then
+     * Origin, then authentication, all before anything reads the body.
+     *
+     * @param array<string, string> $headers lower-cased request headers
+     * @param array<string, string> $baseHeaders
+     * @return array{status: int, headers: array<string, string>, body: string}|null
+     */
+    private function rejectTransport(array $headers, ?string $peer, array $baseHeaders): ?array
+    {
         $host = strtolower(trim($headers['host'] ?? ''));
         if ($host === '' || !in_array($host, $this->allowedHosts, true)) {
             return $this->problem(421, 'Unrecognized Host header.', $baseHeaders);
@@ -73,27 +131,43 @@ final readonly class HttpEndpoint
                 return $this->problem(401, 'Bearer authentication is required.', $baseHeaders + ['WWW-Authenticate' => 'Bearer']);
             }
         }
-        // `2026-07-28` removed sessions and the GET stream, so a caller that
-        // declares it gets 405 for both rather than the legacy machinery.
-        $declaredVersion = $headers['mcp-protocol-version'] ?? null;
-        $modern = $declaredVersion === Profile20260728::VERSION;
-        if ($modern && ($method === 'GET' || $method === 'DELETE')) {
-            return $this->problem(405, 'This protocol version supports POST only.', $baseHeaders + ['Allow' => 'POST']);
-        }
-        if ($method === 'DELETE') {
-            $session = $headers['mcp-session-id'] ?? '';
-            try {
-                if ($session !== '' && $this->sessions->exists($session)) {
-                    $this->sessions->delete($session);
-                }
-            } catch (Throwable) {
-                return $this->problem(503, 'HTTP session storage is temporarily unavailable.', $baseHeaders);
+
+        return null;
+    }
+
+    /**
+     * End a 2025-11-25 session. An unknown or empty session id is
+     * acknowledged with the same 204.
+     *
+     * @param array<string, string> $baseHeaders
+     * @return array{status: int, headers: array<string, string>, body: string}
+     */
+    private function handleDelete(string $session, array $baseHeaders): array
+    {
+        $unavailable = $this->withSessionStore(function () use ($session): void {
+            if ($session !== '' && $this->sessions->exists($session)) {
+                $this->sessions->delete($session);
             }
-            return ['status' => 204, 'headers' => $baseHeaders, 'body' => ''];
-        }
-        if ($method !== 'POST') {
-            return $this->problem(405, 'Only POST and session DELETE are supported.', $baseHeaders + ['Allow' => 'POST, DELETE']);
-        }
+        }, $baseHeaders);
+
+        return $unavailable ?? ['status' => 204, 'headers' => $baseHeaders, 'body' => ''];
+    }
+
+    /**
+     * The refusal for a POST whose envelope is unusable, or null with the
+     * decoded message in $message.
+     *
+     * Checked in a fixed order: size, Content-Type, Accept, a declared revision
+     * this server does not serve, then the body itself.
+     *
+     * @param array<string, string> $headers lower-cased request headers
+     * @param array<string, string> $baseHeaders
+     * @param array<mixed> $message
+     * @param-out array<mixed> $message
+     * @return array{status: int, headers: array<string, string>, body: string}|null
+     */
+    private function rejectEnvelope(array $headers, string $body, array $baseHeaders, array &$message): ?array
+    {
         if (strlen($body) > $this->maxRequestBytes) {
             return $this->problem(413, 'Request body exceeds the configured byte limit.', $baseHeaders);
         }
@@ -104,7 +178,7 @@ final readonly class HttpEndpoint
         if (!str_contains($accept, 'application/json') || !str_contains($accept, 'text/event-stream')) {
             return $this->problem(406, 'Accept must include application/json and text/event-stream.', $baseHeaders);
         }
-        $protocol = $declaredVersion;
+        $protocol = $headers['mcp-protocol-version'] ?? null;
         // supported(), not the SUPPORTED constant: with KNOSSOS_LEGACY_PROTOCOL=0
         // the constant still lists the withdrawn revision, so a legacy client
         // would slip past this gate into the session path and be refused further
@@ -120,91 +194,125 @@ final readonly class HttpEndpoint
             ], $baseHeaders);
         }
         try {
-            $message = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
-            if (!is_array($message) || array_is_list($message)) {
+            $decoded = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($decoded) || array_is_list($decoded)) {
                 throw new JsonException('JSON-RPC body must be an object.');
             }
-        } catch (JsonException $error) {
+        } catch (JsonException) {
             return $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32700, 'message' => 'Parse error']], $baseHeaders);
         }
         // The same id rule as stdio, before anything echoes the id back.
-        if (JsonRpcId::isInvalid($message)) {
+        if (JsonRpcId::isInvalid($decoded)) {
             return $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32600, 'message' => 'Invalid Request']], $baseHeaders);
         }
-        $rpcMethod = $message['method'] ?? null;
-        if ($modern) {
-            return $this->handleModern($message, $headers, $baseHeaders);
-        }
-        if ($rpcMethod !== 'initialize' && $protocol === null) {
-            return $this->problem(400, 'MCP-Protocol-Version is required after initialization.', $baseHeaders);
-        }
-        $session = $headers['mcp-session-id'] ?? null;
-        if ($rpcMethod === 'initialize') {
-            if ($session !== null) {
-                return $this->problem(400, 'Initialization must not supply a session ID.', $baseHeaders);
-            }
-            try {
-                $response = $this->dispatcher()->handle($message);
-            } catch (Throwable $error) {
-                return $this->internalError($message['id'] ?? null, $error, $baseHeaders);
-            }
-            if ($response === null) {
-                // initialize delivered as a notification (no id): acknowledge with
-                // no session rather than an empty JSON body.
-                return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
-            }
-            if (isset($response['error'])) {
-                return $this->json(200, $response, $baseHeaders);
-            }
-            try {
-                $session = $this->sessions->create();
-            } catch (Throwable $error) {
-                return $this->problem(503, $error instanceof RuntimeException && $error->getCode() === HttpSessionStore::CAPACITY_ERROR
-                    ? $error->getMessage()
-                    : 'HTTP session storage is temporarily unavailable.', $baseHeaders);
-            }
-            return $this->json(200, $response, $baseHeaders + ['Mcp-Session-Id' => $session]);
+        $message = $decoded;
+
+        return null;
+    }
+
+    /**
+     * Open a 2025-11-25 session: answer `initialize`, then store the session
+     * only when the handshake succeeded.
+     *
+     * @param array<string, mixed> $message
+     * @param array<string, string> $baseHeaders
+     * @return array{status: int, headers: array<string, string>, body: string}
+     */
+    private function handleInitialize(array $message, ?string $session, array $baseHeaders): array
+    {
+        if ($session !== null) {
+            return $this->problem(400, 'Initialization must not supply a session ID.', $baseHeaders);
         }
         try {
-            $sessionExists = is_string($session) && $this->sessions->exists($session);
-        } catch (Throwable) {
-            return $this->problem(503, 'HTTP session storage is temporarily unavailable.', $baseHeaders);
+            $response = $this->dispatcher()->handle($message);
+        } catch (Throwable $error) {
+            return $this->internalError($message['id'] ?? null, $error, $baseHeaders);
         }
-        if (!$sessionExists) {
+        if ($response === null) {
+            // initialize delivered as a notification (no id): acknowledge with
+            // no session rather than an empty JSON body.
+            return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
+        }
+        if (isset($response['error'])) {
+            return $this->json(200, $response, $baseHeaders);
+        }
+        $created = '';
+        $unavailable = $this->withSessionStore(function () use (&$created): void {
+            $created = $this->sessions->create();
+        }, $baseHeaders);
+
+        return $unavailable ?? $this->json(200, $response, $baseHeaders + ['Mcp-Session-Id' => $created]);
+    }
+
+    /**
+     * The response that ends a session request before dispatch, or null when
+     * the session exists, has completed its handshake, and has been touched.
+     *
+     * `notifications/initialized` is answered here, since completing the
+     * handshake is the session's own transition and needs no dispatcher.
+     *
+     * @param array<string, string> $baseHeaders
+     * @return array{status: int, headers: array<string, string>, body: string}|null
+     */
+    private function requireLiveSession(?string $session, mixed $rpcMethod, array $baseHeaders): ?array
+    {
+        $exists = false;
+        $unavailable = $this->withSessionStore(function () use ($session, &$exists): void {
+            $exists = is_string($session) && $this->sessions->exists($session);
+        }, $baseHeaders);
+        if ($unavailable !== null) {
+            return $unavailable;
+        }
+        if (!$exists || $session === null) {
             return $this->problem(404, 'Unknown or expired MCP session.', $baseHeaders);
         }
         if ($rpcMethod === 'notifications/initialized') {
-            try {
+            $transition = '';
+            $unavailable = $this->withSessionStore(function () use ($session, &$transition): void {
                 $transition = $this->sessions->markInitialized($session);
-            } catch (Throwable) {
-                return $this->problem(503, 'HTTP session storage is temporarily unavailable.', $baseHeaders);
-            }
-            return match ($transition) {
+            }, $baseHeaders);
+            return $unavailable ?? match ($transition) {
                 HttpSessionStore::INITIALIZED => ['status' => 202, 'headers' => $baseHeaders, 'body' => ''],
                 HttpSessionStore::ALREADY_INITIALIZED => $this->problem(409, 'MCP session has already been initialized.', $baseHeaders),
                 default => $this->problem(404, 'Unknown or expired MCP session.', $baseHeaders),
             };
         }
-        try {
+        $initialized = false;
+        $unavailable = $this->withSessionStore(function () use ($session, &$initialized): void {
             $initialized = $this->sessions->initialized($session);
-        } catch (Throwable) {
-            return $this->problem(503, 'HTTP session storage is temporarily unavailable.', $baseHeaders);
+        }, $baseHeaders);
+        if ($unavailable !== null) {
+            return $unavailable;
         }
         if (!$initialized) {
             return $this->problem(409, 'MCP session has not been initialized.', $baseHeaders);
         }
+
+        // Slide the expiry forward so an actively used session survives.
+        return $this->withSessionStore(fn() => $this->sessions->touch($session), $baseHeaders);
+    }
+
+    /**
+     * Run one session-store operation, or answer 503 when the store fails.
+     *
+     * The store's own detail never reaches the client, with one exception: a
+     * full store says so, because that is the caller's to act on.
+     *
+     * @param \Closure(): mixed $operation
+     * @param array<string, string> $baseHeaders
+     * @return array{status: int, headers: array<string, string>, body: string}|null null when the operation succeeded
+     */
+    private function withSessionStore(\Closure $operation, array $baseHeaders): ?array
+    {
         try {
-            // Slide the expiry forward so an actively used session survives.
-            $this->sessions->touch((string) $session);
-        } catch (Throwable) {
-            return $this->problem(503, 'HTTP session storage is temporarily unavailable.', $baseHeaders);
+            $operation();
+        } catch (Throwable $error) {
+            return $this->problem(503, $error instanceof RuntimeException && $error->getCode() === HttpSessionStore::CAPACITY_ERROR
+                ? $error->getMessage()
+                : 'HTTP session storage is temporarily unavailable.', $baseHeaders);
         }
-        if (!array_key_exists('id', $message)) {
-            // Stateless PHP HTTP workers cannot interrupt an already-running request;
-            // cancellation notifications are accepted for protocol compatibility.
-            return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
-        }
-        return $this->serveSessionRequest($message, (string) $protocol, $headers, $baseHeaders);
+
+        return null;
     }
 
     /**
