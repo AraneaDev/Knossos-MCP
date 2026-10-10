@@ -7,10 +7,10 @@ namespace Knossos\Scan;
 use InvalidArgumentException;
 use Knossos\Cancellation\CancellationToken;
 use Knossos\Discovery\FileFingerprint;
-use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scanner\Protocol\{Diagnostic, Evidence, Protocol, ScanContribution, ScannerManifest};
 use Knossos\Scanner\Worker\{ContributionDecoder, WorkerException, WorkerLimits};
 use Knossos\Store\ChunkedInQuery;
+use Knossos\Store\ContributionCacheEntry;
 use PDO;
 use Throwable;
 

@@ -15,8 +15,8 @@ use Knossos\Cli\CliOptionParser;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Runtime\RuntimeFactory;
-use Knossos\Scan\ScanBusyException;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Store\ScanBusyException;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 

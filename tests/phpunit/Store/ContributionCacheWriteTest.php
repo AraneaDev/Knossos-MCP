@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Store;
 
-use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scanner\Protocol\ScanContribution;
+use Knossos\Store\ContributionCacheEntry;
 use Knossos\Store\SqliteGraphRepository;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;

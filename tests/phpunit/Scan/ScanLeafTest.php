@@ -7,7 +7,7 @@ namespace Knossos\Tests\Phpunit\Scan;
 use Knossos\Cancellation\CancellationToken;
 use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Scan\ScanAnalysis;
-use Knossos\Scan\ScanBusyException;
+use Knossos\Store\ScanBusyException;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 
@@ -19,7 +19,7 @@ use RuntimeException;
  *                                          cancellation marker thrown by
  *                                          CancellationToken::throwIfCancelled
  *                                          and propagated by Scan services).
- *   - src/Scan/ScanBusyException.php      (structural-infimum, extends
+ *   - src/Store/ScanBusyException.php      (structural-infimum, extends
  *                                          RuntimeException; the busy-state
  *                                          marker thrown when a scan is
  *                                          re-entered while another scan is

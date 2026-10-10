@@ -314,7 +314,7 @@ final readonly class LanguageScanRunner
      * @return array{
      *     manifest: \Knossos\Scanner\Protocol\ScannerManifest,
      *     contributions: list<\Knossos\Scanner\Protocol\ScanContribution>,
-     *     cache_entries: list<\Knossos\Reconciliation\ContributionCacheEntry>,
+     *     cache_entries: list<\Knossos\Store\ContributionCacheEntry>,
      *     parsed: int,
      *     unchanged: int,
      *     added: int,

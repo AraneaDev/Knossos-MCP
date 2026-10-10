@@ -7,7 +7,7 @@ namespace Knossos\Tests\Phpunit;
 use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Reconciliation\ReconciliationException;
-use Knossos\Scan\ScanBusyException;
+use Knossos\Store\ScanBusyException;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 use Throwable;
@@ -17,7 +17,7 @@ use Throwable;
  * src/:
  *   - Knossos\Discovery\DiscoveryException        (non-final; see below)
  *   - Knossos\Reconciliation\ReconciliationException (9 LoC, final)
- *   - Knossos\Scan\ScanBusyException              (9 LoC, final)
+ *   - Knossos\Store\ScanBusyException             (9 LoC, final)
  *   - Knossos\Cancellation\ScanCancelledException (9 LoC, final)
  *
  * Each source file is just `class X extends RuntimeException {}` — no body,
@@ -65,7 +65,7 @@ final class ExceptionsTest extends KnossosTestCase
     public function testScanBusyExceptionIsRuntimeException(): void
     {
         $error = new ScanBusyException('a scan is already running');
-        assertSame('Knossos\\Scan\\ScanBusyException', $error::class);
+        assertSame('Knossos\\Store\\ScanBusyException', $error::class);
         assertSame(RuntimeException::class, get_parent_class($error));
         self::assertInstanceOf(RuntimeException::class, $error);
         self::assertInstanceOf(Throwable::class, $error);

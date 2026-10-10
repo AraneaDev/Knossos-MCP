@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Knossos\Store;
 
-use Knossos\Scan\ScanBusyException;
 use PDO;
 use PDOException;
 

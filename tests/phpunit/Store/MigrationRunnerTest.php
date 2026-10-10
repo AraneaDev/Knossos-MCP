@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Store;
 
-use Knossos\Scan\ScanBusyException;
 use Knossos\Store\MigrationRunner;
+use Knossos\Store\ScanBusyException;
 use Knossos\Store\SqliteConnection;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;

@@ -7,9 +7,9 @@ namespace Knossos\Cli;
 use InvalidArgumentException;
 use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Discovery\DiscoveryException;
-use Knossos\Scan\ScanBusyException;
 use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Store\ScanBusyException;
 use PDOException;
 use Throwable;
 

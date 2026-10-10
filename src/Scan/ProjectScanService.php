@@ -11,6 +11,7 @@ use Knossos\Git\GitHeadResolver;
 use Knossos\Reconciliation\{FullScanRequest, GraphReconciler, ReconciliationResult};
 use Knossos\Result\ResultEnvelope;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Store\ScanBusyException;
 use Knossos\Store\SqliteGraphRepository;
 use PDO;
 
