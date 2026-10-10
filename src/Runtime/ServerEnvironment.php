@@ -7,7 +7,6 @@ namespace Knossos\Runtime;
 use Knossos\Application;
 use Knossos\Discovery\AllowedRoots;
 use Knossos\Discovery\RootGuard;
-use Knossos\Mcp\Protocol\ProtocolNegotiator;
 use PDO;
 
 /**
@@ -40,17 +39,22 @@ final readonly class ServerEnvironment
     /**
      * Everything an agent needs to know about this server's reach and identity.
      *
+     * The transport owns the protocol revisions, so the caller passes in the
+     * ones it supports right now.
+     *
+     * @param list<string> $protocolVersions the protocol revisions the transport accepts
+     * @param bool $legacyProtocolEnabled whether the handshake-era revision is still accepted
      * @return array<string, mixed>
      */
-    public function describe(): array
+    public function describe(array $protocolVersions, bool $legacyProtocolEnabled): array
     {
         $roots = $this->roots->describe();
 
         return [
             'name' => 'knossos',
             'version' => Application::VERSION,
-            'protocol_versions' => ProtocolNegotiator::supported(),
-            'legacy_protocol_enabled' => ProtocolNegotiator::legacyEnabled(),
+            'protocol_versions' => $protocolVersions,
+            'legacy_protocol_enabled' => $legacyProtocolEnabled,
             'allowed_roots' => $roots,
             // Named even when no file exists yet: this is the path to create in
             // order to grant another project, and it is re-read per request.
