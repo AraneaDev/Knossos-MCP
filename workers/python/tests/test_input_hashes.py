@@ -1093,7 +1093,7 @@ def test_a_bounded_read_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
     os.mkfifo(fifo)
 
     child = subprocess.run(
-        [sys.executable, "-c", _READ_A_FIFO, str(WORKER_PATH), str(fifo)],
+        [sys.executable, "-I", "-B", "-c", _READ_A_FIFO, str(WORKER_PATH), str(fifo)],
         capture_output=True,
         text=True,
         timeout=20,
