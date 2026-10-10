@@ -23,8 +23,8 @@ mod routes;
 mod state;
 
 use calls::{is_foreign_export, is_wasm_bindgen};
-pub use cfg::{collect_test_modules, TestModules};
-use cfg::{is_cfg_test, is_test_attribute, is_test_module_path, item_attrs};
+pub use cfg::{collect_test_modules, is_test_module_path, TestModules};
+use cfg::{is_cfg_test, is_test_attribute, item_attrs};
 pub use declarations::{declaration_paths, declared_renames, Declarations};
 use placement::mod_child;
 use state::{Calls, Walk};

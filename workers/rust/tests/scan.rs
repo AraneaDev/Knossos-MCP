@@ -2585,3 +2585,29 @@ fn a_method_called_on_an_untyped_receiver_is_listed_on_the_module() {
     assert!(names.contains(&serde_json::json!("label")));
     assert!(!names.contains(&serde_json::json!("typed")));
 }
+
+#[test]
+fn an_out_of_line_cfg_test_module_is_test_code_down_to_its_module_node() {
+    // `#[cfg(test)] mod tests;` in `visit/mod.rs` with the body in
+    // `visit/tests.rs`: the file's own module node is test code too, or the
+    // module reads as unreferenced production code.
+    let files = [
+        ("src/lib.rs", "pub mod visit;\n"),
+        (
+            "src/visit/mod.rs",
+            "pub fn walk() {}\n\n#[cfg(test)]\nmod tests;\n",
+        ),
+        (
+            "src/visit/tests.rs",
+            "#[test]\nfn walks() {\n    super::walk();\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("out-of-line-test-module", &files);
+    let module = contributions
+        .iter()
+        .flat_map(|contribution| contribution["nodes"].as_array().unwrap().clone())
+        .find(|node| node["kind"] == "module" && node["canonical_name"] == "crate::visit::tests")
+        .unwrap();
+
+    assert_eq!(Value::Bool(true), module["attributes"]["test"], "{module}");
+}

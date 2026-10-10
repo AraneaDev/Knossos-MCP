@@ -124,6 +124,10 @@ final class RustModuleIdentityTest extends KnossosTestCase
         $tests = $this->testNodes($pdo);
         self::assertContains('crate::checks::check', $tests);
         self::assertContains('crate::lib_tests::probe', $tests);
+        // The module node of the file is test code too, or the module reads
+        // as unreferenced production code.
+        self::assertContains('crate::checks', $tests);
+        self::assertContains('crate::lib_tests', $tests);
         self::assertNotContains('crate::cli::start', $tests);
         self::assertNotContains('crate::renamed_impl::go', $tests);
     }

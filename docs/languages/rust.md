@@ -170,7 +170,7 @@ and through its `mod helper;`, `crate::helper` is `crate::bin::helper`
 file knows this; a module file below `src/bin/<name>/` could belong to that
 binary or to another, so its own `crate::` paths still start at the package's
 `crate`. An out-of-line `#[cfg(test)] mod name;`
-marks the file it loads as test code when the declaring file sits in a module
+marks the file it loads as test code, its module node included, when the declaring file sits in a module
 above it, or is the crate root; a `#[path]` that sends a test module to a
 sibling (`src/net.rs` loading `src/net_tests.rs`) is not marked.
 

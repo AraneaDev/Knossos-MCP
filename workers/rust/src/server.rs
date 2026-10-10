@@ -258,7 +258,13 @@ fn walk_one(
     let mut facts = Facts::new(relative);
     facts.set_content_hash(content_hash);
     let span = proc_macro2::Span::call_site();
+    // The module node of a file a `#[cfg(test)] mod name;` loads is test
+    // code like everything the walk declares in it, or the module itself
+    // reads as unreferenced production code.
+    let file_is_test = crate::visit::is_test_module_path(module, test_modules);
+    facts.enter_test_scope_if(file_is_test);
     facts.node("module", module, &display, span, span);
+    facts.exit_test_scope_if(file_is_test);
     let placed = crate::visit::walk(
         &mut facts,
         module,
