@@ -15,7 +15,7 @@ final class SourceExcerptTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
         try {
-            $queries = new ArchitectureQueryService($pdo);
+            $queries = ArchitectureQueryService::forDatabase($pdo);
             $result = $queries->architectureContext($projectId, files: ['src/CheckoutService.php'], includeSource: true);
             $dossiers = $result->data['context']['sections']['dossiers'];
             assertSame('included', $dossiers['status']);

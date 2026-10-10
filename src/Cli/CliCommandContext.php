@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Knossos\Cli;
 
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Runtime\RuntimeFactory;
-use Knossos\Scan\CancellationToken;
 use PDO;
 
 /**

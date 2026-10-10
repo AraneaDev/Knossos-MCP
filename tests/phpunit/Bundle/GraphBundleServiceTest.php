@@ -8,7 +8,7 @@ use InvalidArgumentException;
 use Knossos\Bundle\GraphBundleDecoder;
 use Knossos\Bundle\GraphBundleService;
 use Knossos\Bundle\RedactionMap;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Store\SqliteConnection;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;

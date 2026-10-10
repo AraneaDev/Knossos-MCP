@@ -101,6 +101,33 @@ def is_type_checking_guard(test: ast.expr) -> bool:
     )
 
 
+def is_none(node: ast.AST) -> bool:
+    """Whether ``node`` is the literal ``None``."""
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def optional_inner(annotation: ast.AST | None) -> ast.AST | None:
+    """The type an optional annotation wraps: ``X | None``, ``Optional[X]`` or either as a string.
+
+    Anything else comes back unchanged, so a plain ``X`` still reads as ``X``.
+    """
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            parsed: ast.AST = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            return annotation
+        inner = optional_inner(parsed)
+        return inner if inner is not parsed else annotation
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        if is_none(annotation.right):
+            return annotation.left
+        if is_none(annotation.left):
+            return annotation.right
+    if isinstance(annotation, ast.Subscript) and (dotted(annotation.value) or "").split(".")[-1] == "Optional":
+        return annotation.slice
+    return annotation
+
+
 def is_protocol_base(base: ast.expr) -> bool:
     """Whether a class base is ``Protocol``, generic (``Protocol[T]``) or not."""
     named = base.value if isinstance(base, ast.Subscript) else base

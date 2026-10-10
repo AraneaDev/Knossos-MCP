@@ -73,7 +73,7 @@ trait ToolArgumentProbes
         return [
             new ToolService(
                 new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-                new ArchitectureQueryService($pdo),
+                ArchitectureQueryService::forDatabase($pdo),
                 new DatabaseMaintenanceService($pdo, ':memory:'),
                 new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
             ),

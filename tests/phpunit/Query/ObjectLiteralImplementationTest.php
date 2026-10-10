@@ -55,7 +55,7 @@ final class ObjectLiteralImplementationTest extends KnossosTestCase
         try {
             $pdo = $this->freshTestDatabase();
             $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root)->projectId;
-            $data = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 100)->data;
+            $data = ArchitectureQueryService::forDatabase($pdo)->architectureHealth($projectId, limit: 100)->data;
         } finally {
             $this->removeTempTree($root);
         }
@@ -112,7 +112,7 @@ final class ObjectLiteralImplementationTest extends KnossosTestCase
         try {
             $pdo = $this->freshTestDatabase();
             $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root)->projectId;
-            $data = (new ArchitectureQueryService($pdo))->architectureHealth($projectId)->data;
+            $data = ArchitectureQueryService::forDatabase($pdo)->architectureHealth($projectId)->data;
             $candidates = array_map(
                 static fn(array $candidate): string => $candidate['component']['canonical_name'],
                 $data['dead_code_candidates'],

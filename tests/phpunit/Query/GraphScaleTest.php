@@ -32,7 +32,7 @@ final class GraphScaleTest extends KnossosTestCase
         // Five seconds rather than the default one is headroom for a loaded CI
         // runner, not a bound the walk needs; any reason beyond the capped hub
         // list (a time, node or edge limit) still fails the test.
-        $result = (new ArchitectureQueryService($pdo))->architectureHealth($project, timeoutMs: 5000);
+        $result = ArchitectureQueryService::forDatabase($pdo)->architectureHealth($project, timeoutMs: 5000);
 
         assertSame(['result_limit'], $result->data['bounds']['truncation_reasons']);
         assertSame(false, $result->data['bounds']['cycle_scan_truncated']);
@@ -53,7 +53,7 @@ final class GraphScaleTest extends KnossosTestCase
         ini_set('memory_limit', '128M');
         [$pdo, $project] = $this->graphAtTheCeiling();
 
-        $result = (new ArchitectureQueryService($pdo))->dependencyCycles($project, timeoutMs: 5000);
+        $result = ArchitectureQueryService::forDatabase($pdo)->dependencyCycles($project, timeoutMs: 5000);
 
         assertSame([], array_values(array_diff($result->data['bounds']['truncation_reasons'], ['edge_limit'])));
         assertSame([3], array_column($result->data['cycles'], 'size'));

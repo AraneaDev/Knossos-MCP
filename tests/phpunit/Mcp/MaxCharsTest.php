@@ -10,8 +10,8 @@ use Knossos\Mcp\NextStepPlanner;
 use Knossos\Mcp\ResultEnricher;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
-use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
@@ -174,7 +174,7 @@ final class MaxCharsTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
         );
@@ -243,7 +243,7 @@ final class MaxCharsTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
         );

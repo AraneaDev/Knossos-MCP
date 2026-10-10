@@ -24,7 +24,7 @@ by default), or a file in a boundary a declared policy binds, it reads one line
 after the file:
 
 ```text
-knossos: src/Query/ResultEnvelope.php (core) has 47 dependent files. Policy: core may not depend on php-worker, tests.
+knossos: src/Result/ResultEnvelope.php (core) has 47 dependent files. Policy: core may not depend on php-worker, tests.
 ```
 
 The rules of a boundary are stated once per loop: the main loop and each

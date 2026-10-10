@@ -55,7 +55,7 @@ final class QualityGateBoundaryScanTest extends KnossosTestCase
 
         unset($edges);
         gc_collect_cycles();
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
         $policies = [['id' => 'backend-allows-billing', 'from_boundary' => $backend, 'allow_targets' => [$backend]]];
 
         // The checker must not hold the edge set in memory. Materialising it

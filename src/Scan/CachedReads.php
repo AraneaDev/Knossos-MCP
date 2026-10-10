@@ -47,7 +47,7 @@ final readonly class CachedReads
                 'configuration_hash' => (string) $row['configuration_hash'],
                 'read_attribution' => (int) $row['read_attribution'] >= 1,
                 'read_group' => $row['read_group'] === null ? null : (string) $row['read_group'],
-                // Stored as 2 ({@see \Knossos\Reconciliation\ContributionCacheEntry::$readsIncomplete}).
+                // Stored as 2 ({@see \Knossos\Store\ContributionCacheEntry::$readsIncomplete}).
                 'reads_incomplete' => (int) $row['read_attribution'] === 2,
             ];
         }

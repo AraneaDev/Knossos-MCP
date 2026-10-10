@@ -17,7 +17,7 @@ final class DeclaredPolicyCheckTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture('turn-brief');
         try {
-            $queries = new ArchitectureQueryService($pdo);
+            $queries = ArchitectureQueryService::forDatabase($pdo);
             $this->assertRefused($queries, $projectId, 'declares no policies');
             file_put_contents($root . '/knossos.json', json_encode(['version' => 1, 'boundaries' => [
                 ['name' => 'Core', 'path_prefix' => 'src/Core/'],

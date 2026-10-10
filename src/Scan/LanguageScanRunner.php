@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Scanner\Worker\WorkerException;
@@ -312,7 +314,7 @@ final readonly class LanguageScanRunner
      * @return array{
      *     manifest: \Knossos\Scanner\Protocol\ScannerManifest,
      *     contributions: list<\Knossos\Scanner\Protocol\ScanContribution>,
-     *     cache_entries: list<\Knossos\Reconciliation\ContributionCacheEntry>,
+     *     cache_entries: list<\Knossos\Store\ContributionCacheEntry>,
      *     parsed: int,
      *     unchanged: int,
      *     added: int,

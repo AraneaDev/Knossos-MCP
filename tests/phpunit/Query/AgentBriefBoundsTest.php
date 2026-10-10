@@ -29,7 +29,7 @@ final class AgentBriefBoundsTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         assertSame(1_000, $queries->exportAgentBrief($ids['project'], 1_000)->data['max_chars']);
         assertSame(20_000, $queries->exportAgentBrief($ids['project'], 20_000)->data['max_chars']);
@@ -45,7 +45,7 @@ final class AgentBriefBoundsTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         assertSame(true, str_contains($queries->exportAgentBrief($ids['project'])->data['markdown'], 'php: '));
 
@@ -71,7 +71,7 @@ final class AgentBriefBoundsTest extends KnossosTestCase
             self::addFile($pdo, $ids['project'], $scan, $language);
         }
 
-        $markdown = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+        $markdown = ArchitectureQueryService::forDatabase($pdo)->exportAgentBrief($ids['project'])->data['markdown'];
 
         assertSame(true, str_contains($markdown, 'aaa: 1, bbb: 1, ccc: 1, ddd: 1, eee: 1, +3 more'), $markdown);
         assertSame(false, str_contains($markdown, 'fff: 1'), 'Only five languages are named.');
@@ -95,7 +95,7 @@ final class AgentBriefBoundsTest extends KnossosTestCase
             self::addFile($pdo, $ids['project'], $scan, $language);
         }
 
-        $markdown = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+        $markdown = ArchitectureQueryService::forDatabase($pdo)->exportAgentBrief($ids['project'])->data['markdown'];
 
         assertSame(true, str_contains($markdown, 'aaa: 1, bbb: 1, ccc: 1, ddd: 1, php: 1'), $markdown);
         assertSame(false, str_contains($markdown, '+0 more'), 'Five languages are five, not five and a remainder of none.');
@@ -107,7 +107,7 @@ final class AgentBriefBoundsTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         assertSame(false, str_contains($queries->exportAgentBrief($ids['project'])->data['markdown'], 'the active snapshot'));
 
@@ -146,7 +146,7 @@ final class AgentBriefBoundsTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $markdown = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+        $markdown = ArchitectureQueryService::forDatabase($pdo)->exportAgentBrief($ids['project'])->data['markdown'];
 
         assertSame(true, str_contains($markdown, '- ShipCommand (class): src/Checkout.php'), $markdown);
         assertSame(true, str_contains($markdown, "- ZipCommand (class)\n"), $markdown);

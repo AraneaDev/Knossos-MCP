@@ -30,7 +30,7 @@ final class ExplainFlowBoundsTest extends KnossosTestCase
 
         // Depth 2 keeps the drained leaves from costing a query each: a leaf
         // already holds two hops, so it is popped and dropped.
-        $result = (new ArchitectureQueryService($pdo))->explainFlow($ids['project'], 'App\\S', 'App\\T', maxDepth: 2, timeoutMs: 5000);
+        $result = ArchitectureQueryService::forDatabase($pdo)->explainFlow($ids['project'], 'App\\S', 'App\\T', maxDepth: 2, timeoutMs: 5000);
 
         self::assertTrue($result->truncated);
         self::assertSame(['queue_limit'], $result->data['bounds']['truncation_reasons']);
@@ -58,7 +58,7 @@ final class ExplainFlowBoundsTest extends KnossosTestCase
         $edges[] = self::edge($ids, $last, $nodes[1]['id']);
         self::save($repository, $ids, $nodes, $edges);
 
-        $result = (new ArchitectureQueryService($pdo))->explainFlow($ids['project'], 'App\\S', 'App\\T', maxDepth: 2, timeoutMs: 5000);
+        $result = ArchitectureQueryService::forDatabase($pdo)->explainFlow($ids['project'], 'App\\S', 'App\\T', maxDepth: 2, timeoutMs: 5000);
 
         self::assertTrue($result->truncated);
         self::assertSame(['queue_limit'], $result->data['bounds']['truncation_reasons']);
@@ -84,7 +84,7 @@ final class ExplainFlowBoundsTest extends KnossosTestCase
             return ++$ticks * 1_000_000;
         };
 
-        $result = (new ArchitectureQueryService($pdo, $clock))->explainFlow($ids['project'], 'App\\S', 'App\\T', maxDepth: 2, timeoutMs: 3);
+        $result = ArchitectureQueryService::forDatabase($pdo, $clock)->explainFlow($ids['project'], 'App\\S', 'App\\T', maxDepth: 2, timeoutMs: 3);
 
         self::assertTrue($result->truncated);
         self::assertContains('time_limit', $result->data['bounds']['truncation_reasons']);
@@ -102,7 +102,7 @@ final class ExplainFlowBoundsTest extends KnossosTestCase
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->explainFlow($ids['project'], $ids['checkout'], $ids['invoice']);
+        $result = ArchitectureQueryService::forDatabase($pdo)->explainFlow($ids['project'], $ids['checkout'], $ids['invoice']);
 
         self::assertFalse($result->truncated);
         self::assertSame('Found 1 plausible static flow.', $result->summary);

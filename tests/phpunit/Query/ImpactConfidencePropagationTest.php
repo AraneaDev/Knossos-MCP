@@ -45,7 +45,7 @@ final class ImpactConfidencePropagationTest extends KnossosTestCase
         $edge('calls', $y, $x, 'certain');
         $repository->completeScan($project, $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->impactAnalysis($project, 'App\\T');
+        $result = ArchitectureQueryService::forDatabase($pdo)->impactAnalysis($project, 'App\\T');
         $byName = [];
         foreach ($result->data['dependants'] as $record) {
             $byName[$record['node']['canonical_name']] = $record;

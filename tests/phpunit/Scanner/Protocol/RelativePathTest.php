@@ -30,6 +30,15 @@ final class RelativePathTest extends TestCase
         assertThrows(static fn() => RelativePath::assertValid("a\x7fb.php"), InvalidArgumentException::class);
     }
 
+    public function testIsSupportedAcceptsUtf8NamesAndRejectsControlCharacters(): void
+    {
+        $this->assertTrue(RelativePath::isSupported('src/caf\u{e9}/a b.php'));
+        $this->assertFalse(RelativePath::isSupported("caf\xe9.php"));
+        $this->assertFalse(RelativePath::isSupported("a\x7fb.php"));
+        $this->assertFalse(RelativePath::isSupported("a\tb.php"));
+        $this->assertFalse(RelativePath::isSupported("a\x00b.php"));
+    }
+
     public function testRejectsInvalidUtf8(): void
     {
         assertThrows(static fn() => RelativePath::assertValid("caf\xe9.php"), InvalidArgumentException::class);

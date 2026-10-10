@@ -78,7 +78,7 @@ final readonly class FileViolationQuery
             return ['violations' => [], 'truncated' => false];
         }
         try {
-            $check = (new ArchitectureQueryService($this->pdo))->checkArchitecture(
+            $check = ArchitectureQueryService::forDatabase($this->pdo)->checkArchitecture(
                 $projectId,
                 $policies,
                 maxEdges: $this->maxEdges,

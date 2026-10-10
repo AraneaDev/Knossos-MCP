@@ -19,9 +19,9 @@ use Knossos\Query\Drift\DriftOracle;
 use Knossos\Query\Drift\FirstAnsweringDriftOracle;
 use Knossos\Query\Drift\GitDriftOracle;
 use Knossos\Query\Drift\WalkDriftOracle;
-use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
 use Knossos\Query\StalenessSnapshot;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Tests\Phpunit\Support\CountingDriftOracle;
@@ -192,7 +192,7 @@ final class RefreshIfStaleTest extends KnossosTestCase
             );
             $tools = new ToolService(
                 $scanner,
-                new ArchitectureQueryService($pdo, driftOracle: $oracle),
+                ArchitectureQueryService::forDatabase($pdo, driftOracle: $oracle),
                 new DatabaseMaintenanceService($pdo, ':memory:'),
                 new ResultEnricher(new StalenessProbe($pdo, oracle: $oracle), new NextStepPlanner()),
             );
@@ -238,7 +238,7 @@ final class RefreshIfStaleTest extends KnossosTestCase
             $oracle = $this->oracleReporting(new DriftCounts(0, 500, 0, true));
             $tools = new ToolService(
                 new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
-                new ArchitectureQueryService($pdo, driftOracle: $oracle),
+                ArchitectureQueryService::forDatabase($pdo, driftOracle: $oracle),
                 new DatabaseMaintenanceService($pdo, ':memory:'),
                 new ResultEnricher(new StalenessProbe($pdo, oracle: $oracle), new NextStepPlanner()),
             );
@@ -330,7 +330,7 @@ final class RefreshIfStaleTest extends KnossosTestCase
             $oracle = new CountingDriftOracle(new WalkDriftOracle($pdo));
             $tools = new ToolService(
                 new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
-                new ArchitectureQueryService($pdo, driftOracle: $oracle),
+                ArchitectureQueryService::forDatabase($pdo, driftOracle: $oracle),
                 new DatabaseMaintenanceService($pdo, ':memory:'),
                 new ResultEnricher(new StalenessProbe($pdo, oracle: $oracle), new NextStepPlanner()),
             );
@@ -522,7 +522,7 @@ final class RefreshIfStaleTest extends KnossosTestCase
             touch($file, filemtime($file) + 60);
             $confined = new ToolService(
                 new ProjectScanService($pdo, self::repositoryRoot(), ['/nonexistent-allowed-root']),
-                new ArchitectureQueryService($pdo),
+                ArchitectureQueryService::forDatabase($pdo),
                 new DatabaseMaintenanceService($pdo, ':memory:'),
                 new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
             );
@@ -770,7 +770,7 @@ final class RefreshIfStaleTest extends KnossosTestCase
                         ?int $maxFileBytes = null,
                         ?array $explicitBoundaries = null,
                         ?string $mode = null,
-                        ?\Knossos\Scan\CancellationToken $cancellation = null,
+                        ?\Knossos\Cancellation\CancellationToken $cancellation = null,
                         ?int $snapshotRetention = null,
                         ?int $workerTimeoutMs = null,
                         ?int $workerMemoryMb = null,
@@ -778,7 +778,7 @@ final class RefreshIfStaleTest extends KnossosTestCase
                         throw new \RuntimeException('SQLSTATE[HY000]: /srv/internal/knossos.sqlite is locked');
                     }
                 },
-                new ArchitectureQueryService($pdo),
+                ArchitectureQueryService::forDatabase($pdo),
                 new DatabaseMaintenanceService($pdo, ':memory:'),
                 new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
             );

@@ -81,7 +81,7 @@ final class ShebangScanTest extends KnossosTestCase
     /**
      * Run a real end-to-end scan of a temporary tree.
      *
-     * @return array{0: PDO, 1: \Knossos\Query\ResultEnvelope}
+     * @return array{0: PDO, 1: \Knossos\Result\ResultEnvelope}
      */
     private function scanTree(string $root, ?int $maxFileBytes = null): array
     {

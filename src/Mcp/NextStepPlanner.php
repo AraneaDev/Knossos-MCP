@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Mcp;
 
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * Pure mapper from a completed tool result to at most three follow-up suggestions.

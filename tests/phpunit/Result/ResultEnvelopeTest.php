@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Tests\Phpunit\Query;
+namespace Knossos\Tests\Phpunit\Result;
 
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;

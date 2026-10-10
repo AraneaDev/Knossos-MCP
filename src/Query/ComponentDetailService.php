@@ -60,7 +60,7 @@ final readonly class ComponentDetailService
             return $envelope;
         }
         $id = (string) $project['id'];
-        $result = (new ArchitectureQueryService($this->pdo))->inspectComponent($id, $name, self::RELATIONSHIPS, 1);
+        $result = ArchitectureQueryService::forDatabase($this->pdo)->inspectComponent($id, $name, self::RELATIONSHIPS, 1);
         $envelope['project_id'] = $id;
         $envelope['snapshot_id'] = $project['active_scan_id'];
         $data = $result->data;
