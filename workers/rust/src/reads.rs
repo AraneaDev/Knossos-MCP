@@ -8,8 +8,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use serde_json::Value;
-
 use crate::layout::Layout;
 use crate::params::assert_scannable_str;
 use crate::source_hash::sha256_hex;
@@ -175,87 +173,10 @@ pub(crate) fn read_bounded(path: &Path, max_file_bytes: u64) -> std::io::Result<
     Ok(bytes)
 }
 
-/// Split one path map of a result (`input_hashes`, `reads` or
-/// `unattributed_reads`) into parts that each fit one frame, leaving the last
-/// part in the result and returning the others, in order, to go out ahead of
-/// it in `scan/input_hashes` notifications.
-///
-/// The result's own field marks that the worker finished reporting, so it
-/// always keeps one part, `{}` when nothing was read. A single entry longer
-/// than the budget still travels alone. A result without the field (any
-/// method but `scan`) is left untouched.
-pub(crate) fn split_read_map(result: &mut Value, field: &str, part_bytes: usize) -> Vec<Value> {
-    let Some(Value::Object(map)) = result.get_mut(field) else {
-        return Vec::new();
-    };
-    let mut parts: Vec<serde_json::Map<String, Value>> = Vec::new();
-    let mut part = serde_json::Map::new();
-    // The serialized part: its braces, less the comma its last entry lacks.
-    let mut bytes = 1_usize;
-    for (relative, hash) in std::mem::take(map) {
-        // `"path":"<64 hex>",` or `"path":null,`
-        let key_bytes =
-            serde_json::to_string(&relative).map_or(relative.len() + 2, |key| key.len());
-        let entry_bytes = key_bytes + if hash.is_null() { 4 } else { 66 } + 2;
-        if !part.is_empty() && bytes + entry_bytes > part_bytes {
-            parts.push(std::mem::take(&mut part));
-            bytes = 1;
-        }
-        part.insert(relative, hash);
-        bytes += entry_bytes;
-    }
-    *map = part;
-
-    parts.into_iter().map(Value::Object).collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{read_bounded, record_read, split_read_map};
-    use serde_json::json;
+    use super::{read_bounded, record_read};
     use std::collections::BTreeMap;
-
-    #[test]
-    fn input_hashes_split_into_parts_that_fit_their_budget() {
-        let hash = "a".repeat(64);
-        let pair = json!({"a/1": hash, "a/2": null});
-        let length = pair.to_string().len();
-
-        let mut whole = json!({"files_scanned": 2, "input_hashes": pair});
-        assert!(split_read_map(&mut whole, "input_hashes", length).is_empty());
-        assert_eq!(pair, whole["input_hashes"]);
-
-        let mut split = json!({"files_scanned": 2, "input_hashes": pair});
-        assert_eq!(
-            vec![json!({"a/1": hash})],
-            split_read_map(&mut split, "input_hashes", length - 1)
-        );
-        assert_eq!(json!({"a/2": null}), split["input_hashes"]);
-        assert_eq!(2, split["files_scanned"]);
-
-        // An entry longer than the budget travels alone; keys are measured
-        // escaped, as they are written.
-        let long = "x".repeat(300);
-        let quoted = json!({"\"": null, "b": null});
-        let mut escaped = json!({"input_hashes": quoted});
-        assert_eq!(
-            vec![json!({"\"": null})],
-            split_read_map(&mut escaped, "input_hashes", quoted.to_string().len() - 1)
-        );
-        let mut alone = json!({"input_hashes": {"a": null, long.clone(): hash}});
-        assert_eq!(
-            vec![json!({"a": null})],
-            split_read_map(&mut alone, "input_hashes", 20)
-        );
-        assert_eq!(json!({long: hash}), alone["input_hashes"]);
-
-        let mut empty = json!({"input_hashes": {}});
-        assert!(split_read_map(&mut empty, "input_hashes", 1).is_empty());
-        assert_eq!(json!({}), empty["input_hashes"]);
-        let mut other = json!({"status": "bye"});
-        assert!(split_read_map(&mut other, "input_hashes", 1).is_empty());
-        assert_eq!(json!({"status": "bye"}), other);
-    }
 
     #[test]
     fn repeated_reads_that_agree_keep_their_value() {

@@ -1,20 +1,17 @@
 //! The newline-delimited JSON-RPC loop. Mirrors `workers/php/src/WorkerServer.php`.
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
-use std::path::Path;
 
 use serde_json::{json, Value};
 
 use crate::cargo_manifest::cargo_crates;
 use crate::facts::Facts;
+use crate::index::{index_project, Prepared, ProjectIndex};
 use crate::layout::Layout;
-use crate::nesting::{nesting_beyond, MAX_NESTING};
 use crate::params::ScanRequest;
 use crate::protocol::{Contribution, Manifest};
-use crate::reads::{read_safely, record_read, split_read_map, FileReads};
-use crate::source_hash::sha256_hex;
+use crate::reads::FileReads;
 use crate::visit::{Declarations, TestModules};
 
 /// Serialized bytes one `scan/input_hashes` notification carries at most, well
@@ -29,46 +26,9 @@ const READ_MAP_FIELDS: [&str; 3] = ["input_hashes", "reads", "unattributed_reads
 /// sends a `scan/heartbeat`, well inside the core's inactivity timeout.
 const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// What one file gives the declaration index.
-#[derive(Clone, Debug)]
-struct FileIndex {
-    /// Every path the file declares, see [`crate::visit::declaration_paths`].
-    declarations: BTreeSet<String>,
-    /// Every out-of-line `#[cfg(test)] mod name;` the file declares.
-    test_modules: crate::visit::TestModules,
-    /// Every `mod name;` the file declares at a path other than the module
-    /// it loads, see [`crate::visit::declared_renames`].
-    renames: BTreeMap<String, Option<String>>,
-}
-
-impl FileIndex {
-    /// The index entries of `relative`, placed in `module`. A file the index
-    /// does not answer for (see [`Layout::is_indexed`]) declares nothing to
-    /// it, no names and no renamed modules, though its test modules still
-    /// count.
-    fn of(relative: &str, module: &str, items: &[syn::Item], layout: &Layout) -> Self {
-        let mut test_modules = crate::visit::TestModules::new();
-        crate::visit::collect_test_modules(relative, module, items, layout, &mut test_modules);
-        let indexed = layout.is_indexed(relative, module);
-        Self {
-            declarations: if indexed {
-                crate::visit::declaration_paths(module, items)
-            } else {
-                BTreeSet::new()
-            },
-            test_modules,
-            renames: if indexed {
-                crate::visit::declared_renames(relative, module, items, layout)
-            } else {
-                BTreeMap::new()
-            },
-        }
-    }
-}
-
 /// Sends `scan/heartbeat` when the request has been quiet for
 /// [`HEARTBEAT_EVERY`].
-struct Heartbeat {
+pub(crate) struct Heartbeat {
     /// When the last heartbeat went out, or the request began.
     last: std::time::Instant,
 }
@@ -82,7 +42,7 @@ impl Heartbeat {
     }
 
     /// Send a heartbeat through `emit` if the request has been quiet too long.
-    fn beat(&mut self, emit: &mut dyn FnMut(&Value)) {
+    pub(crate) fn beat(&mut self, emit: &mut dyn FnMut(&Value)) {
         if self.last.elapsed() >= HEARTBEAT_EVERY {
             emit(&json!({"jsonrpc": "2.0", "method": "scan/heartbeat"}));
             self.last = std::time::Instant::now();
@@ -183,30 +143,6 @@ pub fn handle(request: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, St
     }
 }
 
-/// One file awaiting its walk: parsed successfully, or already reduced to a
-/// diagnostic-only contribution (unreadable, oversized, escaping, or
-/// unparsable — each failure costs only its own file).
-enum Prepared {
-    /// Read, validated, and parsed; ready to walk.
-    Parsed {
-        /// Project-relative path.
-        relative: String,
-        /// The parsed syntax tree.
-        parsed: syn::File,
-        /// SHA-256 hex of the raw bytes `parsed` came from.
-        content_hash: String,
-    },
-    /// A failed file, reduced to its final (diagnostic-only) contribution.
-    Err {
-        /// The diagnostic-only contribution itself.
-        contribution: Contribution,
-        /// Whether the filesystem refused the read (gone, not a regular file,
-        /// over the byte cap, or resolving outside the root), as opposed to
-        /// bytes that were read and failed to parse.
-        read_failed: bool,
-    },
-}
-
 /// Parse a bounded file set, emitting one owned contribution per input.
 ///
 /// The request is scanned in three passes. Every Rust file of the project is
@@ -228,14 +164,11 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
         &mut input_hashes,
     );
     let mut heartbeat = Heartbeat::new();
-    let (prepared, declarations, test_modules) =
-        index_project(&request, &layout, &mut input_hashes, &mut heartbeat, emit);
+    let index = index_project(&request, &layout, &mut input_hashes, &mut heartbeat, emit);
     let walked = walk_requested(
         &request,
         &layout,
-        prepared,
-        &declarations,
-        &test_modules,
+        index,
         &mut input_hashes,
         &mut heartbeat,
         emit,
@@ -244,115 +177,21 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     emit_contributions(&request, walked, input_hashes, emit)
 }
 
-/// The index entries of every file the last request read, by the file's path
-/// and the hash of its bytes; `None` for bytes that do not parse. With the
-/// [`Layout`] they were collected under, both decide the entries, so a hit is
-/// what parsing would give.
-type IndexMemo = HashMap<(String, String), Option<FileIndex>>;
-
-thread_local! {
-    /// The worker lives across the requests of a scan, and each request
-    /// indexes the whole project: parsing only bytes it has not seen keeps
-    /// a large workspace's later batches as cheap as reading it. The memo is
-    /// kept for the layout it was built under and dropped when it changes.
-    static INDEX_MEMO: RefCell<(Layout, IndexMemo)> = RefCell::new((Layout::default(), HashMap::new()));
-}
-
-/// Pass 1: read every Rust file of the project and index it, returning the
-/// requested files ready to walk with the declaration index and the test
-/// modules every file declared. Without `source_files` the project is the
-/// batch, as it always was. An unrequested file's tree is dropped once
-/// indexed, so the whole project is never held parsed at once.
-fn index_project(
-    request: &ScanRequest,
-    layout: &Layout,
-    input_hashes: &mut BTreeMap<String, Option<String>>,
-    heartbeat: &mut Heartbeat,
-    emit: &mut dyn FnMut(&Value),
-) -> (Vec<Prepared>, Declarations, TestModules) {
-    let root = &request.root;
-    let max_file_bytes = request.max_file_bytes;
-    let requested: BTreeSet<&str> = request.relatives.iter().map(String::as_str).collect();
-    let project: BTreeSet<&str> = request
-        .source_files
-        .iter()
-        .map(String::as_str)
-        .chain(requested.iter().copied())
-        .collect();
-    let mut prepared: Vec<Prepared> = Vec::with_capacity(request.relatives.len());
-    let mut declarations = Declarations::new();
-    let mut test_modules = TestModules::new();
-    let mut memo = INDEX_MEMO.with(|memo| {
-        let (built_under, memo) = std::mem::take(&mut *memo.borrow_mut());
-        if built_under == *layout {
-            memo
-        } else {
-            HashMap::new()
-        }
-    });
-    let mut kept: IndexMemo = HashMap::new();
-    for relative in project {
-        heartbeat.beat(emit);
-        let module = layout.module_of(relative);
-        let (value, index) = if requested.contains(relative) {
-            let item = prepare_one(root, relative, max_file_bytes);
-            let index = match &item {
-                Prepared::Parsed { parsed, .. } => {
-                    Some(FileIndex::of(relative, &module, &parsed.items, layout))
-                }
-                Prepared::Err { .. } => None,
-            };
-            let value = read_value(&item);
-            prepared.push(item);
-            (value, index)
-        } else {
-            // An unrequested file is read and hashed on every request, as
-            // its read must be recorded, but parsed only when this worker
-            // has not indexed those bytes in that module before.
-            match read_safely(root, relative, max_file_bytes) {
-                Ok(bytes) => {
-                    let hash = sha256_hex(&bytes);
-                    let index = match memo.remove(&(relative.to_owned(), hash.clone())) {
-                        Some(index) => index,
-                        None => parse_source(&bytes)
-                            .ok()
-                            .map(|parsed| FileIndex::of(relative, &module, &parsed.items, layout)),
-                    };
-                    (Some(hash), index)
-                }
-                Err(_) => (None, None),
-            }
-        };
-        if let Some(index) = &index {
-            declarations.add_file(&index.declarations);
-            declarations.add_renames(&index.renames);
-            test_modules.extend(index.test_modules.iter().cloned());
-        }
-        if let Some(hash) = &value {
-            kept.insert((relative.to_owned(), hash.clone()), index);
-        }
-        record_read(input_hashes, relative, value);
-    }
-    // Only what this request indexed is kept, so the memo follows the
-    // project rather than every version of it this process has seen.
-    INDEX_MEMO.with(|memo| *memo.borrow_mut() = (layout.clone(), kept));
-
-    (prepared, declarations, test_modules)
-}
-
 /// Pass 2: walk each requested file, noting what its facts were read from.
-#[allow(clippy::too_many_arguments)]
 fn walk_requested(
     request: &ScanRequest,
     layout: &Layout,
-    prepared: Vec<Prepared>,
-    declarations: &Declarations,
-    test_modules: &TestModules,
+    index: ProjectIndex,
     input_hashes: &mut BTreeMap<String, Option<String>>,
     heartbeat: &mut Heartbeat,
     emit: &mut dyn FnMut(&Value),
 ) -> Vec<(Contribution, BTreeSet<String>)> {
     let mut reads = FileReads::new(&request.root, request.max_file_bytes, layout);
+    let ProjectIndex {
+        prepared,
+        declarations,
+        test_modules,
+    } = index;
     let mut walked: Vec<(Contribution, BTreeSet<String>)> = Vec::with_capacity(prepared.len());
     for item in prepared {
         heartbeat.beat(emit);
@@ -371,8 +210,8 @@ fn walk_requested(
                     &parsed,
                     content_hash,
                     &request.frameworks,
-                    declarations,
-                    test_modules,
+                    &declarations,
+                    &test_modules,
                     layout,
                 );
                 let lookups = declarations.take_lookups();
@@ -439,7 +278,7 @@ fn walk_one(
     content_hash: String,
     frameworks: &[String],
     declarations: &Declarations,
-    test_modules: &crate::visit::TestModules,
+    test_modules: &TestModules,
     layout: &Layout,
 ) -> (Contribution, BTreeSet<String>) {
     let display = module.rsplit("::").next().unwrap_or(module).to_owned();
@@ -483,74 +322,6 @@ fn walk_one(
     (facts.finish(), placed)
 }
 
-/// What one prepared file puts in `input_hashes`: the hash of the bytes read,
-/// or `None` when the filesystem refused the read. A file whose read failed is
-/// not what discovery hashed right now, and a requested one's contribution
-/// stands in for its facts empty: null makes the core fail the scan for a
-/// discovered path rather than keep a graph without them.
-fn read_value(item: &Prepared) -> Option<String> {
-    match item {
-        Prepared::Parsed { content_hash, .. } => Some(content_hash.clone()),
-        Prepared::Err {
-            read_failed: true, ..
-        } => None,
-        Prepared::Err { contribution, .. } => contribution.content_hash.clone(),
-    }
-}
-
-/// Read, validate, and parse one file into a [`Prepared`].
-///
-/// Every failure is per file. Aborting the request would discard the facts
-/// every other file in the batch contributes, so one unreadable or
-/// unparsable file costs only its own contribution.
-fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
-    let mut facts = Facts::new(relative);
-    let bytes = match read_safely(root, relative, max_file_bytes) {
-        Ok(bytes) => bytes,
-        Err(message) => {
-            facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &message, 1);
-            return Prepared::Err {
-                contribution: facts.finish(),
-                read_failed: true,
-            };
-        }
-    };
-    let content_hash = sha256_hex(&bytes);
-    facts.set_content_hash(content_hash.clone());
-    match parse_source(&bytes) {
-        Ok(parsed) => Prepared::Parsed {
-            relative: relative.to_owned(),
-            parsed,
-            content_hash,
-        },
-        Err((code, message, line)) => {
-            facts.diagnostic("error", code, &message, line);
-            Prepared::Err {
-                contribution: facts.finish(),
-                read_failed: false,
-            }
-        }
-    }
-}
-
-/// Parse a file's bytes, or the diagnostic code, message and line saying why
-/// they do not parse: not UTF-8, nested past [`MAX_NESTING`], or not Rust.
-fn parse_source(bytes: &[u8]) -> Result<syn::File, (&'static str, String, usize)> {
-    let source =
-        std::str::from_utf8(bytes).map_err(|e| ("RS_UNSCANNABLE_FILE", e.to_string(), 1))?;
-    if let Some(depth) = nesting_beyond(source, MAX_NESTING) {
-        return Err((
-            "RS_TOO_DEEP",
-            format!("Delimiters nest {depth} levels deep, past the limit of {MAX_NESTING}."),
-            1,
-        ));
-    }
-    syn::parse_file(source).map_err(|error| {
-        let line = error.span().start().line.max(1);
-        ("RS_SYNTAX_ERROR", error.to_string(), line)
-    })
-}
-
 /// A JSON-RPC error reply carrying the caller's id.
 fn error_reply(id: &Value, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": message}})
@@ -561,4 +332,86 @@ fn write_line(output: &mut impl Write, message: &Value) -> std::io::Result<()> {
     serde_json::to_writer(&mut *output, message)?;
     output.write_all(b"\n")?;
     output.flush()
+}
+
+/// Split one path map of a result (`input_hashes`, `reads` or
+/// `unattributed_reads`) into parts that each fit one frame, leaving the last
+/// part in the result and returning the others, in order, to go out ahead of
+/// it in `scan/input_hashes` notifications.
+///
+/// The result's own field marks that the worker finished reporting, so it
+/// always keeps one part, `{}` when nothing was read. A single entry longer
+/// than the budget still travels alone. A result without the field (any
+/// method but `scan`) is left untouched.
+fn split_read_map(result: &mut Value, field: &str, part_bytes: usize) -> Vec<Value> {
+    let Some(Value::Object(map)) = result.get_mut(field) else {
+        return Vec::new();
+    };
+    let mut parts: Vec<serde_json::Map<String, Value>> = Vec::new();
+    let mut part = serde_json::Map::new();
+    // The serialized part: its braces, less the comma its last entry lacks.
+    let mut bytes = 1_usize;
+    for (relative, hash) in std::mem::take(map) {
+        // `"path":"<64 hex>",` or `"path":null,`
+        let key_bytes =
+            serde_json::to_string(&relative).map_or(relative.len() + 2, |key| key.len());
+        let entry_bytes = key_bytes + if hash.is_null() { 4 } else { 66 } + 2;
+        if !part.is_empty() && bytes + entry_bytes > part_bytes {
+            parts.push(std::mem::take(&mut part));
+            bytes = 1;
+        }
+        part.insert(relative, hash);
+        bytes += entry_bytes;
+    }
+    *map = part;
+
+    parts.into_iter().map(Value::Object).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_read_map;
+    use serde_json::json;
+
+    #[test]
+    fn input_hashes_split_into_parts_that_fit_their_budget() {
+        let hash = "a".repeat(64);
+        let pair = json!({"a/1": hash, "a/2": null});
+        let length = pair.to_string().len();
+
+        let mut whole = json!({"files_scanned": 2, "input_hashes": pair});
+        assert!(split_read_map(&mut whole, "input_hashes", length).is_empty());
+        assert_eq!(pair, whole["input_hashes"]);
+
+        let mut split = json!({"files_scanned": 2, "input_hashes": pair});
+        assert_eq!(
+            vec![json!({"a/1": hash})],
+            split_read_map(&mut split, "input_hashes", length - 1)
+        );
+        assert_eq!(json!({"a/2": null}), split["input_hashes"]);
+        assert_eq!(2, split["files_scanned"]);
+
+        // An entry longer than the budget travels alone; keys are measured
+        // escaped, as they are written.
+        let long = "x".repeat(300);
+        let quoted = json!({"\"": null, "b": null});
+        let mut escaped = json!({"input_hashes": quoted});
+        assert_eq!(
+            vec![json!({"\"": null})],
+            split_read_map(&mut escaped, "input_hashes", quoted.to_string().len() - 1)
+        );
+        let mut alone = json!({"input_hashes": {"a": null, long.clone(): hash}});
+        assert_eq!(
+            vec![json!({"a": null})],
+            split_read_map(&mut alone, "input_hashes", 20)
+        );
+        assert_eq!(json!({long: hash}), alone["input_hashes"]);
+
+        let mut empty = json!({"input_hashes": {}});
+        assert!(split_read_map(&mut empty, "input_hashes", 1).is_empty());
+        assert_eq!(json!({}), empty["input_hashes"]);
+        let mut other = json!({"status": "bye"});
+        assert!(split_read_map(&mut other, "input_hashes", 1).is_empty());
+        assert_eq!(json!({"status": "bye"}), other);
+    }
 }
