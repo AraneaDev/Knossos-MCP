@@ -10,7 +10,7 @@ namespace Knossos\Mcp\Protocol;
  * The revisions Knossos speaks share their method semantics — `tools/list`,
  * `tools/call`, `resources/*`, and `prompts/*` behave identically — and differ
  * only in how a connection is established and how a result is shaped. Isolating
- * that difference behind a profile keeps one dispatcher in {@see \Knossos\Mcp\StdioServer}
+ * that difference behind a profile keeps one dispatcher in {@see \Knossos\Mcp\McpDispatcher}
  * instead of forking the server per revision.
  */
 interface ProtocolProfile

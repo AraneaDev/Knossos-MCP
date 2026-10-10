@@ -102,7 +102,7 @@ fn a_scan_outside_the_root_is_refused() {
 /// harmless-looking segment and only becomes a real `../escape.rs` traversal
 /// once something downstream normalizes the backslash. Each case here is a
 /// shape the worker must refuse outright, matching
-/// `workers/python/bin/worker.py`'s `assert_scannable_path`.
+/// `workers/python/bin/knossos_python/safe_io.py`'s `assert_scannable_path`.
 fn assert_scan_path_refused(id: i64, file: &str) {
     let root = std::env::temp_dir();
     let request = serde_json::json!({

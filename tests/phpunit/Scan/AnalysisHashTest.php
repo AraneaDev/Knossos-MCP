@@ -22,6 +22,7 @@ final class AnalysisHashTest extends KnossosTestCase
         mkdir($this->root . '/src/__tests__', 0o777, true);
         mkdir($this->root . '/src/tests', 0o777, true);
         mkdir($this->root . '/src/node_modules/dep', 0o777, true);
+        mkdir($this->root . '/src/__pycache__', 0o777, true);
         mkdir($this->root . '/bin', 0o777, true);
         file_put_contents($this->root . '/src/a.js', 'a');
         file_put_contents($this->root . '/src/b.js', 'b');
@@ -50,7 +51,7 @@ final class AnalysisHashTest extends KnossosTestCase
     {
         $before = AnalysisHash::of($this->root, ['src/**']);
 
-        foreach (['src/__tests__/t.js', 'src/tests/t.js', 'src/node_modules/dep/index.js'] as $ignored) {
+        foreach (['src/__tests__/t.js', 'src/tests/t.js', 'src/node_modules/dep/index.js', 'src/__pycache__/a.cpython-312.pyc'] as $ignored) {
             file_put_contents($this->root . '/' . $ignored, 'changed');
         }
 
