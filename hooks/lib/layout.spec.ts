@@ -14,7 +14,6 @@ import {
   hubList,
   listFor,
   mergeRanked,
-  needsRescan,
   paneInput,
   paneStatus,
   rowWidth,
@@ -249,9 +248,9 @@ describe('paneRows', () => {
     expect(press).toEqual({ id: 'rescan', label: 'rescan', hotkey: 'r' })
   })
 
-  it('offers no rescan for a fresh snapshot or while one runs', () => {
+  it('offers a rescan on a fresh snapshot too, but not while one runs', () => {
     const fresh = dash({ freshness: { state: 'fresh', age_seconds: 3, drift_files: 0 } })
-    expect(textOf(paneRows(input({}, fresh), 60))).not.toContain('rescan')
+    expect(plainText(row(paneRows(input({}, fresh), 60), 'title')!)).toMatch(/rescan$/)
     const scanning = paneInput(dash(), null, FETCHED, { phase: 'scanning', reason: null }, view(), 0, true)
     const title = plainText(row(paneRows(scanning, 60), 'title')!)
     expect(title).toContain('● scanning…')
@@ -394,7 +393,7 @@ describe('tabRows', () => {
   })
 })
 
-describe('paneStatus and needsRescan', () => {
+describe('paneStatus and the rescan action', () => {
   it('reads the snapshot state and an age that keeps counting', () => {
     expect(paneStatus(dash(), { fetchedAt: 1_000, failed: false }, IDLE, 61_000)).toEqual({ tone: 'warn', text: 'stale 11h' })
     const fresh = dash({ freshness: { state: 'fresh', age_seconds: 5, drift_files: 0 } })
@@ -411,10 +410,12 @@ describe('paneStatus and needsRescan', () => {
     expect(paneStatus(dash(), { fetchedAt: 1_000, failed: true }, scanning, 61_000).text).toBe('scanning… · refresh failed 11h')
     expect(paneStatus(dash({ freshness: { state: 'fresh', age_seconds: 5, drift_files: 0 } }), FETCHED, scanning, 0).text).toBe('scanning…')
   })
-  it('wants a rescan when stale or drifted', () => {
-    expect(needsRescan(dash())).toBe(true)
-    expect(needsRescan(dash({ freshness: { state: 'fresh', age_seconds: 1, drift_files: 2 } }))).toBe(true)
-    expect(needsRescan(dash({ freshness: { state: 'fresh', age_seconds: 1, drift_files: 0 } }))).toBe(false)
+  it('offers a rescan whatever the snapshot says, unless a scan is running', () => {
+    const fresh = dash({ freshness: { state: 'fresh', age_seconds: 1, drift_files: 0 } })
+    for (const d of [dash(), dash({ freshness: { state: 'fresh', age_seconds: 1, drift_files: 2 } }), fresh]) {
+      expect(paneInput(d, null, FETCHED, IDLE, view(), 0, true, null, null).canRescan).toBe(true)
+    }
+    expect(paneInput(fresh, null, FETCHED, { phase: 'scanning', reason: null }, view(), 0, true, null, null).canRescan).toBe(false)
   })
 })
 
