@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from .accumulator import PythonFactAccumulator
 from .ast_helpers import decorator_short, dotted, keyword_string, positional_string, prefixed_path, ref
-
-if TYPE_CHECKING:
-    from .collector import PythonFactAccumulator
 
 
 class PythonFrameworkRoleEnricher:
