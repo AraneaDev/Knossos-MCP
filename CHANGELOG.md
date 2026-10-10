@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.3](https://github.com/AraneaDev/knossos/compare/v0.21.2...v0.21.3) (2026-10-10)
+
+
+### Refactoring
+
+* split ProjectDiscoverer into a walker, readers and resolvers ([#185](https://github.com/AraneaDev/knossos/issues/185)) ([ad0840f](https://github.com/AraneaDev/knossos/commit/ad0840fbe5e558ab63a01683b0c1e5c09c0707a2))
+
 ## [0.21.2](https://github.com/AraneaDev/knossos/compare/v0.21.1...v0.21.2) (2026-10-09)
 
 
