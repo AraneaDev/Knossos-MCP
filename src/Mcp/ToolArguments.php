@@ -17,6 +17,8 @@ use InvalidArgumentException;
  */
 final class ToolArguments
 {
+    private function __construct() {}
+
     /**
      * Reject unknown or missing keys in a nested object argument. The top-level
      * argument check lives in {@see ToolService}, driven by ToolCatalog; this

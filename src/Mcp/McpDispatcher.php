@@ -19,10 +19,9 @@ use Throwable;
  * One instance is one connection's state: whether the handshake completed, which
  * revision the last request selected, and which requests the client has asked to
  * cancel. Stdio keeps one for the life of the process; HTTP builds a fresh one per
- * request and resumes the session it stored itself. Framing, byte caps on the
- * wire, and reading input stay with the transport, so which protocol revision
- * governs a message is decided here, per message, and both supported revisions
- * and both transports share one dispatcher.
+ * request and resumes the session it stored itself. Transport concerns, such as
+ * framing and reading input, stay out of this class. The protocol revision that
+ * governs a message is chosen here, per message.
  */
 final class McpDispatcher
 {

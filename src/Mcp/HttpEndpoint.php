@@ -72,9 +72,12 @@ final readonly class HttpEndpoint
         if ($method !== 'POST') {
             return $this->problem(405, 'Only POST and session DELETE are supported.', $baseHeaders + ['Allow' => 'POST, DELETE']);
         }
-        $message = [];
-        $refusal = $this->rejectEnvelope($headers, $body, $baseHeaders, $message);
+        $refusal = $this->rejectEnvelope($headers, $body, $baseHeaders);
         if ($refusal !== null) {
+            return $refusal;
+        }
+        [$message, $refusal] = $this->decodeBody($body, $baseHeaders);
+        if ($message === null) {
             return $refusal;
         }
         $rpcMethod = $message['method'] ?? null;
@@ -154,19 +157,16 @@ final readonly class HttpEndpoint
     }
 
     /**
-     * The refusal for a POST whose envelope is unusable, or null with the
-     * decoded message in $message.
+     * The refusal for a POST whose envelope is unusable, or null.
      *
-     * Checked in a fixed order: size, Content-Type, Accept, a declared revision
-     * this server does not serve, then the body itself.
+     * Checked in a fixed order before the body is decoded: size, Content-Type,
+     * Accept, then a declared revision this server does not serve.
      *
      * @param array<string, string> $headers lower-cased request headers
      * @param array<string, string> $baseHeaders
-     * @param array<mixed> $message
-     * @param-out array<mixed> $message
      * @return array{status: int, headers: array<string, string>, body: string}|null
      */
-    private function rejectEnvelope(array $headers, string $body, array $baseHeaders, array &$message): ?array
+    private function rejectEnvelope(array $headers, string $body, array $baseHeaders): ?array
     {
         if (strlen($body) > $this->maxRequestBytes) {
             return $this->problem(413, 'Request body exceeds the configured byte limit.', $baseHeaders);
@@ -193,21 +193,33 @@ final readonly class HttpEndpoint
                 'error' => ['code' => $unsupported->getCode(), 'message' => $unsupported->getMessage(), 'data' => $unsupported->data()],
             ], $baseHeaders);
         }
+
+        return null;
+    }
+
+    /**
+     * The decoded JSON-RPC message, or the 400 that refuses the body: one that
+     * is not a JSON object, or whose id could not be echoed back.
+     *
+     * @param array<string, string> $baseHeaders
+     * @return array{0: array<mixed>, 1: null}|array{0: null, 1: array{status: int, headers: array<string, string>, body: string}}
+     */
+    private function decodeBody(string $body, array $baseHeaders): array
+    {
         try {
             $decoded = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
             if (!is_array($decoded) || array_is_list($decoded)) {
                 throw new JsonException('JSON-RPC body must be an object.');
             }
         } catch (JsonException) {
-            return $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32700, 'message' => 'Parse error']], $baseHeaders);
+            return [null, $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32700, 'message' => 'Parse error']], $baseHeaders)];
         }
         // The same id rule as stdio, before anything echoes the id back.
         if (JsonRpcId::isInvalid($decoded)) {
-            return $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32600, 'message' => 'Invalid Request']], $baseHeaders);
+            return [null, $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32600, 'message' => 'Invalid Request']], $baseHeaders)];
         }
-        $message = $decoded;
 
-        return null;
+        return [$decoded, null];
     }
 
     /**
@@ -296,7 +308,9 @@ final readonly class HttpEndpoint
      * Run one session-store operation, or answer 503 when the store fails.
      *
      * The store's own detail never reaches the client, with one exception: a
-     * full store says so, because that is the caller's to act on.
+     * full store says so, because that is the caller's to act on. Only
+     * create() can report a full store (CAPACITY_ERROR); every other
+     * operation only ever fails as unavailable.
      *
      * @param \Closure(): mixed $operation
      * @param array<string, string> $baseHeaders
