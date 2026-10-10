@@ -35,7 +35,17 @@ pub struct Declarations {
     /// when two declarations send one path to two modules. See
     /// [`declared_renames`].
     renames: BTreeMap<String, Option<String>>,
+    /// Each name a visible `use` makes a path of its module, mapped to the
+    /// path it imports; `None` when two files map one name apart. See
+    /// [`ExportedNames`].
+    exports: BTreeMap<String, Option<String>>,
 }
+
+/// The names one file's visible `use` items (`pub use cfg::collect;`,
+/// `pub(crate) use self::a as b;`) add to the module they are written in, by
+/// that path, mapped to the path each imports, as the file's own imports
+/// resolve it. A glob re-export names nothing and is not here.
+pub type ExportedNames = BTreeMap<String, String>;
 
 impl Declarations {
     /// An empty index.
@@ -63,6 +73,33 @@ impl Declarations {
         for (declared, placed) in renames {
             merge_rename(&mut self.renames, declared, placed.clone());
         }
+    }
+
+    /// Record one file's re-exported names, as
+    /// [`index_facts`](super::index_facts) returned them; a name two files
+    /// map apart resolves to nothing.
+    pub fn add_exports(&mut self, exports: &ExportedNames) {
+        for (name, target) in exports {
+            merge_rename(&mut self.exports, name, Some(target.clone()));
+        }
+    }
+
+    /// `path` with its longest prefix that a visible `use` re-exports
+    /// rewritten onto the path that `use` imports, once: `crate::visit::go`
+    /// under `pub use cfg::go;` in `crate::visit` is `crate::visit::cfg::go`.
+    /// `None` when no prefix is re-exported, or when the one that is maps
+    /// apart. The path is remembered as a lookup: the re-exporting file sits
+    /// in a module above it.
+    pub fn exported(&self, path: &str) -> Option<String> {
+        self.lookups.borrow_mut().insert(path.to_owned());
+        let (prefix, target) = std::iter::successors(Some(path), |prefix| {
+            prefix.rsplit_once("::").map(|(head, _)| head)
+        })
+        .find_map(|prefix| Some((prefix, self.exports.get(prefix)?)))?;
+
+        target
+            .as_ref()
+            .map(|target| format!("{target}{}", &path[prefix.len()..]))
     }
 
     /// `path` with its longest prefix that a `mod` declaration renamed

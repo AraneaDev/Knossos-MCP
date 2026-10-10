@@ -120,7 +120,14 @@ impl Walk<'_> {
                         } else {
                             parent_module(&full).to_owned()
                         };
+                        // The import names the module the source wrote; the
+                        // alias, what that name is declared as.
                         self.import(&source, &module, item.span());
+                        if !matches!(node.vis, syn::Visibility::Inherited) && leaf.alias != "_" {
+                            self.exports
+                                .insert(format!("{container}::{}", leaf.alias), full.clone());
+                        }
+                        let full = self.exported(full);
                         let key = (container.to_owned(), leaf.alias.clone());
                         match self.module_aliases.get(&key) {
                             Some(Some(existing)) if existing != &full => {
@@ -239,7 +246,18 @@ impl Walk<'_> {
     /// target reaches the reconciler as-is, and an unconfirmed target that names
     /// nothing becomes a fabricated external node. See
     /// [`Calls::visit_call`](super::state::Calls::visit_call).
+    ///
+    /// A path a visible `use` re-exports (`crate::visit::go` under `pub use
+    /// cfg::go;`) names the item it imports, which is where the graph
+    /// declares it (see [`Walk::exported`]).
     pub(super) fn resolve_path(&self, container: &str, path: &syn::Path) -> Option<(String, bool)> {
+        self.resolve_written(container, path)
+            .map(|(target, unconfirmed)| (self.exported(target), unconfirmed))
+    }
+
+    /// [`Walk::resolve_path`] before re-exports are followed: the path as
+    /// the file's imports, roots and `mod` declarations place it.
+    fn resolve_written(&self, container: &str, path: &syn::Path) -> Option<(String, bool)> {
         let rendered = path
             .segments
             .iter()
@@ -403,17 +421,49 @@ impl Walk<'_> {
     /// one of those is ambiguous.
     /// A path outside the project is returned unchanged and asks nothing.
     pub(super) fn renamed(&self, path: String) -> Option<String> {
-        let head = path.split("::").next().unwrap_or(&path);
-        if head != self.crate_root()
-            && head != self.crate_module.split("::").next().unwrap_or("")
-            && !self.layout.is_project_root(head)
-        {
+        if !self.in_project(&path) {
             return Some(path);
         }
         match self.declarations.renamed(&path) {
             Some(placed) => placed,
             None => Some(path),
         }
+    }
+
+    /// A path inside the project, followed through every visible `use` that
+    /// re-exports it or a module above it (see
+    /// [`Declarations::exported`](super::declarations::Declarations::exported)),
+    /// to the path the graph declares the item at: `crate::visit::go` under
+    /// `pub use cfg::go;` is `crate::visit::cfg::go`. A chain of re-exports
+    /// is followed to its end, within a bound a cycle cannot outrun. A path
+    /// outside the project, or one nothing re-exports, is returned unchanged.
+    pub(super) fn exported(&self, path: String) -> String {
+        /// Re-exports followed for one path at most.
+        const MAX_HOPS: usize = 8;
+        let mut current = path;
+        for _ in 0..MAX_HOPS {
+            if !self.in_project(&current) {
+                break;
+            }
+            let Some(next) = self.declarations.exported(&current) else {
+                break;
+            };
+            match self.renamed(next) {
+                Some(next) if next != current => current = next,
+                _ => break,
+            }
+        }
+
+        current
+    }
+
+    /// Whether `path` is rooted in this project: at this file's crate root,
+    /// its target root's crate, or a workspace member's crate.
+    fn in_project(&self, path: &str) -> bool {
+        let head = path.split("::").next().unwrap_or(path);
+        head == self.crate_root()
+            || head == self.crate_module.split("::").next().unwrap_or("")
+            || self.layout.is_project_root(head)
     }
 
     /// A path headed by the crate name of one of the project's libraries,

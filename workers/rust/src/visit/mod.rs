@@ -25,7 +25,7 @@ mod state;
 use calls::{is_foreign_export, is_wasm_bindgen};
 pub use cfg::{collect_test_modules, is_test_module_path, TestModules};
 use cfg::{is_cfg_test, is_test_attribute, item_attrs};
-pub use declarations::{declaration_paths, declared_renames, Declarations};
+pub use declarations::{declaration_paths, declared_renames, Declarations, ExportedNames};
 use placement::mod_child;
 use state::{Calls, Walk};
 
@@ -47,32 +47,7 @@ pub fn walk(
     if file_is_test {
         facts.enter_test_scope();
     }
-    let relative = facts.relative().to_owned();
-    let root = module.split("::").next().unwrap_or("crate").to_owned();
-    let crate_module = if layout.is_target_root(&relative) {
-        module.to_owned()
-    } else {
-        root
-    };
-    let mut walker = Walk {
-        facts,
-        module: module.to_owned(),
-        aliases: Aliases::default(),
-        globs: Vec::new(),
-        pending_globs: Vec::new(),
-        module_aliases: BTreeMap::new(),
-        current_impl_target: None,
-        frameworks,
-        declarations,
-        routes: Vec::new(),
-        role_marks: Vec::new(),
-        struct_fields: BTreeMap::new(),
-        layout,
-        relative,
-        renamed_children: BTreeMap::new(),
-        crate_module,
-        placed: BTreeSet::new(),
-    };
+    let mut walker = Walk::new(facts, module, frameworks, declarations, layout);
     walker.collect_uses(module, &file.items);
     walker.resolve_globs();
     walker.collect_struct_fields(module, &file.items);
@@ -84,6 +59,62 @@ pub fn walk(
     }
 
     placed
+}
+
+/// The names one file's visible `use` items re-export, for the declaration
+/// index, each resolved through the file's own imports as its walk would
+/// resolve it, before any other file is known. See [`ExportedNames`].
+#[must_use]
+pub fn index_facts(relative: &str, module: &str, items: &[Item], layout: &Layout) -> ExportedNames {
+    // Nothing here is emitted: the facts and the empty index only satisfy
+    // the walk's resolution, which falls back on neither for a path the
+    // file roots or imports.
+    let mut facts = Facts::new(relative);
+    let declarations = Declarations::new();
+    let mut walker = Walk::new(&mut facts, module, &[], &declarations, layout);
+    walker.collect_uses(module, items);
+
+    std::mem::take(&mut walker.exports)
+}
+
+impl<'a> Walk<'a> {
+    /// A walk of the file `facts` is for, placed in `module`, with nothing
+    /// collected yet.
+    fn new(
+        facts: &'a mut Facts,
+        module: &str,
+        frameworks: &'a [String],
+        declarations: &'a Declarations,
+        layout: &'a Layout,
+    ) -> Self {
+        let relative = facts.relative().to_owned();
+        let root = module.split("::").next().unwrap_or("crate").to_owned();
+        let crate_module = if layout.is_target_root(&relative) {
+            module.to_owned()
+        } else {
+            root
+        };
+        Walk {
+            facts,
+            module: module.to_owned(),
+            aliases: Aliases::default(),
+            globs: Vec::new(),
+            pending_globs: Vec::new(),
+            module_aliases: BTreeMap::new(),
+            current_impl_target: None,
+            frameworks,
+            declarations,
+            routes: Vec::new(),
+            role_marks: Vec::new(),
+            struct_fields: BTreeMap::new(),
+            layout,
+            relative,
+            renamed_children: BTreeMap::new(),
+            crate_module,
+            placed: BTreeSet::new(),
+            exports: BTreeMap::new(),
+        }
+    }
 }
 
 impl Walk<'_> {

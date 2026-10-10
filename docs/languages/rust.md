@@ -98,6 +98,12 @@ with a type annotation, or a `let` assigned from a struct literal or an
 associated call such as `Widget::make()`. A call on what another call returns
 (`state.mode().label()`) resolves through the declared return type.
 
+A path that reaches an item through a `pub use` re-export
+(`crate::visit::collect()` under `pub use cfg::collect;` in `visit`) names the
+item where it is declared, `crate::visit::cfg::collect`, so the edge lands on
+the node the graph holds. The `imports` edge still names the module the source
+wrote.
+
 ## Frameworks
 
 The core reads your Cargo manifests and tells the worker which of `axum`,
@@ -196,8 +202,11 @@ looked up below the crate root, so editing `src/lib.rs`, or adding a
 the files read, not from a rule. A file that does not parse has no facts and
 reads nothing beyond itself, so it stays an ordinary attributed row and is
 rescanned only when it changes. Editing a `Cargo.toml` rescans every Rust file.
-A rebuilt file reaches its readers only when its own bytes changed: a `pub use`
-adds nothing to the index, so no file's facts depend on what another file read.
+A rebuilt file reaches its readers only when its own bytes changed: what a file
+gives the index (its declarations and the names its `pub use` items re-export)
+follows from its own bytes and the package layout, so no file's facts depend on
+what another file read. A name followed through a re-export is a lookup like
+any other, so the file declaring it is read.
 
 ## Limits
 

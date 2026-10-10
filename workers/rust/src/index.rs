@@ -31,6 +31,9 @@ struct FileIndex {
     /// Every `mod name;` the file declares at a path other than the module
     /// it loads, see [`crate::visit::declared_renames`].
     renames: BTreeMap<String, Option<String>>,
+    /// Every name the file's visible `use` items re-export, see
+    /// [`crate::visit::index_facts`].
+    exports: crate::visit::ExportedNames,
 }
 
 impl FileIndex {
@@ -42,6 +45,11 @@ impl FileIndex {
         let mut test_modules = crate::visit::TestModules::new();
         crate::visit::collect_test_modules(relative, module, items, layout, &mut test_modules);
         let indexed = layout.is_indexed(relative, module);
+        let exports = if indexed {
+            crate::visit::index_facts(relative, module, items, layout)
+        } else {
+            Default::default()
+        };
         Self {
             declarations: if indexed {
                 crate::visit::declaration_paths(module, items)
@@ -54,6 +62,7 @@ impl FileIndex {
             } else {
                 BTreeMap::new()
             },
+            exports,
         }
     }
 }
@@ -174,6 +183,7 @@ pub(crate) fn index_project(
         if let Some(index) = &index {
             declarations.add_file(&index.declarations);
             declarations.add_renames(&index.renames);
+            declarations.add_exports(&index.exports);
             test_modules.extend(index.test_modules.iter().cloned());
         }
         if let Some(hash) = &value {

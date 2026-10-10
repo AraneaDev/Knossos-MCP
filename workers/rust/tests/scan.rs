@@ -2587,6 +2587,52 @@ fn a_method_called_on_an_untyped_receiver_is_listed_on_the_module() {
 }
 
 #[test]
+fn a_path_through_a_pub_use_re_export_names_the_defining_item() {
+    // `crate::visit::collect()` and `use crate::visit::Store;` reach items
+    // `visit` re-exports from its child `cfg`. The graph declares them under
+    // `crate::visit::cfg`, so an edge to the re-exported path named nothing.
+    let files = [
+        ("src/lib.rs", "pub mod index;\npub mod visit;\n"),
+        (
+            "src/visit/mod.rs",
+            "mod cfg;\npub use cfg::{collect, Store};\npub(crate) use self::cfg::helper as assist;\n",
+        ),
+        (
+            "src/visit/cfg.rs",
+            "pub fn collect() {}\npub fn helper() {}\npub struct Store;\nimpl Store {\n    pub fn new() -> Self {\n        Store\n    }\n    pub fn add(&self) {}\n}\n",
+        ),
+        (
+            "src/index.rs",
+            "use crate::visit::Store;\npub fn go() {\n    crate::visit::collect();\n    crate::visit::assist();\n    let store = Store::new();\n    store.add();\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("pub-use-re-export", &files);
+    let calls = method_calls(&contributions, "rust:function:crate::index::go");
+
+    for target in [
+        "rust:function:crate::visit::cfg::collect",
+        "rust:function:crate::visit::cfg::helper",
+        "rust:method:crate::visit::cfg::Store::new",
+        "rust:method:crate::visit::cfg::Store::add",
+    ] {
+        assert!(
+            calls.iter().any(|(called, _)| called == target),
+            "{target} missing from {calls:?}"
+        );
+    }
+    // The import still names the module the source wrote.
+    let index = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/index.rs")
+        .unwrap();
+    assert!(index["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|edge| { edge["kind"] == "imports" && edge["target"] == "rust:module:crate::visit" }));
+}
+
+#[test]
 fn an_out_of_line_cfg_test_module_is_test_code_down_to_its_module_node() {
     // `#[cfg(test)] mod tests;` in `visit/mod.rs` with the body in
     // `visit/tests.rs`: the file's own module node is test code too, or the
