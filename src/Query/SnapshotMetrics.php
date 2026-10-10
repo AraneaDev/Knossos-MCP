@@ -17,6 +17,9 @@ namespace Knossos\Query;
  */
 final readonly class SnapshotMetrics extends AbstractArchitectureQueryService
 {
+    /** Relationships by which a type takes on another type's members. */
+    private const CONTRACT_EDGE_KINDS = ['implements', 'extends', 'uses_trait'];
+
     /**
      * A snapshot's fact counts and quality metrics, as a trend reports them.
      *
@@ -360,9 +363,6 @@ final readonly class SnapshotMetrics extends AbstractArchitectureQueryService
 
         return $roles;
     }
-
-    /** Relationships by which a type takes on another type's members. */
-    private const CONTRACT_EDGE_KINDS = ['implements', 'extends', 'uses_trait'];
 
     /**
      * Whether a method is reached through a contract its type carries.

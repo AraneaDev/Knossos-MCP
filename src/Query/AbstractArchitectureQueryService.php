@@ -472,6 +472,7 @@ abstract readonly class AbstractArchitectureQueryService
         $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
         return is_array($decoded) ? $decoded : [];
     }
+
     /**
      * The edge kinds a traversal walks: every supported kind when the caller
      * named none, otherwise the named ones, deduplicated in the order given.
