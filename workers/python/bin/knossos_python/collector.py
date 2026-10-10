@@ -11,6 +11,7 @@ from .ast_helpers import (
     declared_protocols,
     dotted,
     is_protocol_base,
+    is_type_checking_guard,
     names_main_guard,
     ref,
 )
@@ -33,6 +34,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
     ) -> None:
         self.relative = relative
         self.has_shebang = has_shebang
+        # How many `if TYPE_CHECKING:` bodies the walk is inside: an import
+        # there is read by the type checker and skipped at runtime.
+        self.type_checking_depth = 0
         self.executable = has_shebang or names_main_guard(tree)
         # `029_seed.py` names no module an import statement can reach, so a
         # loader reads it by path and calls the public names it exposes.
@@ -205,6 +209,25 @@ class PythonAstFactCollector(ast.NodeVisitor):
         directory = PurePosixPath(self.relative).parent
         return bool(directory.parts) and not self.index.is_package_directory(directory)
 
+    def visit_If(self, node: ast.If) -> None:
+        """Walk an ``if TYPE_CHECKING:`` body as type-only; its ``else`` runs."""
+        if not is_type_checking_guard(node.test):
+            self.generic_visit(node)
+            return
+        self.visit(node.test)
+        self.type_checking_depth += 1
+        try:
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self.type_checking_depth -= 1
+        for statement in node.orelse:
+            self.visit(statement)
+
+    def import_attributes(self, attributes: dict[str, Any]) -> dict[str, Any]:
+        """An import's attributes, marked type-only when only a type checker runs it."""
+        return {**attributes, "type_only": True} if self.type_checking_depth else attributes
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             spelled = self.script_import(alias.name)
@@ -214,7 +237,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
             depth = 0 if alias.asname else alias.name.count(".")
             bound = target if depth == 0 else ref("module", self.index.canonical_module(spelled.rsplit(".", depth)[0]))
             self.aliases[alias.asname or alias.name.split(".")[0]] = bound
-            self.facts.add_edge("imports", self.module_id, target, node, {"alias": alias.asname})
+            self.facts.add_edge(
+                "imports", self.module_id, target, node, self.import_attributes({"alias": alias.asname})
+            )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         spelled = absolute_import(self.module, node.level, node.module, self.is_package)
@@ -234,7 +259,13 @@ class PythonAstFactCollector(ast.NodeVisitor):
             return
         # Named by the file the import finds, the id that file's own scan declares.
         module = self.index.canonical_module(spelled)
-        self.facts.add_edge("imports", self.module_id, ref("module", module), node, {"relative_level": node.level})
+        self.facts.add_edge(
+            "imports",
+            self.module_id,
+            ref("module", module),
+            node,
+            self.import_attributes({"relative_level": node.level}),
+        )
         for alias in node.names:
             if alias.name == "*":
                 continue
@@ -243,7 +274,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 # `from .tools import cors` names the submodule `tools/cors.py`
                 # when the package declares no `cors` of its own.
                 target = ref("module", self.index.canonical_module(f"{spelled}.{alias.name}"))
-                self.facts.add_edge("imports", self.module_id, target, node, {"relative_level": node.level})
+                self.facts.add_edge(
+                    "imports", self.module_id, target, node, self.import_attributes({"relative_level": node.level})
+                )
             self.aliases[alias.asname or alias.name] = target or ref("external_symbol", f"{module}.{alias.name}")
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
