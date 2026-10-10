@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{Item, Type};
 
-use super::mod_child;
+use super::placement::mod_child;
 use crate::layout::Layout;
 use crate::resolve::ident_name;
 

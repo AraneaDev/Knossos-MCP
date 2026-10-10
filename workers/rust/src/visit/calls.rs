@@ -9,7 +9,7 @@
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
-use super::Calls;
+use super::state::Calls;
 use crate::facts::reference;
 use crate::resolve::ident_name;
 
@@ -70,8 +70,8 @@ impl Calls<'_, '_> {
     /// another crate stays an ordinary edge, its external node the
     /// dependency's symbol.
     ///
-    /// [`Walk::resolve_path`]: super::Walk::resolve_path
-    /// [`Walk::walk_mod`]: super::Walk::walk_mod
+    /// [`Walk::resolve_path`]: super::state::Walk::resolve_path
+    /// [`Walk::walk_mod`]: super::state::Walk::walk_mod
     /// [`Facts::conditional_edge`]: crate::facts::Facts::conditional_edge
     fn visit_call(&mut self, path: &syn::Path, span: proc_macro2::Span) {
         if builds_value(path) {
@@ -368,7 +368,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
 
     fn visit_expr_struct(&mut self, node: &syn::ExprStruct) {
         if let Some((target, unconfirmed)) = self.walk.resolve_path(&self.container, &node.path) {
-            let endpoint = crate::visit::reference("class", &target);
+            let endpoint = reference("class", &target);
             if unconfirmed {
                 self.walk.facts.conditional_edge(
                     &self.enclosing,

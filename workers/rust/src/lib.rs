@@ -9,6 +9,7 @@
 
 mod cargo_manifest;
 pub mod facts;
+mod heartbeat;
 mod index;
 pub mod layout;
 mod nesting;

@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 use syn::spanned::Spanned;
 use syn::{Item, Type};
 
-use super::{mod_child, Walk};
+use super::placement::mod_child;
+use super::state::Walk;
 use crate::facts::reference;
 use crate::resolve::{flatten_use, glob_prefixes, ident_name, parent_module, rebase};
 
@@ -237,7 +238,7 @@ impl Walk<'_> {
     /// [`Walk::path_target`] and ignore the flag. A `calls` edge cannot: its
     /// target reaches the reconciler as-is, and an unconfirmed target that names
     /// nothing becomes a fabricated external node. See
-    /// [`Calls::visit_call`](super::Calls::visit_call).
+    /// [`Calls::visit_call`](super::state::Calls::visit_call).
     pub(super) fn resolve_path(&self, container: &str, path: &syn::Path) -> Option<(String, bool)> {
         let rendered = path
             .segments
@@ -398,7 +399,7 @@ impl Walk<'_> {
 
     /// A path inside the project, rewritten through every `mod` declaration
     /// of the project that loads a module other than its declared path (see
-    /// [`Declarations::renamed`](super::Declarations::renamed)); `None` when
+    /// [`Declarations::renamed`](super::declarations::Declarations::renamed)); `None` when
     /// one of those is ambiguous.
     /// A path outside the project is returned unchanged and asks nothing.
     pub(super) fn renamed(&self, path: String) -> Option<String> {

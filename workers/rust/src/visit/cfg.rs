@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use syn::Item;
 
-use super::mod_child;
+use super::placement::mod_child;
 use crate::layout::{modules_above, Layout};
 
 /// Canonical paths of modules the crate declared `#[cfg(test)] mod name;`
@@ -36,20 +36,6 @@ pub(super) fn is_test_module_path(module: &str, test_modules: &TestModules) -> b
     }
 
     false
-}
-
-/// The value of a `#[path = "..."]` attribute.
-pub(super) fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
-    attrs.iter().find_map(|attr| match &attr.meta {
-        syn::Meta::NameValue(pair) if pair.path.is_ident("path") => match &pair.value {
-            syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(text),
-                ..
-            }) => Some(text.value()),
-            _ => None,
-        },
-        _ => None,
-    })
 }
 
 /// Record every out-of-line `#[cfg(test)] mod name;` in one file's items, by

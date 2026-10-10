@@ -10,32 +10,9 @@ use std::collections::BTreeMap;
 use syn::spanned::Spanned;
 
 use super::cfg::{attr_method, attr_path};
-use super::{Calls, Walk};
+use super::state::{Calls, RouteCandidate, Walk};
 use crate::facts::reference;
 use crate::resolve::ident_name;
-
-/// One route fact discovered while walking, emitted after the walk.
-///
-/// Unlike ordinary nodes, a route's handler may be declared later in the file
-/// than the routing call that names it (Rust is order-agnostic), so routes are
-/// deferred until the whole file's declarations are known.
-pub(super) struct RouteCandidate {
-    /// Semantic framework name (`axum`, `actix`, `rocket`) for the node's
-    /// `framework` attribute.
-    framework: &'static str,
-    /// HTTP method, uppercase.
-    method: String,
-    /// The path as written, when it is a static literal.
-    path: String,
-    /// Handler's resolved canonical path, or the container-relative guess
-    /// when nothing resolved it.
-    handler: String,
-    /// Whether `handler` is that guess — needs the same-file declarations to
-    /// confirm it, like a call target.
-    handler_unconfirmed: bool,
-    /// Where the routing statement is, for evidence.
-    span: proc_macro2::Span,
-}
 
 impl Walk<'_> {
     /// Record routes declared by actix-style handler attributes.

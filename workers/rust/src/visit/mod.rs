@@ -18,72 +18,16 @@ mod calls;
 mod cfg;
 mod declarations;
 mod paths;
+mod placement;
 mod routes;
+mod state;
 
 use calls::{is_foreign_export, is_wasm_bindgen};
 pub use cfg::{collect_test_modules, TestModules};
-use cfg::{is_cfg_test, is_test_attribute, is_test_module_path, item_attrs, path_attribute};
+use cfg::{is_cfg_test, is_test_attribute, is_test_module_path, item_attrs};
 pub use declarations::{collect_declarations, declaration_paths, declared_renames, Declarations};
-use routes::RouteCandidate;
-
-/// A walk in progress: the facts being built plus the names in scope.
-struct Walk<'a> {
-    /// Where facts accumulate.
-    facts: &'a mut Facts,
-    /// The file's module path, which owns its imports.
-    module: String,
-    /// Names this file brought into scope.
-    aliases: Aliases,
-    /// The modules this file's glob imports (`use a::b::*;`) bring every
-    /// public name of into scope, each with the module that declares it, in
-    /// the order they were written.
-    globs: Vec<(String, String)>,
-    /// Glob imports as written, with their module, whether the path is
-    /// absolute (`::dep::*`), and span, until every `use` in the file is
-    /// known: a glob's path may start with an alias declared later in the
-    /// same module.
-    pending_globs: Vec<(String, String, bool, proc_macro2::Span)>,
-    /// Each module's own imported names, for a glob's leading alias: a `use`
-    /// is scoped to the module that declares it, so sibling modules may bind
-    /// one alias to different paths. `None` marks a name bound twice.
-    module_aliases: BTreeMap<(String, String), Option<String>>,
-    /// Target type of the current impl block, for resolving `Self`.
-    current_impl_target: Option<String>,
-    /// Frameworks the scan request asked this worker to enrich, by short name
-    /// (`axum`, `actix`, `rocket`). Empty means none.
-    frameworks: &'a [String],
-    /// Scan-wide declaration index, see [`Declarations`].
-    declarations: &'a Declarations,
-    /// Route facts found during the walk, flushed in [`Walk::flush_routes`].
-    routes: Vec<RouteCandidate>,
-    /// Framework roles discovered for handlers in this file, applied by
-    /// canonical name once the walk is complete.
-    role_marks: Vec<String>,
-    /// The field types of each struct this file declares, by struct then
-    /// field name, so `self.walk.facts.edge()` resolves through the fields.
-    struct_fields: BTreeMap<String, BTreeMap<String, String>>,
-    /// Where the project's crates are, which names each `mod` declaration's
-    /// module (see [`mod_child`]).
-    layout: &'a Layout,
-    /// The file's project-relative path, which the `mod` declarations in it
-    /// load their files beside.
-    relative: String,
-    /// Each `mod name;` whose module is not `container::name` (a binary
-    /// root's or a test target's children, `#[path]`), by its container and
-    /// name: a path through `name` there names that module. `None` marks a
-    /// name two declarations (under different `cfg`s) send to two modules.
-    renamed_children: BTreeMap<(String, String), Option<String>>,
-    /// What `crate` names in this file: the package's crate root, or for a
-    /// target root (a binary in `src/bin/`, a test, an example) the file's
-    /// own module, so `crate::own` in `src/bin/tool.rs` is
-    /// `crate::bin::tool::own`. Its `mod helper;` loads `src/bin/helper.rs`,
-    /// and `crate::helper` reaches that through the renamed declaration (see
-    /// [`Declarations::renamed`]).
-    crate_module: String,
-    /// The files this file's `mod` declarations load, whose own placement
-    /// decided the module each declaration names.
-    placed: BTreeSet<String>,
-}
+use placement::mod_child;
+use state::{Calls, Walk};
 
 /// Walk every item in a parsed file, attributing each to `module`, and
 /// return the files its `mod` declarations load (see [`mod_child`]).
@@ -140,39 +84,6 @@ pub fn walk(
     }
 
     placed
-}
-
-/// The module a `mod` item in `relative` (placed in `module`) declares, and
-/// for a `mod name;` the file it loads.
-///
-/// `mod name { .. }` declares `container::name` in place. `mod name;` names
-/// the module of the file Rust loads for it (see [`Layout::child_file`]), so
-/// a binary root's `mod cli;` is `crate::cli` beside `src/cli.rs`, a test
-/// target's `mod common;` is `tests::common`, and `#[path = "x.rs"]` is the
-/// module of `x.rs`: the declaration and that file's contribution agree on
-/// one node.
-fn mod_child(
-    relative: &str,
-    module: &str,
-    container: &str,
-    node: &syn::ItemMod,
-    layout: &Layout,
-) -> (String, Option<String>) {
-    let name = ident_name(&node.ident);
-    let in_place = format!("{container}::{name}");
-    if node.content.is_some() {
-        return (in_place, None);
-    }
-    let inline: Vec<String> = container
-        .strip_prefix(module)
-        .and_then(|rest| rest.strip_prefix("::"))
-        .map(|rest| rest.split("::").map(str::to_owned).collect())
-        .unwrap_or_default();
-    let path = path_attribute(&node.attrs);
-    match layout.child_file(relative, &inline, &name, path.as_deref()) {
-        Some(file) => (layout.module_of(&file), Some(file)),
-        None => (in_place, None),
-    }
 }
 
 impl Walk<'_> {
@@ -751,36 +662,6 @@ impl Walk<'_> {
         }
         receivers
     }
-}
-
-/// A `syn` visitor that emits a `calls` edge for every resolvable call
-/// expression it walks through.
-///
-/// Kept as a small, separate `Visit` implementation (rather than inline
-/// closures in [`Walk::walk_body`]) so the call-resolution logic stays a
-/// single, shallow method, [`Calls::visit_call`] in `calls.rs`, instead of
-/// growing the cognitive complexity of a larger function.
-///
-/// Declared here rather than in `calls.rs` so its fields stay private to
-/// `visit` while both `calls` and `routes` implement methods on it.
-struct Calls<'a, 'b> {
-    /// The walk collecting facts.
-    walk: &'a mut Walk<'b>,
-    /// Full `rust:<kind>:<canonical>` reference of the function or method
-    /// whose body this is; the source of every `calls` edge emitted while
-    /// walking it.
-    enclosing: String,
-    /// The module `enclosing` is declared in — never an `impl` block's type
-    /// path, since free functions and modules, the only things an
-    /// unqualified call can name, live in module scope. Passed to
-    /// [`Walk::path_target`] as the container an unqualified or relative
-    /// path resolves against.
-    container: String,
-    /// Local names whose type the source states, mapped to that type's
-    /// canonical path: `self`, typed parameters, and `let` bindings that are
-    /// annotated or constructed through a path. What a method call on one of
-    /// them resolves through.
-    receivers: BTreeMap<String, String>,
 }
 
 #[cfg(test)]

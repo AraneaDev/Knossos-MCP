@@ -12,12 +12,12 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::facts::Facts;
+use crate::heartbeat::Heartbeat;
 use crate::layout::Layout;
 use crate::nesting::{nesting_beyond, MAX_NESTING};
 use crate::params::ScanRequest;
 use crate::protocol::Contribution;
 use crate::reads::{read_safely, record_read};
-use crate::server::Heartbeat;
 use crate::source_hash::sha256_hex;
 use crate::visit::{Declarations, TestModules};
 

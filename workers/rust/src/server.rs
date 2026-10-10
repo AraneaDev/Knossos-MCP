@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::cargo_manifest::cargo_crates;
 use crate::facts::Facts;
+use crate::heartbeat::Heartbeat;
 use crate::index::{index_project, Prepared, ProjectIndex};
 use crate::layout::Layout;
 use crate::params::ScanRequest;
@@ -21,34 +22,6 @@ const INPUT_HASHES_PART_BYTES: usize = 256_000;
 
 /// The result's path maps a `scan/input_hashes` part may carry a piece of.
 const READ_MAP_FIELDS: [&str; 3] = ["input_hashes", "reads", "unattributed_reads"];
-
-/// How long the worker may go without writing during a request before it
-/// sends a `scan/heartbeat`, well inside the core's inactivity timeout.
-const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// Sends `scan/heartbeat` when the request has been quiet for
-/// [`HEARTBEAT_EVERY`].
-pub(crate) struct Heartbeat {
-    /// When the last heartbeat went out, or the request began.
-    last: std::time::Instant,
-}
-
-impl Heartbeat {
-    /// Start counting from now.
-    fn new() -> Self {
-        Self {
-            last: std::time::Instant::now(),
-        }
-    }
-
-    /// Send a heartbeat through `emit` if the request has been quiet too long.
-    pub(crate) fn beat(&mut self, emit: &mut dyn FnMut(&Value)) {
-        if self.last.elapsed() >= HEARTBEAT_EVERY {
-            emit(&json!({"jsonrpc": "2.0", "method": "scan/heartbeat"}));
-            self.last = std::time::Instant::now();
-        }
-    }
-}
 
 /// Read requests until stdin ends or `shutdown` arrives, writing replies to `output`.
 ///
