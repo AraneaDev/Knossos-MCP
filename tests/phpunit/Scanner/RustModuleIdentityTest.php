@@ -302,6 +302,23 @@ final class RustModuleIdentityTest extends KnossosTestCase
     }
 
     /**
+     * `self.inner.ledger.record()` in an `impl` block whose struct, and whose
+     * field's struct, are declared in other files reaches `Ledger::record`.
+     */
+    public function testACallThroughFieldsDeclaredInOtherFilesReachesTheMethod(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod a;\npub mod b;\npub mod c;\npub mod d;\n");
+        $this->write('src/b.rs', "pub struct Ledger;\n\nimpl Ledger {\n    pub fn record(&self) {}\n}\n");
+        $this->write('src/d.rs', "use crate::b::Ledger;\n\npub struct Inner {\n    pub(crate) ledger: Ledger,\n}\n");
+        $this->write('src/a.rs', "use crate::d::Inner;\n\npub struct Holder {\n    pub(crate) inner: Inner,\n}\n");
+        $this->write('src/c.rs', "use crate::a::Holder;\n\nimpl Holder {\n    pub fn save(&self) {\n        self.inner.ledger.record();\n    }\n}\n");
+        $pdo = $this->scanned();
+
+        self::assertContains('calls crate::a::Holder::save -> crate::b::Ledger::record', $this->edges($pdo));
+    }
+
+    /**
      * `crate::visit::collect()` names what `visit` re-exports with `pub use`,
      * declared in its child `cfg`; no node is invented at the re-exported path.
      */

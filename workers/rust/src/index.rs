@@ -34,6 +34,9 @@ struct FileIndex {
     /// Every name the file's visible `use` items re-export, see
     /// [`crate::visit::index_facts`].
     exports: crate::visit::ExportedNames,
+    /// The field types of every struct the file declares, see
+    /// [`crate::visit::index_facts`].
+    fields: crate::visit::StructFields,
 }
 
 impl FileIndex {
@@ -45,7 +48,7 @@ impl FileIndex {
         let mut test_modules = crate::visit::TestModules::new();
         crate::visit::collect_test_modules(relative, module, items, layout, &mut test_modules);
         let indexed = layout.is_indexed(relative, module);
-        let exports = if indexed {
+        let (exports, fields) = if indexed {
             crate::visit::index_facts(relative, module, items, layout)
         } else {
             Default::default()
@@ -63,6 +66,7 @@ impl FileIndex {
                 BTreeMap::new()
             },
             exports,
+            fields,
         }
     }
 }
@@ -184,6 +188,7 @@ pub(crate) fn index_project(
             declarations.add_file(&index.declarations);
             declarations.add_renames(&index.renames);
             declarations.add_exports(&index.exports);
+            declarations.add_fields(&index.fields);
             test_modules.extend(index.test_modules.iter().cloned());
         }
         if let Some(hash) = &value {

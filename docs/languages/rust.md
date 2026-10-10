@@ -94,9 +94,14 @@ Some names could refer to a type the graph does not hold, such as `Vec` or
 `String`. For those the worker emits a `speculative` edge, and the core keeps it
 only if the target turns out to be a declared node. That is how a method call on
 a receiver of known type reaches its method: `self`, a typed parameter, a `let`
-with a type annotation, or a `let` assigned from a struct literal or an
-associated call such as `Widget::make()`. A call on what another call returns
-(`state.mode().label()`) resolves through the declared return type.
+with a type annotation, a `let` assigned from a struct literal or an
+associated call such as `Widget::make()`, or a binding a struct pattern takes
+from a field (`let Index { store, .. } = index;`). A call on what another call
+returns (`state.mode().label()`) resolves through the declared return type. A
+call through a field (`self.walk.facts.edge()`) resolves through the field's
+declared type, also when the struct, its `impl` block and the field's type sit
+in three different files: the declaration index holds every struct's field
+types as the declaring file's own imports resolve them.
 
 A path that reaches an item through a `pub use` re-export
 (`crate::visit::collect()` under `pub use cfg::collect;` in `visit`) names the
@@ -203,10 +208,11 @@ the files read, not from a rule. A file that does not parse has no facts and
 reads nothing beyond itself, so it stays an ordinary attributed row and is
 rescanned only when it changes. Editing a `Cargo.toml` rescans every Rust file.
 A rebuilt file reaches its readers only when its own bytes changed: what a file
-gives the index (its declarations and the names its `pub use` items re-export)
-follows from its own bytes and the package layout, so no file's facts depend on
-what another file read. A name followed through a re-export is a lookup like
-any other, so the file declaring it is read.
+gives the index (its declarations, the names its `pub use` items re-export and
+its structs' field types) follows from its own bytes and the package layout, so
+no file's facts depend on what another file read. A name followed through a
+re-export or a field type is a lookup like any other, so the file declaring it
+is read.
 
 ## Limits
 

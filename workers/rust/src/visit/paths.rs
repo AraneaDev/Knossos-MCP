@@ -466,6 +466,18 @@ impl Walk<'_> {
             || self.layout.is_project_root(head)
     }
 
+    /// The declared type of `owner`'s field `field`: from this file when it
+    /// declares the struct, else from the declaration index, which holds
+    /// what the declaring file's own imports resolved it to.
+    pub(super) fn field_type(&self, owner: &str, field: &str) -> Option<String> {
+        if let Some(fields) = self.struct_fields.get(owner) {
+            return fields.get(field).cloned();
+        }
+        let declared = self.declarations.field_type(owner, field)?;
+
+        self.renamed(declared).map(|target| self.exported(target))
+    }
+
     /// A path headed by the crate name of one of the project's libraries,
     /// rewritten onto that library's root in the graph: `my_demo::run` in
     /// `src/main.rs`, `tests/` or `examples/` is `crate::run`, the node the

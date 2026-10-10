@@ -2587,6 +2587,82 @@ fn a_method_called_on_an_untyped_receiver_is_listed_on_the_module() {
 }
 
 #[test]
+fn a_method_called_through_a_field_of_a_struct_declared_in_another_file_resolves() {
+    // `Walk` declared in one file, its `impl` in another, its field's type in
+    // a third: `self.store.put()` names `Store::put` through a field the
+    // walking file never sees declared. The scan-wide index carries every
+    // struct's field types, so the receiver is typed all the same.
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod b;\npub mod c;\npub mod d;\n"),
+        (
+            "src/b.rs",
+            "pub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n}\npub struct Ledger;\nimpl Ledger {\n    pub fn record(&self) {}\n}\n",
+        ),
+        (
+            "src/d.rs",
+            "use crate::b::Ledger;\npub struct Inner {\n    pub(crate) ledger: Ledger,\n}\n",
+        ),
+        (
+            "src/a.rs",
+            "use crate::b::Store;\nuse crate::d::Inner;\npub struct Holder<'a> {\n    pub(crate) store: &'a mut Store,\n    pub(crate) inner: Inner,\n}\n",
+        ),
+        (
+            "src/c.rs",
+            "use crate::a::Holder;\nimpl Holder<'_> {\n    pub fn save(&mut self) {\n        self.store.put();\n        self.inner.ledger.record();\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("cross-file-field-receiver", &files);
+
+    assert_eq!(
+        vec![
+            ("rust:method:crate::b::Ledger::record".to_owned(), true),
+            ("rust:method:crate::b::Store::put".to_owned(), true),
+        ],
+        method_calls(&contributions, "rust:method:crate::a::Holder::save")
+    );
+    // The answer rests on `Inner`'s declaration, which only the field type
+    // led to, so the walking file read the file declaring it.
+    let walking = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/c.rs")
+        .unwrap();
+    assert!(
+        walking["reads"].get("src/d.rs").is_some(),
+        "{}",
+        walking["reads"]
+    );
+}
+
+#[test]
+fn a_destructured_struct_binding_takes_the_field_type() {
+    // `let Index { store, .. } = index;` binds `store` with the type its
+    // field declares, in this file or another.
+    let files = [
+        ("src/lib.rs", "pub mod b;\npub mod index;\npub mod server;\n"),
+        (
+            "src/b.rs",
+            "pub struct Store;\nimpl Store {\n    pub fn take(&self) {}\n}\n",
+        ),
+        (
+            "src/index.rs",
+            "use crate::b::Store;\npub struct Index {\n    pub store: Store,\n    pub count: usize,\n}\n",
+        ),
+        (
+            "src/server.rs",
+            "use crate::index::Index;\npub fn run(index: Index) {\n    let Index { store, .. } = index;\n    store.take();\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("destructured-field-receiver", &files);
+
+    assert!(
+        method_calls(&contributions, "rust:function:crate::server::run")
+            .contains(&("rust:method:crate::b::Store::take".to_owned(), true)),
+        "{:?}",
+        method_calls(&contributions, "rust:function:crate::server::run")
+    );
+}
+
+#[test]
 fn a_path_through_a_pub_use_re_export_names_the_defining_item() {
     // `crate::visit::collect()` and `use crate::visit::Store;` reach items
     // `visit` re-exports from its child `cfg`. The graph declares them under

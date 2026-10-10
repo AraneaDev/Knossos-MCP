@@ -25,7 +25,9 @@ mod state;
 use calls::{is_foreign_export, is_wasm_bindgen};
 pub use cfg::{collect_test_modules, is_test_module_path, TestModules};
 use cfg::{is_cfg_test, is_test_attribute, item_attrs};
-pub use declarations::{declaration_paths, declared_renames, Declarations, ExportedNames};
+pub use declarations::{
+    declaration_paths, declared_renames, Declarations, ExportedNames, StructFields,
+};
 use placement::mod_child;
 use state::{Calls, Walk};
 
@@ -61,11 +63,18 @@ pub fn walk(
     placed
 }
 
-/// The names one file's visible `use` items re-export, for the declaration
-/// index, each resolved through the file's own imports as its walk would
-/// resolve it, before any other file is known. See [`ExportedNames`].
+/// What one file tells the declaration index beyond the paths it declares:
+/// the names its visible `use` items re-export and the field types of its
+/// structs, each resolved through the file's own imports as its walk would
+/// resolve them, before any other file is known. See [`ExportedNames`] and
+/// [`StructFields`].
 #[must_use]
-pub fn index_facts(relative: &str, module: &str, items: &[Item], layout: &Layout) -> ExportedNames {
+pub fn index_facts(
+    relative: &str,
+    module: &str,
+    items: &[Item],
+    layout: &Layout,
+) -> (ExportedNames, StructFields) {
     // Nothing here is emitted: the facts and the empty index only satisfy
     // the walk's resolution, which falls back on neither for a path the
     // file roots or imports.
@@ -73,8 +82,12 @@ pub fn index_facts(relative: &str, module: &str, items: &[Item], layout: &Layout
     let declarations = Declarations::new();
     let mut walker = Walk::new(&mut facts, module, &[], &declarations, layout);
     walker.collect_uses(module, items);
+    walker.collect_struct_fields(module, items);
 
-    std::mem::take(&mut walker.exports)
+    (
+        std::mem::take(&mut walker.exports),
+        std::mem::take(&mut walker.struct_fields),
+    )
 }
 
 impl<'a> Walk<'a> {

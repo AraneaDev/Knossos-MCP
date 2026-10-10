@@ -39,6 +39,10 @@ pub struct Declarations {
     /// path it imports; `None` when two files map one name apart. See
     /// [`ExportedNames`].
     exports: BTreeMap<String, Option<String>>,
+    /// The field types of every struct, by struct then field; `None` for a
+    /// struct two files declare, whose fields cannot be told apart. See
+    /// [`StructFields`].
+    fields: BTreeMap<String, Option<BTreeMap<String, String>>>,
 }
 
 /// The names one file's visible `use` items (`pub use cfg::collect;`,
@@ -46,6 +50,12 @@ pub struct Declarations {
 /// that path, mapped to the path each imports, as the file's own imports
 /// resolve it. A glob re-export names nothing and is not here.
 pub type ExportedNames = BTreeMap<String, String>;
+
+/// The declared type of each named field of one file's structs, by the
+/// struct's canonical path then field name, resolved through the file's own
+/// imports: what a method call through `self.field` in another file's
+/// `impl` block resolves through.
+pub type StructFields = BTreeMap<String, BTreeMap<String, String>>;
 
 impl Declarations {
     /// An empty index.
@@ -84,6 +94,23 @@ impl Declarations {
         }
     }
 
+    /// Record one file's struct field types, as
+    /// [`index_facts`](super::index_facts) returned them. A struct another
+    /// file declares too keeps no fields: which declaration a receiver holds
+    /// is unknown.
+    pub fn add_fields(&mut self, fields: &StructFields) {
+        for (owner, types) in fields {
+            match self.fields.get(owner) {
+                Some(_) => {
+                    self.fields.insert(owner.clone(), None);
+                }
+                None => {
+                    self.fields.insert(owner.clone(), Some(types.clone()));
+                }
+            }
+        }
+    }
+
     /// `path` with its longest prefix that a visible `use` re-exports
     /// rewritten onto the path that `use` imports, once: `crate::visit::go`
     /// under `pub use cfg::go;` in `crate::visit` is `crate::visit::cfg::go`.
@@ -100,6 +127,14 @@ impl Declarations {
         target
             .as_ref()
             .map(|target| format!("{target}{}", &path[prefix.len()..]))
+    }
+
+    /// The declared type of `owner`'s field `field`, as the struct's own
+    /// file resolved it, remembering that `owner` was asked about: the file
+    /// declaring it sits in a module above it.
+    pub fn field_type(&self, owner: &str, field: &str) -> Option<String> {
+        self.lookups.borrow_mut().insert(owner.to_owned());
+        self.fields.get(owner)?.as_ref()?.get(field).cloned()
     }
 
     /// `path` with its longest prefix that a `mod` declaration renamed

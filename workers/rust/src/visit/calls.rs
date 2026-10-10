@@ -251,12 +251,7 @@ impl Calls<'_, '_> {
                 return None;
             };
             let owner = self.receiver_owner(&field.base)?;
-            return self
-                .walk
-                .struct_fields
-                .get(&owner)
-                .and_then(|fields| fields.get(&name.to_string()))
-                .cloned();
+            return self.walk.field_type(&owner, &ident_name(name));
         }
         let syn::Expr::Path(path) = current else {
             return None;
@@ -270,6 +265,40 @@ impl Calls<'_, '_> {
         self.walk
             .resolve_path(&self.container, &owner)
             .map(|(target, _)| target)
+    }
+
+    /// The bindings a struct pattern makes (`let Index { store, .. } = x;`),
+    /// each with the type of the field it takes, when the struct's
+    /// declaration states one. Every other binding of the pattern shadows
+    /// an outer one of unknown type.
+    fn destructured_receivers(&mut self, pattern: &syn::PatStruct) {
+        let owner = if pattern.qself.is_none() {
+            self.walk
+                .resolve_path(&self.container, &pattern.path)
+                .map(|(target, _)| target)
+        } else {
+            None
+        };
+        for field in &pattern.fields {
+            let syn::Pat::Ident(binding) = field.pat.as_ref() else {
+                continue;
+            };
+            let name = ident_name(&binding.ident);
+            let stated = match (&owner, &field.member) {
+                (Some(owner), syn::Member::Named(member)) => {
+                    self.walk.field_type(owner, &ident_name(member))
+                }
+                _ => None,
+            };
+            match stated {
+                Some(target) => {
+                    self.receivers.insert(name, target);
+                }
+                None => {
+                    self.receivers.remove(&name);
+                }
+            }
+        }
     }
 
     /// The method whose result an expression is, when its owner is known: a
@@ -430,6 +459,10 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         // so `let p = p.clone()` resolves its receiver through the old `p`.
         syn::visit::visit_local(self, node);
         let (ident, annotation) = match &node.pat {
+            syn::Pat::Struct(pattern) => {
+                self.destructured_receivers(pattern);
+                return;
+            }
             syn::Pat::Ident(ident) => (ident_name(&ident.ident), None),
             syn::Pat::Type(typed) => match typed.pat.as_ref() {
                 syn::Pat::Ident(ident) => (ident_name(&ident.ident), Some(typed.ty.as_ref())),
