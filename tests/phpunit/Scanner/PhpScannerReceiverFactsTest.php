@@ -229,6 +229,53 @@ final class PhpScannerReceiverFactsTest extends KnossosTestCase
         assertArrayContains('unknown', $scan['untyped']);
     }
 
+    /**
+     * `$request = $graph->request;` binds a property of a typed variable,
+     * declared in whatever file declares that type. The variable keeps the
+     * property path, so a call on it, or on a property of it, names the path
+     * for the reconciler to finish; a property this file types types the
+     * variable itself. Rebinding it to anything untracked forgets the path.
+     */
+    public function testAVariableAssignedFromAPropertyOfATypedReceiverNamesThePropertyPath(): void
+    {
+        $scan = $this->scan(<<<'PHP'
+            <?php
+            namespace App;
+
+            final class Reconciler
+            {
+                private Parser $parser;
+
+                public function open(Graph $graph): void
+                {
+                    $request = $graph->request;
+                    $request->root();
+                    $request->dirtyPaths?->encode();
+                    $own = $this->options;
+                    $own->flag();
+                    $parser = $this->parser;
+                    $parser->parse();
+                    $either = $graph->fallback;
+                    $either ??= new Parser();
+                    $either->undecided();
+                    $request = $graph->build();
+                    $request = strtolower('x');
+                    $request->stale();
+                }
+            }
+            PHP);
+
+        assertArrayContains(['calls', 'php:method:App\Reconciler::open', 'php:method_of_property:App\Graph::$request::root'], $scan['edges']);
+        assertArrayContains(['calls', 'php:method:App\Reconciler::open', 'php:method_of_property:App\Graph::$request::$dirtyPaths::encode'], $scan['edges']);
+        assertArrayContains(['calls', 'php:method:App\Reconciler::open', 'php:method_of_property:App\Reconciler::$options::flag'], $scan['edges']);
+        // A property this file types types the variable outright.
+        assertArrayContains(['calls', 'php:method:App\Reconciler::open', 'php:method:App\Parser::parse'], $scan['edges']);
+        // A coalescing construction leaves it either the property or the new
+        // object, and rebinding it to something untracked forgets the path.
+        assertArrayContains('undecided', $scan['untyped']);
+        assertArrayContains('stale', $scan['untyped']);
+    }
+
     /** @return list<array{string, string, string}> */
     private function edges(string $source): array
     {
