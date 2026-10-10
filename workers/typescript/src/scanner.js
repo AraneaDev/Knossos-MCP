@@ -1,14 +1,7 @@
-import { createHash } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
-import { exceedsByteCap, readBounded } from "./byte-caps.js";
-import {
-    blankSource,
-    componentAliasSuffix,
-    componentDialect,
-    toVirtualSource,
-} from "./component-source.js";
+import { exceedsByteCap } from "./byte-caps.js";
+import { componentAliasSuffix, componentDialect } from "./component-source.js";
 import {
     ambientAttributes,
     boundFunction,
@@ -31,11 +24,7 @@ import {
     unalias,
     valueReferencePosition,
 } from "./declaration-kinds.js";
-import {
-    errorMessage,
-    isStackOverflow,
-    rethrowStackOverflow,
-} from "./errors.js";
+import { isStackOverflow, rethrowStackOverflow } from "./errors.js";
 import {
     BUILT_IN_EXCLUSIONS,
     exclusionRules,
@@ -50,7 +39,6 @@ import {
     recordProbe,
     recordRefused,
     recordUnreadSourceFiles,
-    recordWalked,
 } from "./input-reads.js";
 import {
     hasMainGuard,
@@ -67,7 +55,6 @@ import {
 } from "./program-diagnostics.js";
 import {
     allowedCompilerPath,
-    assertScannablePath,
     belowNodeModules,
     COMPONENT_ALIAS,
     COMPONENT_ALIAS_MARK,
@@ -82,14 +69,20 @@ import {
     realSourcePath,
     relativeInside,
     SHEBANG_ALIAS_SUFFIX,
-    SOURCE_EXTENSIONS,
     sourceFilesFrom,
     validatedInside,
     validateRoot,
-    walk,
     walkPath,
 } from "./project-paths.js";
+import {
+    configFilesForScan,
+    maxFileBytesFrom,
+    readableAsItself,
+    startsWithShebang,
+    validateRequestedFiles,
+} from "./request-validation.js";
 import { componentSources, parsedContentHashes } from "./source-caches.js";
+import { readHashedSourceFile, readRecorded } from "./source-reading.js";
 import {
     globBase,
     globContext,
@@ -118,11 +111,10 @@ import {
     unwrapExpression,
 } from "./typescript-fact-utils.js";
 export { excludedBy } from "./exclusions.js";
+export { discoverConfigFiles } from "./request-validation.js";
 
 // Every contribution's owner key is this prefix and the file's project path.
 const OWNER_KEY_PREFIX = "knossos.typescript:file:";
-// Bytes read when probing an extensionless file's shebang; one short line is enough.
-const SHEBANG_PROBE_BYTES = 256;
 // Lets a tsconfig `include` match components, so they are checked under the
 // options of the project that holds them.
 const COMPONENT_FILE_EXTENSIONS = [".vue", ".svelte", ".astro"].map(
@@ -2511,193 +2503,6 @@ function parseConfig(root, configPath, reads) {
     return parsed;
 }
 
-/**
- * Read a file for the compiler within the byte cap, decoded as TypeScript
- * decodes it, recording the read under its walk's keys: the hash of the raw
- * bytes read, or null when the read failed or went over the cap. A default
- * library file is exempt from the cap and never recorded, since discovery
- * never reports one.
- */
-function readRecorded(root, file, reads, maxFileBytes) {
-    const normalized = realSourcePath(normalize(path.resolve(file)));
-    const library = contains(defaultLibDirectory(), normalized);
-    let buffer;
-    try {
-        buffer = readBounded(
-            normalized,
-            library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
-        );
-    } catch (error) {
-        rethrowStackOverflow(error);
-        buffer = undefined;
-    }
-    if (!library)
-        recordWalked(
-            reads,
-            root,
-            walkPath(normalized),
-            buffer === undefined
-                ? null
-                : createHash("sha256").update(buffer).digest("hex"),
-            maxFileBytes,
-        );
-    return buffer === undefined ? undefined : decodeLikeTypeScript(buffer);
-}
-
-/**
- * Decode a file's bytes into the string ts.sys.readFile would return, so
- * reading the buffer ourselves (to hash it) changes nothing the compiler sees.
- * Mirrors TypeScript 6.0's node `readFile`: UTF-16 BE and LE byte-order marks
- * decode as UTF-16, a UTF-8 BOM is dropped, anything else is UTF-8.
- */
-function decodeLikeTypeScript(buffer) {
-    if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
-        // Copied before swapping: the caller's buffer is what was hashed.
-        const swapped = Buffer.from(buffer.subarray(0, buffer.length & ~1));
-        swapped.swap16();
-        return swapped.toString("utf16le", 2);
-    }
-    if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
-        return buffer.toString("utf16le", 2);
-    }
-    if (
-        buffer.length >= 3 &&
-        buffer[0] === 0xef &&
-        buffer[1] === 0xbb &&
-        buffer[2] === 0xbf
-    ) {
-        return buffer.toString("utf8", 3);
-    }
-    return buffer.toString("utf8");
-}
-
-/**
- * Read, hash and parse one file in a single read, so the hash is over exactly
- * the bytes the SourceFile was built from, and record the read for the request.
- * Returns undefined when the file cannot be read, the same "skip this input"
- * signal ts.sys.readFile gives.
- *
- * The path is resolved once, by walkPath, and that one walk decides everything:
- * whether the file may be read (it must end at a file inside the root, or be a
- * default-library file), the path the bytes are read from (the file the walk
- * ended at), and the key the read goes under (inputKeyLocation). Discovery
- * never follows a symlink, so a linked name is not a path the core tracks,
- * while the file its bytes came from is. A tsconfig `include` walks through
- * links (and `preserveSymlinks` keeps linked import paths), so both names do
- * reach this host. A path that is refused here is not read at all; the compiler
- * goes on as if the file did not exist, which changes the facts of every file
- * importing it, so it is recorded as a failed read under the same key.
- *
- * The tree can still change between the walk and the read, and the read is
- * still verified. A read that fails is recorded as null. A read that opens a
- * file other than the one the walk reached, because a component became a link
- * in between, hashes the bytes it actually got and records that hash under the
- * walk's keys, where it disagrees with what discovery hashed for the keyed path
- * unless the bytes are the same, in which case so are the facts. The read is
- * bounded to one byte past the cap for the same reason: whatever it opens, it
- * never reads more than a file the host would accept.
- *
- * @param {InputReadRecorder} reads the request's recorder
- */
-function readHashedSourceFile(
-    root,
-    readPath,
-    fileName,
-    languageVersion,
-    scriptKind,
-    reads,
-    maxFileBytes,
-) {
-    const absolute = normalize(path.resolve(readPath));
-    reads.observe("read", absolute);
-    const walked = walkPath(absolute);
-    const library = contains(defaultLibDirectory(), absolute);
-    if (
-        walked.kind !== "file" ||
-        !(contains(root, walked.location) || library)
-    ) {
-        recordWalked(reads, root, walked, null, maxFileBytes);
-        return undefined;
-    }
-    let buffer;
-    try {
-        // Default-library declaration files are exempt from the cap, as in
-        // exceedsByteCap.
-        buffer = readBounded(
-            walked.location,
-            library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
-        );
-    } catch (error) {
-        rethrowStackOverflow(error);
-        buffer = undefined;
-    }
-    if (buffer === undefined) {
-        recordWalked(reads, root, walked, null, maxFileBytes);
-        return undefined;
-    }
-    const contentHash = createHash("sha256").update(buffer).digest("hex");
-    const decoded = decodeLikeTypeScript(buffer);
-    const component = componentSource(readPath, decoded);
-    const sourceFile = ts.createSourceFile(
-        fileName,
-        component?.text ?? decoded,
-        component === undefined
-            ? languageVersion
-            : asComponentModule(languageVersion),
-        true,
-        scriptKind,
-    );
-    if (component !== undefined) componentSources.set(sourceFile, component);
-    parsedContentHashes.set(sourceFile, contentHash);
-    reads.created(sourceFile);
-    recordWalked(reads, root, walked, contentHash, maxFileBytes);
-    return sourceFile;
-}
-
-/**
- * The virtual source a component is parsed from, or undefined for any other
- * file. One that cannot be delimited is parsed as blank text, so it keeps its
- * module node, and says why.
- */
-function componentSource(readPath, decoded) {
-    const dialect = componentDialect(readPath);
-    if (dialect === null) return undefined;
-    try {
-        return { dialect, ...toVirtualSource(decoded, dialect, readPath) };
-    } catch (error) {
-        rethrowStackOverflow(error);
-        return {
-            dialect,
-            text: blankSource(decoded),
-            scriptRanges: [],
-            templateRanges: [],
-            typed: false,
-            unparsed: errorMessage(error),
-        };
-    }
-}
-
-/**
- * Parse options that make a component a module whatever its script says.
- *
- * A `<script setup>` that neither imports nor exports reads to the compiler as
- * a global script, and an import of the component then resolves to nothing.
- * Every component is a module to its bundler, with its compiled component as
- * the default export.
- */
-function asComponentModule(languageVersion) {
-    const options =
-        typeof languageVersion === "object"
-            ? languageVersion
-            : { languageVersion };
-    return {
-        ...options,
-        setExternalModuleIndicator: (file) => {
-            file.externalModuleIndicator = true;
-        },
-    };
-}
-
 // The defaults TypeScript 5.x applied to options a config leaves unset, where
 // 6.0 changed them: every `@types` package rather than none, non-strict, and no
 // check on side-effect imports.
@@ -3281,179 +3086,6 @@ function componentTarget(specifier, resolved) {
     };
 }
 
-function configFilesForScan(root, requested) {
-    if (requested !== undefined) {
-        if (
-            !Array.isArray(requested) ||
-            requested.some((item) => typeof item !== "string")
-        ) {
-            throw new Error(
-                "TypeScript config_files must be a list of project-relative paths.",
-            );
-        }
-        return requested.map((item) =>
-            normalize(path.relative(root, validatedInside(root, item))),
-        );
-    }
-    return discoverConfigFiles(root);
-}
-
-/**
- * Return sorted project-relative tsconfig paths below a validated root.
- *
- * Walking is the fallback, not the norm: the core names `config_files` on every
- * scan it plans, so this runs only for a request that supplied none.
- *
- * @param {string} root Absolute, already-validated project root.
- * @returns {string[]} Project-relative tsconfig paths, sorted.
- */
-export function discoverConfigFiles(root) {
-    const configs = [];
-    walk(root, root, (absolute, relative) => {
-        const basename = path.basename(relative).toLowerCase();
-        if (
-            basename === "tsconfig.json" ||
-            (basename.startsWith("tsconfig.") && basename.endsWith(".json"))
-        ) {
-            configs.push(relative);
-        }
-    });
-
-    return configs.sort();
-}
-
-function maxFileBytesFrom(limits) {
-    return Number.isInteger(limits?.max_file_bytes)
-        ? limits.max_file_bytes
-        : 2_000_000;
-}
-
-/**
- * Whether a requested path is still an in-root regular file within the byte
- * cap, reached without following a link.
- */
-function readableAsItself(root, relative, maxFileBytes) {
-    const absolute = `${root}/${relative}`;
-    const walked = walkPath(absolute);
-    if (walked.kind !== "file" || walked.location !== absolute) return false;
-    try {
-        return fs.statSync(absolute).size <= maxFileBytes;
-    } catch {
-        return false;
-    }
-}
-
-/**
- * A requested file the filesystem would not let the worker read as that file.
- * See validateRequestedFiles.
- */
-class UnreadableInput extends Error {}
-
-// A requested file refused because of what was read in it: an extensionless
-// script whose shebang does not name JavaScript. Discovery routed it here
-// because its reading of those bytes did, so a script swapped for another one
-// and restored around the probe would otherwise lose its facts from a graph
-// reported fresh. The refusal carries evidence for `input_hashes`: the hash of
-// the whole file from one bounded read that reached the same verdict, which a
-// stable tree matches, or null when that read failed, was over the cap, or
-// found JavaScript after all.
-class RefusedAfterRead extends Error {
-    constructor(message, contentHash) {
-        super(message);
-        this.contentHash = contentHash;
-    }
-}
-
-function validateRequestedFiles(root, files, limits = {}) {
-    if (
-        !Array.isArray(files) ||
-        files.some((file) => typeof file !== "string")
-    ) {
-        throw new Error(
-            "TypeScript scan files must be a list of project-relative paths.",
-        );
-    }
-    const maxFiles = Number.isInteger(limits?.max_files)
-        ? limits.max_files
-        : 100_000;
-    const maxFileBytes = maxFileBytesFrom(limits);
-    if (maxFiles < 1 || maxFileBytes < 1 || files.length > maxFiles)
-        throw new Error("TypeScript scan limits are invalid or exceeded.");
-
-    // A path this worker refuses, or a file that vanished between discovery and
-    // scan, is reported per file rather than raised: only a request that cannot
-    // be interpreted at all (checked above) is fatal.
-    //
-    // A rejection is either a refusal by policy (an extension or shebang this
-    // worker does not scan), which says nothing about the tree, or a read the
-    // filesystem refused: the path is gone, is not a regular file, is over the
-    // byte cap, or resolves somewhere other than where it was requested. The
-    // second kind is marked `failedRead`, because the facts-free contribution
-    // standing in for the file must not pass verification as if it had been
-    // read.
-    const accepted = [];
-    const rejected = [];
-    for (const relative of files) {
-        // A malformed path stays fatal: it names no file, so there is nothing to
-        // attribute a diagnostic to, and echoing it into a contribution would
-        // emit an owner key the graph rejects anyway.
-        assertScannablePath(relative);
-        const requested = normalize(relative);
-        try {
-            let absolute;
-            try {
-                absolute = validatedInside(root, relative);
-            } catch (error) {
-                throw new UnreadableInput(errorMessage(error));
-            }
-            // Discovery never follows a link, so a requested path always names
-            // its own file. One that now resolves elsewhere is read as another
-            // file, whose facts must not stand in for this one's, nor be
-            // emitted under the other file's key.
-            if (normalize(path.relative(root, absolute)) !== requested)
-                throw new UnreadableInput(
-                    `TypeScript input no longer resolves to itself: ${relative}`,
-                );
-            if (
-                !SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase()) &&
-                componentDialect(absolute) === null
-            ) {
-                if (path.extname(absolute) !== "")
-                    throw new Error(
-                        `Unsupported TypeScript input: ${relative}`,
-                    );
-                if (!namesJavaScriptInShebang(absolute))
-                    throw new RefusedAfterRead(
-                        `Unsupported TypeScript input: ${relative}`,
-                        shebangRefusalEvidence(absolute, maxFileBytes),
-                    );
-            }
-            let stat;
-            try {
-                stat = fs.statSync(absolute);
-            } catch (error) {
-                throw new UnreadableInput(errorMessage(error));
-            }
-            if (!stat.isFile() || stat.size > maxFileBytes)
-                throw new UnreadableInput(
-                    `TypeScript input exceeds limits: ${relative}`,
-                );
-            accepted.push(requested);
-        } catch (error) {
-            rejected.push({
-                relative: requested,
-                message: errorMessage(error),
-                failedRead: error instanceof UnreadableInput,
-                ...(error instanceof RefusedAfterRead
-                    ? { refusalHash: error.contentHash }
-                    : {}),
-            });
-        }
-    }
-
-    return { accepted, rejected };
-}
-
 /**
  * Whether a redirect SourceFile's facts provably come from its own path's bytes.
  *
@@ -3492,85 +3124,6 @@ function factFreeContribution(relative, code, message) {
             },
         ],
     };
-}
-
-// Discovery classifies an extensionless script by its shebang and routes it
-// here, so gating on the extension alone rejected exactly the files discovery
-// had just resolved. Mirrors the discoverer's rule: match `#!/usr/bin/node` and
-// `#!/usr/bin/env node`, tolerate a version suffix, and anchor to a word
-// boundary so a path merely containing an interpreter name is not matched. Only
-// the first line is read, and only for a file that has no known extension.
-function namesJavaScriptInShebang(absolute) {
-    if (path.extname(absolute) !== "") return false;
-    let buffer;
-    let read;
-    try {
-        // Non-blocking, and checked on the handle, as readBounded does: the
-        // path may have been swapped for a FIFO, whose open would otherwise
-        // block until a writer appears.
-        const handle = fs.openSync(
-            absolute,
-            fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
-        );
-        try {
-            if (!fs.fstatSync(handle).isFile())
-                throw new Error(`Not a regular file: ${absolute}`);
-            buffer = Buffer.alloc(SHEBANG_PROBE_BYTES);
-            read = fs.readSync(handle, buffer, 0, SHEBANG_PROBE_BYTES, 0);
-        } finally {
-            fs.closeSync(handle);
-        }
-    } catch (error) {
-        // Only ever asked of a path that just resolved, so a failed read is the
-        // filesystem's answer, not this script's interpreter.
-        throw new UnreadableInput(errorMessage(error));
-    }
-
-    return probeNamesJavaScript(buffer.subarray(0, read));
-}
-
-// Whether the probe's bytes, the file's first SHEBANG_PROBE_BYTES at most, name
-// JavaScript on their first line.
-function probeNamesJavaScript(bytes) {
-    const first = bytes
-        .toString("utf8", 0, Math.min(bytes.length, SHEBANG_PROBE_BYTES))
-        .split("\n", 1)[0];
-    return (
-        first.startsWith("#!") &&
-        /\b(node|nodejs|bun|deno)[0-9.]*\b/i.test(first)
-    );
-}
-
-// What a shebang refusal reports in `input_hashes` for the refused file. The
-// probe read only a line, which no discovery hash can be compared with, so the
-// whole file is read once more, bounded, and judged again on those same bytes.
-// A file that still does not name JavaScript is reported by that read's hash:
-// a tree that is not changing matches what discovery hashed, so a script this
-// rule and discovery's happen to judge apart costs only its diagnostic, while a
-// script swapped for another one does not match. A read that fails, is over the
-// cap, or now names JavaScript saw a file that changed between the two reads,
-// and is reported as null.
-function shebangRefusalEvidence(absolute, maxFileBytes) {
-    let buffer;
-    try {
-        buffer = readBounded(absolute, maxFileBytes);
-    } catch {
-        return null;
-    }
-    if (buffer === undefined || probeNamesJavaScript(buffer)) return null;
-    return createHash("sha256").update(buffer).digest("hex");
-}
-
-// Whether a file opens with a shebang, whatever interpreter it names.
-//
-// A shebang means the file is executed rather than imported, which is what
-// dead-code analysis needs to know: nothing in the codebase references a
-// script, so its module having no inbound edge says nothing about whether it is
-// wanted. Unlike the probe above, which decides whether an extensionless file
-// is JavaScript at all, this asks only how the file is entered, so the
-// interpreter is irrelevant. A byte-order mark may precede it.
-function startsWithShebang(text) {
-    return text.replace(/^\uFEFF/, "").startsWith("#!");
 }
 
 /**
