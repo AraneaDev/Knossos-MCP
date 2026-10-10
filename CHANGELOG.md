@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.22.0](https://github.com/AraneaDev/knossos/compare/v0.21.3...v0.22.0) (2026-10-10)
+
+
+### Features
+
+* let the pane rescan at any time ([#205](https://github.com/AraneaDev/knossos/issues/205)) ([8fa2a42](https://github.com/AraneaDev/knossos/commit/8fa2a427a7c27a8f66b054bc0a326c0b6a62599f))
+
+
+### Fixes
+
+* let the quality gate follow a cycle whose members only moved ([#195](https://github.com/AraneaDev/knossos/issues/195)) ([11c43ff](https://github.com/AraneaDev/knossos/commit/11c43ff435199b571db1e1f60608f855ff0cd7d3))
+* name the recorder type source-reading.js documents ([#201](https://github.com/AraneaDev/knossos/issues/201)) ([2b58e09](https://github.com/AraneaDev/knossos/commit/2b58e09692ef5f6b9f25ced1739628a93658b2b1))
+* read a name a Python function binds as its own local ([#188](https://github.com/AraneaDev/knossos/issues/188)) ([789881b](https://github.com/AraneaDev/knossos/commit/789881bb0bf6fe6bccf2d7b628818e334076947d))
+* resolve Rust glob imports and function-body use statements ([#207](https://github.com/AraneaDev/knossos/issues/207)) ([5265567](https://github.com/AraneaDev/knossos/commit/5265567ff0d9d3e54c864456e0f00ae2420abfd4))
+* resolve Rust receivers and re-exports across files ([#204](https://github.com/AraneaDev/knossos/issues/204)) ([7e89a52](https://github.com/AraneaDev/knossos/commit/7e89a526797958006329981f92be121b344c88b9))
+* treat Python imports under TYPE_CHECKING as type-only ([#197](https://github.com/AraneaDev/knossos/issues/197)) ([87d619e](https://github.com/AraneaDev/knossos/commit/87d619ee0bd72f866b492d96a5c8f843cf2afc88))
+* type a PHP variable assigned from a typed property ([#203](https://github.com/AraneaDev/knossos/issues/203)) ([71e4ba6](https://github.com/AraneaDev/knossos/commit/71e4ba6e4531333e7c58659cd6d16d577078b50e))
+* type Python receivers held as optional collaborators ([#202](https://github.com/AraneaDev/knossos/issues/202)) ([e9c0423](https://github.com/AraneaDev/knossos/commit/e9c0423ed9fca583ffe00667a623d4cde468c936))
+* type the receivers behind Knossos's own dead-code candidates ([#187](https://github.com/AraneaDev/knossos/issues/187)) ([b7069c3](https://github.com/AraneaDev/knossos/commit/b7069c3a8833448cbd8879254e836661f06cce9c))
+
+
+### Refactoring
+
+* break the namespace cycles in src and wire the query services outside the facade ([#200](https://github.com/AraneaDev/knossos/issues/200)) ([c0f274f](https://github.com/AraneaDev/knossos/commit/c0f274f38b116795446a1a14120ba82ddd90ecbf))
+* extract the MCP dispatcher from the stdio server ([#194](https://github.com/AraneaDev/knossos/issues/194)) ([652faf2](https://github.com/AraneaDev/knossos/commit/652faf20d8dc80222959613459c55f354ec7d436))
+* move the scan ledger and scan target into Scan ([#206](https://github.com/AraneaDev/knossos/issues/206)) ([303f3f5](https://github.com/AraneaDev/knossos/commit/303f3f5873a2602c72e973dae8ac0f224d6bdf2e))
+* split the dead-code inheritance graph, diagram export, tree walk and annotation writes ([#199](https://github.com/AraneaDev/knossos/issues/199)) ([24c54cd](https://github.com/AraneaDev/knossos/commit/24c54cd2cd3524846419a5f1a293189389ace786))
+* split the PHP worker's fact collector ([#196](https://github.com/AraneaDev/knossos/issues/196)) ([9d490ac](https://github.com/AraneaDev/knossos/commit/9d490ac13c8cdedd824dbb520e067dc8b4ab65c1))
+* split the Python worker into a package ([#192](https://github.com/AraneaDev/knossos/issues/192)) ([ccab5bd](https://github.com/AraneaDev/knossos/commit/ccab5bdbfda63b006757e65ba666c73b8dcdca98))
+* split the reconciler, read-set invalidator and scan request building ([#198](https://github.com/AraneaDev/knossos/issues/198)) ([fe897b1](https://github.com/AraneaDev/knossos/commit/fe897b15dbf33d2fe9d8e3477b752787ac313fc2))
+* split the Rust worker's visitor and server into modules ([#191](https://github.com/AraneaDev/knossos/issues/191)) ([5d3ae75](https://github.com/AraneaDev/knossos/commit/5d3ae755dc49fd8fb75b7ad8a66b60a3c8b0e36a))
+* split the topology and catalog query services ([#189](https://github.com/AraneaDev/knossos/issues/189)) ([a550468](https://github.com/AraneaDev/knossos/commit/a55046857493a9e4d4ffef9037097ce1278ced96))
+* split the TypeScript scanner into modules ([#190](https://github.com/AraneaDev/knossos/issues/190)) ([8bee6f4](https://github.com/AraneaDev/knossos/commit/8bee6f406313026c6bef482945f30ffb344c74aa))
+
 ## [0.21.3](https://github.com/AraneaDev/knossos/compare/v0.21.2...v0.21.3) (2026-10-10)
 
 
