@@ -1,4 +1,3 @@
-use super::calls::call_kind;
 use super::{collect_declarations, collect_test_modules, walk, Declarations, TestModules};
 use crate::facts::Facts;
 use crate::layout::Layout;
@@ -481,39 +480,6 @@ fn a_drop_impl_marks_its_method_as_runtime_invoked() {
     );
 }
 
-/// `not(test)` and `any(test, ..)` hold in a production build too, so
-/// only a predicate no production build meets marks test code.
-#[test]
-fn a_cfg_predicate_requires_test_only_where_every_build_that_meets_it_is_a_test() {
-    let requires = |predicate: &str| {
-        super::cfg::requires_test(&syn::parse_str::<syn::Meta>(predicate).expect("parses"))
-    };
-    for test_only in [
-        "test",
-        "all(test, feature = \"x\")",
-        "any(test, all(test, unix))",
-        "not(not(test))",
-        "not(any(not(test), unix))",
-        "all(any(test, all(test, unix)), not(any(not(test), windows)))",
-        "not(all(not(test), all()))",
-    ] {
-        assert!(requires(test_only), "{test_only}");
-    }
-    for production in [
-        "not(test)",
-        "any(test, feature = \"x\")",
-        "all(not(test), unix)",
-        "not(all(not(test), unix))",
-        "any(not(not(test)), unix)",
-        "not(test, unix)",
-        "any()",
-        "feature = \"test\"",
-        "unix",
-    ] {
-        assert!(!requires(production), "{production}");
-    }
-}
-
 /// `contains("test")` matched any token whose text held those four
 /// letters, so `#[cfg(feature = "latest")]` marked a whole production
 /// module as test code and removed it from the dead-code budget. Only a
@@ -609,16 +575,4 @@ fn items_under_cfg_test_carry_the_test_attribute() {
     // subtree is compiled only under cfg(test).
     assert!(marked("crate::tests::helper"), "a helper inside it");
     assert!(!marked("crate::production"), "production code must not be");
-}
-
-#[test]
-fn a_snake_case_owner_segment_guesses_a_free_function() {
-    assert_eq!("function", call_kind("crate::helper"));
-    assert_eq!("function", call_kind("crate::net::http::get"));
-}
-
-#[test]
-fn an_upper_camel_case_owner_segment_guesses_a_method() {
-    assert_eq!("method", call_kind("crate::Engine::stop"));
-    assert_eq!("method", call_kind("crate::net::Engine::stop"));
 }

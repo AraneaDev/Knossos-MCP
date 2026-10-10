@@ -44,7 +44,7 @@ impl Walk<'_> {
     /// method = "DELETE")]` are actix's and rocket's primary wiring — both
     /// share the shape, so which framework owns the route is decided by the
     /// scan request's framework list (actix when both are present). The route
-    /// fact is deferred to [`Walk::finish_walk`] like every other route; the
+    /// fact is deferred to [`Walk::flush_routes`] like every other route; the
     /// handler is this function itself, so it is always declared.
     pub(super) fn attribute_routes(&mut self, canonical: &str, attrs: &[syn::Attribute]) {
         let actix = self.frameworks.iter().any(|f| f == "actix");
@@ -101,7 +101,7 @@ impl Walk<'_> {
     /// walked, hence always declared; a call route's handler may be an
     /// unresolved guess, which only counts if it names a real declaration in
     /// this file.
-    pub(super) fn finish_walk(&mut self) {
+    pub(super) fn flush_routes(&mut self) {
         for route in &self.routes {
             if route.handler_unconfirmed
                 && !self.facts.declares(&reference("function", &route.handler))
@@ -150,7 +150,7 @@ impl Walk<'_> {
 impl Calls<'_, '_> {
     /// An axum `Router::route("/path", get(handler))` or actix
     /// `web::resource("/path").route(web::get().to(handler))` call, recorded
-    /// as a route fact for [`Walk::finish_walk`].
+    /// as a route fact for [`Walk::flush_routes`].
     ///
     /// Only the two canonical shapes are handled: the routing shorthand
     /// (`get(handler)`, `routing::post(handler)`, `any(handler)`) for axum,

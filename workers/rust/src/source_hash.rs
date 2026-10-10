@@ -68,7 +68,7 @@ fn collect(root: &Path, relative: &str, inputs: &mut Vec<String>) {
 
 /// Lowercase SHA-256 hex of `bytes`, the form discovery records in the core.
 #[must_use]
-pub fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }
 

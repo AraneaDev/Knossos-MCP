@@ -12,7 +12,7 @@ use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
 use crate::layout::Layout;
-use crate::resolve::{flatten_use, glob_prefixes, ident_name, parent_module, rebase, Aliases};
+use crate::resolve::{ident_name, Aliases};
 
 mod calls;
 mod cfg;
@@ -54,7 +54,7 @@ struct Walk<'a> {
     frameworks: &'a [String],
     /// Scan-wide declaration index, see [`Declarations`].
     declarations: &'a Declarations,
-    /// Route facts found during the walk, flushed in [`Walk::finish_walk`].
+    /// Route facts found during the walk, flushed in [`Walk::flush_routes`].
     routes: Vec<RouteCandidate>,
     /// Framework roles discovered for handlers in this file, applied by
     /// canonical name once the walk is complete.
@@ -133,7 +133,7 @@ pub fn walk(
     walker.resolve_globs();
     walker.collect_struct_fields(module, &file.items);
     walker.walk_items(module, "module", &file.items);
-    walker.finish_walk();
+    walker.flush_routes();
     let placed = std::mem::take(&mut walker.placed);
     if file_is_test {
         facts.exit_test_scope();
@@ -175,200 +175,7 @@ fn mod_child(
     }
 }
 
-/// A `use` path whose head names a `mod` of the module it is written in,
-/// rewritten onto that module's path (see [`mod_child`]); `Some(None)` when
-/// two declarations of that name load different modules, `None` for any
-/// other path. A leading `::` (`unrooted` false) always names a crate.
-#[allow(clippy::option_option)]
-fn through_child(
-    children: &BTreeMap<String, Option<String>>,
-    unrooted: bool,
-    path: &str,
-) -> Option<Option<String>> {
-    if !unrooted {
-        return None;
-    }
-    let (head, rest) = match path.split_once("::") {
-        Some((head, rest)) => (head, Some(rest)),
-        None => (path, None),
-    };
-    let child = children.get(head)?;
-
-    Some(child.as_ref().map(|child| match rest {
-        Some(rest) => format!("{child}::{rest}"),
-        None => child.clone(),
-    }))
-}
-
 impl Walk<'_> {
-    /// Record every `use` in this item list, emitting one `imports` edge each.
-    ///
-    /// Imports are collected before declarations are walked, because a call in
-    /// the first function may name something imported at the bottom of the file.
-    ///
-    /// `container` only drives recursion into nested `mod` blocks — it builds
-    /// the canonical path passed to a further-nested `collect_uses` call — and
-    /// never the edge source, which is always `self.module`, the file's own
-    /// module, regardless of how deep the `use` line is nested.
-    ///
-    /// A nested `mod` block's `use` lines are still collected into the same
-    /// file-wide alias map. That is wider than Rust's own scoping, which would
-    /// hide them from the outer module, and it is the deliberate trade: this
-    /// worker resolves names to emit edges, and a name that resolves in the
-    /// file it appears in produces a true edge whichever block declared it.
-    /// That flatness has a cost the map itself owns up to: two different `use`
-    /// lines in different modules that import different full paths under the
-    /// same local name collide. See `Aliases::insert` for how that collision
-    /// is handled without ever emitting a silently wrong edge.
-    ///
-    /// `flatten_use` renders a `self`- or `super`-rooted leaf literally
-    /// (`self::foo`, `super::foo`); [`rebase`] resolves that against
-    /// `container`, the module the `use` line actually appears in, before the
-    /// leaf becomes an edge target or an alias. A leaf `rebase` cannot place —
-    /// a `super` chain longer than `container` has segments to give up —
-    /// contributes neither an edge nor an alias.
-    ///
-    /// The edge points at the MODULE the imported name lives in, not at the
-    /// name itself: `use a::b::C;` emits `imports` to `rust:module:a::b`, and
-    /// `C` goes into the alias map, exactly as `visit_ImportFrom` in
-    /// `workers/python/bin/worker.py` splits the two. A `use` overwhelmingly
-    /// names a struct, trait, or function, whose real node kind is `class`,
-    /// `interface`, or `function`, so targeting `rust:module:a::b::C` resolved
-    /// against nothing and made the reconciler synthesise an external module
-    /// that shadowed the very symbol the file had already declared. The module
-    /// is a node the graph genuinely holds. Two shapes need no truncation: a
-    /// single-segment `use foo;` already names a module (see
-    /// [`parent_module`]), and a `self` leaf already names its prefix module
-    /// (see [`crate::resolve::UseLeaf::names_module`]).
-    ///
-    /// Several symbols imported from the same module produce one edge, not one
-    /// per symbol, matching the Python worker, which emits a single `imports`
-    /// edge per `from` statement. `Facts::finish` performs that collapse for the
-    /// whole contribution rather than per `use` line, so a module importing from
-    /// the same place on ten separate lines still stores one row: the scanner
-    /// SDK's persistence identity is kind/source/target within one owner, and
-    /// every one of those rows is identical.
-    fn collect_uses(&mut self, container: &str, items: &[Item]) {
-        // `use policy::Policy;` beside `mod policy;` names that child module:
-        // since the 2018 edition a path's first segment may be any name in
-        // scope, and a module declared here is one. Left as written, the path
-        // read as an external crate's.
-        let mut children: BTreeMap<String, Option<String>> = BTreeMap::new();
-        for item in items {
-            if let Item::Mod(node) = item {
-                let (child, file) =
-                    mod_child(&self.relative, &self.module, container, node, self.layout);
-                self.placed.extend(file);
-                let name = ident_name(&node.ident);
-                match children.get(&name) {
-                    Some(Some(existing)) if *existing != child => {
-                        children.insert(name, None);
-                    }
-                    Some(_) => {}
-                    None => {
-                        children.insert(name, Some(child));
-                    }
-                }
-            }
-        }
-        for (name, child) in &children {
-            if child.as_deref() != Some(format!("{container}::{name}").as_str()) {
-                self.renamed_children
-                    .insert((container.to_owned(), name.clone()), child.clone());
-            }
-        }
-        for item in items {
-            match item {
-                Item::Use(node) => {
-                    let mut leaves = Vec::new();
-                    flatten_use(&node.tree, "", &mut leaves);
-                    let source = reference("module", &self.module);
-                    for leaf in leaves {
-                        let written = match through_child(
-                            &children,
-                            node.leading_colon.is_none(),
-                            &leaf.full,
-                        ) {
-                            Some(Some(written)) => written,
-                            Some(None) => continue,
-                            None => leaf.full.clone(),
-                        };
-                        let Some(full) = rebase(container, &self.anchor_crate(&written))
-                            .and_then(|full| self.renamed(full))
-                        else {
-                            continue;
-                        };
-                        let module = if leaf.names_module {
-                            full.clone()
-                        } else {
-                            parent_module(&full).to_owned()
-                        };
-                        self.import(&source, &module, item.span());
-                        let key = (container.to_owned(), leaf.alias.clone());
-                        match self.module_aliases.get(&key) {
-                            Some(Some(existing)) if existing != &full => {
-                                self.module_aliases.insert(key, None);
-                            }
-                            Some(_) => {}
-                            None => {
-                                self.module_aliases.insert(key, Some(full.clone()));
-                            }
-                        }
-                        self.aliases.insert(leaf.alias, full);
-                    }
-                    let mut globs = Vec::new();
-                    glob_prefixes(&node.tree, "", &mut globs);
-                    for glob in globs {
-                        let written =
-                            match through_child(&children, node.leading_colon.is_none(), &glob) {
-                                Some(Some(written)) => written,
-                                Some(None) => continue,
-                                None => glob,
-                            };
-                        self.pending_globs.push((
-                            container.to_owned(),
-                            written,
-                            node.leading_colon.is_some(),
-                            item.span(),
-                        ));
-                    }
-                }
-                Item::Mod(node) => {
-                    if let Some((_, inner)) = &node.content {
-                        let nested = format!("{container}::{}", ident_name(&node.ident));
-                        self.collect_uses(&nested, inner);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// The edge a `use` leaves from `source` to the scope it imports from.
-    ///
-    /// A scope whose last segment is UpperCamelCase is a type, not a module:
-    /// `use crate::errors::Error::Io;` and `use Error::*;` take variants or
-    /// associated items of `Error`, so they reference the type (speculative,
-    /// struct or trait being unknown) instead of importing a module the graph
-    /// would invent.
-    fn import(&mut self, source: &str, scope: &str, span: proc_macro2::Span) {
-        let last = scope.rsplit("::").next().unwrap_or(scope);
-        if scope.contains("::") && last.starts_with(char::is_uppercase) {
-            for kind in ["class", "interface"] {
-                self.facts
-                    .speculative_edge("references", source, &reference(kind, scope), span);
-            }
-            return;
-        }
-        self.facts.edge(
-            "imports",
-            source,
-            &reference("module", scope),
-            "certain",
-            span,
-        );
-    }
-
     /// Walk one item list whose declarations belong to `container`.
     ///
     /// `container_kind` is the node kind of `container` itself (`module`, `class`,
@@ -950,9 +757,12 @@ impl Walk<'_> {
 /// expression it walks through.
 ///
 /// Kept as a small, separate `Visit` implementation (rather than inline
-/// closures in `Walk::walk_statement`) so the call-resolution logic stays a
-/// single, shallow method — [`Calls::visit_call`] below — instead of growing
-/// the cognitive complexity of a larger function.
+/// closures in [`Walk::walk_body`]) so the call-resolution logic stays a
+/// single, shallow method, [`Calls::visit_call`] in `calls.rs`, instead of
+/// growing the cognitive complexity of a larger function.
+///
+/// Declared here rather than in `calls.rs` so its fields stay private to
+/// `visit` while both `calls` and `routes` implement methods on it.
 struct Calls<'a, 'b> {
     /// The walk collecting facts.
     walk: &'a mut Walk<'b>,

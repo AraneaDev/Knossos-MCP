@@ -147,7 +147,7 @@ pub(super) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
 
 /// Whether a `cfg` predicate can hold only when `test` is set (see
 /// [`test_gate`]).
-pub(super) fn requires_test(predicate: &syn::Meta) -> bool {
+fn requires_test(predicate: &syn::Meta) -> bool {
     test_gate(predicate).0
 }
 
@@ -253,4 +253,40 @@ fn attr_args(
     };
     list.parse_args_with(syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated)
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    /// `not(test)` and `any(test, ..)` hold in a production build too, so
+    /// only a predicate no production build meets marks test code.
+    #[test]
+    fn a_cfg_predicate_requires_test_only_where_every_build_that_meets_it_is_a_test() {
+        let requires = |predicate: &str| {
+            super::requires_test(&syn::parse_str::<syn::Meta>(predicate).expect("parses"))
+        };
+        for test_only in [
+            "test",
+            "all(test, feature = \"x\")",
+            "any(test, all(test, unix))",
+            "not(not(test))",
+            "not(any(not(test), unix))",
+            "all(any(test, all(test, unix)), not(any(not(test), windows)))",
+            "not(all(not(test), all()))",
+        ] {
+            assert!(requires(test_only), "{test_only}");
+        }
+        for production in [
+            "not(test)",
+            "any(test, feature = \"x\")",
+            "all(not(test), unix)",
+            "not(all(not(test), unix))",
+            "any(not(not(test)), unix)",
+            "not(test, unix)",
+            "any()",
+            "feature = \"test\"",
+            "unix",
+        ] {
+            assert!(!requires(production), "{production}");
+        }
+    }
 }

@@ -666,11 +666,28 @@ fn names_variant(path: &syn::Path) -> bool {
 /// `Facts::finish` requires a pending call to match a declaration exactly.
 /// Either way a bad guess costs one edge or one spurious node, not a failed
 /// scan.
-pub(super) fn call_kind(canonical: &str) -> &'static str {
+fn call_kind(canonical: &str) -> &'static str {
     let segments: Vec<&str> = canonical.split("::").collect();
     let owner = segments.len().checked_sub(2).and_then(|i| segments.get(i));
     match owner {
         Some(segment) if segment.starts_with(char::is_uppercase) => "method",
         _ => "function",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::call_kind;
+
+    #[test]
+    fn a_snake_case_owner_segment_guesses_a_free_function() {
+        assert_eq!("function", call_kind("crate::helper"));
+        assert_eq!("function", call_kind("crate::net::http::get"));
+    }
+
+    #[test]
+    fn an_upper_camel_case_owner_segment_guesses_a_method() {
+        assert_eq!("method", call_kind("crate::Engine::stop"));
+        assert_eq!("method", call_kind("crate::net::Engine::stop"));
     }
 }
