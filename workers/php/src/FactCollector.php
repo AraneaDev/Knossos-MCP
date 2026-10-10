@@ -40,25 +40,6 @@ final class FactCollector extends NodeVisitorAbstract
     private array $callables = [];
 
     /**
-     * The variables of each function-like node the traversal is inside,
-     * innermost last, beside the bindings a closure captured by reference.
-     *
-     * A closure and an arrow function have variables of their own: a
-     * parameter or an assignment there does not reach the code around them,
-     * which sees only what a by-reference capture may have changed.
-     *
-     * @var list<array{variables: array<string, array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>, by_reference: array<string, ?array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>}>
-     */
-    private array $scopeVariables = [];
-
-    /**
-     * The variables of code no callable encloses: a script's body.
-     *
-     * @var array<string, array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>
-     */
-    private array $fileScopeVariables = [];
-
-    /**
      * Declared return types of the methods this file declares, keyed
      * `Class::method` in lower case, since PHP reads both names so.
      *
@@ -86,24 +67,6 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private array $untypedCalls = [];
 
-    /**
-     * Variables holding a class name built from a namespace literal
-     * (`$card = 'App\\Cards\\' . $name`), keyed by the function-like scope
-     * they live in and their name.
-     *
-     * @var array<string, string>
-     */
-    private array $classPrefixes = [];
-
-    /**
-     * The function-like nodes the traversal is inside, innermost last. A
-     * closure has its own variables, so a prefix recorded in the method
-     * around it does not reach a parameter of the same name.
-     *
-     * @var list<int>
-     */
-    private array $variableScopes = [];
-
     /** The namespace block the traversal is in: its node id, 0 for a file without one. */
     private int $namespaceScope = 0;
 
@@ -116,9 +79,13 @@ final class FactCollector extends NodeVisitorAbstract
     /** Class names read out of docblocks, through the file's imports. */
     private readonly DocblockTypes $docblocks;
 
+    /** What each local variable in scope holds, as far as the code shows. */
+    private readonly VariableTypeScope $variables;
+
     public function __construct(private readonly string $relativePath)
     {
         $this->docblocks = new DocblockTypes();
+        $this->variables = new VariableTypeScope();
     }
 
     /**
@@ -182,7 +149,10 @@ final class FactCollector extends NodeVisitorAbstract
     public function enterNode(Node $node): ?int
     {
         if ($node instanceof Node\FunctionLike) {
-            $this->enterVariableScope($node);
+            $this->variables->enter($node);
+        }
+        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
+            $this->closureSignature($node);
         }
         if ($node instanceof Stmt\Namespace_) {
             $this->namespaceScope = spl_object_id($node);
@@ -269,8 +239,7 @@ final class FactCollector extends NodeVisitorAbstract
     public function leaveNode(Node $node): ?int
     {
         if ($node instanceof Node\FunctionLike) {
-            array_pop($this->variableScopes);
-            $this->leaveVariableTypes();
+            $this->variables->leave();
         }
         if ($node instanceof Stmt\ClassMethod || $node instanceof Stmt\Function_) {
             array_pop($this->callables);
@@ -501,8 +470,7 @@ final class FactCollector extends NodeVisitorAbstract
             $element = isset($parameters[$name]) ? DocblockTypes::elementType($type) : null;
             $resolved = $element === null ? null : $this->docblocks->documentedClass($element, $this->namespaceScope, $this->namespaceName, $class);
             if ($resolved !== null) {
-                $variables = &$this->variables();
-                $variables[$name] = ($variables[$name] ?? ['type' => null, 'confidence' => 'probable']) + ['element' => $resolved];
+                $this->variables->setElement($name, $resolved);
             }
         }
     }
@@ -523,7 +491,7 @@ final class FactCollector extends NodeVisitorAbstract
                 $this->promotedProperty($param, $param->var->name, $types);
             }
             if ($types !== [] && is_string($param->var->name)) {
-                $this->setVariableType($param->var->name, $types[0]);
+                $this->variables->set($param->var->name, $types[0]);
                 if ($constructor && $param->flags !== 0) {
                     $this->setPropertyType($param->var->name, $types[0]);
                 }
@@ -601,28 +569,27 @@ final class FactCollector extends NodeVisitorAbstract
         }
         $prefix = self::namespacePrefix($node->expr);
         if ($prefix === null) {
-            unset($this->classPrefixes[$this->prefixKey($node->var->name)]);
+            $this->variables->clearPrefix($node->var->name);
         } else {
-            $this->classPrefixes[$this->prefixKey($node->var->name)] = $prefix;
+            $this->variables->setPrefix($node->var->name, $prefix);
         }
         if ($node->expr instanceof Expr\New_ && $node->expr->class instanceof Name) {
             // Inferred from local construction flow — only ever probable.
-            $this->setVariableType($node->var->name, $this->resolvedClassName($node->expr->class), 'probable');
+            $this->variables->set($node->var->name, $this->resolvedClassName($node->expr->class), 'probable');
 
             return;
         }
         $invoked = $this->invokedType($node->expr);
         if ($invoked !== null) {
             // `$result = $run()` where `$run` holds a closure whose result type is declared.
-            $this->setVariableType($node->var->name, $invoked, 'probable');
+            $this->variables->set($node->var->name, $invoked, 'probable');
 
             return;
         }
         $yields = $this->closureResult($node->expr);
         if ($yields !== null) {
-            $this->setVariableType($node->var->name, 'Closure', 'probable');
-            $variables = &$this->variables();
-            $variables[$node->var->name]['invokes'] = $yields;
+            $this->variables->set($node->var->name, 'Closure', 'probable');
+            $this->variables->setInvokes($node->var->name, $yields);
 
             return;
         }
@@ -630,7 +597,7 @@ final class FactCollector extends NodeVisitorAbstract
         if ($returned !== null) {
             // The type is declared, but the binding to this variable is local
             // flow like the `new` case above, so it stays probable.
-            $this->setVariableType($node->var->name, $returned, 'probable');
+            $this->variables->set($node->var->name, $returned, 'probable');
 
             return;
         }
@@ -638,7 +605,7 @@ final class FactCollector extends NodeVisitorAbstract
         if ($optional !== null) {
             // `$x = $flag ? new Y() : null` is how PHP spells an optional
             // collaborator; losing the type there loses every call through it.
-            $this->setVariableType($node->var->name, $optional, 'probable');
+            $this->variables->set($node->var->name, $optional, 'probable');
 
             return;
         }
@@ -648,13 +615,13 @@ final class FactCollector extends NodeVisitorAbstract
             // that would say what is in another file. Record the call so a
             // member access on this variable can name it; the reconciler, which
             // sees every file, finishes the resolution.
-            $this->setVariableReturnSource($node->var->name, $callee);
+            $this->variables->setReturnSource($node->var->name, $callee);
 
             return;
         }
         // Reassignment to any untracked value invalidates the inferred type so a
         // stale `$x = new A; …; $x = something(); $x->m()` no longer resolves to A.
-        $this->clearVariableType($node->var->name);
+        $this->variables->clear($node->var->name);
     }
 
     /**
@@ -672,14 +639,14 @@ final class FactCollector extends NodeVisitorAbstract
         $assigned = $node->expr instanceof Expr\New_ && $node->expr->class instanceof Name
             ? $this->resolvedClassName($node->expr->class)
             : $this->returnedType($node->expr);
-        $held = $this->variableType($node->var->name);
-        if ($assigned !== null && ($held === null || $held === $assigned) && $this->variableReturnSource($node->var->name) === null) {
-            $this->setVariableType($node->var->name, $assigned, 'probable');
+        $held = $this->variables->type($node->var->name);
+        if ($assigned !== null && ($held === null || $held === $assigned) && $this->variables->returnSource($node->var->name) === null) {
+            $this->variables->set($node->var->name, $assigned, 'probable');
 
             return;
         }
         if ($held !== $assigned) {
-            $this->clearVariableType($node->var->name);
+            $this->variables->clear($node->var->name);
         }
     }
 
@@ -693,7 +660,7 @@ final class FactCollector extends NodeVisitorAbstract
             return null;
         }
 
-        return $this->variables()[$expression->name->name]['invokes'] ?? null;
+        return $this->variables->invokes($expression->name->name);
     }
 
     /**
@@ -722,7 +689,7 @@ final class FactCollector extends NodeVisitorAbstract
         // The loop rebinds its variables, whatever they held before.
         foreach ([$node->keyVar, $node->valueVar] as $bound) {
             if ($bound instanceof Expr\Variable && is_string($bound->name)) {
-                unset($this->classPrefixes[$this->prefixKey($bound->name)]);
+                $this->variables->clearPrefix($bound->name);
             }
         }
         if (!$node->valueVar instanceof Expr\Variable || !is_string($node->valueVar->name)) {
@@ -732,21 +699,21 @@ final class FactCollector extends NodeVisitorAbstract
             && $node->expr->class instanceof Name
             && $node->expr->name instanceof Identifier
             && strtolower($node->expr->name->toString()) === 'cases') {
-            $this->setVariableType($node->valueVar->name, $this->resolvedClassName($node->expr->class), 'probable');
+            $this->variables->set($node->valueVar->name, $this->resolvedClassName($node->expr->class), 'probable');
 
             return;
         }
         $element = $node->expr instanceof Expr\Variable && is_string($node->expr->name)
-            ? ($this->variables()[$node->expr->name]['element'] ?? null)
+            ? $this->variables->element($node->expr->name)
             : null;
         if ($element !== null) {
             // A parameter whose docblock names its element type.
-            $this->setVariableType($node->valueVar->name, $element, 'probable');
+            $this->variables->set($node->valueVar->name, $element, 'probable');
 
             return;
         }
         // Any other loop rebinds the variable to something untracked.
-        $this->clearVariableType($node->valueVar->name);
+        $this->variables->clear($node->valueVar->name);
     }
 
     /**
@@ -796,7 +763,7 @@ final class FactCollector extends NodeVisitorAbstract
         if ($receiver instanceof Expr\Variable && is_string($receiver->name)) {
             return $receiver->name === 'this'
                 ? ($this->currentClass()['name'] ?? null)
-                : $this->variableType($receiver->name);
+                : $this->variables->type($receiver->name);
         }
         if (($receiver instanceof Expr\PropertyFetch || $receiver instanceof Expr\NullsafePropertyFetch)
             && $receiver->var instanceof Expr\Variable
@@ -883,92 +850,12 @@ final class FactCollector extends NodeVisitorAbstract
         // `new ('App\\Cards\\' . $name)` or `new $card` after `$card = 'App\\Cards\\' . $name`:
         // any class in that namespace may be the one built.
         $prefix = match (true) {
-            $node->class instanceof Expr\Variable && is_string($node->class->name) => $this->classPrefixes[$this->prefixKey($node->class->name)] ?? null,
+            $node->class instanceof Expr\Variable && is_string($node->class->name) => $this->variables->prefix($node->class->name),
             $node->class instanceof Expr => self::namespacePrefix($node->class),
             default => null,
         };
         if ($prefix !== null) {
             $this->addEdge('references', $this->currentSource(), 'php:class_prefix:' . $prefix, $node, 'probable');
-        }
-    }
-
-    /**
-     * Open a function-like node's variable scope, carrying over the prefixes
-     * it captures: every variable of the enclosing scope for an arrow
-     * function, except those its parameters shadow, and the `use` list for a
-     * closure. Any other function starts empty.
-     */
-    private function enterVariableScope(Node\FunctionLike $node): void
-    {
-        $outer = $this->variableScopes === [] ? 0 : $this->variableScopes[count($this->variableScopes) - 1];
-        $this->variableScopes[] = spl_object_id($node);
-        $captured = [];
-        if ($node instanceof Expr\ArrowFunction) {
-            $parameters = [];
-            foreach ($node->params as $parameter) {
-                if ($parameter->var instanceof Expr\Variable && is_string($parameter->var->name)) {
-                    $parameters[$parameter->var->name] = true;
-                }
-            }
-            foreach ($this->classPrefixes as $key => $prefix) {
-                [$scope, $variable] = explode('$', $key, 2);
-                if ((int) $scope === $outer && !isset($parameters[$variable])) {
-                    $captured[$variable] = $prefix;
-                }
-            }
-        } elseif ($node instanceof Expr\Closure) {
-            foreach ($node->uses as $use) {
-                if (is_string($use->var->name) && isset($this->classPrefixes[$outer . '$' . $use->var->name])) {
-                    $captured[$use->var->name] = $this->classPrefixes[$outer . '$' . $use->var->name];
-                }
-            }
-        }
-        foreach ($captured as $variable => $prefix) {
-            $this->classPrefixes[$this->prefixKey($variable)] = $prefix;
-        }
-        $this->enterVariableTypes($node);
-    }
-
-    /**
-     * Open a function-like node's variable types: everything around an arrow
-     * function, which captures by value, the `use` list of a closure, and
-     * nothing for any other function. A closure's or arrow function's own
-     * parameters then bind over whatever was captured.
-     */
-    private function enterVariableTypes(Node\FunctionLike $node): void
-    {
-        $outer = $this->variables();
-        $variables = $node instanceof Expr\ArrowFunction ? $outer : [];
-        $byReference = [];
-        foreach ($node instanceof Expr\Closure ? $node->uses : [] as $use) {
-            // The grammar allows only a plain `$name` in a `use` list.
-            $name = (string) $use->var->name;
-            $binding = $outer[$name] ?? null;
-            if ($binding !== null) {
-                $variables[$name] = $binding;
-            }
-            if ($use->byRef) {
-                $byReference[$name] = $binding;
-            }
-        }
-        $this->scopeVariables[] = ['variables' => $variables, 'by_reference' => $byReference];
-        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
-            $this->closureSignature($node);
-        }
-    }
-
-    /**
-     * Close a function-like node's variable types. A variable a closure took
-     * by reference and rebound may hold either value once the closure might
-     * have run, so the code around it no longer knows its type.
-     */
-    private function leaveVariableTypes(): void
-    {
-        $scope = array_pop($this->scopeVariables);
-        foreach ($scope['by_reference'] ?? [] as $variable => $captured) {
-            if (($scope['variables'][$variable] ?? null) !== $captured) {
-                $this->clearVariableType($variable);
-            }
         }
     }
 
@@ -988,21 +875,15 @@ final class FactCollector extends NodeVisitorAbstract
             }
             if ($param->var instanceof Expr\Variable && is_string($param->var->name)) {
                 if ($types === []) {
-                    $this->clearVariableType($param->var->name);
+                    $this->variables->clear($param->var->name);
                 } else {
-                    $this->setVariableType($param->var->name, $types[0]);
+                    $this->variables->set($param->var->name, $types[0]);
                 }
             }
         }
         foreach ($this->typeNames($node->returnType) as $type) {
             $this->addEdge('references', $source, self::reference('class', $type), $node->returnType ?? $node);
         }
-    }
-
-    /** A variable's key in {@see self::$classPrefixes}: its scope and its name. */
-    private function prefixKey(string $variable): string
-    {
-        return ($this->variableScopes === [] ? 0 : $this->variableScopes[count($this->variableScopes) - 1]) . '$' . $variable;
     }
 
     /**
@@ -1104,8 +985,8 @@ final class FactCollector extends NodeVisitorAbstract
             if ($node->var->name === 'this') {
                 $class = $this->currentClass()['name'] ?? null;
             } else {
-                $class = $this->variableType($node->var->name);
-                $confidence = $this->variableConfidence($node->var->name);
+                $class = $this->variables->type($node->var->name);
+                $confidence = $this->variables->confidence($node->var->name);
             }
         } elseif (
             ($node->var instanceof Expr\PropertyFetch || $node->var instanceof Expr\NullsafePropertyFetch)
@@ -1178,7 +1059,7 @@ final class FactCollector extends NodeVisitorAbstract
         $property = '$' . $receiver->name->toString();
         $root = $receiver->var;
         if ($root instanceof Expr\Variable && is_string($root->name)) {
-            $type = $root->name === 'this' ? ($this->currentClass()['name'] ?? null) : $this->variableType($root->name);
+            $type = $root->name === 'this' ? ($this->currentClass()['name'] ?? null) : $this->variables->type($root->name);
 
             return $type === null ? null : $type . '::' . $property;
         }
@@ -1191,7 +1072,7 @@ final class FactCollector extends NodeVisitorAbstract
     private function receiverReturnSource(Expr $receiver): ?string
     {
         if ($receiver instanceof Expr\Variable && is_string($receiver->name) && $receiver->name !== 'this') {
-            return $this->variableReturnSource($receiver->name);
+            return $this->variables->returnSource($receiver->name);
         }
 
         return $receiver instanceof Expr\MethodCall || $receiver instanceof Expr\StaticCall
@@ -1400,72 +1281,6 @@ final class FactCollector extends NodeVisitorAbstract
         }
 
         return $id;
-    }
-
-    /**
-     * The variables of the scope being read: the innermost function-like
-     * node's, closures included, or the file's own when none encloses the code.
-     *
-     * A script makes its calls from file scope (`$endpoint = new Endpoint();
-     * $endpoint->handle();`), and leaving those variables untracked typed
-     * nothing there, so whatever an entry script alone reaches read as dead.
-     * A function does not see the file's variables, which is why each
-     * callable keeps its own.
-     *
-     * @return array<string, array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>
-     */
-    private function &variables(): array
-    {
-        if ($this->scopeVariables === []) {
-            return $this->fileScopeVariables;
-        }
-
-        return $this->scopeVariables[array_key_last($this->scopeVariables)]['variables'];
-    }
-
-    /** Remember a variable's inferred class so later calls on it can be resolved. */
-    private function setVariableType(string $variable, string $type, string $confidence = 'certain'): void
-    {
-        $variables = &$this->variables();
-        $variables[$variable] = ['type' => $type, 'confidence' => $confidence];
-    }
-
-    /**
-     * Remember that a variable holds whatever a named call returned.
-     *
-     * Kept instead of a type because the declaration that names the type is in
-     * another file; the reference this records is enough for the reconciler,
-     * which sees every file, to name the receiver.
-     */
-    private function setVariableReturnSource(string $variable, string $callee): void
-    {
-        $variables = &$this->variables();
-        $variables[$variable] = ['type' => null, 'confidence' => 'probable', 'returned_by' => $callee];
-    }
-
-    /** The call a variable's value came from, when its type was not resolvable here. */
-    private function variableReturnSource(string $variable): ?string
-    {
-        return $this->variables()[$variable]['returned_by'] ?? null;
-    }
-
-    /** Forget a variable's type when it is reassigned to something unknown. */
-    private function clearVariableType(string $variable): void
-    {
-        $variables = &$this->variables();
-        unset($variables[$variable]);
-    }
-
-    /** The tracked class for a variable, or null when it was never inferred. */
-    private function variableType(string $variable): ?string
-    {
-        return $this->variables()[$variable]['type'] ?? null;
-    }
-
-    /** How far a tracked variable's type is inferred, so a guess is never recorded as proven. */
-    private function variableConfidence(string $variable): string
-    {
-        return $this->variables()[$variable]['confidence'] ?? 'certain';
     }
 
     /** Remember a property's declared type for resolving calls on `$this->x`. */
