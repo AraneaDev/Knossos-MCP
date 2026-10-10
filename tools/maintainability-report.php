@@ -6,7 +6,7 @@ require_once __DIR__ . '/lib/php-function-metrics.php';
 
 $root = dirname(__DIR__);
 $reportPath = $root . '/coverage/quality/maintainability.json';
-$patterns = [$root . '/src/*.php', $root . '/src/*/*.php', $root . '/src/*/*/*.php', $root . '/workers/php/src/*.php', $root . '/workers/php/src/*/*.php', $root . '/workers/typescript/src/*.js', $root . '/workers/python/bin/*.py'];
+$patterns = [$root . '/src/*.php', $root . '/src/*/*.php', $root . '/src/*/*/*.php', $root . '/workers/php/src/*.php', $root . '/workers/php/src/*/*.php', $root . '/workers/typescript/src/*.js', $root . '/workers/python/bin/*.py', $root . '/workers/python/bin/knossos_python/*.py'];
 $paths = [];
 foreach ($patterns as $pattern) {
     foreach (glob($pattern) ?: [] as $path) {

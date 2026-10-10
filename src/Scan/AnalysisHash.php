@@ -11,11 +11,13 @@ namespace Knossos\Scan;
  * the cache key follows the worker's own files instead of a version somebody
  * has to remember to bump. A pattern is a path relative to the installation
  * root; a trailing `/**` means every regular file below that directory,
- * skipping any directory named `__tests__`, `tests` or `node_modules`.
+ * skipping any directory named `__tests__`, `tests`, `node_modules` or
+ * `__pycache__`. The last holds bytecode an interpreter may write beside a
+ * worker's own modules, which follows from them and decides nothing.
  */
 final class AnalysisHash
 {
-    private const SKIPPED_DIRECTORIES = ['__tests__', 'tests', 'node_modules'];
+    private const SKIPPED_DIRECTORIES = ['__tests__', 'tests', 'node_modules', '__pycache__'];
 
     private function __construct() {}
 

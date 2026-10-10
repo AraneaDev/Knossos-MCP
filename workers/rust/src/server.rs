@@ -636,12 +636,12 @@ fn parse_source(bytes: &[u8]) -> Result<syn::File, (&'static str, String, usize)
 /// The raw bytes of one project file, or why the filesystem refused them:
 /// gone, not a regular file, over the byte cap, or resolving outside the root.
 ///
-/// Mirrors `safe_file` in `workers/python/bin/worker.py`: `assert_scannable_path`
-/// only checked the path's shape, so a symlink inside the project that points
-/// outside it would otherwise be resolved untouched. Canonicalising and
-/// re-checking containment here, at the point the file is first opened, is
-/// what actually catches that. `safe_root` canonicalises `root`, so a plain
-/// `starts_with` comparison is enough.
+/// Mirrors `safe_file` in `workers/python/bin/knossos_python/safe_io.py`:
+/// `assert_scannable_path` only checked the path's shape, so a symlink inside
+/// the project that points outside it would otherwise be resolved untouched.
+/// Canonicalising and re-checking containment here, at the point the file is
+/// first opened, is what actually catches that. `safe_root` canonicalises
+/// `root`, so a plain `starts_with` comparison is enough.
 ///
 /// Bytes, not a string: the hash must be of exactly what is on disk, and a
 /// file that is not UTF-8 is still a file whose bytes were read. Bounded to
@@ -982,8 +982,8 @@ fn limit_of(limits: Option<&Value>, key: &str, fallback: u64) -> Result<u64, Str
 /// walking `Path::components()`: that iterator silently collapses a leading
 /// `./` and a doubled `/` before a `.` or empty segment would ever be seen,
 /// which would let `./x` and `x//y` slip past unnoticed. This mirrors
-/// `assert_scannable_path` in `workers/python/bin/worker.py`: the two workers
-/// must refuse exactly the same shapes.
+/// `assert_scannable_path` in `workers/python/bin/knossos_python/safe_io.py`:
+/// the two workers must refuse exactly the same shapes.
 fn assert_scannable_path(value: &Value) -> Result<String, String> {
     let raw = value
         .as_str()

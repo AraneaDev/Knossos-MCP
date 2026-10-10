@@ -14,6 +14,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from conftest import patch_everywhere
 
 PACKAGE = {
     "pkg/__init__.py": "from .impl import Engine\nfrom .star import *\nfrom .later import Later\n",
@@ -231,7 +232,7 @@ def test_a_failure_while_following_a_reexport_names_what_was_read(
             raise RuntimeError("injected")
         return real(tree, module)
 
-    monkeypatch.setattr(worker, "top_level_declarations", failing)
+    patch_everywhere(monkeypatch, worker, "top_level_declarations", failing)
     root = project(PACKAGE)
     files = ["app.py", "cli.py", "other.py"]
     result, contributions = _scan(worker, root, files, sorted(PACKAGE))
