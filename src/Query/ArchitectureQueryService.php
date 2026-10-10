@@ -22,20 +22,14 @@ use PDO;
  */
 final readonly class ArchitectureQueryService
 {
-    /**
-     * @param PDO $pdo the graph database the services read; the facade reads project roots from it itself
-     * @param QueryServices $services the services every method delegates to
-     */
+    /** @param QueryServices $services the services every method delegates to, and the database they read */
     public function __construct(
-        private PDO $pdo,
         private QueryServices $services,
     ) {}
 
     /**
      * The facade over every query service wired against `$pdo`; see
      * {@see QueryServices::wire()} for what each optional collaborator does.
-     * A caller that needs a different wall clock or refresh policy wires the
-     * services itself and passes them to the constructor.
      */
     public static function forDatabase(
         PDO $pdo,
@@ -45,7 +39,7 @@ final readonly class ArchitectureQueryService
         ?GitWorkingTreeProvider $gitWorkingTree = null,
         ?DriftOracle $driftOracle = null,
     ): self {
-        return new self($pdo, QueryServices::wire($pdo, $clock, $semanticRanker, $gitHistory, $gitWorkingTree, driftOracle: $driftOracle));
+        return new self(QueryServices::wire($pdo, $clock, $semanticRanker, $gitHistory, $gitWorkingTree, $driftOracle));
     }
 
     /**
@@ -62,7 +56,7 @@ final readonly class ArchitectureQueryService
     /** Root path recorded at scan time; used by the MCP layer to self-heal stale graphs. */
     public function projectRoot(string $projectId): ?string
     {
-        $statement = $this->pdo->prepare('SELECT root_realpath FROM projects WHERE id = :id');
+        $statement = $this->services->pdo->prepare('SELECT root_realpath FROM projects WHERE id = :id');
         $statement->execute(['id' => $projectId]);
         $root = $statement->fetchColumn();
         return is_string($root) && $root !== '' ? $root : null;
@@ -482,6 +476,6 @@ final readonly class ArchitectureQueryService
      */
     public function sessionBrief(string $path, ?string $databasePath = null): string
     {
-        return (new SessionBriefService($this->pdo, $databasePath, $this->services->healthQueries))->brief($path);
+        return $this->services->sessionBrief($databasePath)->brief($path);
     }
 }

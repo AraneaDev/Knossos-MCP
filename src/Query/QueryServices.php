@@ -11,15 +11,16 @@ use PDO;
 
 /**
  * The query services {@see ArchitectureQueryService} delegates to, wired
- * against one graph database.
+ * against one graph database, which it holds so every service reads the same one.
  *
  * Exists so the facade only delegates: which service needs which other one,
  * and which optional collaborators reach which service, is decided here.
  */
 final readonly class QueryServices
 {
-    /** Each service under the name the facade delegates to it by; {@see self::wire()} builds them. */
+    /** The database and each service under the name the facade delegates to it by; {@see self::wire()} builds them. */
     public function __construct(
+        public PDO $pdo,
         public ProjectCatalogQueryService $catalogQueries,
         public SnapshotDiffQuery $diffQueries,
         public QualityGateQueryService $gateQueries,
@@ -53,8 +54,6 @@ final readonly class QueryServices
      * @param SemanticRanker|null $semanticRanker the optional ranker `suggest_location` may consult
      * @param GitHistoryProvider|null $gitHistory where change impact reads commit history; null reports none
      * @param GitWorkingTreeProvider|null $gitWorkingTree where change impact reads the working tree; null makes that unavailable
-     * @param Closure|null $wallClock the clock the staleness probe dates scans by; null reads time()
-     * @param RefreshPolicy|null $refreshPolicy decides whether a stale graph may be repaired in a query
      * @param DriftOracle|null $driftOracle how the staleness probe measures drift; null uses the probe's default
      */
     public static function wire(
@@ -63,11 +62,9 @@ final readonly class QueryServices
         ?SemanticRanker $semanticRanker = null,
         ?GitHistoryProvider $gitHistory = null,
         ?GitWorkingTreeProvider $gitWorkingTree = null,
-        ?Closure $wallClock = null,
-        ?RefreshPolicy $refreshPolicy = null,
         ?DriftOracle $driftOracle = null,
     ): self {
-        $refreshPolicy ??= new RefreshPolicy($pdo);
+        $refreshPolicy = new RefreshPolicy($pdo);
         $policyQueries = new ArchitecturePolicyQueryService($pdo, $clock);
         $locationQueries = new LocationSuggestionService($pdo, $clock, $semanticRanker);
         $summaryQueries = new GraphSummaryQuery($pdo, $clock);
@@ -82,6 +79,7 @@ final readonly class QueryServices
         $changeQueries = new ChangeImpactQueryService($pdo, $clock, $impactQueries, $gitHistory, $gitWorkingTree);
 
         return new self(
+            pdo: $pdo,
             catalogQueries: $catalogQueries,
             diffQueries: $diffQueries,
             gateQueries: $gateQueries,
@@ -98,12 +96,22 @@ final readonly class QueryServices
             reviewQueries: new ReviewDiffService($pdo, $clock, $changeQueries, $policyQueries, $gateQueries, $cycleQueries),
             diagramQueries: new DiagramExportService($pdo, $clock),
             fileMetricsQueries: new FileMetricsQueryService($pdo, $clock),
-            stalenessProbe: new StalenessProbe($pdo, $wallClock, $driftOracle),
+            stalenessProbe: new StalenessProbe($pdo, oracle: $driftOracle),
             briefQueries: new AgentBriefService($pdo, $clock, $healthQueries),
             annotationQueries: new AnnotationService($pdo, $clock),
             fileContextQueries: new FileContextQueryService($pdo, $clock),
             diagnosticsQueries: new DiagnosticsQueryService($pdo, $clock),
             refreshPolicy: $refreshPolicy,
         );
+    }
+
+    /**
+     * The session brief over this database, sharing the wired health query.
+     *
+     * @param string|null $databasePath where the database lives; lets the brief warn about a path outside every allowed root
+     */
+    public function sessionBrief(?string $databasePath): SessionBriefService
+    {
+        return new SessionBriefService($this->pdo, $databasePath, $this->healthQueries);
     }
 }
