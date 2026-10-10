@@ -340,6 +340,83 @@ final class PythonScannerTest extends KnossosTestCase
     }
 
     /**
+     * A name a function binds itself is that function's local, whatever the
+     * module declares under the same name: `with open(p) as handle:` read
+     * `handle` as the module's `def handle()`, a certain edge to a function
+     * nothing there touches. Every binding form shadows; `global` does not,
+     * and a nested function sees the locals of the function around it.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerDoesNotReadALocalAsTheModuleFunctionItShadows(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-shadow-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o755, true);
+        file_put_contents($root . '/io.py', implode("\n", [
+            'def handle(request):',
+            '    return request',
+            '',
+            'def size():',
+            '    return 0',
+            '',
+            'def report():',
+            '    return 1',
+            '',
+            'def reads(path):',
+            '    with open(path) as handle:',
+            '        return handle.read()',
+            '',
+            'def loops(items):',
+            '    for size in items:',
+            '        print(size)',
+            '    try:',
+            '        pass',
+            '    except ValueError as report:',
+            '        print(report)',
+            '',
+            'def outer():',
+            '    handle = 1',
+            '    def inner():',
+            '        return handle',
+            '    return inner',
+            '',
+            'def dispatcher():',
+            '    global handle',
+            '    return handle',
+            '',
+            'def walrus(items):',
+            '    if (size := len(items)):',
+            '        return size',
+            '',
+        ]));
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['io.py']]));
+            $client->shutdown();
+        } finally {
+            @unlink($root . '/io.py');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = [$edge->sourceReference, $edge->targetReference];
+                }
+            }
+        }
+
+        foreach (['io.reads', 'io.loops', 'io.outer.<locals>.inner', 'io.walrus'] as $function) {
+            foreach (['io.handle', 'io.size', 'io.report'] as $shadowed) {
+                assertSame(false, in_array(['py:function:' . $function, 'py:function:' . $shadowed], $references, true), $function . ' -> ' . $shadowed);
+            }
+        }
+        // `global` makes the name the module's.
+        assertArrayContains(['py:function:io.dispatcher', 'py:function:io.handle'], $references);
+    }
+
+    /**
      * A service module creates one instance at import time
      * (`user_repo = UserRepository()`) and the rest of the codebase imports
      * that instance. Its type was known only inside the declaring module, so

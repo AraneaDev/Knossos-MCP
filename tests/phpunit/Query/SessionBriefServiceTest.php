@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query;
 
-use Knossos\Query\GraphTopologyQueryService;
+use Knossos\Query\ArchitectureHealthQuery;
 use Knossos\Query\SessionBriefService;
 use Knossos\Store\SqliteGraphRepository;
 use Knossos\Store\StableId;
@@ -526,14 +526,14 @@ final class SessionBriefServiceTest extends KnossosTestCase
         }
     }
 
-    /** A caller that already holds a topology service passes it, and that one ranks the hubs. */
+    /** A caller that already holds a health query passes it, and that one ranks the hubs. */
     #[Group('query')]
     public function testAnInjectedTopologyIsTheOneThatRanksHubs(): void
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture('php-scanner');
         try {
             $this->seedRouteAndHub($pdo, $projectId);
-            $overAnEmptyGraph = new GraphTopologyQueryService($this->freshTestDatabase());
+            $overAnEmptyGraph = new ArchitectureHealthQuery($this->freshTestDatabase());
 
             $default = (new SessionBriefService($pdo))->gather($root);
             $injected = (new SessionBriefService($pdo, null, $overAnEmptyGraph))->gather($root);

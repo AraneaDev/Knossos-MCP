@@ -10,7 +10,7 @@ namespace Knossos\Query;
  * Three callers answer this question about the same graph: the agent brief
  * ({@see AgentBriefService::entryPointsSection()}), read once by a person, the
  * session brief ({@see SessionBriefService::entryPoints()}), injected at every
- * session start, and impact analysis ({@see GraphTopologyQueryService::impactAnalysis()}),
+ * session start, and impact analysis ({@see ImpactAnalysisQuery::impactAnalysis()}),
  * whose entry points `change_impact` and `changed_files_impact` report. The
  * first two select with {@see self::sqlCondition()}; impact analysis already
  * holds each dependant and its roles, so it asks {@see self::matches()}. Each

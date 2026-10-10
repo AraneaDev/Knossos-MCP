@@ -17,9 +17,9 @@ use PDO;
  * boundaries and the files' paths.
  *
  * Its readers are the branch comparison, the quality gate and the trend
- * report ({@see ProjectCatalogQueryService::branchComparison()},
- * {@see ProjectCatalogQueryService::qualityGate()},
- * {@see ProjectCatalogQueryService::architectureTrends()}), and snapshot_diff
+ * report ({@see QualityGateQueryService::branchComparison()},
+ * {@see QualityGateQueryService::qualityGate()},
+ * {@see QualityGateQueryService::architectureTrends()}), and snapshot_diff
  * for whole archived tables ({@see self::archivedTablesById()}).
  *
  * A stored row carries far more (owners, hashes, the scan it came from),
