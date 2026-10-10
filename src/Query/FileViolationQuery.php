@@ -6,6 +6,7 @@ namespace Knossos\Query;
 
 use InvalidArgumentException;
 use Knossos\Configuration\ProjectConfigurationLoader;
+use Knossos\Store\ChunkedInQuery;
 use PDO;
 use Throwable;
 
@@ -124,16 +125,9 @@ final readonly class FileViolationQuery
         $wanted = array_fill_keys($files, true);
         $found = [];
         // Chunked to stay far below SQLite's bound-variable limit.
-        foreach (array_chunk($nodeIds, 500) as $chunk) {
-            $statement = $this->pdo->prepare(
-                'SELECT n.id, f.relative_path FROM nodes n JOIN files f ON f.id = n.file_id ' .
-                'WHERE n.project_id = ? AND n.id IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')',
-            );
-            $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                if (isset($wanted[(string) $row['relative_path']])) {
-                    $found[(string) $row['id']] = true;
-                }
+        foreach (ChunkedInQuery::rows($this->pdo, 'SELECT n.id, f.relative_path FROM nodes n JOIN files f ON f.id = n.file_id WHERE n.project_id = ? AND n.id IN (%s)', $nodeIds, [$projectId]) as $row) {
+            if (isset($wanted[(string) $row['relative_path']])) {
+                $found[(string) $row['id']] = true;
             }
         }
         return $found;

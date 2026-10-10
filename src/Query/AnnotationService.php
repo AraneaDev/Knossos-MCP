@@ -14,9 +14,50 @@ use InvalidArgumentException;
 final readonly class AnnotationService extends AbstractArchitectureQueryService
 {
     public const KINDS = ['intended_boundary', 'confirmed_dead', 'false_positive', 'intentional', 'note'];
-    /** Record or remove a durable annotation, previewing unless executing. */
+    /** Record or replace a durable annotation, previewing unless executing. */
+    public function upsertAnnotation(string $projectId, string $component, string $kind, string $value = '', bool $execute = false): ResultEnvelope
+    {
+        $target = $this->target($projectId, $component, $kind, $value);
+        if (!$execute) {
+            return $this->preview($projectId, $target, $kind, 'upsert', ['value' => $value]);
+        }
+        $statement = $this->pdo->prepare(
+            'INSERT INTO annotations(project_id, canonical_name, kind, value, author, created_at, updated_at) ' .
+            "VALUES (:project, :name, :kind, :value, 'agent', :now, :now) " .
+            'ON CONFLICT(project_id, canonical_name, kind) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+        );
+        $statement->execute(['project' => $projectId, 'name' => $target['canonical'], 'kind' => $kind, 'value' => $value, 'now' => gmdate('Y-m-d\TH:i:s\Z')]);
 
-    public function annotateComponent(string $projectId, string $component, string $kind, string $value = '', bool $remove = false, bool $execute = false): ResultEnvelope
+        return $this->executed($projectId, $target, $kind, 'upsert', 'Recorded', $this->fetch($projectId, $target['canonical'], $kind));
+    }
+
+    /**
+     * Remove a durable annotation, previewing unless executing.
+     *
+     * A value a caller passes along is checked as an upsert's would be and
+     * otherwise ignored: the write tools take one value argument for both
+     * actions, and an over-long one is refused whichever action it came with.
+     */
+    public function removeAnnotation(string $projectId, string $component, string $kind, string $value = '', bool $execute = false): ResultEnvelope
+    {
+        $target = $this->target($projectId, $component, $kind, $value);
+        if (!$execute) {
+            return $this->preview($projectId, $target, $kind, 'remove', null);
+        }
+        $statement = $this->pdo->prepare('DELETE FROM annotations WHERE project_id = :project AND canonical_name = :name AND kind = :kind');
+        $statement->execute(['project' => $projectId, 'name' => $target['canonical'], 'kind' => $kind]);
+
+        return $this->executed($projectId, $target, $kind, 'remove', 'Removed', null);
+    }
+
+    /**
+     * Check a write's arguments and resolve the component it names: the
+     * project, the canonical name the annotation is keyed by, the warnings
+     * about that name, and the annotation already stored under it.
+     *
+     * @return array{project: array<string, mixed>, canonical: string, warnings: list<string>, existing: ?array<string, mixed>}
+     */
+    private function target(string $projectId, string $component, string $kind, string $value): array
     {
         $project = $this->project($projectId);
         if (!in_array($kind, self::KINDS, true)) {
@@ -44,42 +85,45 @@ final readonly class AnnotationService extends AbstractArchitectureQueryService
             $warnings[] = $near === [] ? $warning : $warning . ' Did you mean: ' . implode(', ', $near) . '?';
         }
 
-        $existing = $this->fetch($projectId, $canonical, $kind);
-        $action = $remove ? 'remove' : 'upsert';
-        if (!$execute) {
-            return new ResultEnvelope(
-                $projectId,
-                $project['active_scan_id'],
-                sprintf('Preview: would %s %s annotation on %s.', $action, $kind, $canonical),
-                ['component' => $canonical, 'kind' => $kind, 'action' => $action, 'executed' => false, 'previous' => $existing, 'annotation' => $remove ? null : ['value' => $value]],
-                [],
-                [...$warnings, 'Set execute=true to apply the change.'],
-            );
-        }
-        $now = gmdate('Y-m-d\TH:i:s\Z');
-        if ($remove) {
-            $statement = $this->pdo->prepare('DELETE FROM annotations WHERE project_id = :project AND canonical_name = :name AND kind = :kind');
-            $statement->execute(['project' => $projectId, 'name' => $canonical, 'kind' => $kind]);
-            $annotation = null;
-        } else {
-            $statement = $this->pdo->prepare(
-                'INSERT INTO annotations(project_id, canonical_name, kind, value, author, created_at, updated_at) ' .
-                "VALUES (:project, :name, :kind, :value, 'agent', :now, :now) " .
-                'ON CONFLICT(project_id, canonical_name, kind) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
-            );
-            $statement->execute(['project' => $projectId, 'name' => $canonical, 'kind' => $kind, 'value' => $value, 'now' => $now]);
-            $annotation = $this->fetch($projectId, $canonical, $kind);
-        }
+        return ['project' => $project, 'canonical' => $canonical, 'warnings' => $warnings, 'existing' => $this->fetch($projectId, $canonical, $kind)];
+    }
 
+    /**
+     * What a write would do, without doing it.
+     *
+     * @param array{project: array<string, mixed>, canonical: string, warnings: list<string>, existing: ?array<string, mixed>} $target
+     * @param array<string, mixed>|null $annotation the annotation the write would leave
+     */
+    private function preview(string $projectId, array $target, string $kind, string $action, ?array $annotation): ResultEnvelope
+    {
         return new ResultEnvelope(
             $projectId,
-            $project['active_scan_id'],
-            sprintf('%s %s annotation on %s.', $remove ? 'Removed' : 'Recorded', $kind, $canonical),
-            ['component' => $canonical, 'kind' => $kind, 'action' => $action, 'executed' => true, 'previous' => $existing, 'annotation' => $annotation],
+            $target['project']['active_scan_id'],
+            sprintf('Preview: would %s %s annotation on %s.', $action, $kind, $target['canonical']),
+            ['component' => $target['canonical'], 'kind' => $kind, 'action' => $action, 'executed' => false, 'previous' => $target['existing'], 'annotation' => $annotation],
             [],
-            $warnings,
+            [...$target['warnings'], 'Set execute=true to apply the change.'],
         );
     }
+
+    /**
+     * What a write did.
+     *
+     * @param array{project: array<string, mixed>, canonical: string, warnings: list<string>, existing: ?array<string, mixed>} $target
+     * @param array<string, mixed>|null $annotation the annotation stored now
+     */
+    private function executed(string $projectId, array $target, string $kind, string $action, string $verb, ?array $annotation): ResultEnvelope
+    {
+        return new ResultEnvelope(
+            $projectId,
+            $target['project']['active_scan_id'],
+            sprintf('%s %s annotation on %s.', $verb, $kind, $target['canonical']),
+            ['component' => $target['canonical'], 'kind' => $kind, 'action' => $action, 'executed' => true, 'previous' => $target['existing'], 'annotation' => $annotation],
+            [],
+            $target['warnings'],
+        );
+    }
+
     /** Annotations recorded for a project, optionally filtered. */
 
     public function listAnnotations(string $projectId, ?string $component = null, ?string $kind = null, int $limit = 100, int $offset = 0): ResultEnvelope

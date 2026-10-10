@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use Knossos\Boundary\BoundaryReferences;
+use Knossos\Store\ChunkedInQuery;
 use PDO;
 
 /**
@@ -85,15 +86,12 @@ final readonly class BoundaryLabels
     {
         $memberships = [];
         // Chunked to stay far below SQLite's bound-variable limit.
-        foreach (array_chunk(array_values(array_unique($nodeIds)), 500) as $chunk) {
-            $statement = $this->pdo->prepare(
-                'SELECT bm.node_id, b.id, b.name FROM boundary_memberships bm JOIN boundaries b ON b.id = bm.boundary_id '
-                . 'WHERE bm.node_id IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')',
-            );
-            $statement->execute($chunk);
-            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                $memberships[(string) $row['node_id']][] = ['id' => $row['id'], 'name' => $row['name']];
-            }
+        foreach (ChunkedInQuery::rows(
+            $this->pdo,
+            'SELECT bm.node_id, b.id, b.name FROM boundary_memberships bm JOIN boundaries b ON b.id = bm.boundary_id WHERE bm.node_id IN (%s)',
+            array_values(array_unique($nodeIds)),
+        ) as $row) {
+            $memberships[(string) $row['node_id']][] = ['id' => $row['id'], 'name' => $row['name']];
         }
         $labels = [];
         foreach ($memberships as $node => $boundaries) {
@@ -120,17 +118,12 @@ final readonly class BoundaryLabels
     {
         $memberships = [];
         // Chunked to stay far below SQLite's bound-variable limit.
-        foreach (array_chunk(array_values(array_unique($paths)), 500) as $chunk) {
-            $statement = $this->pdo->prepare(
-                'SELECT DISTINCT f.relative_path, b.id, b.name FROM files f JOIN nodes n ON n.file_id = f.id '
-                . 'JOIN boundary_memberships bm ON bm.node_id = n.id JOIN boundaries b ON b.id = bm.boundary_id '
-                . 'WHERE f.project_id = ? AND f.relative_path IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')',
-            );
-            $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$path, $id, $name]) {
-                if (($this->ranks[(string) $id][1] ?? 0) === 0) {
-                    $memberships[(string) $path][] = ['id' => $id, 'name' => $name];
-                }
+        $sql = 'SELECT DISTINCT f.relative_path, b.id, b.name FROM files f JOIN nodes n ON n.file_id = f.id '
+            . 'JOIN boundary_memberships bm ON bm.node_id = n.id JOIN boundaries b ON b.id = bm.boundary_id '
+            . 'WHERE f.project_id = ? AND f.relative_path IN (%s)';
+        foreach (ChunkedInQuery::rows($this->pdo, $sql, array_values(array_unique($paths)), [$projectId], mode: PDO::FETCH_NUM) as [$path, $id, $name]) {
+            if (($this->ranks[(string) $id][1] ?? 0) === 0) {
+                $memberships[(string) $path][] = ['id' => $id, 'name' => $name];
             }
         }
 

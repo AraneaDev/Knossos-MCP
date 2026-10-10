@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Knossos\Store\ChunkedInQuery;
 use PDO;
 
 /**
@@ -289,16 +290,10 @@ final readonly class DeadCodeCandidates extends AbstractArchitectureQueryService
     public function rows(array $ids): array
     {
         $rows = [];
-        foreach (array_chunk(array_values(array_unique($ids)), self::CHUNK) as $chunk) {
-            $statement = $this->pdo->prepare(
-                'SELECT n.id, n.language, n.kind, n.canonical_name, n.display_name, n.origin, n.confidence, n.attributes_json, '
-                . 'n.start_line, n.end_line, f.relative_path FROM nodes n LEFT JOIN files f ON f.id = n.file_id '
-                . sprintf('WHERE n.id IN (%s)', implode(',', array_fill(0, count($chunk), '?'))),
-            );
-            $statement->execute($chunk);
-            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                $rows[(string) $row['id']] = $row;
-            }
+        $sql = 'SELECT n.id, n.language, n.kind, n.canonical_name, n.display_name, n.origin, n.confidence, n.attributes_json, '
+            . 'n.start_line, n.end_line, f.relative_path FROM nodes n LEFT JOIN files f ON f.id = n.file_id WHERE n.id IN (%s)';
+        foreach (ChunkedInQuery::rows($this->pdo, $sql, array_values(array_unique($ids)), size: self::CHUNK) as $row) {
+            $rows[(string) $row['id']] = $row;
         }
 
         return $rows;

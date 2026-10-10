@@ -46,16 +46,8 @@ final readonly class TreeWalker
     public function walk(string $requestedRoot, ?CancellationToken $cancellation = null): array
     {
         $root = $this->rootGuard->resolve($requestedRoot);
-        $files = [];
-        $units = [];
-        $unparsedManifestHashes = [];
-        $diagnostics = [];
-        $stack = [$root];
-        $inputCount = 0;
+        $state = new TreeWalkState($root);
         $seen = 0;
-        $gitIgnore = new GitIgnoreRules();
-        /** @var array<string, FileContent> $gitIgnoreReads each `.gitignore` read, kept to hash as its unit */
-        $gitIgnoreReads = [];
 
         /** @var array<string, true> $manifestRoots directories whose listing holds a manifest */
         $manifestRoots = [];
@@ -70,10 +62,10 @@ final readonly class TreeWalker
             },
         );
 
-        while ($stack !== []) {
-            $directory = array_pop($stack);
-            $this->readGitIgnore($root, $directory, $gitIgnore, $gitIgnoreReads);
-            $names = $this->listDirectory($root, $directory, $diagnostics, $manifestRoots);
+        while ($state->stack !== []) {
+            $directory = array_pop($state->stack);
+            $this->readGitIgnore($root, $directory, $state->gitIgnore, $state->gitIgnoreReads);
+            $names = $this->listDirectory($root, $directory, $state->diagnostics, $manifestRoots);
             if ($names !== null && $directory !== $root) {
                 $directories[] = $this->relative($root, $directory);
             }
@@ -94,7 +86,7 @@ final readonly class TreeWalker
                 // id, and one with a control character fails a worker's path
                 // check. Skipping a directory here also skips its children.
                 if (!SourceClassifier::isSupportedPath($relative)) {
-                    $diagnostics[] = new DiscoveryDiagnostic(
+                    $state->diagnostics[] = new DiscoveryDiagnostic(
                         'warning',
                         'DISCOVERY_PATH_UNSUPPORTED',
                         'Skipped a path whose name is not valid UTF-8 or contains a control character: ' . bin2hex($relative),
@@ -102,97 +94,13 @@ final readonly class TreeWalker
                     continue;
                 }
                 if (!SourceClassifier::isConfigurationFile($relative) && $ignoreMatcher->matches($relative)) {
-                    self::reportBuildOutput($ignoreMatcher, $gitIgnore, $entry, $relative, $diagnostics);
+                    self::reportBuildOutput($ignoreMatcher, $state->gitIgnore, $entry, $relative, $state->diagnostics);
                     continue;
                 }
 
-                // Every stat-dependent probe below (isLink/isDir/isFile/getSize/getMTime)
-                // throws RuntimeException when the entry vanishes mid-walk (a concurrent
-                // build deleting a temp file). Treat that as an unreadable file — emit a
-                // diagnostic and keep going rather than failing the whole scan.
-                try {
-                    if ($entry->isLink()) {
-                        $diagnostics[] = self::symlinkDiagnostic($root, $absolute, $relative);
-                        continue;
-                    }
-
-                    if ($entry->isDir()) {
-                        if (!$gitIgnore->ignores($relative, true)) {
-                            $stack[] = $absolute;
-                        }
-                        continue;
-                    }
-                    if (!$entry->isFile()) {
-                        continue;
-                    }
-                    if (!SourceClassifier::isConfigurationFile($relative) && $gitIgnore->ignores($relative, false)) {
-                        continue;
-                    }
-
-                    $language = SourceClassifier::languageFor($relative, $absolute);
-                    $unitKind = SourceClassifier::unitKindFor($relative);
-                    if ($language === null && $unitKind === null) {
-                        continue;
-                    }
-
-                    ++$inputCount;
-                    if ($inputCount > $this->config->maxFiles) {
-                        throw new DiscoveryException(sprintf('Discovery file limit exceeded (%d).', $this->config->maxFiles));
-                    }
-
-                    $size = $entry->getSize();
-                    if ($size > $this->config->maxFileBytes) {
-                        $diagnostics[] = new DiscoveryDiagnostic(
-                            'warning',
-                            'DISCOVERY_FILE_TOO_LARGE',
-                            sprintf('File exceeds the %d-byte discovery limit.', $this->config->maxFileBytes),
-                            $relative,
-                        );
-                        continue;
-                    }
-
-                    $mtime = max(0, $entry->getMTime());
-                } catch (DiscoveryException $error) {
-                    throw $error;
-                } catch (RuntimeException $error) {
-                    $diagnostics[] = new DiscoveryDiagnostic(
-                        'warning',
-                        'DISCOVERY_FILE_UNREADABLE',
-                        sprintf('File could not be inspected: %s', $error->getMessage()),
-                        $relative,
-                    );
-                    continue;
-                }
-
-                $fingerprinted = $this->fingerprint($unitKind, $relative, $absolute, $gitIgnoreReads, $diagnostics);
-                if ($fingerprinted === null) {
-                    continue;
-                }
-                [$buffer, $fingerprint] = $fingerprinted;
-                $contentHash = $fingerprint->contentHash;
-
-                if ($language !== null) {
-                    $files[] = new DiscoveredFile(
-                        $relative,
-                        $absolute,
-                        $language,
-                        $size,
-                        $mtime,
-                        $contentHash,
-                        $fingerprint->lineCount,
-                        $fingerprint->gitBlobHash,
-                    );
-                }
-
-                if ($unitKind !== null) {
-                    $unit = UnitReader::read($unitKind, $relative, $absolute, $contentHash, $buffer, $diagnostics);
-                    if ($unit !== null) {
-                        $units[] = $unit;
-                    } elseif ($buffer !== null) {
-                        // Read and hashed, but not a unit: a worker can still
-                        // read these bytes, so their hash is kept to check it by.
-                        $unparsedManifestHashes[$relative] = $contentHash;
-                    }
+                $inspected = $this->inspectEntry($state, $entry, $absolute, $relative);
+                if ($inspected !== null) {
+                    $this->recordEntry($state, $inspected, $relative, $absolute);
                 }
             }
         }
@@ -203,13 +111,133 @@ final readonly class TreeWalker
 
         return [
             'root' => $root,
-            'files' => $files,
-            'units' => $units,
-            'diagnostics' => $diagnostics,
-            'unparsedManifestHashes' => $unparsedManifestHashes,
+            'files' => $state->files,
+            'units' => $state->units,
+            'diagnostics' => $state->diagnostics,
+            'unparsedManifestHashes' => $state->unparsedManifestHashes,
             'manifestRoots' => $manifestRoots,
             'directories' => $directories,
         ];
+    }
+
+    /**
+     * What the walk keeps of one entry that has a supported path and that no
+     * configured ignore pattern matched: its language, unit kind, size and
+     * mtime, or null when it is skipped.
+     *
+     * The `.gitignore` rules are applied here. A directory they leave in is
+     * queued on the state's stack and a symlink becomes a diagnostic; neither
+     * is kept. Every stat-dependent probe
+     * here (isLink/isDir/isFile/getSize/getMTime) throws RuntimeException when
+     * the entry vanishes mid-walk (a concurrent build deleting a temp file).
+     * That is treated as an unreadable file: a diagnostic, and the walk keeps
+     * going rather than failing the whole scan.
+     *
+     * @return ?array{language: ?string, unitKind: ?string, size: int, mtime: int}
+     */
+    private function inspectEntry(TreeWalkState $state, SplFileInfo $entry, string $absolute, string $relative): ?array
+    {
+        try {
+            if ($entry->isLink()) {
+                $state->diagnostics[] = self::symlinkDiagnostic($state->root, $absolute, $relative);
+                return null;
+            }
+
+            if ($entry->isDir()) {
+                if (!$state->gitIgnore->ignores($relative, true)) {
+                    $state->stack[] = $absolute;
+                }
+                return null;
+            }
+            if (!$entry->isFile()) {
+                return null;
+            }
+            if (!SourceClassifier::isConfigurationFile($relative) && $state->gitIgnore->ignores($relative, false)) {
+                return null;
+            }
+
+            $language = SourceClassifier::languageFor($relative, $absolute);
+            $unitKind = SourceClassifier::unitKindFor($relative);
+            if ($language === null && $unitKind === null) {
+                return null;
+            }
+
+            ++$state->inputCount;
+            if ($state->inputCount > $this->config->maxFiles) {
+                throw new DiscoveryException(sprintf('Discovery file limit exceeded (%d).', $this->config->maxFiles));
+            }
+
+            $size = $entry->getSize();
+            if ($size > $this->config->maxFileBytes) {
+                $state->diagnostics[] = $this->tooLarge($relative);
+                return null;
+            }
+
+            return ['language' => $language, 'unitKind' => $unitKind, 'size' => $size, 'mtime' => max(0, $entry->getMTime())];
+        } catch (DiscoveryException $error) {
+            throw $error;
+        } catch (RuntimeException $error) {
+            $state->diagnostics[] = new DiscoveryDiagnostic(
+                'warning',
+                'DISCOVERY_FILE_UNREADABLE',
+                sprintf('File could not be inspected: %s', $error->getMessage()),
+                $relative,
+            );
+            return null;
+        }
+    }
+
+    /**
+     * Fingerprint a kept entry and record it: as a source file when it has a
+     * language, and as a unit when it is a manifest, or as an unparsed
+     * manifest's hash when it was read but is not a unit.
+     *
+     * @param array{language: ?string, unitKind: ?string, size: int, mtime: int} $inspected
+     */
+    private function recordEntry(TreeWalkState $state, array $inspected, string $relative, string $absolute): void
+    {
+        ['language' => $language, 'unitKind' => $unitKind] = $inspected;
+        $fingerprinted = $this->fingerprint($unitKind, $relative, $absolute, $state->gitIgnoreReads, $state->diagnostics);
+        if ($fingerprinted === null) {
+            return;
+        }
+        [$buffer, $fingerprint] = $fingerprinted;
+        $contentHash = $fingerprint->contentHash;
+
+        if ($language !== null) {
+            $state->files[] = new DiscoveredFile(
+                $relative,
+                $absolute,
+                $language,
+                $inspected['size'],
+                $inspected['mtime'],
+                $contentHash,
+                $fingerprint->lineCount,
+                $fingerprint->gitBlobHash,
+            );
+        }
+
+        if ($unitKind !== null) {
+            $unit = UnitReader::read($unitKind, $relative, $absolute, $contentHash, $buffer, $state->diagnostics);
+            if ($unit !== null) {
+                $state->units[] = $unit;
+            } elseif ($buffer !== null) {
+                // Read and hashed, but not a unit: a worker can still
+                // read these bytes, so their hash is kept to check it by.
+                $state->unparsedManifestHashes[$relative] = $contentHash;
+            }
+        }
+    }
+
+    /** The diagnostic for a file over the byte limit, whether its size or its read found it so. */
+    private function tooLarge(string $relative): DiscoveryDiagnostic
+    {
+        return new DiscoveryDiagnostic(
+            'warning',
+            'DISCOVERY_FILE_TOO_LARGE',
+            sprintf('File exceeds the %d-byte discovery limit.', $this->config->maxFileBytes),
+            $relative,
+        );
     }
 
     /**
@@ -244,12 +272,7 @@ final readonly class TreeWalker
             // The same diagnostic a file already too large when its
             // size was checked gets: it is the same fact, learned one
             // moment later, and a caller acts on it the same way.
-            $diagnostics[] = new DiscoveryDiagnostic(
-                'warning',
-                'DISCOVERY_FILE_TOO_LARGE',
-                sprintf('File exceeds the %d-byte discovery limit.', $this->config->maxFileBytes),
-                $relative,
-            );
+            $diagnostics[] = $this->tooLarge($relative);
             return null;
         }
         $buffer = $read?->bytes;

@@ -8,6 +8,7 @@ use Closure;
 use InvalidArgumentException;
 use Knossos\Boundary\BoundaryAliases;
 use Knossos\Boundary\BoundaryReferences;
+use Knossos\Store\ChunkedInQuery;
 use PDO;
 use PDOStatement;
 
@@ -365,19 +366,12 @@ abstract readonly class AbstractArchitectureQueryService
             return [];
         }
         $result = [];
-        foreach (array_chunk($nodeIds, 500) as $chunk) {
-            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-            $statement = $this->pdo->prepare(
-                'SELECT node_id, role, origin, confidence, rule_id, attributes_json FROM classifications ' .
-                sprintf('WHERE node_id IN (%s) ORDER BY node_id, role, rule_id', $placeholders),
-            );
-            $statement->execute($chunk);
-            foreach ($statement->fetchAll() as $row) {
-                $result[$row['node_id']][] = [
-                    'role' => $row['role'], 'origin' => $row['origin'], 'confidence' => $row['confidence'],
-                    'rule_id' => $row['rule_id'], 'attributes' => self::decode($row['attributes_json']),
-                ];
-            }
+        $sql = 'SELECT node_id, role, origin, confidence, rule_id, attributes_json FROM classifications WHERE node_id IN (%s) ORDER BY node_id, role, rule_id';
+        foreach (ChunkedInQuery::rows($this->pdo, $sql, $nodeIds) as $row) {
+            $result[$row['node_id']][] = [
+                'role' => $row['role'], 'origin' => $row['origin'], 'confidence' => $row['confidence'],
+                'rule_id' => $row['rule_id'], 'attributes' => self::decode($row['attributes_json']),
+            ];
         }
         ksort($result, SORT_STRING);
         return $result;
@@ -419,16 +413,10 @@ abstract readonly class AbstractArchitectureQueryService
             return [];
         }
         $result = [];
-        foreach (array_chunk($nodeIds, 500) as $chunk) {
-            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-            $statement = $this->pdo->prepare(
-                'SELECT bm.node_id, b.id, b.name, b.source FROM boundary_memberships bm JOIN boundaries b ON b.id = bm.boundary_id ' .
-                sprintf('WHERE bm.node_id IN (%s) ORDER BY bm.node_id, b.source, b.name', $placeholders),
-            );
-            $statement->execute($chunk);
-            foreach ($statement->fetchAll() as $row) {
-                $result[$row['node_id']][] = ['id' => $row['id'], 'name' => $row['name'], 'source' => $row['source']];
-            }
+        $sql = 'SELECT bm.node_id, b.id, b.name, b.source FROM boundary_memberships bm JOIN boundaries b ON b.id = bm.boundary_id '
+            . 'WHERE bm.node_id IN (%s) ORDER BY bm.node_id, b.source, b.name';
+        foreach (ChunkedInQuery::rows($this->pdo, $sql, $nodeIds) as $row) {
+            $result[$row['node_id']][] = ['id' => $row['id'], 'name' => $row['name'], 'source' => $row['source']];
         }
         ksort($result, SORT_STRING);
         return $result;

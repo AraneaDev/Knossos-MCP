@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use InvalidArgumentException;
+use Knossos\Query\Diagram\DiagramRenderer;
+use Knossos\Query\Diagram\MermaidRenderer;
+use Knossos\Query\Diagram\PlantUmlRenderer;
 
 /**
  * Renders a slice of the graph as Mermaid or PlantUML source.
@@ -86,6 +89,54 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
     public function exportDiagram(string $projectId, string $format = 'mermaid', ?string $boundary = null, array $edgeKinds = [], string $minConfidence = 'possible', string $direction = 'LR', int $maxNodes = 200, int $maxEdges = 500): ResultEnvelope
     {
         $project = $this->project($projectId);
+        self::validateArguments($format, $direction, $maxNodes, $maxEdges, $minConfidence);
+        $edgeKinds = self::selectedEdgeKinds($edgeKinds, self::IMPACT_EDGE_KINDS, 'dependency');
+        $boundaryId = $boundary === null ? null : $this->boundaryReferences($projectId)->resolve($boundary);
+        $minRank = self::CONFIDENCE_RANK[$minConfidence];
+
+        $pool = $this->candidatePool($projectId, $edgeKinds, $minRank, $boundaryId, $maxNodes);
+        $truncated = count($pool) > $maxNodes;
+        $reasons = $truncated ? ['node_limit'] : [];
+        $poolEdges = $this->poolEdges($projectId, $pool, $edgeKinds, $minRank);
+        $rows = $this->selectSlice($pool, $poolEdges, $maxNodes);
+        $nodes = [];
+        foreach ($rows as $row) {
+            $nodes[$row['id']] = $row;
+        }
+        $edges = array_values(array_filter(
+            $poolEdges,
+            static fn(array $edge): bool => isset($nodes[$edge['source_id']], $nodes[$edge['target_id']]),
+        ));
+        if (count($edges) > $maxEdges) {
+            $truncated = true;
+            $reasons[] = 'edge_limit';
+        }
+        $edges = array_slice($edges, 0, $maxEdges);
+        $evidence = [];
+        foreach (array_slice($rows, 0, 100) as $row) {
+            if ($row['relative_path'] !== null) {
+                $evidence[] = [
+                    'component_id' => $row['id'], 'path' => $row['relative_path'], 'start_line' => $row['start_line'], 'end_line' => $row['end_line'],
+                ];
+            }
+        }
+        return new ResultEnvelope(
+            $projectId,
+            $project['active_scan_id'],
+            sprintf('Exported %d nodes and %d relationships as %s source.', count($nodes), count($edges), $format),
+            ['format' => $format, 'direction' => $direction, 'boundary_id' => $boundaryId, 'diagram' => self::renderSlice(self::rendererFor($format), $direction, $nodes, $edges), 'bounds' => [
+                'max_nodes' => $maxNodes, 'max_edges' => $maxEdges, 'nodes_exported' => count($nodes),
+                'edges_exported' => count($edges), 'truncation_reasons' => array_values(array_unique($reasons)),
+            ]],
+            $evidence,
+            ['Diagram source represents the bounded active static graph and may be incomplete when truncated.'],
+            $truncated,
+        );
+    }
+
+    /** Check the export arguments, in the order their errors are reported. */
+    private static function validateArguments(string $format, string $direction, int $maxNodes, int $maxEdges, string $minConfidence): void
+    {
         if (!in_array($format, ['mermaid', 'plantuml'], true)) {
             throw new InvalidArgumentException('format must be mermaid or plantuml.');
         }
@@ -98,20 +149,30 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
         if ($maxEdges < 1 || $maxEdges > 1000) {
             throw new InvalidArgumentException('max_edges must be between 1 and 1000.');
         }
-        $rank = self::CONFIDENCE_RANK;
-        if (!isset($rank[$minConfidence])) {
+        if (!isset(self::CONFIDENCE_RANK[$minConfidence])) {
             throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
         }
-        $edgeKinds = self::selectedEdgeKinds($edgeKinds, self::IMPACT_EDGE_KINDS, 'dependency');
+    }
 
-        $boundaryId = null;
-        if ($boundary !== null) {
-            $boundaryId = $this->boundaryReferences($projectId)->resolve($boundary);
-        }
-        // Ranked by how connected each node is, because a bounded diagram of a
-        // real codebase has to choose, and the alphabetically-first nodes are
-        // rarely the ones whose relationships explain anything — truncating on
-        // name produced pages of unconnected boxes.
+    /** The renderer for a format {@see validateArguments} has accepted. */
+    private static function rendererFor(string $format): DiagramRenderer
+    {
+        return $format === 'mermaid' ? new MermaidRenderer() : new PlantUmlRenderer();
+    }
+
+    /**
+     * The candidates the slice is grown from, most connected first.
+     *
+     * Ranked by how connected each node is, because a bounded diagram of a
+     * real codebase has to choose, and the alphabetically-first nodes are
+     * rarely the ones whose relationships explain anything — truncating on
+     * name produced pages of unconnected boxes.
+     *
+     * @param list<string> $edgeKinds
+     * @return list<array<string, mixed>>
+     */
+    private function candidatePool(string $projectId, array $edgeKinds, int $minRank, ?string $boundaryId, int $maxNodes): array
+    {
         $kindPlaceholders = implode(',', array_fill(0, count($edgeKinds), '?'));
         $confidenceCase = "CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER)";
         $degreeSql = sprintf(
@@ -131,8 +192,8 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
             'LEFT JOIN (' . $degreeSql . ') d ON d.node_id = n.id ' .
             'WHERE n.project_id = ?';
         $nodeParams = [
-            $projectId, ...$edgeKinds, $rank[$minConfidence],
-            $projectId, ...$edgeKinds, $rank[$minConfidence],
+            $projectId, ...$edgeKinds, $minRank,
+            $projectId, ...$edgeKinds, $minRank,
             $projectId,
         ];
         if ($boundaryId !== null) {
@@ -145,113 +206,71 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
         // Eight times the slice, capped: always wider than the slice itself, so
         // the pool is what tells count($pool) > $maxNodes that anything was left
         // out. A max() against $maxNodes + 1 here could never bind.
-        $poolSize = min(self::MAX_CANDIDATE_POOL, $maxNodes * 8);
         $sql .= ' ORDER BY degree DESC, n.canonical_name, n.id LIMIT ?';
-        $nodeParams[] = $poolSize;
+        $nodeParams[] = min(self::MAX_CANDIDATE_POOL, $maxNodes * 8);
         $statement = $this->pdo->prepare($sql);
         // bindValue keeps the integers integers; execute([...]) would send them as text.
         foreach ($nodeParams as $index => $value) {
             $statement->bindValue($index + 1, $value, is_int($value) ? \PDO::PARAM_INT : \PDO::PARAM_STR);
         }
         $statement->execute();
-        $pool = $statement->fetchAll();
-        $truncated = count($pool) > $maxNodes;
-        $reasons = $truncated ? ['node_limit'] : [];
 
-        $poolEdges = [];
-        if ($pool !== []) {
-            $poolIds = array_column($pool, 'id');
-            $poolPlaceholders = implode(',', array_fill(0, count($poolIds), '?'));
-            // DISTINCT: a relationship written at ten call sites is ten edges
-            // but one arrow, and rendering it ten times drew ten overlapping
-            // arrows while spending ten of the caller's max_edges budget.
-            $statement = $this->pdo->prepare(
-                'SELECT DISTINCT kind, source_id, target_id FROM edges WHERE project_id = ? ' .
-                sprintf('AND source_id IN (%s) AND target_id IN (%s) AND kind IN (%s) ', $poolPlaceholders, $poolPlaceholders, $kindPlaceholders) .
-                "AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
-                'ORDER BY source_id, target_id, kind',
-            );
-            $statement->execute([$projectId, ...$poolIds, ...$poolIds, ...$edgeKinds, $rank[$minConfidence]]);
-            $poolEdges = $statement->fetchAll();
-        }
-        $rows = $this->selectSlice($pool, $poolEdges, $maxNodes);
-        $nodes = [];
-        foreach ($rows as $row) {
-            $nodes[$row['id']] = $row;
-        }
-        $edges = array_values(array_filter(
-            $poolEdges,
-            static fn(array $edge): bool => isset($nodes[$edge['source_id']], $nodes[$edge['target_id']]),
-        ));
-        if (count($edges) > $maxEdges) {
-            $truncated = true;
-            $reasons[] = 'edge_limit';
-        }
-        $edges = array_slice($edges, 0, $maxEdges);
-        $aliases = [];
-        foreach (array_keys($nodes) as $index => $id) {
-            $aliases[$id] = 'n' . ($index + 1);
-        }
-        $lines = [];
-        if ($format === 'mermaid') {
-            $lines[] = 'flowchart ' . $direction;
-            foreach ($nodes as $id => $node) {
-                $lines[] = sprintf('  %s["%s"]', $aliases[$id], $this->diagramLabel($node, 'mermaid'));
-            }
-            foreach ($edges as $edge) {
-                $lines[] = sprintf('  %s -->|%s| %s', $aliases[$edge['source_id']], $this->diagramEdgeLabel($edge['kind']), $aliases[$edge['target_id']]);
-            }
-        } else {
-            $lines[] = '@startuml';
-            if ($direction === 'LR') {
-                $lines[] = 'left to right direction';
-            }
-            foreach ($nodes as $id => $node) {
-                $lines[] = sprintf('component "%s" as %s', $this->diagramLabel($node, 'plantuml'), $aliases[$id]);
-            }
-            foreach ($edges as $edge) {
-                $lines[] = sprintf('%s --> %s : %s', $aliases[$edge['source_id']], $aliases[$edge['target_id']], $this->diagramEdgeLabel($edge['kind']));
-            }
-            $lines[] = '@enduml';
-        }
-        $evidence = [];
-        foreach (array_slice($rows, 0, 100) as $row) {
-            if ($row['relative_path'] !== null) {
-                $evidence[] = [
-                    'component_id' => $row['id'], 'path' => $row['relative_path'], 'start_line' => $row['start_line'], 'end_line' => $row['end_line'],
-                ];
-            }
-        }
-        return new ResultEnvelope(
-            $projectId,
-            $project['active_scan_id'],
-            sprintf('Exported %d nodes and %d relationships as %s source.', count($nodes), count($edges), $format),
-            ['format' => $format, 'direction' => $direction, 'boundary_id' => $boundaryId, 'diagram' => implode("\n", $lines) . "\n", 'bounds' => [
-                'max_nodes' => $maxNodes, 'max_edges' => $maxEdges, 'nodes_exported' => count($nodes),
-                'edges_exported' => count($edges), 'truncation_reasons' => array_values(array_unique($reasons)),
-            ]],
-            $evidence,
-            ['Diagram source represents the bounded active static graph and may be incomplete when truncated.'],
-            $truncated,
-        );
+        return $statement->fetchAll();
     }
 
     /**
-     * A node label safe to embed in diagram source.
+     * The distinct edges between candidates of the pool, in source, target and kind order.
      *
-     * @param array<string, mixed> $node
+     * @param list<array<string, mixed>> $pool
+     * @param list<string> $edgeKinds
+     * @return list<array<string, mixed>>
      */
-    private function diagramLabel(array $node, string $format): string
+    private function poolEdges(string $projectId, array $pool, array $edgeKinds, int $minRank): array
     {
-        $label = preg_replace('/[\x00-\x1F\x7F]/u', ' ', $node['display_name'] . ' (' . $node['kind'] . ')') ?? 'component';
-        if ($format === 'mermaid') {
-            return str_replace(['&', '<', '>', '"'], ['&amp;', '&lt;', '&gt;', '&quot;'], $label);
+        if ($pool === []) {
+            return [];
         }
-        return str_replace(['\\', '"'], ['\\\\', '\\"'], $label);
+        $poolIds = array_column($pool, 'id');
+        $poolPlaceholders = implode(',', array_fill(0, count($poolIds), '?'));
+        $kindPlaceholders = implode(',', array_fill(0, count($edgeKinds), '?'));
+        // DISTINCT: a relationship written at ten call sites is ten edges
+        // but one arrow, and rendering it ten times drew ten overlapping
+        // arrows while spending ten of the caller's max_edges budget.
+        $statement = $this->pdo->prepare(
+            'SELECT DISTINCT kind, source_id, target_id FROM edges WHERE project_id = ? ' .
+            sprintf('AND source_id IN (%s) AND target_id IN (%s) AND kind IN (%s) ', $poolPlaceholders, $poolPlaceholders, $kindPlaceholders) .
+            "AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
+            'ORDER BY source_id, target_id, kind',
+        );
+        $statement->execute([$projectId, ...$poolIds, ...$poolIds, ...$edgeKinds, $minRank]);
+
+        return $statement->fetchAll();
     }
-    /** An edge label safe to embed in diagram source. */
-    private function diagramEdgeLabel(string $kind): string
+
+    /**
+     * Hand the slice to the renderer under short aliases (`n1`, `n2`, ...) in
+     * slice order, with labels made safe to embed in any diagram source.
+     *
+     * @param array<string, array<string, mixed>> $nodes id => node row
+     * @param list<array<string, mixed>> $edges
+     */
+    private static function renderSlice(DiagramRenderer $renderer, string $direction, array $nodes, array $edges): string
     {
-        return preg_replace('/[^A-Za-z0-9_.-]/', '_', $kind) ?? 'depends_on';
+        $aliases = [];
+        $labels = [];
+        foreach (array_keys($nodes) as $index => $id) {
+            $aliases[$id] = 'n' . ($index + 1);
+            $labels[$aliases[$id]] = preg_replace('/[\x00-\x1F\x7F]/u', ' ', $nodes[$id]['display_name'] . ' (' . $nodes[$id]['kind'] . ')') ?? 'component';
+        }
+        $arrows = [];
+        foreach ($edges as $edge) {
+            $arrows[] = [
+                'source' => $aliases[$edge['source_id']],
+                'target' => $aliases[$edge['target_id']],
+                'label' => preg_replace('/[^A-Za-z0-9_.-]/', '_', $edge['kind']) ?? 'depends_on',
+            ];
+        }
+
+        return $renderer->render($direction, $labels, $arrows);
     }
 }

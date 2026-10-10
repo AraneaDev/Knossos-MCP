@@ -9,6 +9,7 @@ use InvalidArgumentException;
 use Knossos\Git\GitHistoryProvider;
 use Knossos\Git\GitWorkingTreeProvider;
 use Knossos\Scanner\Protocol\RelativePath;
+use Knossos\Store\ChunkedInQuery;
 use PDO;
 use Throwable;
 
@@ -290,12 +291,8 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
     private function displayNames(array $nodeIds): array
     {
         $names = [];
-        foreach (array_chunk($nodeIds, 500) as $chunk) {
-            $statement = $this->pdo->prepare(sprintf('SELECT id, display_name FROM nodes WHERE id IN (%s)', implode(',', array_fill(0, count($chunk), '?'))));
-            $statement->execute($chunk);
-            while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
-                $names[(string) $row['id']] = (string) $row['display_name'];
-            }
+        foreach (ChunkedInQuery::rows($this->pdo, 'SELECT id, display_name FROM nodes WHERE id IN (%s)', $nodeIds) as $row) {
+            $names[(string) $row['id']] = (string) $row['display_name'];
         }
         return $names;
     }
@@ -401,19 +398,8 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
     private function nodePaths(array $nodeIds): array
     {
         $paths = [];
-        foreach (array_chunk($nodeIds, 500) as $chunk) {
-            if ($chunk === []) {
-                continue;
-            }
-            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-            $statement = $this->pdo->prepare(
-                'SELECT n.id, f.relative_path FROM nodes n JOIN files f ON f.id = n.file_id ' .
-                sprintf('WHERE n.id IN (%s) ORDER BY n.id', $placeholders),
-            );
-            $statement->execute($chunk);
-            foreach ($statement->fetchAll() as $row) {
-                $paths[$row['id']] = $row['relative_path'];
-            }
+        foreach (ChunkedInQuery::rows($this->pdo, 'SELECT n.id, f.relative_path FROM nodes n JOIN files f ON f.id = n.file_id WHERE n.id IN (%s) ORDER BY n.id', $nodeIds) as $row) {
+            $paths[$row['id']] = $row['relative_path'];
         }
         return $paths;
     }

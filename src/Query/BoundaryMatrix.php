@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use Closure;
+use Knossos\Store\ChunkedInQuery;
 use PDO;
 
 /**
@@ -219,12 +220,8 @@ final readonly class BoundaryMatrix
     private function canonicalNames(array $ids): array
     {
         $names = [];
-        foreach (array_chunk($ids, self::IDS_PER_QUERY) as $chunk) {
-            $statement = $this->pdo->prepare('SELECT id, canonical_name FROM nodes WHERE id IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')');
-            $statement->execute($chunk);
-            while (($row = $statement->fetch(PDO::FETCH_NUM)) !== false) {
-                $names[(string) $row[0]] = (string) $row[1];
-            }
+        foreach (ChunkedInQuery::rows($this->pdo, 'SELECT id, canonical_name FROM nodes WHERE id IN (%s)', $ids, mode: PDO::FETCH_NUM, size: self::IDS_PER_QUERY) as $row) {
+            $names[(string) $row[0]] = (string) $row[1];
         }
 
         return $names;
@@ -309,13 +306,9 @@ final readonly class BoundaryMatrix
         }
         $nodes = [];
         // A chunk at a time: SQLite binds at most 32,766 values in one statement (as it is usually built).
-        foreach (array_chunk(array_values($ids), self::IDS_PER_QUERY) as $chunk) {
-            $statement = $this->pdo->prepare('SELECT id, display_name, canonical_name, kind FROM nodes WHERE id IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')');
-            $statement->execute($chunk);
-            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                $canonical = (string) $row['canonical_name'];
-                $nodes[(string) $row['id']] = ['name' => (string) ($row['display_name'] ?? $canonical), 'canonical_name' => $canonical, 'kind' => (string) $row['kind']];
-            }
+        foreach (ChunkedInQuery::rows($this->pdo, 'SELECT id, display_name, canonical_name, kind FROM nodes WHERE id IN (%s)', array_values($ids), size: self::IDS_PER_QUERY) as $row) {
+            $canonical = (string) $row['canonical_name'];
+            $nodes[(string) $row['id']] = ['name' => (string) ($row['display_name'] ?? $canonical), 'canonical_name' => $canonical, 'kind' => (string) $row['kind']];
         }
         return $nodes;
     }

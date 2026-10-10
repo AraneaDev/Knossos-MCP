@@ -11,6 +11,7 @@ use Knossos\Scanner\Protocol\{Diagnostic, Evidence, Protocol, ScanContribution, 
 use Knossos\Scanner\Worker\ContributionDecoder;
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Scanner\Worker\WorkerLimits;
+use Knossos\Store\ChunkedInQuery;
 use PDO;
 use Throwable;
 
@@ -140,15 +141,14 @@ final readonly class ContributionCacheService
 
             return $decoded;
         }
-        foreach (array_chunk(array_map('strval', array_keys($rows)), 500) as $chunk) {
-            $statement = $pdo->prepare(sprintf(
-                'SELECT owner_key, payload_json FROM contribution_cache WHERE project_id = ? AND owner_key IN (%s)',
-                implode(', ', array_fill(0, count($chunk), '?')),
-            ));
-            $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$owner, $payload]) {
-                $decoded[(string) $owner] = self::decodePayload((string) $payload);
-            }
+        foreach (ChunkedInQuery::rows(
+            $pdo,
+            'SELECT owner_key, payload_json FROM contribution_cache WHERE project_id = ? AND owner_key IN (%s)',
+            array_map('strval', array_keys($rows)),
+            [$projectId],
+            mode: PDO::FETCH_NUM,
+        ) as [$owner, $payload]) {
+            $decoded[(string) $owner] = self::decodePayload((string) $payload);
         }
 
         return $decoded;
