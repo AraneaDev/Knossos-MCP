@@ -31,8 +31,20 @@ import {
     unalias,
     valueReferencePosition,
 } from "./declaration-kinds.js";
+import {
+    errorMessage,
+    isStackOverflow,
+    rethrowStackOverflow,
+} from "./errors.js";
+import {
+    BUILT_IN_EXCLUSIONS,
+    excludedFromDiscovery,
+    exclusionRules,
+    setActiveExclusions,
+} from "./exclusions.js";
 import { FactAccumulator } from "./fact-accumulator.js";
 import { NestJsFactEnricher } from "./nestjs-fact-enricher.js";
+import { componentSources, parsedContentHashes } from "./source-caches.js";
 import {
     globBase,
     globContext,
@@ -60,6 +72,7 @@ import {
     reference,
     unwrapExpression,
 } from "./typescript-fact-utils.js";
+export { excludedBy } from "./exclusions.js";
 
 // Every contribution's owner key is this prefix and the file's project path.
 const OWNER_KEY_PREFIX = "knossos.typescript:file:";
@@ -101,166 +114,10 @@ const COMPONENT_FILE_EXTENSIONS = [".vue", ".svelte", ".astro"].map(
         scriptKind: ts.ScriptKind.Deferred,
     }),
 );
-// What discovery leaves out, for a request that does not carry the core's own
-// rules: the directories a project vendors under or keeps tool state in, the
-// namespace this tool owns (`.knossos-ci` beside a project), and build output
-// directly under the project root. A request that carries `exclusions`, the
-// rules the core's IgnoreMatcher applies, uses those instead for its duration.
-const BUILT_IN_EXCLUSIONS = Object.freeze({
-    segments: [
-        ".git",
-        ".knossos",
-        "node_modules",
-        "vendor",
-        ".next",
-        ".nuxt",
-        ".stryker-tmp",
-        ".pnpm-store",
-        ".yarn",
-        ".worktrees",
-    ],
-    anchored_segments: ["build", "coverage", "dist", "site"],
-    anchor_roots: [""],
-    prefixes: [".knossos-"],
-    sequences: [
-        [".vitepress", "cache"],
-        [".vitepress", "dist"],
-    ],
-    suffixes: [],
-    path_prefixes: [],
-    patterns: [],
-});
 // Dependency trees may be read for module resolution even though discovery
 // does not scan them as project-owned source. Generated and tool-owned trees
 // remain blocked at this boundary.
 const RESOLUTION_ALLOWED_EXCLUDED = new Set(["node_modules", "vendor"]);
-
-/** The exclusion rules of the request in progress (see exclusionRules). */
-let activeExclusions = exclusionRules(BUILT_IN_EXCLUSIONS);
-
-/**
- * Exclusion rules ready to apply, from the core's `exclusions` object (see
- * IgnoreMatcher::workerRules in the core), each pattern compiled once.
- * `anchored_segments` and `anchor_roots` are optional: without them no
- * segment is anchored.
- *
- * @throws {Error} for anything but that object
- */
-function exclusionRules(input) {
-    const strings = (value) =>
-        Array.isArray(value) && value.every((item) => typeof item === "string");
-    const valid =
-        input !== null &&
-        typeof input === "object" &&
-        ["segments", "prefixes", "suffixes", "path_prefixes"].every((field) =>
-            strings(input[field]),
-        ) &&
-        ["anchored_segments", "anchor_roots"].every(
-            (field) => input[field] === undefined || strings(input[field]),
-        ) &&
-        Array.isArray(input.sequences) &&
-        input.sequences.every((pair) => strings(pair) && pair.length === 2) &&
-        Array.isArray(input.patterns) &&
-        input.patterns.every(
-            (pattern) =>
-                typeof pattern?.regex === "string" &&
-                typeof pattern.anchored === "boolean" &&
-                typeof pattern.negated === "boolean",
-        );
-    if (!valid)
-        throw new Error(
-            "TypeScript exclusions must be an object of segments, anchored_segments, anchor_roots, prefixes, sequences, suffixes, path_prefixes and patterns.",
-        );
-    return {
-        segments: new Set(input.segments),
-        anchoredSegments: new Set(input.anchored_segments ?? []),
-        anchorRoots: new Set(input.anchor_roots ?? []),
-        prefixes: input.prefixes,
-        sequences: input.sequences,
-        suffixes: input.suffixes,
-        pathPrefixes: input.path_prefixes,
-        patterns: input.patterns.map(({ regex, anchored, negated }) => ({
-            expression: new RegExp(
-                anchored ? `^(?:${regex})(?:/.*)?$` : `^(?:${regex})$`,
-            ),
-            anchored,
-            negated,
-        })),
-    };
-}
-
-/**
- * Whether the given `exclusions` rules leave a project-relative path out, as
- * a scan applies them. Exported so the rules can be checked against the
- * core's shared case list without a scan.
- *
- * @throws {Error} when `exclusions` is not the rules object
- */
-export function excludedBy(exclusions, relative) {
-    return excludedByRules(exclusionRules(exclusions), relative);
-}
-
-/** Whether discovery leaves a project-relative path out, under the request's rules. */
-function excludedFromDiscovery(relative) {
-    return excludedByRules(activeExclusions, relative);
-}
-
-/**
- * Whether discovery leaves a project-relative path out: the path, or a
- * directory above it, matches the rules, since discovery never descends into
- * a directory that matches. A segment rule, a file-name suffix and a path
- * prefix that match a directory match everything below it. Each directory in
- * turn is then marked ignored when it lies in an anchored segment directly
- * under an anchor root (build output beside a manifest), and the patterns are
- * asked of it, the last match deciding, so a negated pattern re-includes
- * build output.
- */
-function excludedByRules(rules, relative) {
-    const segments = relative.split("/");
-    const bySegment = segments.some(
-        (segment, index) =>
-            rules.segments.has(segment) ||
-            rules.prefixes.some((prefix) => segment.startsWith(prefix)) ||
-            rules.suffixes.some((suffix) => segment.endsWith(suffix)) ||
-            rules.sequences.some(
-                ([first, second]) =>
-                    segment === first && segments[index + 1] === second,
-            ),
-    );
-    if (
-        bySegment ||
-        rules.pathPrefixes.some(
-            (prefix) =>
-                relative === prefix || relative.startsWith(`${prefix}/`),
-        )
-    )
-        return true;
-    let anchored = false;
-    for (let end = 1; end <= segments.length; ++end) {
-        anchored ||=
-            rules.anchoredSegments.has(segments[end - 1]) &&
-            rules.anchorRoots.has(segments.slice(0, end - 1).join("/"));
-        if (patternsIgnore(rules.patterns, segments.slice(0, end), anchored))
-            return true;
-    }
-    return false;
-}
-
-/**
- * Whether a path is ignored: the last pattern that matches decides, and with
- * none matching, whether an anchored segment already marked it.
- */
-function patternsIgnore(patterns, segments, ignoredBefore) {
-    const joined = segments.join("/");
-    let ignored = ignoredBefore;
-    for (const pattern of patterns) {
-        const matched = pattern.anchored
-            ? pattern.expression.test(joined)
-            : segments.some((segment) => pattern.expression.test(segment));
-        if (matched) ignored = !pattern.negated;
-    }
-    return ignored;
-}
 
 // Each retained ts.Program holds its own parsed default library and type
 // checker (~100-120MB). A repo with many tsconfigs builds one program per
@@ -271,19 +128,6 @@ function patternsIgnore(patterns, segments, ignoredBefore) {
 // least-recently-used program never affects correctness — an evicted config is
 // simply rebuilt from scratch on its next scan.
 const MAX_CACHED_PROGRAMS = 2;
-
-// The hash of the raw bytes each SourceFile was created from, keyed by the
-// SourceFile object itself. Keyed by object rather than by path because
-// programs are cached across requests and several programs can read the same
-// path: a path-keyed map could pair one read's facts with another read's hash,
-// which is precisely the false match the hash exists to prevent.
-const parsedContentHashes = new WeakMap();
-/**
- * A component's virtual source, by the source file made from it: its dialect,
- * the script and template ranges, whether its script is TypeScript, and, for
- * one that could not be read, why.
- */
-const componentSources = new WeakMap();
 
 /**
  * Every project file one scan request read to derive facts, for the result's
@@ -919,8 +763,8 @@ export class TypeScriptScanner {
         // read a path again and disagree, which turns its value null, and a
         // contribution's `reads` must carry the value `input_hashes` ends with.
         const contributions = [];
-        activeExclusions = exclusionRules(
-            params.exclusions ?? BUILT_IN_EXCLUSIONS,
+        setActiveExclusions(
+            exclusionRules(params.exclusions ?? BUILT_IN_EXCLUSIONS),
         );
         const { result, attribution } = this.#scanRequest(
             params,
@@ -4688,10 +4532,6 @@ class RefusedAfterRead extends Error {
     }
 }
 
-function errorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
-}
-
 function validateRequestedFiles(root, files, limits = {}) {
     if (
         !Array.isArray(files) ||
@@ -4798,24 +4638,6 @@ function redirectReadsAgree(redirect) {
             : parsedContentHashes.get(redirect.unredirected);
     const target = parsedContentHashes.get(redirect.redirectTarget);
     return own !== undefined && own === target;
-}
-
-// V8's own message for a JavaScript stack overflow. Any other RangeError is a
-// real fault and keeps propagating.
-function isStackOverflow(error) {
-    return (
-        error instanceof RangeError &&
-        error.message.includes("Maximum call stack size exceeded")
-    );
-}
-
-// For a catch that reads any failure as the filesystem's answer. A stack
-// overflow is not one: a host callback is a leaf frame of a deep program build,
-// so swallowing the overflow there would drop one read and let the build carry
-// on, truncating the program instead of reaching the TS_PROGRAM_TOO_DEEP
-// backstop in #scanProgram.
-function rethrowStackOverflow(error) {
-    if (isStackOverflow(error)) throw error;
 }
 
 // A contribution that carries nothing but the reason one file was skipped.
