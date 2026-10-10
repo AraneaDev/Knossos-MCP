@@ -11,14 +11,11 @@ use crate::cargo_manifest::cargo_crates;
 use crate::facts::Facts;
 use crate::layout::Layout;
 use crate::nesting::{nesting_beyond, MAX_NESTING};
-use crate::params::{
-    assert_scannable_path, assert_scannable_str, limit_of, safe_root, string_list,
-    DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES,
-};
+use crate::params::ScanRequest;
 use crate::protocol::{Contribution, Manifest};
 use crate::reads::{read_safely, record_read, split_read_map, FileReads};
 use crate::source_hash::sha256_hex;
-use crate::visit::Declarations;
+use crate::visit::{Declarations, TestModules};
 
 /// Serialized bytes one `scan/input_hashes` notification carries at most, well
 /// under the core's 1,000,000-byte line cap, and the same as the packaged PHP,
@@ -67,20 +64,6 @@ impl FileIndex {
             },
         }
     }
-}
-
-/// The index entries of every file the last request read, by the file's path
-/// and the hash of its bytes; `None` for bytes that do not parse. With the
-/// [`Layout`] they were collected under, both decide the entries, so a hit is
-/// what parsing would give.
-type IndexMemo = HashMap<(String, String), Option<FileIndex>>;
-
-thread_local! {
-    /// The worker lives across the requests of a scan, and each request
-    /// indexes the whole project: parsing only bytes it has not seen keeps
-    /// a large workspace's later batches as cheap as reading it. The memo is
-    /// kept for the layout it was built under and dropped when it changes.
-    static INDEX_MEMO: RefCell<(Layout, IndexMemo)> = RefCell::new((Layout::default(), HashMap::new()));
 }
 
 /// Sends `scan/heartbeat` when the request has been quiet for
@@ -236,71 +219,86 @@ enum Prepared {
 /// in the sorted order the batch was accepted in, with the files its facts
 /// were read from (see [`FileReads`]).
 fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
-    let root = safe_root(params.get("root"))?;
-    let limits = params.get("limits");
-    let max_files = limit_of(limits, "max_files", DEFAULT_MAX_FILES as u64)? as usize;
-    let max_file_bytes = limit_of(limits, "max_file_bytes", DEFAULT_MAX_FILE_BYTES)?;
-    let files = params
-        .get("files")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "Rust scan files must be a bounded list.".to_owned())?;
-    if files.len() > max_files {
-        return Err("Rust scan files must be a bounded list.".to_owned());
-    }
-
-    let mut relatives: Vec<String> = Vec::with_capacity(files.len());
-    for value in files {
-        // A malformed path stays fatal: it names no file, so there is nothing to
-        // attribute a diagnostic to, and echoing it into a contribution would
-        // emit an owner id the graph rejects anyway.
-        relatives.push(assert_scannable_path(value)?);
-    }
-    relatives.sort();
-    relatives.dedup();
-
-    let frameworks = string_list(params.get("frameworks"), "frameworks")?;
-    let config_files = string_list(params.get("config_files"), "config_files")?;
-    for config in &config_files {
-        assert_scannable_str(config)?;
-    }
-    let source_files = string_list(params.get("source_files"), "source_files")?;
-    for source in &source_files {
-        assert_scannable_str(source)?;
-    }
+    let request = ScanRequest::parse(params)?;
     let mut input_hashes: BTreeMap<String, Option<String>> = BTreeMap::new();
-    let layout = cargo_crates(&root, &config_files, max_file_bytes, &mut input_hashes);
+    let layout = cargo_crates(
+        &request.root,
+        &request.config_files,
+        request.max_file_bytes,
+        &mut input_hashes,
+    );
+    let mut heartbeat = Heartbeat::new();
+    let (prepared, declarations, test_modules) =
+        index_project(&request, &layout, &mut input_hashes, &mut heartbeat, emit);
+    let walked = walk_requested(
+        &request,
+        &layout,
+        prepared,
+        &declarations,
+        &test_modules,
+        &mut input_hashes,
+        &mut heartbeat,
+        emit,
+    );
 
-    // Pass 1: read every Rust file of the project and index it. Without
-    // `source_files` the project is the batch, as it always was. An
-    // unrequested file's tree is dropped once indexed, so the whole project
-    // is never held parsed at once.
-    let requested: BTreeSet<&str> = relatives.iter().map(String::as_str).collect();
-    let project: BTreeSet<&str> = source_files
+    emit_contributions(&request, walked, input_hashes, emit)
+}
+
+/// The index entries of every file the last request read, by the file's path
+/// and the hash of its bytes; `None` for bytes that do not parse. With the
+/// [`Layout`] they were collected under, both decide the entries, so a hit is
+/// what parsing would give.
+type IndexMemo = HashMap<(String, String), Option<FileIndex>>;
+
+thread_local! {
+    /// The worker lives across the requests of a scan, and each request
+    /// indexes the whole project: parsing only bytes it has not seen keeps
+    /// a large workspace's later batches as cheap as reading it. The memo is
+    /// kept for the layout it was built under and dropped when it changes.
+    static INDEX_MEMO: RefCell<(Layout, IndexMemo)> = RefCell::new((Layout::default(), HashMap::new()));
+}
+
+/// Pass 1: read every Rust file of the project and index it, returning the
+/// requested files ready to walk with the declaration index and the test
+/// modules every file declared. Without `source_files` the project is the
+/// batch, as it always was. An unrequested file's tree is dropped once
+/// indexed, so the whole project is never held parsed at once.
+fn index_project(
+    request: &ScanRequest,
+    layout: &Layout,
+    input_hashes: &mut BTreeMap<String, Option<String>>,
+    heartbeat: &mut Heartbeat,
+    emit: &mut dyn FnMut(&Value),
+) -> (Vec<Prepared>, Declarations, TestModules) {
+    let root = &request.root;
+    let max_file_bytes = request.max_file_bytes;
+    let requested: BTreeSet<&str> = request.relatives.iter().map(String::as_str).collect();
+    let project: BTreeSet<&str> = request
+        .source_files
         .iter()
         .map(String::as_str)
         .chain(requested.iter().copied())
         .collect();
-    let mut prepared: Vec<Prepared> = Vec::with_capacity(relatives.len());
+    let mut prepared: Vec<Prepared> = Vec::with_capacity(request.relatives.len());
     let mut declarations = Declarations::new();
-    let mut test_modules = crate::visit::TestModules::new();
+    let mut test_modules = TestModules::new();
     let mut memo = INDEX_MEMO.with(|memo| {
         let (built_under, memo) = std::mem::take(&mut *memo.borrow_mut());
-        if built_under == layout {
+        if built_under == *layout {
             memo
         } else {
             HashMap::new()
         }
     });
     let mut kept: IndexMemo = HashMap::new();
-    let mut heartbeat = Heartbeat::new();
     for relative in project {
         heartbeat.beat(emit);
         let module = layout.module_of(relative);
         let (value, index) = if requested.contains(relative) {
-            let item = prepare_one(&root, relative, max_file_bytes);
+            let item = prepare_one(root, relative, max_file_bytes);
             let index = match &item {
                 Prepared::Parsed { parsed, .. } => {
-                    Some(FileIndex::of(relative, &module, &parsed.items, &layout))
+                    Some(FileIndex::of(relative, &module, &parsed.items, layout))
                 }
                 Prepared::Err { .. } => None,
             };
@@ -311,14 +309,14 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
             // An unrequested file is read and hashed on every request, as
             // its read must be recorded, but parsed only when this worker
             // has not indexed those bytes in that module before.
-            match read_safely(&root, relative, max_file_bytes) {
+            match read_safely(root, relative, max_file_bytes) {
                 Ok(bytes) => {
                     let hash = sha256_hex(&bytes);
                     let index = match memo.remove(&(relative.to_owned(), hash.clone())) {
                         Some(index) => index,
                         None => parse_source(&bytes)
                             .ok()
-                            .map(|parsed| FileIndex::of(relative, &module, &parsed.items, &layout)),
+                            .map(|parsed| FileIndex::of(relative, &module, &parsed.items, layout)),
                     };
                     (Some(hash), index)
                 }
@@ -333,14 +331,28 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
         if let Some(hash) = &value {
             kept.insert((relative.to_owned(), hash.clone()), index);
         }
-        record_read(&mut input_hashes, relative, value);
+        record_read(input_hashes, relative, value);
     }
     // Only what this request indexed is kept, so the memo follows the
     // project rather than every version of it this process has seen.
     INDEX_MEMO.with(|memo| *memo.borrow_mut() = (layout.clone(), kept));
 
-    // Pass 2: walk each requested file, noting what its facts were read from.
-    let mut reads = FileReads::new(&root, max_file_bytes, &layout);
+    (prepared, declarations, test_modules)
+}
+
+/// Pass 2: walk each requested file, noting what its facts were read from.
+#[allow(clippy::too_many_arguments)]
+fn walk_requested(
+    request: &ScanRequest,
+    layout: &Layout,
+    prepared: Vec<Prepared>,
+    declarations: &Declarations,
+    test_modules: &TestModules,
+    input_hashes: &mut BTreeMap<String, Option<String>>,
+    heartbeat: &mut Heartbeat,
+    emit: &mut dyn FnMut(&Value),
+) -> Vec<(Contribution, BTreeSet<String>)> {
+    let mut reads = FileReads::new(&request.root, request.max_file_bytes, layout);
     let mut walked: Vec<(Contribution, BTreeSet<String>)> = Vec::with_capacity(prepared.len());
     for item in prepared {
         heartbeat.beat(emit);
@@ -358,21 +370,32 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
                     &module,
                     &parsed,
                     content_hash,
-                    &frameworks,
-                    &declarations,
-                    &test_modules,
-                    &layout,
+                    &request.frameworks,
+                    declarations,
+                    test_modules,
+                    layout,
                 );
                 let lookups = declarations.take_lookups();
-                let keys = reads.of_file(&relative, &module, &lookups, &placed, &mut input_hashes);
+                let keys = reads.of_file(&relative, &module, &lookups, &placed, input_hashes);
                 (contribution, keys)
             }
         });
     }
 
-    // Pass 3: emit, each read carrying the value `input_hashes` holds for it.
-    let mut named: BTreeSet<String> = relatives.iter().cloned().collect();
-    let shared: BTreeMap<String, Option<String>> = config_files
+    walked
+}
+
+/// Pass 3: emit, each read carrying the value `input_hashes` holds for it,
+/// and return the request's result.
+fn emit_contributions(
+    request: &ScanRequest,
+    walked: Vec<(Contribution, BTreeSet<String>)>,
+    input_hashes: BTreeMap<String, Option<String>>,
+    emit: &mut dyn FnMut(&Value),
+) -> Result<Value, String> {
+    let mut named: BTreeSet<String> = request.relatives.iter().cloned().collect();
+    let shared: BTreeMap<String, Option<String>> = request
+        .config_files
         .iter()
         .filter_map(|config| Some((config.clone(), input_hashes.get(config)?.clone())))
         .collect();
