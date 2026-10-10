@@ -21,7 +21,7 @@ namespace Knossos\Query;
  * annotations, suppressions), so among components with no inbound edge at all
  * its candidate pool is a subset of the gate's. It additionally reports
  * components reached only from test code, which the gate counts as referenced —
- * see {@see \Knossos\Query\ProjectCatalogQueryService} for why that budget
+ * see {@see \Knossos\Query\SnapshotMetrics::snapshotAnalysis()} for why that budget
  * stays narrower.
  */
 final readonly class ReportableComponent

@@ -23,6 +23,8 @@ final readonly class ArchitectureQueryService
 {
     private PDO $pdo;
     private ProjectCatalogQueryService $catalogQueries;
+    private SnapshotDiffQuery $diffQueries;
+    private QualityGateQueryService $gateQueries;
     private ComponentQueryService $componentQueries;
     private GraphSummaryQuery $summaryQueries;
     private DependencyCycleQuery $cycleQueries;
@@ -63,7 +65,9 @@ final readonly class ArchitectureQueryService
         $this->flowQueries = new FlowQuery($pdo, $clock);
         $this->impactQueries = new ImpactAnalysisQuery($pdo, $clock);
         $this->componentQueries = new ComponentQueryService($pdo, $clock);
-        $this->catalogQueries = new ProjectCatalogQueryService($pdo, $clock, $this->policyQueries);
+        $this->catalogQueries = new ProjectCatalogQueryService($pdo, $clock);
+        $this->diffQueries = new SnapshotDiffQuery($pdo, $clock);
+        $this->gateQueries = new QualityGateQueryService($pdo, $clock, $this->policyQueries, $this->catalogQueries, $this->diffQueries);
         $this->changeQueries = new ChangeImpactQueryService(
             $pdo,
             $clock,
@@ -79,7 +83,7 @@ final readonly class ArchitectureQueryService
             $this->componentQueries,
             $this->locationQueries,
         );
-        $this->reviewQueries = new ReviewDiffService($pdo, $clock, $this->changeQueries, $this->policyQueries, $this->catalogQueries, $this->cycleQueries);
+        $this->reviewQueries = new ReviewDiffService($pdo, $clock, $this->changeQueries, $this->policyQueries, $this->gateQueries, $this->cycleQueries);
         $this->diagramQueries = new DiagramExportService($pdo, $clock);
         $this->fileMetricsQueries = new FileMetricsQueryService($pdo, $clock);
         $this->stalenessProbe = new StalenessProbe($pdo, $wallClock, $driftOracle);
@@ -145,25 +149,25 @@ final readonly class ArchitectureQueryService
         return $this->catalogQueries->listSnapshots($projectId, $limit, $offset);
     }
 
-    /** {@see ProjectCatalogQueryService::snapshotDiff()} */
+    /** {@see SnapshotDiffQuery::snapshotDiff()} */
     public function snapshotDiff(string $projectId, string $fromSnapshot, string $toSnapshot = 'active', int $maxChanges = 25): ResultEnvelope
     {
-        return $this->catalogQueries->snapshotDiff($projectId, $fromSnapshot, $toSnapshot, $maxChanges);
+        return $this->diffQueries->snapshotDiff($projectId, $fromSnapshot, $toSnapshot, $maxChanges);
     }
 
     /**
-     * {@see ProjectCatalogQueryService::branchComparison()}
+     * {@see QualityGateQueryService::branchComparison()}
      *
      * @param list<array<string, mixed>> $policies
      * @return array<string, mixed>
      */
     public function branchComparison(string $projectId, string $baseSnapshot, array $policies, int $limit = 8): array
     {
-        return $this->catalogQueries->branchComparison($projectId, $baseSnapshot, $policies, $limit);
+        return $this->gateQueries->branchComparison($projectId, $baseSnapshot, $policies, $limit);
     }
 
     /**
-     * {@see ProjectCatalogQueryService::qualityGate()}
+     * {@see QualityGateQueryService::qualityGate()}
      *
      * @param array<string, mixed> $budgets
      * @param list<array<string, mixed>> $policies
@@ -176,13 +180,13 @@ final readonly class ArchitectureQueryService
         bool $sarif = false,
         bool $proposeBaseline = false,
     ): ResultEnvelope {
-        return $this->catalogQueries->qualityGate($projectId, $baselineSnapshot, $budgets, $policies, $sarif, $proposeBaseline);
+        return $this->gateQueries->qualityGate($projectId, $baselineSnapshot, $budgets, $policies, $sarif, $proposeBaseline);
     }
 
-    /** {@see ProjectCatalogQueryService::architectureTrends()} */
+    /** {@see QualityGateQueryService::architectureTrends()} */
     public function architectureTrends(string $projectId, int $limit = 10, ?string $releaseFrom = null): ResultEnvelope
     {
-        return $this->catalogQueries->architectureTrends($projectId, $limit, $releaseFrom);
+        return $this->gateQueries->architectureTrends($projectId, $limit, $releaseFrom);
     }
 
     /** {@see ComponentQueryService::findComponent()} */
