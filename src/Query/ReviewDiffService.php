@@ -26,8 +26,8 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
         ?Closure $clock,
         private ChangeImpactQueryService $changeQueries,
         private ArchitecturePolicyQueryService $policyQueries,
-        private ProjectCatalogQueryService $catalogQueries,
-        private GraphTopologyQueryService $topologyQueries,
+        private QualityGateQueryService $gateQueries,
+        private DependencyCycleQuery $cycleQueries,
     ) {
         parent::__construct($pdo, $clock);
     }
@@ -110,7 +110,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
                 $qualityGate = ['status' => 'not_evaluated', 'reason' => 'No retained snapshot other than the active scan; scan again after the next change to establish a baseline.'];
             } else {
                 try {
-                    $gate = $this->catalogQueries->qualityGate($projectId, $baselineSnapshot, $budgets, $policies);
+                    $gate = $this->gateQueries->qualityGate($projectId, $baselineSnapshot, $budgets, $policies);
                     $qualityGate = [
                         'status' => 'evaluated',
                         'passed' => $gate->data['passed'],
@@ -128,7 +128,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
         $cycleEvidence = [];
         $touchingCycles = [];
         try {
-            $cycleResult = $this->topologyQueries->dependencyCycles($projectId, [], $minConfidence, 100, 50_000, 100_000, $timeoutMs);
+            $cycleResult = $this->cycleQueries->dependencyCycles($projectId, [], $minConfidence, 100, 50_000, 100_000, $timeoutMs);
             $touchingCycles = array_values(array_filter(
                 $cycleResult->data['cycles'],
                 static function (array $cycle) use ($touched): bool {

@@ -83,6 +83,152 @@ final class PhpScannerReceiverFactsTest extends KnossosTestCase
         assertArrayContains(['calls', 'php:method:App\Boot::run', 'php:method_of_return:App\Kernel::server::start'], $edges);
     }
 
+    /**
+     * `$x ??= new Foo()` is how PHP spells a collaborator built on first use;
+     * a call through it, plain or nullsafe, names that class.
+     */
+    public function testACoalescingAssignmentOfAConstructionTypesItsVariable(): void
+    {
+        $scan = $this->scan(<<<'PHP'
+            <?php
+            namespace App;
+
+            final class Index
+            {
+                public function map(): array { return []; }
+                public function spelling(): string { return ''; }
+            }
+
+            final class Resolver
+            {
+                public function resolve(bool $folded, $other): void
+                {
+                    $index = null;
+                    if ($folded) {
+                        $index ??= new Index();
+                        $index->map();
+                    }
+                    $index?->spelling();
+                    $other ??= $folded;
+                    $other->drop();
+                    $held = new Index();
+                    $held ??= new Resolver();
+                    $held->either();
+                }
+            }
+            PHP);
+
+        assertArrayContains(['calls', 'php:method:App\Resolver::resolve', 'php:method:App\Index::map'], $scan['edges']);
+        assertArrayContains(['calls', 'php:method:App\Resolver::resolve', 'php:method:App\Index::spelling'], $scan['edges']);
+        // A coalescing assignment of something untyped types nothing, and one
+        // of another class than the variable held leaves it either.
+        assertArrayContains('drop', $scan['untyped']);
+        assertArrayContains('either', $scan['untyped']);
+    }
+
+    /**
+     * A loop over a parameter whose docblock names the element type types its
+     * value variable, however the docblock lays its tags out and whichever
+     * array shape it names.
+     */
+    public function testALoopOverADocumentedParameterTypesItsValue(): void
+    {
+        $scan = $this->scan(<<<'PHP'
+            <?php
+            namespace App;
+
+            use App\Facts\Boundary as Fact;
+
+            final class Resolver
+            {
+                /**
+                 * @param list<Fact> $facts @param array<string, string> $names
+                 */
+                public function resolve(array $facts, array $names): void
+                {
+                    foreach ($facts as $fact) {
+                        $fact->matcher();
+                    }
+                    foreach ($names as $name) {
+                        $name->nothing();
+                    }
+                }
+
+                /**
+                 * @param array<string, \App\Rule> $byId
+                 * @param Edge[] $edges
+                 */
+                public function index(array $byId, iterable $edges): void
+                {
+                    foreach ($byId as $id => $rule) {
+                        $rule->apply();
+                    }
+                    foreach ($edges as $edge) {
+                        $edge->target();
+                    }
+                    $edges = [];
+                    foreach ($edges as $edge) {
+                        $edge->reassigned();
+                    }
+                }
+            }
+            PHP);
+
+        assertArrayContains(['calls', 'php:method:App\Resolver::resolve', 'php:method:App\Facts\Boundary::matcher'], $scan['edges']);
+        assertArrayContains(['calls', 'php:method:App\Resolver::index', 'php:method:App\Rule::apply'], $scan['edges']);
+        assertArrayContains(['calls', 'php:method:App\Resolver::index', 'php:method:App\Edge::target'], $scan['edges']);
+        // A scalar element type names no class, and a reassigned parameter no longer holds what its docblock says.
+        assertArrayContains('nothing', $scan['untyped']);
+        assertArrayContains('reassigned', $scan['untyped']);
+    }
+
+    /**
+     * A method declared to return `\Closure(): X` hands back work that yields
+     * an X: the variable the closure's result is assigned to holds one. A
+     * closure literal with a declared return type says the same.
+     */
+    public function testTheResultOfInvokingATypedClosureTypesItsVariable(): void
+    {
+        $scan = $this->scan(<<<'PHP'
+            <?php
+            namespace App;
+
+            use App\Query\Envelope;
+
+            final class Tools
+            {
+                public function call(): void
+                {
+                    $run = $this->prepare();
+                    $envelope = $run();
+                    $envelope->withWarnings();
+                    $make = static fn(): Report => new Report();
+                    $report = $make();
+                    $report->render();
+                    $plain = $this->plain();
+                    $result = $plain();
+                    $result->unknown();
+                }
+
+                /** @return \Closure(): Envelope */
+                private function prepare(): \Closure
+                {
+                    return static fn(): Envelope => new Envelope();
+                }
+
+                private function plain(): \Closure
+                {
+                    return static fn() => null;
+                }
+            }
+            PHP);
+
+        assertArrayContains(['calls', 'php:method:App\Tools::call', 'php:method:App\Query\Envelope::withWarnings'], $scan['edges']);
+        assertArrayContains(['calls', 'php:method:App\Tools::call', 'php:method:App\Report::render'], $scan['edges']);
+        // A closure whose result type nothing declares types nothing.
+        assertArrayContains('unknown', $scan['untyped']);
+    }
+
     /** @return list<array{string, string, string}> */
     private function edges(string $source): array
     {

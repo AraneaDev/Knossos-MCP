@@ -26,10 +26,14 @@ use ReflectionClass;
  */
 final readonly class SnapshotMetricsCache
 {
-    /** The classes whose code decides the stored figures: decoding and reading the archive, and computing the metrics. */
+    /**
+     * The classes whose code decides the stored figures: resolving the
+     * snapshot and reading its archive, computing the metrics, and the trend
+     * that asks for them and stores what comes back.
+     */
     private const SOURCES = [
-        ProjectCatalogQueryService::class, AbstractArchitectureQueryService::class, ReportableComponent::class, SnapshotPayload::class,
-        SnapshotGraphReader::class, ErasedTypeEdge::class,
+        QualityGateQueryService::class, SnapshotMetrics::class, SnapshotResolver::class, AbstractArchitectureQueryService::class,
+        ReportableComponent::class, SnapshotPayload::class, SnapshotGraphReader::class, ErasedTypeEdge::class, RenameMatching::class,
     ];
 
     /** The code the stored figures must come from to answer. */
