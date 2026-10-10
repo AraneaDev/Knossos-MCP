@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Query;
+namespace Knossos\Scan;
 
 /**
  * Consecutive {@see ScanLedger} entries merged into one, so a long session's
@@ -31,7 +31,7 @@ final readonly class ScanLedgerSpan
     public const MAX_POINTS = 5000;
 
     /** The newest scans named per file in a span, as many as a session's changes name per file. */
-    public const SCANS_PER_FILE = SessionChangesService::MAX_SCANS;
+    public const SCANS_PER_FILE = 20;
 
     /** How much of a snapshot id a span keeps: the `scan_` prefix and 48 bits of its hash. */
     private const KEY = 17;

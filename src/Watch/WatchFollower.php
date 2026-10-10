@@ -6,7 +6,7 @@ namespace Knossos\Watch;
 
 use Closure;
 use Knossos\Cancellation\CancellationToken;
-use Knossos\Query\ScanLedger;
+use Knossos\Scan\ScanLedger;
 
 /**
  * A session's stand-in while another session's watcher leads: it scans

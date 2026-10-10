@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Knossos\Scan\ProjectPathResolver;
+use Knossos\Scan\ScanLedger;
+use Knossos\Scan\ScanLedgerSpan;
 use PDO;
 
 /**
@@ -49,7 +52,7 @@ final readonly class SessionChangesService
     public const MAX_TESTS = 50;
 
     /** Scans named per file, the newest kept: a file changed more often than this is still told by its latest. */
-    public const MAX_SCANS = 20;
+    public const MAX_SCANS = ScanLedgerSpan::SCANS_PER_FILE;
 
     /** Scans listed in the timeline, the newest kept. */
     public const MAX_TIMELINE = 60;

@@ -10,6 +10,7 @@ use Knossos\Discovery\AllowedRoots;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\RootGuard;
 use Knossos\Discovery\RootNotFoundException;
+use Knossos\Scan\ProjectPathResolver;
 use PDO;
 use Throwable;
 

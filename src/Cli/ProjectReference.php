@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Cli;
 
 use InvalidArgumentException;
-use Knossos\Query\ProjectPathResolver;
+use Knossos\Scan\ProjectPathResolver;
 use PDO;
 
 /**
