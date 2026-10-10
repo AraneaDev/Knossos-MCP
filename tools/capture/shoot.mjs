@@ -700,19 +700,16 @@ export async function playShot(session, shot, { worktree, record = false }) {
  * Types into the prompt with the step's own steps, and sends Enter only once
  * the prompt reads exactly what it should (see promptReady). Otherwise the
  * prompt is cleared and typed again, twice at most, and the step fails with
- * nothing sent.
+ * nothing sent, showing the screen that failed the check.
  */
 export async function submit(session, step, runStep, { attempts = 3 } = {}) {
     let why = null;
+    let seen = "";
     for (let n = 0; n < attempts; n += 1) {
         for (const sub of step.steps) await runStep(sub);
         await sleep(300);
-        why = promptReady(
-            await snap(session),
-            await cursor(session),
-            step.expect,
-            step.absent,
-        );
+        seen = await snap(session);
+        why = promptReady(seen, await cursor(session), step.expect, step.absent);
         if (why === null) {
             await send(session, "Enter");
             return;
@@ -723,7 +720,8 @@ export async function submit(session, step, runStep, { attempts = 3 } = {}) {
     const error = new Error(
         `submit "${step.expect.trim()}": ${why}; Enter not sent`,
     );
-    error.lastFrame = plain(await snap(session));
+    // The screen that failed the check, not the cleared prompt after it.
+    error.lastFrame = plain(seen);
     throw error;
 }
 

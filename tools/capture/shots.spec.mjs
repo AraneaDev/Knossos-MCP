@@ -11,6 +11,8 @@ import {
     shown,
 } from "./shoot.mjs";
 import {
+    COMMAND_LIST,
+    COMMAND_LISTED,
     NEVER_SHOWN,
     SHOTS,
     STEP_KINDS,
@@ -275,5 +277,23 @@ describe("keepPartial", () => {
         expect(error.message).toBe('step "band" timed out');
         expect(error.lastFrame).toBe("the last frame");
         expect(lines).toEqual(["partial hero not kept: disk full"]);
+    });
+});
+
+describe("the slash command list", () => {
+    const rows = (text) => text.split("\n").filter((l) => new RegExp(COMMAND_LIST).test(l));
+    it("is read with its selected row marked or not, and never from the prompt", () => {
+        const open =
+            "  ❯ /knossos                    Toggle the Knossos architecture pane\n    /knossos:graph              (Knossos) Use when\n";
+        expect(rows(open)).toHaveLength(2);
+        expect(rows(open.replace("❯", " "))).toHaveLength(2);
+        expect(rows("❯ /knossos \n")).toEqual([]);
+        // The prompt with its space typed, over the rule under it: not a row.
+        const prompt = "❯ /knossos  \n────────\n  ⏸ manual mode on\n";
+        expect(new RegExp(COMMAND_LIST, "m").test(prompt)).toBe(false);
+        expect(new RegExp(COMMAND_LISTED, "m").test(prompt)).toBe(false);
+        expect(new RegExp(COMMAND_LISTED, "m").test(open)).toBe(true);
+        expect(new RegExp(COMMAND_LISTED, "m").test(open.replace("❯", " "))).toBe(true);
+        expect(new RegExp(COMMAND_LISTED, "m").test("❯ /knossos \n")).toBe(false);
     });
 });

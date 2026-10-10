@@ -87,9 +87,10 @@ final readonly class ChurnService
         [$head, $commits, $counts, $cut] = $log;
         arsort($counts);
         $counts = array_slice($counts, 0, self::FILES, true);
-        $known = $this->known($id, array_map('strval', array_keys($counts)));
+        $query = new FileFanInQuery($this->pdo);
+        $known = $query->held($id, array_map('strval', array_keys($counts)));
         // Dependents and the file's own boundary as the fan-in map and the file detail count them.
-        $fanIn = $known === [] ? [] : (new FileFanInQuery($this->pdo))->forPaths($id, $known, 0);
+        $fanIn = $known === [] ? [] : $query->forPaths($id, $known, 0);
         $files = [];
         foreach ($fanIn as $file => $row) {
             $count = $counts[$file];
@@ -154,23 +155,5 @@ final readonly class ChurnService
         $commits = count($records);
 
         return [$head, $commits, $counts, $cut];
-    }
-
-    /**
-     * Those of `$paths` the graph holds, in the order given.
-     *
-     * @param list<string> $paths
-     * @return list<string>
-     */
-    private function known(string $projectId, array $paths): array
-    {
-        if ($paths === []) {
-            return [];
-        }
-        $statement = $this->pdo->prepare('SELECT relative_path FROM files WHERE project_id = ? AND relative_path IN (' . implode(',', array_fill(0, count($paths), '?')) . ')');
-        $statement->execute([$projectId, ...$paths]);
-        $held = array_flip(array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN)));
-
-        return array_values(array_filter($paths, static fn(string $path): bool => isset($held[$path])));
     }
 }

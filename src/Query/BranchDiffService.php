@@ -41,6 +41,9 @@ final readonly class BranchDiffService
     /** Items each list names. */
     public const LIMIT = 8;
 
+    /** Touched files, the most lines changed first, whose dependents are counted. */
+    private const FILES = 300;
+
     /** How long one git call may take. */
     private const GIT_TIMEOUT_MS = 3000;
 
@@ -66,7 +69,7 @@ final readonly class BranchDiffService
     public function diff(string $path): array
     {
         $absolute = realpath($path) ?: $path;
-        $envelope = ['path' => $absolute, 'project_id' => null, 'snapshot_id' => null, 'branch' => null, 'default_branch' => null, 'merge_base' => null, 'ahead' => null, 'base' => null, 'comparison' => null];
+        $envelope = ['path' => $absolute, 'project_id' => null, 'snapshot_id' => null, 'branch' => null, 'default_branch' => null, 'merge_base' => null, 'ahead' => null, 'base' => null, 'comparison' => null, 'files' => null];
         $project = (new ProjectPathResolver($this->pdo))->resolve($absolute);
         if ($project === null || !is_string($project['active_scan_id']) || $project['active_scan_id'] === '') {
             return ['status' => 'unscanned'] + $envelope;
@@ -93,6 +96,7 @@ final readonly class BranchDiffService
         if ($ahead === 0 || $branch === $default || $branch === preg_replace('#^[^/]+/#', '', $default)) {
             return ['status' => 'on-default'] + $envelope;
         }
+        $envelope['files'] = $this->touched($root, $id, $mergeBase);
         $base = $this->baseSnapshot($root, $id, $mergeBase, (string) $project['active_scan_id']);
         $envelope['base'] = $base;
         if ($base === null) {
@@ -101,6 +105,42 @@ final readonly class BranchDiffService
         $comparison = ArchitectureQueryService::forDatabase($this->pdo)->branchComparison($id, $base['snapshot_id'], FileViolationQuery::policies($root, null), self::LIMIT);
 
         return ['status' => $base['match'] === 'after' ? 'no-snapshot' : 'ok', 'comparison' => $comparison] + $envelope;
+    }
+
+    /**
+     * The files the branch's commits touched since the merge base: how many,
+     * and those the graph holds, the most depended on first (then the most
+     * lines changed, then by path), with the lines each added and deleted
+     * (zero for a binary file) and its dependents and boundary as the fan-in
+     * map counts them. What is not committed is the Changes tab's. Null when
+     * git cannot say.
+     *
+     * @return array{count: int, items: list<array{path: string, added: int, deleted: int, dependents: int, boundary: string|null}>}|null
+     */
+    private function touched(string $root, string $projectId, string $mergeBase): ?array
+    {
+        $out = $this->git($root, ['diff', '--numstat', '-z', '--no-renames', '--relative', $mergeBase, 'HEAD', '--', '.']);
+        if ($out === null) {
+            return null;
+        }
+        $lines = [];
+        foreach (explode("\0", $out) as $record) {
+            $parts = explode("\t", $record, 3);
+            if (count($parts) === 3 && $parts[2] !== '') {
+                $lines[$parts[2]] = [(int) $parts[0], (int) $parts[1]];
+            }
+        }
+        $changed = $lines;
+        uksort($changed, static fn(string $a, string $b): int => [$lines[$b][0] + $lines[$b][1], $a] <=> [$lines[$a][0] + $lines[$a][1], $b]);
+        $query = new FileFanInQuery($this->pdo);
+        $known = $query->held($projectId, array_slice(array_map('strval', array_keys($changed)), 0, self::FILES));
+        $items = [];
+        foreach ($known === [] ? [] : $query->forPaths($projectId, $known, 0) as $path => $row) {
+            $items[] = ['path' => $path, 'added' => $lines[$path][0], 'deleted' => $lines[$path][1], 'dependents' => $row['dependent_files'], 'boundary' => $row['boundary']];
+        }
+        usort($items, static fn(array $a, array $b): int => [$b['dependents'], $b['added'] + $b['deleted'], $a['path']] <=> [$a['dependents'], $a['added'] + $a['deleted'], $b['path']]);
+
+        return ['count' => count($lines), 'items' => array_slice($items, 0, self::LIMIT)];
     }
 
     /**

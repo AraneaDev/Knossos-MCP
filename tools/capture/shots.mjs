@@ -110,8 +110,16 @@ const still = (name) => ({ do: "still", name });
 /** Claude Code is up: its prompt, not a dialog's numbered choice. */
 const ready = [wait("prompt", String.raw`^❯(?! *\d\.)`, { timeoutMs: 90000 })];
 
-/** A row of the slash command list: the command, two spaces or more, its description. */
-export const COMMAND_LIST = String.raw`^\s*/knossos(:graph)?\s{2,}\S`;
+/**
+ * A row of the slash command list: the command, two spaces or more, its
+ * description. The selected row starts with `❯`; the prompt's own `❯ /knossos`
+ * has no description after it, and spaces only, never a line break, part the
+ * two.
+ */
+export const COMMAND_LIST = String.raw`^ *(?:❯ *)?/knossos(:graph)? {2,}\S`;
+
+/** The command list's row for `/knossos` itself, selected or not. */
+export const COMMAND_LISTED = String.raw`^ *(?:❯ *)?/knossos +Toggle`;
 
 /**
  * `/knossos`, then a space once the command is listed: the space closes the
@@ -127,7 +135,7 @@ export const knossosCommand = {
         {
             do: "type",
             text: "/knossos",
-            until: String.raw`^\s*/knossos\s+Toggle`,
+            until: COMMAND_LISTED,
         },
         { do: "type", text: " " },
     ],
@@ -300,7 +308,8 @@ export const SHOTS = {
         "branch",
         [
             press("7"),
-            wait("branch", String.raw`Against the merge base`, {
+            // Not the head card's title: it is drawn while the comparison still loads.
+            wait("branch", String.raw`Files this branch touched`, {
                 timeoutMs: 60000,
             }),
         ],

@@ -785,6 +785,7 @@ describe('knossos mod', () => {
         dead_code: { count: 5_000, items: Array.from({ length: 8 }, (_, i) => placed(i + 20)) },
         violations: { count: 100, truncated: true, items: Array.from({ length: 8 }, (_, i) => ({ policy_id: 'a-policy-with-a-long-id', source: `App\\${name(i)}`, source_kind: 'method', target: `App\\${name(i + 1)}`, target_kind: 'method' })) },
       },
+      files: { count: 9_000, items: Array.from({ length: 8 }, (_, i) => ({ path: path(i), added: 12_000 + i, deleted: 9_000 + i, dependents: 900 - i, boundary: bounds[i % 12] })) },
     })
     const found = JSON.stringify({ status: 'ok', query: 'x', truncated: true, results: Array.from({ length: 20 }, (_, i) => ({ type: i % 2 === 0 ? 'component' : 'file', ...placed(i), ...(i % 2 === 0 ? {} : { name: path(i), canonical_name: path(i), kind: 'file', line: null }) })) })
     const churned = JSON.stringify({ status: 'ok', days: 30, head: 'a'.repeat(40), commits: 500, truncated: true, files: Array.from({ length: 40 }, (_, i) => ({ path: path(i), commits: 90 - i, dependents: 900 - i * 20, score: (90 - i) * (900 - i * 20), boundary: bounds[i % 12] })) })
@@ -3016,8 +3017,9 @@ describe('knossos mod', () => {
         dead_code: { count: 1, items: [item('Unused', 'Core')] },
         violations: null,
       },
+      files: { count: 4, items: [{ path: 'src/Http/Router.php', added: 30, deleted: 2, dependents: 12, boundary: 'Http' }] },
     })
-    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], branch: [{ stdout: diff }], detail: [{ stdout: fullDetailOf('Greeter') }] })
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], branch: [{ stdout: diff }], detail: [{ stdout: fullDetailOf('Greeter') }], file: [{ stdout: fileDetailOf('src/Http/Router.php') }] })
     await $.session.start(START)
     await w.clock.settle()
     expect(w.branchRuns()).toHaveLength(0)
@@ -3032,15 +3034,23 @@ describe('knossos mod', () => {
       expect(text).toContain("already holds 9 of the branch's 12 commits")
       expect(titled(text)).toMatch(/New cross-boundary dependencies +▲ 1/)
       expect(titled(text)).toMatch(/New cycles +✓ 0/)
+      // The files the branch touched, after what is new: each opens as its file.
+      expect(titled(text)).toMatch(/Files this branch touched +4 files/)
+      expect(text).toMatch(/src\/Http\/Router\.php +\+30 −2 +12 deps/)
       await ui.press({ key: 'row:0' })
       await w.clock.settle()
       expect(w.detailRuns().at(-1)?.at(-1)).toBe('App\\Greeter')
       await ui.press({ key: 'back' })
+      await ui.press({ key: 'row:2' })
+      await w.clock.settle()
+      expect(w.fileRuns().at(-1)?.at(-1)).toBe('src/Http/Router.php')
+      await ui.press({ key: 'back' })
       await ui.press({ key: 'tab:overview' })
       await ui.unmount()
     }
-    // Once for this graph, however often the tab was opened.
+    // Once for this graph, however often the tab was opened; the churn history is the Churn tab's alone.
     expect(w.branchRuns()).toHaveLength(1)
+    expect(w.churnRuns()).toHaveLength(0)
   })
 
   test('s sorts the hubs by in, out, then cross degree', async ($, on) => {

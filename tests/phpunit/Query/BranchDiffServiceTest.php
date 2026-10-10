@@ -123,6 +123,41 @@ final class BranchDiffServiceTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testItListsTheFilesTheBranchTouchedMostDependedOnFirst(): void
+    {
+        [$pdo, $root] = $this->repository();
+        try {
+            // A file the graph does not hold counts as touched, but is not listed.
+            file_put_contents($root . '/NOTES.md', "notes\n");
+            $this->branchWork($pdo, $root);
+            $files = (new BranchDiffService($pdo))->diff($root)['files'];
+            assertSame(3, $files['count']);
+            assertSame(['src/Core/Greeter.php', 'src/Core/Unused.php'], array_column($files['items'], 'path'));
+            [$greeter, $unused] = $files['items'];
+            assertSame([1, 1, 'Core'], [$greeter['added'], $greeter['deleted'], $greeter['boundary']]);
+            assertGreaterThanOrEqual(1, $greeter['dependents']);
+            assertSame(['added' => 9, 'deleted' => 0, 'dependents' => 0, 'boundary' => 'Core'], array_diff_key($unused, ['path' => true]));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testTheTouchedFilesNeedNoSnapshot(): void
+    {
+        [$pdo, $root] = $this->repository();
+        try {
+            $this->branchWork($pdo, $root);
+            $pdo->exec('DELETE FROM scan_snapshots');
+            $diff = (new BranchDiffService($pdo))->diff($root);
+            assertSame('no-snapshot', $diff['status']);
+            assertSame(2, $diff['files']['count']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
     public function testAMethodFulfillingASupertypeMemberIsNotNewDeadCode(): void
     {
         [$pdo, $root] = $this->repository();
@@ -199,7 +234,9 @@ final class BranchDiffServiceTest extends KnossosTestCase
     {
         [$pdo, $root] = $this->repository();
         try {
-            assertSame('on-default', (new BranchDiffService($pdo))->diff($root)['status']);
+            $diff = (new BranchDiffService($pdo))->diff($root);
+            assertSame('on-default', $diff['status']);
+            assertNull($diff['files']);
         } finally {
             $this->removeTempTree($root);
         }
