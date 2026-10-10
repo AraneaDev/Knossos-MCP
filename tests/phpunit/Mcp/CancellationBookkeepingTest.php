@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Mcp;
 
+use Knossos\Mcp\McpDispatcher;
 use Knossos\Mcp\ResourceService;
 use Knossos\Mcp\StdioServer;
 use Knossos\Query\ArchitectureQueryService;
@@ -90,8 +91,8 @@ final class CancellationBookkeepingTest extends KnossosTestCase
     {
         [$tools] = $this->toolServiceWithScannedFixture();
         // Resources over an unmigrated database: reading one throws.
-        $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService(SqliteConnection::open(':memory:'))));
-        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server = new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService(SqliteConnection::open(':memory:'))));
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
         $this->cancel($server, 4);
         $threw = false;
@@ -107,17 +108,76 @@ final class CancellationBookkeepingTest extends KnossosTestCase
         assertSame(true, $response !== null, 'The cancel for request 4 left with it, though answering it threw.');
     }
 
-    private function initializedServer(): StdioServer
+    /**
+     * A cancel the transport finds while the tool runs withdraws that request,
+     * and leaves with it, so a later request reusing the id is answered.
+     */
+    #[Group('mcp')]
+    public function testACancelTheTransportPollsForWithdrawsOnlyTheRunningRequest(): void
+    {
+        $server = $this->initializedServer();
+        $asked = [];
+        $poll = static function (int|string $id) use (&$asked): bool {
+            $asked[] = $id;
+
+            return true;
+        };
+
+        assertSame(null, $server->handle($this->scanRequest(9), $poll), 'The polled cancel must withdraw request 9.');
+        assertSame(true, $asked !== [] && array_unique($asked) === [9], 'The poll is asked about the running request only.');
+        $response = $server->handle($this->scanRequest(9), static fn(int|string $id): bool => false);
+        assertSame(true, $response !== null, 'The polled cancel left with request 9.');
+        assertSame(false, $response['result']['isError']);
+    }
+
+    /**
+     * Over stdio, a cancel that arrives while the tool runs withdraws it: the
+     * transport reads ahead for the running request and tells the dispatcher.
+     */
+    #[Group('mcp')]
+    public function testStdioWithdrawsARequestCancelledWhileItRuns(): void
     {
         [$tools] = $this->toolServiceWithScannedFixture();
-        $server = new StdioServer($tools);
-        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $input = fopen('php://temp', 'w+');
+        $output = fopen('php://temp', 'w+');
+        $errors = fopen('php://temp', 'w+');
+        if (!is_resource($input) || !is_resource($output) || !is_resource($errors)) {
+            throw new \RuntimeException('Unable to allocate stdio streams.');
+        }
+        foreach ([
+            ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]],
+            ['jsonrpc' => '2.0', 'method' => 'notifications/initialized'],
+            $this->scanRequest('s1'),
+            ['jsonrpc' => '2.0', 'method' => 'notifications/cancelled', 'params' => ['requestId' => 's1']],
+            ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping'],
+        ] as $frame) {
+            fwrite($input, json_encode($frame, JSON_THROW_ON_ERROR) . "\n");
+        }
+        rewind($input);
+
+        (new StdioServer(new McpDispatcher($tools), readinessWaiter: static fn(): int => 1))->run($input, $output, $errors);
+
+        rewind($output);
+        $frames = array_map(
+            static fn(string $line): array => json_decode($line, true, 512, JSON_THROW_ON_ERROR),
+            array_values(array_filter(explode("\n", (string) stream_get_contents($output)))),
+        );
+        assertSame([1, 2], array_column($frames, 'id'), 'Only initialize and ping are answered; s1 was withdrawn.');
+        assertSame(true, isset($frames[0]['result']['protocolVersion']));
+        assertSame([], (array) $frames[1]['result']);
+    }
+
+    private function initializedServer(): McpDispatcher
+    {
+        [$tools] = $this->toolServiceWithScannedFixture();
+        $server = new McpDispatcher($tools);
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
 
         return $server;
     }
 
-    private function cancel(StdioServer $server, int|string $requestId): void
+    private function cancel(McpDispatcher $server, int|string $requestId): void
     {
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/cancelled', 'params' => ['requestId' => $requestId]]);
     }
@@ -127,11 +187,17 @@ final class CancellationBookkeepingTest extends KnossosTestCase
      *
      * @return array<string, mixed>|null
      */
-    private function scan(StdioServer $server, int|string $id): ?array
+    private function scan(McpDispatcher $server, int|string $id): ?array
     {
-        return $server->handle(['jsonrpc' => '2.0', 'id' => $id, 'method' => 'tools/call', 'params' => [
+        return $server->handle($this->scanRequest($id));
+    }
+
+    /** @return array<string, mixed> */
+    private function scanRequest(int|string $id): array
+    {
+        return ['jsonrpc' => '2.0', 'id' => $id, 'method' => 'tools/call', 'params' => [
             'name' => 'scan_project',
             'arguments' => ['path' => self::repositoryRoot() . '/tests/Fixtures/mixed'],
-        ]]);
+        ]];
     }
 }

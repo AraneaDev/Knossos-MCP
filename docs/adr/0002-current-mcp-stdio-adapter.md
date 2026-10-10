@@ -22,6 +22,9 @@ ping, `tools/list`, and `tools/call`. Pin the adapter contract to MCP
 `2025-11-25`. Standard output contains NDJSON protocol frames only; diagnostics
 go to standard error.
 
+Note (2026-10-10): dispatch now lives in `Knossos\Mcp\McpDispatcher`, which both
+the stdio and HTTP transports use; `StdioServer` keeps the stdio framing.
+
 Tool business logic is transport-neutral. This makes replacing the adapter
 with an official or current PHP SDK a contained change when one meets the
 runtime, dependency, and protocol requirements.

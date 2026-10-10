@@ -68,9 +68,15 @@ final readonly class McpServerAssembly
         return new PromptService();
     }
 
-    /** A stdio server over this assembly's tools, resources, and prompts. */
+    /** A dispatcher over this assembly's tools, resources, and prompts, holding one connection's protocol state. */
+    public function dispatcher(): McpDispatcher
+    {
+        return new McpDispatcher($this->tools, $this->resources(), $this->prompts());
+    }
+
+    /** A stdio server over a fresh dispatcher. */
     public function stdioServer(): StdioServer
     {
-        return new StdioServer($this->tools, resources: $this->resources(), prompts: $this->prompts());
+        return new StdioServer($this->dispatcher());
     }
 }

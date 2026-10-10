@@ -7,6 +7,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from conftest import patch_everywhere
 
 
 def _diag_codes(contribution: dict) -> list[str]:
@@ -322,7 +323,7 @@ def test_unreadable_file_costs_only_itself(monkeypatch, worker: ModuleType, proj
             raise OSError("No such file or directory")
         return real_read(path, max_bytes)
 
-    monkeypatch.setattr(worker, "read_bounded", flaky)
+    patch_everywhere(monkeypatch, worker, "read_bounded", flaky)
     contributions = {c["owner_key"].rsplit(":", 1)[-1]: c for c in scan_collect(root, ["good.py", "gone.py"])}
 
     assert _diag_codes(contributions["gone.py"]) == ["PY_UNSCANNABLE_FILE"]

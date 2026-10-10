@@ -134,11 +134,11 @@ npm run typecheck:mod
 npm run format:check
 npm run lint:md
 # The tests are linted and formatted alongside the worker they exercise: a
-# gate that covered only bin/worker.py let workers/python/tests drift out of
+# gate that covered only the worker let workers/python/tests drift out of
 # `ruff format` shape with nothing to catch it.
-ruff check workers/python/bin/worker.py workers/python/tests
-ruff format --check workers/python/bin/worker.py workers/python/tests
-mypy workers/python/bin/worker.py
+ruff check workers/python/bin workers/python/tests
+ruff format --check workers/python/bin workers/python/tests
+mypy workers/python/bin/worker.py workers/python/bin/knossos_python
 fi
 
 if in_lane tests; then

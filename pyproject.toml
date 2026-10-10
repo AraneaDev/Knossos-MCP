@@ -10,6 +10,14 @@ ignore = ["S603"]
 [tool.ruff.lint.per-file-ignores]
 # Test modules legitimately use bare asserts.
 "workers/python/tests/**" = ["S101"]
+# The worker imports its own package only after putting its directory on
+# sys.path, which `python3 -I` leaves off.
+"workers/python/bin/worker.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+# Keeps a redundant `name as name` re-export inside one import statement
+# instead of splitting it out, so worker.py imports its package once.
+combine-as-imports = true
 
 [tool.ruff.lint.mccabe]
 max-complexity = 20
@@ -19,4 +27,4 @@ python_version = "3.11"
 strict = true
 warn_unreachable = true
 show_error_codes = true
-files = ["workers/python/bin/worker.py"]
+files = ["workers/python/bin/worker.py", "workers/python/bin/knossos_python"]

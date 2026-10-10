@@ -6,6 +6,7 @@ namespace Knossos\Tests\Phpunit\Mcp;
 
 use InvalidArgumentException;
 use Knossos\Maintenance\DatabaseMaintenanceService;
+use Knossos\Mcp\McpDispatcher;
 use Knossos\Mcp\StdioServer;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
@@ -103,7 +104,7 @@ final class McpTest extends KnossosTestCase
         // message; polling must drop it instead of buffering it unboundedly.
         fwrite($input, str_repeat('x', 4096));
         rewind($input);
-        $server = new StdioServer($tools, maxLineBytes: 64);
+        $server = new StdioServer(new McpDispatcher($tools), maxLineBytes: 64);
         (new ReflectionProperty($server, 'input'))->setValue($server, $input);
         $poll = new ReflectionMethod($server, 'pollCancellation');
         assertSame(false, $poll->invoke($server, 'r1'));
@@ -155,8 +156,8 @@ final class McpTest extends KnossosTestCase
 
         // Transport surfaces pre-dispatch validation as JSON-RPC -32602, while a
         // tool that runs and fails stays an isError result.
-        $server = new StdioServer($tools);
-        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server = new McpDispatcher($tools);
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
         assertSame(-32602, $server->handle([
             'jsonrpc' => '2.0', 'id' => 2, 'method' => 'tools/call', 'params' => ['name' => 'nope', 'arguments' => []],
@@ -254,12 +255,12 @@ final class McpTest extends KnossosTestCase
         }
         fwrite($input, "not-json\n");
         fwrite($input, "[]\n");
-        fwrite($input, json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]], JSON_THROW_ON_ERROR) . "\n");
+        fwrite($input, json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]], JSON_THROW_ON_ERROR) . "\n");
         fwrite($input, json_encode(['jsonrpc' => '2.0', 'method' => 'notifications/initialized'], JSON_THROW_ON_ERROR) . "\n");
         fwrite($input, json_encode(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'tools/list'], JSON_THROW_ON_ERROR) . "\n");
         fwrite($input, json_encode(['jsonrpc' => '2.0', 'id' => 3, 'method' => 'unknown'], JSON_THROW_ON_ERROR) . "\n");
         rewind($input);
-        assertSame(0, (new StdioServer($tools, maxResponseBytes: 100))->run($input, $output, $errors));
+        assertSame(0, (new StdioServer(new McpDispatcher($tools), maxResponseBytes: 100))->run($input, $output, $errors));
         rewind($output);
         $responses = (string) stream_get_contents($output);
         assertContains('Parse error', $responses);
@@ -271,7 +272,7 @@ final class McpTest extends KnossosTestCase
         fclose($output);
         fclose($errors);
 
-        $server = new StdioServer($tools);
+        $server = new McpDispatcher($tools);
         assertSame(-32600, $server->handle(['id' => 10])['error']['code']);
         assertSame(-32602, $server->handle(['jsonrpc' => '2.0', 'id' => 11, 'method' => 'initialize'])['error']['code']);
         assertSame('2.0', $server->handle(['jsonrpc' => '2.0', 'id' => 12, 'method' => 'ping'])['jsonrpc']);
@@ -310,7 +311,7 @@ final class McpTest extends KnossosTestCase
         $oversizedErrors = fopen('php://temp', 'w+');
         fwrite($oversizedInput, str_repeat('x', 20) . "\n");
         rewind($oversizedInput);
-        assertSame(0, (new StdioServer($tools, maxLineBytes: 10))->run($oversizedInput, $oversizedOutput, $oversizedErrors));
+        assertSame(0, (new StdioServer(new McpDispatcher($tools), maxLineBytes: 10))->run($oversizedInput, $oversizedOutput, $oversizedErrors));
         rewind($oversizedOutput);
         assertContains('Invalid or oversized', (string) stream_get_contents($oversizedOutput));
         fclose($oversizedInput);
@@ -327,7 +328,7 @@ final class McpTest extends KnossosTestCase
             'jsonrpc' => '2.0', 'method' => 'notifications/cancelled', 'params' => ['requestId' => 'polled-scan'],
         ], JSON_THROW_ON_ERROR) . "\n");
         rewind($pollInput);
-        $polledServer = new StdioServer($tools);
+        $polledServer = new StdioServer(new McpDispatcher($tools));
         $inputProperty = new ReflectionProperty($polledServer, 'input');
         $inputProperty->setValue($polledServer, $pollInput);
         $pollMethod = new ReflectionMethod($polledServer, 'pollCancellation');
@@ -352,7 +353,7 @@ final class McpTest extends KnossosTestCase
         // response (id plus result or error, no method); it must be ignored,
         // never answered with an Invalid Request error that would desync the
         // stream and make the host tear the connection down.
-        $server = new StdioServer($tools);
+        $server = new McpDispatcher($tools);
         assertSame(null, $server->handle(['jsonrpc' => '2.0', 'id' => 'knossos-keepalive-1', 'result' => []]));
         assertSame(null, $server->handle([
             'jsonrpc' => '2.0', 'id' => 'knossos-keepalive-2', 'error' => ['code' => -32601, 'message' => 'pong'],
@@ -370,13 +371,14 @@ final class McpTest extends KnossosTestCase
 
         // The ping frame itself is a well-formed JSON-RPC request with a unique,
         // non-null id on every send so the client can correlate its replies.
-        $sendKeepalive = new ReflectionMethod($server, 'sendKeepalive');
+        $transport = new StdioServer(new McpDispatcher($tools));
+        $sendKeepalive = new ReflectionMethod($transport, 'sendKeepalive');
         $keepaliveOutput = fopen('php://temp', 'w+');
         if (!is_resource($keepaliveOutput)) {
             throw new RuntimeException('Unable to allocate keepalive output stream.');
         }
-        $sendKeepalive->invoke($server, $keepaliveOutput);
-        $sendKeepalive->invoke($server, $keepaliveOutput);
+        $sendKeepalive->invoke($transport, $keepaliveOutput);
+        $sendKeepalive->invoke($transport, $keepaliveOutput);
         rewind($keepaliveOutput);
         $frames = array_values(array_filter(explode("\n", (string) stream_get_contents($keepaliveOutput))));
         assertSame(2, count($frames));
@@ -402,7 +404,7 @@ final class McpTest extends KnossosTestCase
         if (!is_resource($loopInput) || !is_resource($loopOutput) || !is_resource($loopErrors)) {
             throw new RuntimeException('Unable to allocate keepalive loop streams.');
         }
-        $loopServer = new StdioServer($tools, readinessWaiter: $waiter);
+        $loopServer = new StdioServer(new McpDispatcher($tools), readinessWaiter: $waiter);
         assertSame(0, $loopServer->run($loopInput, $loopOutput, $loopErrors));
         rewind($loopOutput);
         $loopPayload = (string) stream_get_contents($loopOutput);
@@ -600,8 +602,8 @@ final class McpTest extends KnossosTestCase
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
-        $server = new StdioServer($tools);
-        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server = new McpDispatcher($tools);
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
 
         $response = $server->handle([
