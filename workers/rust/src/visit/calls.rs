@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
+use super::paths::{pointee_of, POINTER_MARK};
 use super::state::Calls;
 use crate::facts::reference;
 use crate::resolve::ident_name;
@@ -769,18 +770,6 @@ pub(super) fn is_foreign_export(node: &syn::ItemFn) -> bool {
                         .is_ok_and(|list| list.tokens.to_string().contains("no_mangle")))
         })
 }
-
-/// What a smart pointer receiver (see [`Walk::receiver_type`]) holds, or
-/// the type itself for any other receiver.
-///
-/// [`Walk::receiver_type`]: super::state::Walk::receiver_type
-pub(super) fn pointee_of(owner: &str) -> &str {
-    owner.strip_prefix(POINTER_MARK).unwrap_or(owner)
-}
-
-/// Marks a receiver type held behind `Box`, `Rc` or `Arc`: its own methods
-/// are the pointer's, and every other method derefs to the type.
-pub(super) const POINTER_MARK: &str = "*";
 
 /// The type a method call on a receiver of type `owner` resolves through:
 /// the type itself, or for a smart pointer what it holds, unless the

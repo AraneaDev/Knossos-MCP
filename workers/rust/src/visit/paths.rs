@@ -12,11 +12,10 @@ use std::collections::BTreeMap;
 use syn::spanned::Spanned;
 use syn::{Item, Type};
 
-use super::calls::POINTER_MARK;
 use super::placement::mod_child;
 use super::state::Walk;
 use crate::facts::reference;
-use crate::resolve::{flatten_use, glob_prefixes, ident_name, parent_module, rebase};
+use crate::resolve::{flatten_use, glob_prefixes, ident_name, is_primitive, parent_module, rebase};
 
 impl Walk<'_> {
     /// Record every `use` in this item list, emitting one `imports` edge each.
@@ -624,7 +623,7 @@ impl Walk<'_> {
             Type::Path(path) if path.qself.is_none() => match pointee(&path.path) {
                 Some(inner) => self
                     .receiver_type(container, inner)
-                    .map(|held| format!("{POINTER_MARK}{}", super::calls::pointee_of(&held))),
+                    .map(|held| format!("{POINTER_MARK}{}", pointee_of(&held))),
                 None => self.stated_type(container, &path.path),
             },
             _ => None,
@@ -697,35 +696,15 @@ fn standard_trait(name: &str) -> Option<&'static str> {
     })
 }
 
-/// Whether a bare name is a primitive type or a type the prelude brings
-/// into every module (`String`, `Vec`, `Option`, `Result`, `Box`).
-pub(super) fn is_standard_type(name: &str) -> bool {
-    is_primitive(name) || matches!(name, "Box" | "Option" | "Result" | "String" | "Vec")
+/// What a smart pointer receiver (see [`Walk::receiver_type`]) holds, or
+/// the type itself for any other receiver.
+pub(super) fn pointee_of(owner: &str) -> &str {
+    owner.strip_prefix(POINTER_MARK).unwrap_or(owner)
 }
 
-/// Whether a bare name is one of Rust's primitive types.
-fn is_primitive(name: &str) -> bool {
-    matches!(
-        name,
-        "bool"
-            | "char"
-            | "str"
-            | "u8"
-            | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "usize"
-            | "i8"
-            | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "isize"
-            | "f32"
-            | "f64"
-    )
-}
+/// Marks a receiver type held behind `Box`, `Rc` or `Arc`: its own methods
+/// are the pointer's, and every other method derefs to the type.
+pub(super) const POINTER_MARK: &str = "*";
 
 /// The type a `Box<T>`, `Rc<T>` or `Arc<T>` holds, however its path is
 /// qualified (`std::sync::Arc<T>`), or None for any other type.

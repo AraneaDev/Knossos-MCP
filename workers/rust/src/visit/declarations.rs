@@ -10,10 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{Item, Type};
 
-use super::paths::is_standard_type;
 use super::placement::mod_child;
 use crate::layout::Layout;
-use crate::resolve::ident_name;
+use crate::resolve::{ident_name, is_standard_type};
 
 /// Canonical name of every top-level and inline-module declaration of the
 /// project's Rust files, mapped to how many files declared it. The crate-wide

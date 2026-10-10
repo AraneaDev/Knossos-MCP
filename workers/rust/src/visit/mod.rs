@@ -12,7 +12,7 @@ use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
 use crate::layout::Layout;
-use crate::resolve::{ident_name, Aliases};
+use crate::resolve::{ident_name, is_standard_type, Aliases};
 
 mod calls;
 mod cfg;
@@ -28,7 +28,6 @@ use cfg::{is_cfg_test, is_test_attribute, item_attrs};
 pub use declarations::{
     declaration_paths, declared_renames, Declarations, ExportedNames, StructFields,
 };
-use paths::is_standard_type;
 use placement::mod_child;
 use state::{Calls, Walk};
 
@@ -433,7 +432,7 @@ impl Walk<'_> {
                                 this.facts.speculative_edge(
                                     "returns",
                                     &reference("method", method_canonical),
-                                    &reference("class", calls::pointee_of(&returned)),
+                                    &reference("class", paths::pointee_of(&returned)),
                                     method.sig.output.span(),
                                 );
                             }
