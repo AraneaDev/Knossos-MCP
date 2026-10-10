@@ -87,18 +87,6 @@ final class FactCollector extends NodeVisitorAbstract
     private array $untypedCalls = [];
 
     /**
-     * The file's class imports, per namespace block: its node id (0 for a file
-     * without one) => lower-cased alias => imported name.
-     *
-     * A docblock annotation names its class the way the code would, through
-     * these, but the parser resolves only names in code. A file may declare
-     * several namespaces, each importing its own classes under one alias.
-     *
-     * @var array<int, array<string, string>>
-     */
-    private array $imports = [];
-
-    /**
      * Variables holding a class name built from a namespace literal
      * (`$card = 'App\\Cards\\' . $name`), keyed by the function-like scope
      * they live in and their name.
@@ -116,7 +104,7 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private array $variableScopes = [];
 
-    /** The namespace block the traversal is in, keyed as {@see self::$imports} is. */
+    /** The namespace block the traversal is in: its node id, 0 for a file without one. */
     private int $namespaceScope = 0;
 
     /** The name of that namespace, empty outside one, which a docblock's unqualified class name is read in. */
@@ -125,18 +113,13 @@ final class FactCollector extends NodeVisitorAbstract
     /** Whether this file's module node has been declared; see {@see self::fileModuleId()}. */
     private bool $moduleDeclared = false;
 
-    /** One docblock type, generic arguments, shapes and callable signatures included. */
-    private const DOC_TYPE = '(?:[^\\s<>{}()]|<(?:[^<>]|<[^<>]*>)*>|\\{[^{}]*\\}|\\([^()]*\\))+';
+    /** Class names read out of docblocks, through the file's imports. */
+    private readonly DocblockTypes $docblocks;
 
-    /** Docblock types that name no class. */
-    private const DOC_PSEUDO_TYPES = [
-        'array', 'array-key', 'bool', 'boolean', 'callable', 'callable-string', 'class-string', 'double', 'false', 'float',
-        'int', 'integer', 'iterable', 'list', 'mixed', 'negative-int', 'never', 'non-empty-array', 'non-empty-list',
-        'non-empty-string', 'null', 'numeric', 'numeric-string', 'object', 'positive-int', 'resource', 'scalar', 'string',
-        'true', 'void',
-    ];
-
-    public function __construct(private readonly string $relativePath) {}
+    public function __construct(private readonly string $relativePath)
+    {
+        $this->docblocks = new DocblockTypes();
+    }
 
     /**
      * Index the file's method return types before collecting facts from it.
@@ -161,25 +144,12 @@ final class FactCollector extends NodeVisitorAbstract
             }
         }
         foreach ($scopes === [] ? [0 => $nodes] : $scopes as $scope => $statements) {
-            foreach ($finder->findInstanceOf($statements, Stmt\Use_::class) as $use) {
-                if ($use->type === Stmt\Use_::TYPE_NORMAL) {
-                    foreach ($use->uses as $item) {
-                        $this->imports[$scope][strtolower($item->getAlias()->toString())] = $item->name->toString();
-                    }
-                }
-            }
-            foreach ($finder->findInstanceOf($statements, Stmt\GroupUse::class) as $group) {
-                foreach ($group->uses as $item) {
-                    if ($group->type === Stmt\Use_::TYPE_NORMAL || $item->type === Stmt\Use_::TYPE_NORMAL) {
-                        $this->imports[$scope][strtolower($item->getAlias()->toString())] = $group->prefix->toString() . '\\' . $item->name->toString();
-                    }
-                }
-            }
+            $this->docblocks->readImports($scope, $statements);
             foreach ($finder->findInstanceOf($statements, Stmt\ClassLike::class) as $class) {
                 $className = $class->namespacedName?->toString();
                 foreach ($className === null ? [] : $class->getMethods() as $method) {
-                    $yielded = self::documentedClosureResult($method->getDocComment()?->getText() ?? '');
-                    $resolved = $yielded === null ? null : $this->documentedClass($yielded, $scope, $namespaces[$scope] ?? '', $className);
+                    $yielded = DocblockTypes::documentedClosureResult($method->getDocComment()?->getText() ?? '');
+                    $resolved = $yielded === null ? null : $this->docblocks->documentedClass($yielded, $scope, $namespaces[$scope] ?? '', $className);
                     if ($resolved !== null) {
                         $this->closureReturns[strtolower($className . '::' . $method->name->toString())] = $resolved;
                     }
@@ -284,10 +254,9 @@ final class FactCollector extends NodeVisitorAbstract
                 $classNames[] = substr($tag, 1);
                 continue;
             }
-            [$head, $rest] = array_pad(explode('\\', $tag, 2), 2, null);
-            $imported = $this->imports[$this->namespaceScope][strtolower($head)] ?? null;
+            $imported = $this->docblocks->imported($this->namespaceScope, $tag);
             if ($imported !== null) {
-                $classNames[] = $rest === null ? $imported : $imported . '\\' . $rest;
+                $classNames[] = $imported;
             }
         }
         foreach (array_unique($classNames) as $className) {
@@ -528,83 +497,14 @@ final class FactCollector extends NodeVisitorAbstract
             }
         }
         $class = $this->currentClass()['name'] ?? null;
-        foreach (self::documentedParameters($node->getDocComment()?->getText() ?? '') as $name => $type) {
-            $element = isset($parameters[$name]) ? self::elementType($type) : null;
-            $resolved = $element === null ? null : $this->documentedClass($element, $this->namespaceScope, $this->namespaceName, $class);
+        foreach (DocblockTypes::documentedParameters($node->getDocComment()?->getText() ?? '') as $name => $type) {
+            $element = isset($parameters[$name]) ? DocblockTypes::elementType($type) : null;
+            $resolved = $element === null ? null : $this->docblocks->documentedClass($element, $this->namespaceScope, $this->namespaceName, $class);
             if ($resolved !== null) {
                 $variables = &$this->variables();
                 $variables[$name] = ($variables[$name] ?? ['type' => null, 'confidence' => 'probable']) + ['element' => $resolved];
             }
         }
-    }
-
-    /**
-     * Each `@param` tag's type by parameter name, wherever the tag sits on its
-     * line: a docblock may put several on one.
-     *
-     * @return array<string, string>
-     */
-    private static function documentedParameters(string $docComment): array
-    {
-        preg_match_all('/@(?:phpstan-|psalm-)?param\s+(' . self::DOC_TYPE . ')\s+&?(?:\.\.\.)?\$([A-Za-z_][A-Za-z0-9_]*)/', $docComment, $tags, PREG_SET_ORDER);
-        $types = [];
-        foreach ($tags as [, $type, $name]) {
-            $types[$name] = $type;
-        }
-
-        return $types;
-    }
-
-    /**
-     * The element type of an array or iterable type as a docblock writes it:
-     * `list<X>`, `array<K, X>`, `iterable<X>` or `X[]`.
-     */
-    private static function elementType(string $type): ?string
-    {
-        if (preg_match('/^(?:list|non-empty-list|array|non-empty-array|iterable)<(?:[^<>,]+,\s*)?([^<>,]+)>$/i', $type, $matches) === 1
-            || preg_match('/^([^<>\[\]|{}()]+)\[\]$/', $type, $matches) === 1) {
-            return trim($matches[1]);
-        }
-
-        return null;
-    }
-
-    /** What a docblock's `@return \Closure(): X` (or `callable(): X`) says calling the returned closure yields. */
-    private static function documentedClosureResult(string $docComment): ?string
-    {
-        return preg_match('/@(?:phpstan-|psalm-)?return\s+\\\\?(?:Closure|callable)\s*\([^()]*\)\s*:\s*(\\\\?[A-Za-z_][A-Za-z0-9_\\\\]*)/i', $docComment, $matches) === 1
-            ? $matches[1]
-            : null;
-    }
-
-    /**
-     * The class a docblock names, read the way the code would read it: fully
-     * qualified, through the namespace block's imports, or in its namespace.
-     * Null for a scalar or pseudo type, or for anything that is not one name.
-     */
-    private function documentedClass(string $written, int $scope, string $namespace, ?string $class): ?string
-    {
-        $written = ltrim($written, '?');
-        if (preg_match('/^\\\\?[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*$/', $written) !== 1) {
-            return null;
-        }
-        if (str_starts_with($written, '\\')) {
-            return substr($written, 1);
-        }
-        $lower = strtolower($written);
-        if ($lower === 'self' || $lower === 'static') {
-            return $class;
-        }
-        if (in_array($lower, self::DOC_PSEUDO_TYPES, true)) {
-            return null;
-        }
-        [$head, $rest] = array_pad(explode('\\', $written, 2), 2, null);
-        $imported = $this->imports[$scope][strtolower($head)] ?? null;
-        if ($imported !== null) {
-            return $rest === null ? $imported : $imported . '\\' . $rest;
-        }
-
-        return $namespace === '' ? $written : $namespace . '\\' . $written;
     }
 
     /**
