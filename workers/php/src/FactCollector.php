@@ -47,14 +47,14 @@ final class FactCollector extends NodeVisitorAbstract
      * parameter or an assignment there does not reach the code around them,
      * which sees only what a by-reference capture may have changed.
      *
-     * @var list<array{variables: array<string, array{type: ?string, confidence: string, returned_by?: string}>, by_reference: array<string, ?array{type: ?string, confidence: string, returned_by?: string}>}>
+     * @var list<array{variables: array<string, array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>, by_reference: array<string, ?array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>}>
      */
     private array $scopeVariables = [];
 
     /**
      * The variables of code no callable encloses: a script's body.
      *
-     * @var array<string, array{type: ?string, confidence: string, returned_by?: string}>
+     * @var array<string, array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>
      */
     private array $fileScopeVariables = [];
 
@@ -69,6 +69,15 @@ final class FactCollector extends NodeVisitorAbstract
      * @var array<string, string>
      */
     private array $returnTypes = [];
+
+    /**
+     * What the closure a method returns yields when it is called, keyed as
+     * {@see self::$returnTypes} is, for a method whose docblock declares
+     * `@return \Closure(): X`. The native type says only `\Closure`.
+     *
+     * @var array<string, string>
+     */
+    private array $closureReturns = [];
 
     /**
      * Member names called on a receiver nothing types, keyed by the calling node's id.
@@ -110,8 +119,22 @@ final class FactCollector extends NodeVisitorAbstract
     /** The namespace block the traversal is in, keyed as {@see self::$imports} is. */
     private int $namespaceScope = 0;
 
+    /** The name of that namespace, empty outside one, which a docblock's unqualified class name is read in. */
+    private string $namespaceName = '';
+
     /** Whether this file's module node has been declared; see {@see self::fileModuleId()}. */
     private bool $moduleDeclared = false;
+
+    /** One docblock type, generic arguments, shapes and callable signatures included. */
+    private const DOC_TYPE = '(?:[^\\s<>{}()]|<(?:[^<>]|<[^<>]*>)*>|\\{[^{}]*\\}|\\([^()]*\\))+';
+
+    /** Docblock types that name no class. */
+    private const DOC_PSEUDO_TYPES = [
+        'array', 'array-key', 'bool', 'boolean', 'callable', 'callable-string', 'class-string', 'double', 'false', 'float',
+        'int', 'integer', 'iterable', 'list', 'mixed', 'negative-int', 'never', 'non-empty-array', 'non-empty-list',
+        'non-empty-string', 'null', 'numeric', 'numeric-string', 'object', 'positive-int', 'resource', 'scalar', 'string',
+        'true', 'void',
+    ];
 
     public function __construct(private readonly string $relativePath) {}
 
@@ -130,9 +153,11 @@ final class FactCollector extends NodeVisitorAbstract
     {
         $finder = new NodeFinder();
         $scopes = [];
+        $namespaces = [];
         foreach ($nodes as $node) {
             if ($node instanceof Stmt\Namespace_) {
                 $scopes[spl_object_id($node)] = $node->stmts;
+                $namespaces[spl_object_id($node)] = $node->name?->toString() ?? '';
             }
         }
         foreach ($scopes === [] ? [0 => $nodes] : $scopes as $scope => $statements) {
@@ -147,6 +172,16 @@ final class FactCollector extends NodeVisitorAbstract
                 foreach ($group->uses as $item) {
                     if ($group->type === Stmt\Use_::TYPE_NORMAL || $item->type === Stmt\Use_::TYPE_NORMAL) {
                         $this->imports[$scope][strtolower($item->getAlias()->toString())] = $group->prefix->toString() . '\\' . $item->name->toString();
+                    }
+                }
+            }
+            foreach ($finder->findInstanceOf($statements, Stmt\ClassLike::class) as $class) {
+                $className = $class->namespacedName?->toString();
+                foreach ($className === null ? [] : $class->getMethods() as $method) {
+                    $yielded = self::documentedClosureResult($method->getDocComment()?->getText() ?? '');
+                    $resolved = $yielded === null ? null : $this->documentedClass($yielded, $scope, $namespaces[$scope] ?? '', $className);
+                    if ($resolved !== null) {
+                        $this->closureReturns[strtolower($className . '::' . $method->name->toString())] = $resolved;
                     }
                 }
             }
@@ -181,6 +216,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
         if ($node instanceof Stmt\Namespace_) {
             $this->namespaceScope = spl_object_id($node);
+            $this->namespaceName = $node->name?->toString() ?? '';
         }
         if ($node instanceof Stmt\ClassLike) {
             $this->enterClassLike($node);
@@ -194,6 +230,8 @@ final class FactCollector extends NodeVisitorAbstract
             $this->property($node);
         } elseif ($node instanceof Expr\Assign) {
             $this->assignment($node);
+        } elseif ($node instanceof Expr\AssignOp\Coalesce) {
+            $this->coalescingAssignment($node);
         } elseif ($node instanceof Stmt\Foreach_) {
             $this->foreachLoop($node);
         } elseif ($node instanceof Expr\New_) {
@@ -394,6 +432,7 @@ final class FactCollector extends NodeVisitorAbstract
 
         $constructor = strtolower($node->name->toString()) === '__construct';
         $this->parametersAndReturn($node->params, $node->returnType, $constructor ? $class['id'] : $id, $constructor);
+        $this->documentedElementTypes($node);
     }
 
     /**
@@ -471,6 +510,101 @@ final class FactCollector extends NodeVisitorAbstract
         $this->addNode($id, 'function', $name, $node->name->toString(), $node);
         $this->callables[] = ['id' => $id];
         $this->parametersAndReturn($node->params, $node->returnType, $id, false);
+        $this->documentedElementTypes($node);
+    }
+
+    /**
+     * Remember the element type a parameter's docblock gives an array or
+     * iterable parameter (`@param list<Fact> $facts`), so a loop over it types
+     * its value. The native type says only `array`, and a loop over a list of
+     * collaborators is how most of them are reached.
+     */
+    private function documentedElementTypes(Stmt\ClassMethod|Stmt\Function_ $node): void
+    {
+        $parameters = [];
+        foreach ($node->params as $param) {
+            if ($param->var instanceof Expr\Variable && is_string($param->var->name)) {
+                $parameters[$param->var->name] = true;
+            }
+        }
+        $class = $this->currentClass()['name'] ?? null;
+        foreach (self::documentedParameters($node->getDocComment()?->getText() ?? '') as $name => $type) {
+            $element = isset($parameters[$name]) ? self::elementType($type) : null;
+            $resolved = $element === null ? null : $this->documentedClass($element, $this->namespaceScope, $this->namespaceName, $class);
+            if ($resolved !== null) {
+                $variables = &$this->variables();
+                $variables[$name] = ($variables[$name] ?? ['type' => null, 'confidence' => 'probable']) + ['element' => $resolved];
+            }
+        }
+    }
+
+    /**
+     * Each `@param` tag's type by parameter name, wherever the tag sits on its
+     * line: a docblock may put several on one.
+     *
+     * @return array<string, string>
+     */
+    private static function documentedParameters(string $docComment): array
+    {
+        preg_match_all('/@(?:phpstan-|psalm-)?param\s+(' . self::DOC_TYPE . ')\s+&?(?:\.\.\.)?\$([A-Za-z_][A-Za-z0-9_]*)/', $docComment, $tags, PREG_SET_ORDER);
+        $types = [];
+        foreach ($tags as [, $type, $name]) {
+            $types[$name] = $type;
+        }
+
+        return $types;
+    }
+
+    /**
+     * The element type of an array or iterable type as a docblock writes it:
+     * `list<X>`, `array<K, X>`, `iterable<X>` or `X[]`.
+     */
+    private static function elementType(string $type): ?string
+    {
+        if (preg_match('/^(?:list|non-empty-list|array|non-empty-array|iterable)<(?:[^<>,]+,\s*)?([^<>,]+)>$/i', $type, $matches) === 1
+            || preg_match('/^([^<>\[\]|{}()]+)\[\]$/', $type, $matches) === 1) {
+            return trim($matches[1]);
+        }
+
+        return null;
+    }
+
+    /** What a docblock's `@return \Closure(): X` (or `callable(): X`) says calling the returned closure yields. */
+    private static function documentedClosureResult(string $docComment): ?string
+    {
+        return preg_match('/@(?:phpstan-|psalm-)?return\s+\\\\?(?:Closure|callable)\s*\([^()]*\)\s*:\s*(\\\\?[A-Za-z_][A-Za-z0-9_\\\\]*)/i', $docComment, $matches) === 1
+            ? $matches[1]
+            : null;
+    }
+
+    /**
+     * The class a docblock names, read the way the code would read it: fully
+     * qualified, through the namespace block's imports, or in its namespace.
+     * Null for a scalar or pseudo type, or for anything that is not one name.
+     */
+    private function documentedClass(string $written, int $scope, string $namespace, ?string $class): ?string
+    {
+        $written = ltrim($written, '?');
+        if (preg_match('/^\\\\?[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*$/', $written) !== 1) {
+            return null;
+        }
+        if (str_starts_with($written, '\\')) {
+            return substr($written, 1);
+        }
+        $lower = strtolower($written);
+        if ($lower === 'self' || $lower === 'static') {
+            return $class;
+        }
+        if (in_array($lower, self::DOC_PSEUDO_TYPES, true)) {
+            return null;
+        }
+        [$head, $rest] = array_pad(explode('\\', $written, 2), 2, null);
+        $imported = $this->imports[$scope][strtolower($head)] ?? null;
+        if ($imported !== null) {
+            return $rest === null ? $imported : $imported . '\\' . $rest;
+        }
+
+        return $namespace === '' ? $written : $namespace . '\\' . $written;
     }
 
     /**
@@ -577,6 +711,21 @@ final class FactCollector extends NodeVisitorAbstract
 
             return;
         }
+        $invoked = $this->invokedType($node->expr);
+        if ($invoked !== null) {
+            // `$result = $run()` where `$run` holds a closure whose result type is declared.
+            $this->setVariableType($node->var->name, $invoked, 'probable');
+
+            return;
+        }
+        $yields = $this->closureResult($node->expr);
+        if ($yields !== null) {
+            $this->setVariableType($node->var->name, 'Closure', 'probable');
+            $variables = &$this->variables();
+            $variables[$node->var->name]['invokes'] = $yields;
+
+            return;
+        }
         $returned = $this->returnedType($node->expr);
         if ($returned !== null) {
             // The type is declared, but the binding to this variable is local
@@ -609,6 +758,60 @@ final class FactCollector extends NodeVisitorAbstract
     }
 
     /**
+     * Track `$x ??= new Foo()`, the way PHP builds a collaborator on first use.
+     *
+     * The variable holds what it held unless that was null, so the
+     * construction types it only where nothing else did, and a type it
+     * already had survives only when the construction agrees with it.
+     */
+    private function coalescingAssignment(Expr\AssignOp\Coalesce $node): void
+    {
+        if (!$node->var instanceof Expr\Variable || !is_string($node->var->name)) {
+            return;
+        }
+        $assigned = $node->expr instanceof Expr\New_ && $node->expr->class instanceof Name
+            ? $this->resolvedClassName($node->expr->class)
+            : $this->returnedType($node->expr);
+        $held = $this->variableType($node->var->name);
+        if ($assigned !== null && ($held === null || $held === $assigned) && $this->variableReturnSource($node->var->name) === null) {
+            $this->setVariableType($node->var->name, $assigned, 'probable');
+
+            return;
+        }
+        if ($held !== $assigned) {
+            $this->clearVariableType($node->var->name);
+        }
+    }
+
+    /**
+     * What `$run()` yields when `$run` holds a closure whose result type was
+     * declared, by the method that returned it or by the closure itself.
+     */
+    private function invokedType(Expr $expression): ?string
+    {
+        if (!$expression instanceof Expr\FuncCall || !$expression->name instanceof Expr\Variable || !is_string($expression->name->name)) {
+            return null;
+        }
+
+        return $this->variables()[$expression->name->name]['invokes'] ?? null;
+    }
+
+    /**
+     * What calling the closure an expression evaluates to yields, when that is
+     * declared: a closure literal's own return type, or the docblock of a
+     * method of this file that returns one.
+     */
+    private function closureResult(Expr $expression): ?string
+    {
+        if (($expression instanceof Expr\Closure || $expression instanceof Expr\ArrowFunction) && $expression->returnType instanceof Name) {
+            return $this->resolvedClassName($expression->returnType);
+        }
+        $key = $this->calledMethodKey($expression);
+
+        return $key === null ? null : ($this->closureReturns[$key] ?? null);
+    }
+
+    /**
      * Type the value variable of `foreach (Enum::cases() as $case)`.
      *
      * `cases()` returns the enum's own cases, so each value is an instance of
@@ -630,6 +833,15 @@ final class FactCollector extends NodeVisitorAbstract
             && $node->expr->name instanceof Identifier
             && strtolower($node->expr->name->toString()) === 'cases') {
             $this->setVariableType($node->valueVar->name, $this->resolvedClassName($node->expr->class), 'probable');
+
+            return;
+        }
+        $element = $node->expr instanceof Expr\Variable && is_string($node->expr->name)
+            ? ($this->variables()[$node->expr->name]['element'] ?? null)
+            : null;
+        if ($element !== null) {
+            // A parameter whose docblock names its element type.
+            $this->setVariableType($node->valueVar->name, $element, 'probable');
 
             return;
         }
@@ -735,18 +947,26 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private function returnedType(Expr $expression): ?string
     {
+        $key = $this->calledMethodKey($expression);
+
+        return $key === null ? null : ($this->returnTypes[$key] ?? null);
+    }
+
+    /** The `Class::method` key, lower-cased, of a call whose receiver is statically known: `$this->m()` or `Foo::m()`. */
+    private function calledMethodKey(Expr $expression): ?string
+    {
         if ($expression instanceof Expr\MethodCall
             && $expression->var instanceof Expr\Variable
             && $expression->var->name === 'this'
             && $expression->name instanceof Identifier) {
             $class = $this->currentClass()['name'] ?? null;
 
-            return $class === null ? null : ($this->returnTypes[strtolower($class . '::' . $expression->name->toString())] ?? null);
+            return $class === null ? null : strtolower($class . '::' . $expression->name->toString());
         }
         if ($expression instanceof Expr\StaticCall
             && $expression->class instanceof Name
             && $expression->name instanceof Identifier) {
-            return $this->returnTypes[strtolower($this->resolvedClassName($expression->class) . '::' . $expression->name->toString())] ?? null;
+            return strtolower($this->resolvedClassName($expression->class) . '::' . $expression->name->toString());
         }
 
         return null;
@@ -1292,7 +1512,7 @@ final class FactCollector extends NodeVisitorAbstract
      * A function does not see the file's variables, which is why each
      * callable keeps its own.
      *
-     * @return array<string, array{type: ?string, confidence: string, returned_by?: string}>
+     * @return array<string, array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>
      */
     private function &variables(): array
     {

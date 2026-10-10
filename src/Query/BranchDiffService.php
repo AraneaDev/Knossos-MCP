@@ -25,7 +25,7 @@ use Throwable;
  * retained snapshot taken after the merge base, if any (`after`), which
  * already holds some of the branch's commits, and says how many.
  *
- * The comparison itself is {@see ProjectCatalogQueryService::branchComparison()}.
+ * The comparison itself is {@see QualityGateQueryService::branchComparison()}.
  * Read-only: it never scans; git runs with the hardened runner, each call
  * bounded in time, and the snapshots it checks are bounded in number.
  */

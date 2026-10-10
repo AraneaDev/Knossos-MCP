@@ -1,6 +1,12 @@
-use super::{collect_declarations, collect_test_modules, walk, Declarations, TestModules};
+use super::{collect_test_modules, declaration_paths, walk, Declarations, TestModules};
 use crate::facts::Facts;
 use crate::layout::Layout;
+use syn::Item;
+
+/// Index one file's declarations, as the server does for each file it reads.
+fn collect_declarations(module: &str, items: &[Item], out: &mut Declarations) {
+    out.add_file(&declaration_paths(module, items));
+}
 
 /// A method lives in an `impl` block, not beside the type, so a collector
 /// that walks only top-level items never indexes one. Nothing in the crate

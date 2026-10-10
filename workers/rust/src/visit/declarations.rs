@@ -169,13 +169,8 @@ fn collect_renames(
 ///
 /// A file counts once per path: `#[cfg]` alternatives of one item are one
 /// declaration, compiled in whichever form the target takes. Two files
-/// declaring one path still make it ambiguous.
-pub fn collect_declarations(module: &str, items: &[Item], out: &mut Declarations) {
-    out.add_file(&declaration_paths(module, items));
-}
-
-/// The paths one file declares, as [`collect_declarations`] counts them, for
-/// a caller that keeps them apart from the index (see [`Declarations::add_file`]).
+/// declaring one path still make it ambiguous. The caller keeps the paths
+/// apart from the index and counts them in with [`Declarations::add_file`].
 #[must_use]
 pub fn declaration_paths(module: &str, items: &[Item]) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
@@ -184,7 +179,7 @@ pub fn declaration_paths(module: &str, items: &[Item]) -> BTreeSet<String> {
     paths
 }
 
-/// The paths [`collect_declarations`] indexes for one file, each once.
+/// The paths [`declaration_paths`] returns for one file, each once.
 fn collect_declaration_paths(module: &str, items: &[Item], out: &mut BTreeSet<String>) {
     for item in items {
         match item {
