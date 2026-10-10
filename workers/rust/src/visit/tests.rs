@@ -1,6 +1,5 @@
-use super::{
-    call_kind, collect_declarations, collect_test_modules, walk, Declarations, TestModules,
-};
+use super::calls::call_kind;
+use super::{collect_declarations, collect_test_modules, walk, Declarations, TestModules};
 use crate::facts::Facts;
 use crate::layout::Layout;
 
