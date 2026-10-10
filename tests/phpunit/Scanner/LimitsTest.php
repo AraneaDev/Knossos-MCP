@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Scanner;
 
 use Knossos\Maintenance\DatabaseMaintenanceService;
+use Knossos\Mcp\McpDispatcher;
 use Knossos\Mcp\StdioServer;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
@@ -34,7 +35,7 @@ final class LimitsTest extends KnossosTestCase
         $errors = fopen('php://temp', 'r+');
         fwrite($input, str_repeat('x', 256) . "\n");
         rewind($input);
-        (new StdioServer($tools, maxLineBytes: 128))->run($input, $output, $errors);
+        (new StdioServer(new McpDispatcher($tools), maxLineBytes: 128))->run($input, $output, $errors);
         rewind($output);
         $frame = json_decode(trim((string) stream_get_contents($output)), true, 512, JSON_THROW_ON_ERROR);
         assertSame(-32700, $frame['error']['code']);
@@ -47,7 +48,7 @@ final class LimitsTest extends KnossosTestCase
             'params' => ['protocolVersion' => '2025-11-25', 'capabilities' => [], 'clientInfo' => ['name' => 'cap', 'version' => '1']],
         ], JSON_THROW_ON_ERROR) . "\n");
         rewind($input);
-        (new StdioServer($tools, maxResponseBytes: 100))->run($input, $output, $errors);
+        (new StdioServer(new McpDispatcher($tools), maxResponseBytes: 100))->run($input, $output, $errors);
         rewind($output);
         $frame = json_decode(trim((string) stream_get_contents($output)), true, 512, JSON_THROW_ON_ERROR);
         assertSame(-32001, $frame['error']['code']);
@@ -116,7 +117,7 @@ final class LimitsTest extends KnossosTestCase
         $errors = fopen('php://temp', 'r+');
         fwrite($input, $frame);
         rewind($input);
-        (new StdioServer($tools, maxLineBytes: $maxLineBytes, maxResponseBytes: $maxResponseBytes))->run($input, $output, $errors);
+        (new StdioServer(new McpDispatcher($tools), maxLineBytes: $maxLineBytes, maxResponseBytes: $maxResponseBytes))->run($input, $output, $errors);
         rewind($output);
 
         return json_decode(trim((string) stream_get_contents($output)), true, 512, JSON_THROW_ON_ERROR);

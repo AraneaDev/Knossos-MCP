@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Mcp;
 
+use Knossos\Mcp\McpDispatcher;
 use Knossos\Mcp\ResourceService;
-use Knossos\Mcp\StdioServer;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Store\SqliteConnection;
 use Knossos\Tests\Phpunit\KnossosTestCase;
@@ -90,8 +90,8 @@ final class CancellationBookkeepingTest extends KnossosTestCase
     {
         [$tools] = $this->toolServiceWithScannedFixture();
         // Resources over an unmigrated database: reading one throws.
-        $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService(SqliteConnection::open(':memory:'))));
-        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server = new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService(SqliteConnection::open(':memory:'))));
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
         $this->cancel($server, 4);
         $threw = false;
@@ -107,17 +107,39 @@ final class CancellationBookkeepingTest extends KnossosTestCase
         assertSame(true, $response !== null, 'The cancel for request 4 left with it, though answering it threw.');
     }
 
-    private function initializedServer(): StdioServer
+    /**
+     * A cancel the transport finds while the tool runs withdraws that request,
+     * and leaves with it, so a later request reusing the id is answered.
+     */
+    #[Group('mcp')]
+    public function testACancelTheTransportPollsForWithdrawsOnlyTheRunningRequest(): void
+    {
+        $server = $this->initializedServer();
+        $asked = [];
+        $poll = static function (int|string $id) use (&$asked): bool {
+            $asked[] = $id;
+
+            return true;
+        };
+
+        assertSame(null, $server->handle($this->scanRequest(9), $poll), 'The polled cancel must withdraw request 9.');
+        assertSame(true, $asked !== [] && array_unique($asked) === [9], 'The poll is asked about the running request only.');
+        $response = $server->handle($this->scanRequest(9), static fn(int|string $id): bool => false);
+        assertSame(true, $response !== null, 'The polled cancel left with request 9.');
+        assertSame(false, $response['result']['isError']);
+    }
+
+    private function initializedServer(): McpDispatcher
     {
         [$tools] = $this->toolServiceWithScannedFixture();
-        $server = new StdioServer($tools);
-        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server = new McpDispatcher($tools);
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
 
         return $server;
     }
 
-    private function cancel(StdioServer $server, int|string $requestId): void
+    private function cancel(McpDispatcher $server, int|string $requestId): void
     {
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/cancelled', 'params' => ['requestId' => $requestId]]);
     }
@@ -127,11 +149,17 @@ final class CancellationBookkeepingTest extends KnossosTestCase
      *
      * @return array<string, mixed>|null
      */
-    private function scan(StdioServer $server, int|string $id): ?array
+    private function scan(McpDispatcher $server, int|string $id): ?array
     {
-        return $server->handle(['jsonrpc' => '2.0', 'id' => $id, 'method' => 'tools/call', 'params' => [
+        return $server->handle($this->scanRequest($id));
+    }
+
+    /** @return array<string, mixed> */
+    private function scanRequest(int|string $id): array
+    {
+        return ['jsonrpc' => '2.0', 'id' => $id, 'method' => 'tools/call', 'params' => [
             'name' => 'scan_project',
             'arguments' => ['path' => self::repositoryRoot() . '/tests/Fixtures/mixed'],
-        ]]);
+        ]];
     }
 }

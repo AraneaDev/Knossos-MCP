@@ -8,6 +8,7 @@ use Knossos\Application;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Mcp\HttpEndpoint;
 use Knossos\Mcp\HttpSessionStore;
+use Knossos\Mcp\McpDispatcher;
 use Knossos\Mcp\NextStepPlanner;
 use Knossos\Mcp\PromptService;
 use Knossos\Mcp\Protocol\Profile20251125;
@@ -41,7 +42,7 @@ final class Protocol20260728Test extends KnossosTestCase
     #[Group('mcp')]
     public function testStatelessRequestsNeedNoHandshakeAndCarryRevisionEnvelopeFields(): void
     {
-        $server = new StdioServer($this->tools(), resources: null, prompts: null);
+        $server = new McpDispatcher($this->tools(), resources: null, prompts: null);
 
         // The gate that answers -32003 until `notifications/initialized` arrives
         // must not fire: this revision has no handshake to wait for.
@@ -57,7 +58,7 @@ final class Protocol20260728Test extends KnossosTestCase
     #[Group('mcp')]
     public function testServerDiscoverAdvertisesSupportedRevisionsCapabilitiesAndIdentity(): void
     {
-        $server = new StdioServer($this->tools(), resources: null, prompts: null);
+        $server = new McpDispatcher($this->tools(), resources: null, prompts: null);
         $result = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'server/discover'])['result'];
 
         // Newest first: a client picking the head of this list gets the best
@@ -74,7 +75,7 @@ final class Protocol20260728Test extends KnossosTestCase
     #[Group('mcp')]
     public function testListResultsCarryCacheHintsAndProjectDataStaysPrivate(): void
     {
-        $server = new StdioServer(
+        $server = new McpDispatcher(
             $this->tools(),
             resources: new ResourceService(new ArchitectureQueryService($this->database())),
             prompts: new PromptService(),
@@ -98,7 +99,7 @@ final class Protocol20260728Test extends KnossosTestCase
     #[Group('mcp')]
     public function testUnknownRevisionIsRejectedWithTheSupportedSet(): void
     {
-        $server = new StdioServer($this->tools(), resources: null, prompts: null);
+        $server = new McpDispatcher($this->tools(), resources: null, prompts: null);
         $error = $server->handle($this->request(1, 'tools/list', version: '1999-01-01'))['error'];
 
         assertSame(-32022, $error['code']);
@@ -112,7 +113,7 @@ final class Protocol20260728Test extends KnossosTestCase
     public function testResourceNotFoundUsesTheRevisionSpecificErrorCode(): void
     {
         $resources = new ResourceService(new ArchitectureQueryService($this->database()));
-        $server = new StdioServer($this->tools(), resources: $resources, prompts: null);
+        $server = new McpDispatcher($this->tools(), resources: $resources, prompts: null);
         $missing = ['uri' => 'knossos://project_' . str_repeat('a', 64) . '/summary'];
 
         $modern = $server->handle($this->request(1, 'resources/read', $missing));
@@ -120,7 +121,7 @@ final class Protocol20260728Test extends KnossosTestCase
 
         // The same lookup under the handshake revision keeps the old code, which
         // is what makes the legacy suite valid without edit.
-        $legacy = new StdioServer($this->tools(), resources: $resources, prompts: null);
+        $legacy = new McpDispatcher($this->tools(), resources: $resources, prompts: null);
         $legacy->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => '2025-11-25']]);
         $legacy->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
         assertSame(-32002, $legacy->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'resources/read', 'params' => $missing])['error']['code']);
@@ -129,7 +130,7 @@ final class Protocol20260728Test extends KnossosTestCase
     #[Group('mcp')]
     public function testHandshakeResponsesStayFreeOfRevisionSpecificFields(): void
     {
-        $server = new StdioServer($this->tools(), resources: null, prompts: null);
+        $server = new McpDispatcher($this->tools(), resources: null, prompts: null);
         $result = $server->handle([
             'jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize',
             'params' => ['protocolVersion' => '2025-11-25'],
@@ -146,7 +147,7 @@ final class Protocol20260728Test extends KnossosTestCase
     #[Group('mcp')]
     public function testAHandshakeClientStaysOnItsRevisionForLaterMetaLessRequests(): void
     {
-        $server = new StdioServer($this->tools(), resources: null, prompts: null);
+        $server = new McpDispatcher($this->tools(), resources: null, prompts: null);
         $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => '2025-11-25']]);
 
         // Before `notifications/initialized`, a pinned handshake client must still
@@ -162,7 +163,7 @@ final class Protocol20260728Test extends KnossosTestCase
     #[Group('mcp')]
     public function testTheHandshakeRevisionCanAlsoBeSelectedThroughMeta(): void
     {
-        $server = new StdioServer($this->tools(), resources: null, prompts: null);
+        $server = new McpDispatcher($this->tools(), resources: null, prompts: null);
 
         // A client may name the older revision in `_meta` without ever sending
         // `initialize`. Nothing exercised that arm before, so removing it entirely
@@ -614,7 +615,7 @@ final class Protocol20260728Test extends KnossosTestCase
             fwrite($input, json_encode($frame, JSON_THROW_ON_ERROR) . "\n");
         }
         rewind($input);
-        (new StdioServer($this->tools()))->run($input, $output, $errors);
+        (new StdioServer(new McpDispatcher($this->tools())))->run($input, $output, $errors);
         rewind($errors);
 
         return (string) stream_get_contents($errors);

@@ -144,8 +144,7 @@ final readonly class HttpEndpoint
                 return $this->problem(400, 'Initialization must not supply a session ID.', $baseHeaders);
             }
             try {
-                $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
-                $response = $server->handle($message);
+                $response = $this->dispatcher()->handle($message);
             } catch (Throwable $error) {
                 return $this->internalError($message['id'] ?? null, $error, $baseHeaders);
             }
@@ -226,9 +225,9 @@ final readonly class HttpEndpoint
             return $this->json(400, ['jsonrpc' => '2.0', 'id' => $message['id'] ?? null, 'error' => ['code' => self::HEADER_MISMATCH, 'message' => $mismatch]], $baseHeaders);
         }
         try {
-            $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
-            $server->resumeSession($protocol);
-            $response = $server->handle($message);
+            $dispatcher = $this->dispatcher();
+            $dispatcher->resumeSession($protocol);
+            $response = $dispatcher->handle($message);
         } catch (Throwable $error) {
             return $this->internalError($message['id'] ?? null, $error, $baseHeaders);
         }
@@ -266,8 +265,7 @@ final readonly class HttpEndpoint
             return $this->json(400, ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => self::HEADER_MISMATCH, 'message' => $mismatch]], $baseHeaders);
         }
         try {
-            $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
-            $response = $server->handle($message);
+            $response = $this->dispatcher()->handle($message);
         } catch (Throwable $error) {
             return $this->internalError($id, $error, $baseHeaders);
         }
@@ -280,6 +278,20 @@ final readonly class HttpEndpoint
         $status = ($response['error']['code'] ?? null) === -32601 ? 404 : 200;
 
         return $this->json($status, $response, $baseHeaders);
+    }
+
+    /**
+     * A fresh dispatcher for one request.
+     *
+     * Fresh every time: the session's state lives in the session store, and a
+     * dispatcher's own state (handshake, pinned revision, pending cancels) must
+     * not carry from one request to the next. It is also why a cancel never
+     * reaches a running tool here: the worker serving the tool cannot read the
+     * request that names it, so no cancellation poll is passed.
+     */
+    private function dispatcher(): McpDispatcher
+    {
+        return new McpDispatcher($this->tools, $this->resources, $this->prompts);
     }
 
     /**

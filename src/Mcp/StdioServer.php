@@ -5,66 +5,38 @@ declare(strict_types=1);
 namespace Knossos\Mcp;
 
 use JsonException;
-use Knossos\Application;
-use Knossos\Mcp\Protocol\ProtocolNegotiator;
-use Knossos\Mcp\Protocol\ProtocolProfile;
-use Knossos\Mcp\Protocol\UnsupportedProtocolVersionException;
-use Knossos\Scan\CancellationToken;
 use Throwable;
 
 /**
  * JSON-RPC over stdio: the recommended MCP transport.
  *
  * Stdout carries protocol frames only — diagnostics go to stderr, because one
- * stray write corrupts the stream. Frames are size-capped, cancellation is polled
- * without blocking on input, and which protocol revision governs a message is
- * decided per message so both supported revisions share one dispatcher.
+ * stray write corrupts the stream. This class owns the wire: frames are
+ * size-capped, an idle connection is kept warm, and cancellation is polled
+ * without blocking on input while a tool runs. What a message means is the
+ * {@see McpDispatcher}'s business, shared with the HTTP transport.
  */
 final class StdioServer
 {
-    /**
-     * The revision reported by the `initialize` handshake.
-     *
-     * Handshake-era clients are by definition `2025-11-25` clients; newer
-     * revisions removed `initialize` and announce themselves per request. The
-     * full supported set lives in {@see ProtocolNegotiator::SUPPORTED} and is
-     * advertised through `server/discover`.
-     */
-    public const PROTOCOL_VERSION = '2025-11-25';
-    private const INSTRUCTIONS = 'Call scan_project first, then query its returned project_id.';
     /** Ceiling on lines parked during cancellation polling, so a flood cannot grow memory without bound. */
     private const MAX_PENDING_LINES = 1024;
     /** Idle seconds before the server pings the client to keep the stdio transport warm. */
     private const KEEPALIVE_INTERVAL_SECONDS = 25.0;
-    private bool $initialized = false;
     private int $keepaliveSequence = 0;
-    private readonly ProtocolNegotiator $negotiator;
-    /** The revision governing the most recent request; null until one arrives. */
-    private ?ProtocolProfile $profile = null;
     /** @var resource|null */
     private $input = null;
-    /** The stream lifecycle notes go to; null when handle() is driven directly. @var resource|null */
-    private $notes = null;
-    /** The revision last written to the log, so one connection logs one line. */
-    private ?string $notedProtocol = null;
     /** @var list<string> */
     private array $pendingLines = [];
     private string $inputBuffer = '';
-    /** @var array<string, int|string> pending cancels: cancelKey() => the request id they name */
-    private array $cancelledRequests = [];
 
     public function __construct(
-        private readonly ToolService $tools,
+        private readonly McpDispatcher $dispatcher,
         private readonly int $maxLineBytes = 1_048_576,
         private readonly int $maxResponseBytes = 1_048_576,
-        private readonly ?ResourceService $resources = null,
-        private readonly ?PromptService $prompts = null,
         // Seam for tests: report readability without a real timed stream_select.
         // Production leaves this null and polls the input stream directly.
         private readonly ?\Closure $readinessWaiter = null,
-    ) {
-        $this->negotiator = new ProtocolNegotiator();
-    }
+    ) {}
 
     /**
      * The read loop: frame in, response out, until stdin closes.
@@ -74,11 +46,11 @@ final class StdioServer
     public function run($input, $output, $errors): int
     {
         $this->input = $input;
-        $this->notes = $errors;
+        $this->dispatcher->logProtocolTo($errors);
         stream_set_read_buffer($input, 0);
         while (($line = $this->nextLine($input, $output)) !== false) {
             if (strlen($line) > $this->maxLineBytes || !str_ends_with($line, "\n")) {
-                $this->write($output, $this->error(null, -32700, 'Invalid or oversized JSON-RPC frame.'));
+                $this->write($output, McpDispatcher::error(null, -32700, 'Invalid or oversized JSON-RPC frame.'));
                 continue;
             }
             // Only a frame that does not decode is a parse error with id null.
@@ -92,7 +64,7 @@ final class StdioServer
                 }
             } catch (JsonException $error) {
                 fwrite($errors, $error->getMessage() . PHP_EOL);
-                $this->write($output, $this->error(null, -32700, 'Parse error'));
+                $this->write($output, McpDispatcher::error(null, -32700, 'Parse error'));
                 continue;
             }
             $this->answer($output, $errors, $message);
@@ -108,359 +80,19 @@ final class StdioServer
      */
     private function answer($output, $errors, array $message): void
     {
-        // handle() answers an id that is neither an integer nor a string with
+        // The dispatcher answers an id that is neither an integer nor a string with
         // -32600 and id null, so the id echoed here always encodes and this
         // error cannot fail the way the answer it replaces did.
         $id = JsonRpcId::reply($message['id'] ?? null);
         try {
-            $response = $this->handle($message);
+            $response = $this->dispatcher->handle($message, $this->pollCancellation(...));
             if ($response !== null) {
                 $this->write($output, $response);
             }
         } catch (Throwable $error) {
             fwrite($errors, $error->getMessage() . PHP_EOL);
-            $this->write($output, $this->error($id, -32603, 'Internal error'));
+            $this->write($output, McpDispatcher::error($id, -32603, 'Internal error'));
         }
-    }
-
-    /**
-     * Continue a session whose handshake happened on an earlier request.
-     *
-     * For a transport that keeps the handshake in its own session store and
-     * builds a fresh server per request: the server starts initialized and
-     * pinned to the revision the session negotiated, so a `_meta`-less request
-     * gets that revision's envelope and error codes, as it would over stdio.
-     *
-     * @throws UnsupportedProtocolVersionException when the revision is not on offer
-     */
-    public function resumeSession(string $protocolVersion): void
-    {
-        $this->negotiator->pin($protocolVersion);
-        $this->initialized = true;
-    }
-
-    /**
-     * Handle one JSON-RPC message, selecting the protocol revision and decorating the result.
-     *
-     * @param array<string, mixed> $message @return array<string, mixed>|null
-     */
-    public function handle(array $message): ?array
-    {
-        $id = JsonRpcId::reply($message['id'] ?? null);
-        if (($message['jsonrpc'] ?? null) !== '2.0') {
-            return $this->error($id, -32600, 'Invalid Request');
-        }
-        if (!isset($message['method'])) {
-            // A JSON-RPC response — id plus exactly one of result or error, no
-            // method — such as the client's reply to a keepalive ping. It needs
-            // no answer, so acknowledge it silently. Frames missing an id, or
-            // carrying both result and error, are malformed and still get the
-            // -32600 error rather than being dropped.
-            $hasResult = array_key_exists('result', $message);
-            $hasError = array_key_exists('error', $message);
-            if (array_key_exists('id', $message) && $hasResult !== $hasError) {
-                return null;
-            }
-            return $this->error($id, -32600, 'Invalid Request');
-        }
-        if (!is_string($message['method'])) {
-            return $this->error($id, -32600, 'Invalid Request');
-        }
-        $method = $message['method'];
-        if (!array_key_exists('id', $message)) {
-            if ($method === 'notifications/initialized') {
-                $this->initialized = true;
-            } elseif ($method === 'notifications/cancelled') {
-                $requestId = $message['params']['requestId'] ?? null;
-                if (is_int($requestId) || is_string($requestId)) {
-                    // A cancel whose request never arrives would otherwise linger
-                    // forever; evict the oldest entry once the map is full so the
-                    // set of pending cancellations stays bounded. Keys are
-                    // prefixed, never numeric, so array_shift keeps insertion
-                    // order instead of renumbering the remaining ids.
-                    if (count($this->cancelledRequests) >= self::MAX_PENDING_LINES) {
-                        array_shift($this->cancelledRequests);
-                    }
-                    $this->cancelledRequests[self::cancelKey($requestId)] = $requestId;
-                }
-            }
-            return null;
-        }
-        if (JsonRpcId::isInvalid($message)) {
-            // The id is present but neither an integer nor a string, so it
-            // cannot be echoed: the request is invalid and answered with id null.
-            return $this->error(null, -32600, 'Invalid Request');
-        }
-        $params = $message['params'] ?? [];
-        if (!is_array($params) || ($params !== [] && array_is_list($params))) {
-            return $this->error($id, -32602, 'Params must be an object.');
-        }
-
-        try {
-            $profile = $this->negotiator->select($message);
-        } catch (UnsupportedProtocolVersionException $unsupported) {
-            return $this->error($id, $unsupported->getCode(), $unsupported->getMessage(), $unsupported->data());
-        }
-        $this->profile = $profile;
-        $this->noteProtocol($message, $profile);
-
-        try {
-            $response = $this->dispatchMethod($method, $id, $params, $profile);
-        } finally {
-            // Whatever method answered it, the request is done: a cancel that
-            // named it must not outlive it and withdraw a later request that
-            // reuses the id.
-            unset($this->cancelledRequests[self::cancelKey($id)]);
-        }
-        // Envelope rules are the one thing that varies per revision, so they are
-        // applied once here rather than at every success() call site.
-        if ($response !== null && isset($response['result']) && is_array($response['result'])) {
-            $response['result'] = $profile->decorate($response['result'], $method);
-        }
-
-        return $response;
-    }
-
-    /**
-     * Route a validated request to its method handler.
-     *
-     * @param array<string, mixed> $params
-     * @return array<string, mixed>|null
-     */
-    private function dispatchMethod(string $method, int|string $id, array $params, ProtocolProfile $profile): ?array
-    {
-        if ($method === 'server/discover') {
-            return $this->success($id, [
-                'protocolVersions' => ProtocolNegotiator::supported(),
-                'capabilities' => $this->capabilities(true),
-                'serverInfo' => self::serverInfo(),
-                'instructions' => self::INSTRUCTIONS,
-            ]);
-        }
-        if ($method === 'initialize') {
-            $requested = $params['protocolVersion'] ?? null;
-            if (!is_string($requested)) {
-                return $this->error($id, -32602, 'protocolVersion must be a string.');
-            }
-            return $this->success($id, [
-                'protocolVersion' => self::PROTOCOL_VERSION,
-                'capabilities' => $this->capabilities(false),
-                'serverInfo' => self::serverInfo(),
-                'instructions' => self::INSTRUCTIONS,
-            ]);
-        }
-        if ($method === 'ping') {
-            return $this->success($id, (object) []);
-        }
-        if ($profile->requiresHandshake() && !$this->initialized) {
-            // Distinct from the resource-not-found code so a client can tell
-            // "not initialized yet" from "no such resource". Unreachable for
-            // revisions that removed the handshake.
-            return $this->error($id, -32003, 'Server has not received notifications/initialized.');
-        }
-        if ($method === 'tools/list') {
-            return $this->success($id, ['tools' => $this->tools->definitions()]);
-        }
-        if ($method === 'tools/call') {
-            $name = $params['name'] ?? null;
-            $arguments = $params['arguments'] ?? [];
-            if (!is_string($name) || !is_array($arguments) || ($arguments !== [] && array_is_list($arguments))) {
-                return $this->error($id, -32602, 'Tool name and object arguments are required.');
-            }
-            try {
-                $cancellation = new CancellationToken(fn(): bool => $this->pollCancellation($id));
-                $envelope = $this->tools->call($name, $arguments, $cancellation);
-                $structured = $envelope->jsonSerialize();
-                $response = $this->success($id, [
-                    'content' => [['type' => 'text', 'text' => json_encode($structured, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)]],
-                    'structuredContent' => $structured,
-                    'isError' => false,
-                ]);
-            } catch (ToolInputException $invalid) {
-                // Unknown tool or malformed arguments: a protocol-level invalid
-                // params error, not a tool that ran and failed.
-                $response = $this->error($id, -32602, $invalid->getMessage());
-            } catch (\Knossos\Scan\ScanCancelledException $cancelled) {
-                if (isset($this->cancelledRequests[self::cancelKey($id)])) {
-                    // The client asked to cancel this request and is no longer
-                    // waiting; send nothing back (handle() drops the entry).
-                    return null;
-                }
-                $response = $this->toolError($id, 'KNOSSOS_SCAN_CANCELLED', $cancelled->getMessage());
-            } catch (Throwable $error) {
-                $response = $this->toolError($id, ToolErrorMapper::code($error), ToolErrorMapper::publicMessage($error));
-            }
-            return $response;
-        }
-
-        if ($this->resources !== null && $method === 'resources/list') {
-            $cursor = $params['cursor'] ?? null;
-            if ($cursor !== null && !is_string($cursor)) {
-                return $this->error($id, -32602, 'Invalid cursor.');
-            }
-            try {
-                return $this->success($id, $this->resources->list($cursor));
-            } catch (\InvalidArgumentException) {
-                return $this->error($id, -32602, 'Invalid cursor.');
-            }
-        }
-        if ($this->resources !== null && $method === 'resources/read') {
-            $uri = $params['uri'] ?? null;
-            if (!is_string($uri)) {
-                return $this->error($id, -32602, 'uri must be a string.');
-            }
-            $result = $this->resources->read($uri);
-            return $result === null
-                ? $this->error($id, $profile->resourceNotFoundCode(), 'Resource not found: ' . $uri)
-                : $this->success($id, $result);
-        }
-
-        if ($this->prompts !== null && $method === 'prompts/list') {
-            return $this->success($id, ['prompts' => $this->prompts->list()]);
-        }
-        if ($this->prompts !== null && $method === 'prompts/get') {
-            $name = $params['name'] ?? null;
-            $arguments = $params['arguments'] ?? [];
-            if (!is_string($name) || !is_array($arguments)) {
-                return $this->error($id, -32602, 'Prompt name and object arguments are required.');
-            }
-            $result = $this->prompts->get($name, array_filter($arguments, 'is_string'));
-            return $result === null
-                ? $this->error($id, -32602, 'Unknown prompt: ' . $name)
-                : $this->success($id, $result);
-        }
-
-        return $this->error($id, -32601, 'Method not found');
-    }
-
-    /**
-     * A JSON-RPC success frame.
-     *
-     * @return array<string, mixed>
-     */
-    private function success(mixed $id, mixed $result): array
-    {
-        return ['jsonrpc' => '2.0', 'id' => $id, 'result' => $result];
-    }
-
-    /**
-     * A JSON-RPC error frame, optionally carrying structured data such as the supported revisions.
-     *
-     * @param array<string, mixed>|null $data @return array<string, mixed>
-     */
-    private function error(mixed $id, int $code, string $message, ?array $data = null): array
-    {
-        $error = ['code' => $code, 'message' => $message];
-        if ($data !== null) {
-            $error['data'] = $data;
-        }
-
-        return ['jsonrpc' => '2.0', 'id' => $id, 'error' => $error];
-    }
-
-    /**
-     * Server capabilities, shared by `initialize` and `server/discover`.
-     *
-     * `extensions` is declared empty for `server/discover`: Knossos implements
-     * no optional extension yet, but the field's presence is how a client learns
-     * that — its absence would be indistinguishable from a server too old to
-     * report any. It is withheld from `initialize`, whose revision predates the
-     * field, so handshake-era responses stay byte-identical.
-     *
-     * @return array<string, mixed>
-     */
-    private function capabilities(bool $withExtensions): array
-    {
-        return [
-            'tools' => ['listChanged' => false],
-            ...($this->resources === null ? [] : ['resources' => ['subscribe' => false, 'listChanged' => false]]),
-            ...($this->prompts === null ? [] : ['prompts' => ['listChanged' => false]]),
-            ...($withExtensions ? ['extensions' => (object) []] : []),
-        ];
-    }
-
-    /**
-     * This server's identity, shared by the handshake and server/discover.
-     *
-     * @return array<string, string>
-     */
-    private static function serverInfo(): array
-    {
-        return [
-            'name' => 'knossos', 'title' => 'Knossos Architecture Intelligence',
-            'version' => Application::VERSION,
-            'description' => 'Evidence-backed architecture graph for PHP and TypeScript projects.',
-        ];
-    }
-
-    /** A tools/call failure that ran the tool: reported as an isError result, not a JSON-RPC error. @return array<string, mixed> */
-    private function toolError(mixed $id, string $code, string $message): array
-    {
-        return $this->success($id, [
-            'content' => [['type' => 'text', 'text' => $code . ': ' . $message]],
-            'structuredContent' => ['error' => ['code' => $code, 'message' => $message]],
-            'isError' => true,
-        ]);
-    }
-
-    /**
-     * Record the negotiated revision once per connection, on the lifecycle log.
-     *
-     * Which revision a host actually speaks was previously invisible: the wrapper
-     * logs start, signals, and exit, but nothing about the handshake, so answering
-     * "has the client moved to 2026-07-28 yet?" meant grepping the host's own
-     * binary for its protocol constant. That is the question that decides when the
-     * legacy profile can be dropped, so it belongs in the log.
-     *
-     * Written to stderr because tools/mcp-serve already appends the server's
-     * stderr to .knossos/mcp-serve.log; stdout carries protocol traffic and must
-     * stay clean. Logged on change rather than on `initialize`, since the
-     * 2026-07-28 revision replaced the handshake with server/discover and a
-     * modern client may never send an initialize at all.
-     *
-     * @param array<string, mixed> $message
-     */
-    private function noteProtocol(array $message, ProtocolProfile $profile): void
-    {
-        if ($this->notes === null || $profile->version() === $this->notedProtocol) {
-            return;
-        }
-        $this->notedProtocol = $profile->version();
-        $client = $message['params']['clientInfo'] ?? null;
-        // Two declaration sites, because the revisions disagree about where a
-        // version goes: 2026-07-28 puts it in `params._meta`, which is what the
-        // negotiator reads, while a 2025-11-25 client declares it as
-        // `initialize`'s protocolVersion. Reading only the first would log
-        // `requested=none` for every legacy client -- exactly the population this
-        // line exists to count.
-        $declared = $message['params']['protocolVersion'] ?? null;
-        $requested = ProtocolNegotiator::requestedVersion($message)
-            ?? (is_string($declared) ? $declared : null);
-        fwrite($this->notes, sprintf(
-            "%s protocol requested=%s selected=%s client=%s\n",
-            gmdate('Y-m-d\TH:i:s\Z'),
-            self::logSafe($requested ?? 'none'),
-            $profile->version(),
-            is_array($client)
-                ? self::logSafe((string) ($client['name'] ?? 'unknown')) . '/' . self::logSafe((string) ($client['version'] ?? '?'))
-                : 'unknown',
-        ));
-    }
-
-    /**
-     * Reduce a client-supplied string to something that cannot forge a log line.
-     *
-     * Everything in this line except the timestamp and the selected revision comes
-     * from the peer, and the log is line-oriented, so an unfiltered name could
-     * inject whole entries — including a plausible-looking one claiming a revision
-     * the client never requested. Kept to printable non-space characters and a
-     * short cap, which is all a version string or client identifier needs.
-     */
-    private static function logSafe(string $value): string
-    {
-        $safe = preg_replace('/[^\x21-\x7E]/', '_', $value) ?? '';
-
-        return $safe === '' ? 'unknown' : substr($safe, 0, 64);
     }
 
     /**
@@ -475,7 +107,7 @@ final class StdioServer
         $encoded = json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (strlen($encoded) > $this->maxResponseBytes) {
             $encoded = json_encode(
-                $this->error($message['id'] ?? null, -32001, 'Response exceeds the configured byte limit.'),
+                McpDispatcher::error($message['id'] ?? null, -32001, 'Response exceeds the configured byte limit.'),
                 JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE,
             );
         }
@@ -506,11 +138,11 @@ final class StdioServer
             //
             // Only revisions that still define `ping` are pinged. A client that
             // has not identified itself yet is: pinging is harmless (an
-            // unrecognised request draws -32601, which handle() discards), while
+            // unrecognised request draws -32601, which the dispatcher discards), while
             // staying silent towards a handshake-era client would resurrect the
             // idle-disconnect this keepalive exists to prevent.
             if ($this->awaitReadable($input) === 0) {
-                if ($this->profile?->emitsKeepalive() ?? true) {
+                if ($this->dispatcher->profile()?->emitsKeepalive() ?? true) {
                     $this->sendKeepalive($output);
                 }
                 continue;
@@ -579,7 +211,7 @@ final class StdioServer
     /**
      * Emit a JSON-RPC ping so an idle client keeps the stdio transport open.
      * Each ping carries a fresh, non-null id the client echoes back in a
-     * response that handle() then ignores.
+     * response that the dispatcher then ignores.
      *
      * @param resource $output
      */
@@ -591,24 +223,16 @@ final class StdioServer
             'method' => 'ping',
         ]);
     }
-    /**
-     * The key a request id is pending cancellation under: its type and its
-     * value (serialize(): "i:7;", "s:1:\"7\";"), so "7" and 7 stay apart and no
-     * key is numeric (PHP would store a numeric string key as an int and renumber it
-     * on array_shift).
-     */
-    private static function cancelKey(int|string $id): string
-    {
-        return serialize($id);
-    }
 
-    /** Check for a cancellation notification without blocking the running request. */
+    /**
+     * Read ahead for a cancellation of $requestId without blocking the running request.
+     *
+     * Handed to the dispatcher as its cancellation poll. Every other line read
+     * on the way is parked for the main loop, so nothing the client sent while
+     * the tool ran is lost.
+     */
     private function pollCancellation(int|string $requestId): bool
     {
-        $key = self::cancelKey($requestId);
-        if (isset($this->cancelledRequests[$key])) {
-            return true;
-        }
         if (!is_resource($this->input)) {
             return false;
         }
@@ -644,7 +268,6 @@ final class StdioServer
                     && (($message['params']['requestId'] ?? null) === $requestId)
                 ) {
                     $cancelled = true;
-                    $this->cancelledRequests[$key] = $requestId;
                     continue;
                 }
                 $this->rememberPendingLine($line);
@@ -652,8 +275,6 @@ final class StdioServer
         } finally {
             stream_set_blocking($this->input, true);
         }
-        // An entry set before this poll returned early above; one set during
-        // it set $cancelled as well.
         return $cancelled;
     }
 

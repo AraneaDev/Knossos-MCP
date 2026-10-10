@@ -45,7 +45,7 @@ final class LedgeredWritersTest extends KnossosTestCase
         try {
             $from = (new ScanLedger($pdo))->activeSnapshot($projectId);
             self::touch($root);
-            $server = (new McpServerAssembly($pdo, self::repositoryRoot(), ':memory:', AllowedRoots::of([(string) realpath($root)])))->stdioServer();
+            $server = (new McpServerAssembly($pdo, self::repositoryRoot(), ':memory:', AllowedRoots::of([(string) realpath($root)])))->dispatcher();
             $answer = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call', 'params' => ['name' => 'scan_project', 'arguments' => ['path' => $root]]]);
             assertNotNull($answer);
             $entries = self::entries($pdo);
