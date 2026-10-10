@@ -640,8 +640,8 @@ fn parse_source(bytes: &[u8]) -> Result<syn::File, (&'static str, String, usize)
 /// `assert_scannable_path` only checked the path's shape, so a symlink inside
 /// the project that points outside it would otherwise be resolved untouched.
 /// Canonicalising and re-checking containment here, at the point the file is
-/// first opened, is what actually catches that. `safe_root` canonicalises `root`, so a plain
-/// `starts_with` comparison is enough.
+/// first opened, is what actually catches that. `safe_root` canonicalises
+/// `root`, so a plain `starts_with` comparison is enough.
 ///
 /// Bytes, not a string: the hash must be of exactly what is on disk, and a
 /// file that is not UTF-8 is still a file whose bytes were read. Bounded to

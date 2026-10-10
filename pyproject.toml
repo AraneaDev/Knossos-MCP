@@ -14,6 +14,11 @@ ignore = ["S603"]
 # sys.path, which `python3 -I` leaves off.
 "workers/python/bin/worker.py" = ["E402"]
 
+[tool.ruff.lint.isort]
+# Keeps a redundant `name as name` re-export inside one import statement
+# instead of splitting it out, so worker.py imports its package once.
+combine-as-imports = true
+
 [tool.ruff.lint.mccabe]
 max-complexity = 20
 

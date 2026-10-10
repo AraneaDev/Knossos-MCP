@@ -17,27 +17,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # A name imported ``as`` itself is not used here: it is re-exported for the unit
 # suite, which loads this script as a module and reaches the package through it.
-from knossos_python.ast_helpers import names_main_guard as names_main_guard
-from knossos_python.ast_helpers import prefixed_path as prefixed_path
-from knossos_python.ast_helpers import router_constructors as router_constructors
-from knossos_python.ast_helpers import top_level_declarations as top_level_declarations
-from knossos_python.collector import PythonAstFactCollector
-from knossos_python.exclusions import Exclusions
-from knossos_python.module_index import ProjectModuleIndex
-from knossos_python.module_index import module_name as module_name
-from knossos_python.safe_io import (
+from knossos_python import (
+    Exclusions,
+    ProjectModuleIndex,
+    PythonAstFactCollector,
     RefusedAfterRead,
     UnreadableInput,
     assert_scannable_path,
+    module_name as module_name,
+    names_main_guard as names_main_guard,
+    names_python_in_shebang as names_python_in_shebang,
+    prefixed_path as prefixed_path,
     read_bounded,
+    router_constructors as router_constructors,
     safe_file,
     safe_root,
+    shebang_refusal_evidence as shebang_refusal_evidence,
     starts_with_shebang,
+    top_level_declarations as top_level_declarations,
+    walk_key as walk_key,
+    walk_path as walk_path,
 )
-from knossos_python.safe_io import names_python_in_shebang as names_python_in_shebang
-from knossos_python.safe_io import shebang_refusal_evidence as shebang_refusal_evidence
-from knossos_python.safe_io import walk_key as walk_key
-from knossos_python.safe_io import walk_path as walk_path
 
 VERSION = "0.5.1"
 

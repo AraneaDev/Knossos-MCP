@@ -10,12 +10,12 @@ use crate::protocol::{Contribution, Diagnostic, Edge, Evidence, Node};
 /// Build a language-namespaced reference for one node: `rust:<kind>:<canonical>`.
 ///
 /// Mirrors the Python worker's `ref(kind, canonical)`
-/// (`workers/python/bin/knossos_python/ast_helpers.py`)
-/// and the shape the TypeScript worker already emits. `GraphReconciler::collectNodes`
-/// (`src/Reconciliation/GraphReconciler.php`) calls `languageFromReference` on every
-/// node's `local_id`, and that function throws if the reference has no `<lang>:`
-/// prefix — so every node's `local_id` and every edge endpoint must be built
-/// through this function, never a bare canonical name.
+/// (`workers/python/bin/knossos_python/ast_helpers.py`) and the shape the
+/// TypeScript worker already emits. `GraphReconciler::collectNodes`
+/// (`src/Reconciliation/GraphReconciler.php`) calls `languageFromReference` on
+/// every node's `local_id`, and that function throws if the reference has no
+/// `<lang>:` prefix — so every node's `local_id` and every edge endpoint must
+/// be built through this function, never a bare canonical name.
 #[must_use]
 pub fn reference(kind: &str, canonical: &str) -> String {
     format!("rust:{kind}:{canonical}")
