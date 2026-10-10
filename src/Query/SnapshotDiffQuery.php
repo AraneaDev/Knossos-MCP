@@ -271,6 +271,7 @@ final readonly class SnapshotDiffQuery extends AbstractArchitectureQueryService
         }
         return $record;
     }
+
     /**
      * Pairs that look like a rename rather than a delete plus an add, so a move is not double-counted.
      *
@@ -278,19 +279,23 @@ final readonly class SnapshotDiffQuery extends AbstractArchitectureQueryService
      */
     private function renameCandidates(array $removed, array $added): array
     {
-        $addedBySignature = [];
+        $signature = static fn(array $row): string => $row['kind'] . "\0" . $row['display_name'];
+        $rows = [];
+        $from = [];
+        foreach ($removed as $change) {
+            $rows[(string) $change['before']['id']] = $change['before'];
+            $from[(string) $change['before']['id']] = $signature($change['before']);
+        }
+        $to = [];
         foreach ($added as $change) {
-            $row = $change['after'];
-            $addedBySignature[$row['kind'] . "\0" . $row['display_name']][] = $row;
+            $to[(string) $change['after']['id']] = $signature($change['after']);
         }
         $candidates = [];
-        foreach ($removed as $change) {
-            $before = $change['before'];
-            $matches = $addedBySignature[$before['kind'] . "\0" . $before['display_name']] ?? [];
-            if (count($matches) === 1) {
-                $candidates[] = ['from_id' => $before['id'], 'to_id' => $matches[0]['id'], 'kind' => $before['kind'],
-                    'display_name' => $before['display_name'], 'heuristic' => 'exact_kind_and_display_name', 'confidence' => 'possible'];
-            }
+        // Unique among the added only: these are "possible" renames for a reader to judge ({@see RenameMatching}).
+        foreach (RenameMatching::uniquePairs($from, $to, false) as $fromId => $toId) {
+            $before = $rows[$fromId];
+            $candidates[] = ['from_id' => $before['id'], 'to_id' => $toId, 'kind' => $before['kind'],
+                'display_name' => $before['display_name'], 'heuristic' => 'exact_kind_and_display_name', 'confidence' => 'possible'];
         }
         usort($candidates, static fn(array $left, array $right): int => [$left['from_id'], $left['to_id']] <=> [$right['from_id'], $right['to_id']]);
         return $candidates;

@@ -33,7 +33,7 @@ final readonly class SnapshotMetricsCache
      */
     private const SOURCES = [
         QualityGateQueryService::class, SnapshotMetrics::class, SnapshotResolver::class, AbstractArchitectureQueryService::class,
-        ReportableComponent::class, SnapshotPayload::class, SnapshotGraphReader::class, ErasedTypeEdge::class,
+        ReportableComponent::class, SnapshotPayload::class, SnapshotGraphReader::class, ErasedTypeEdge::class, RenameMatching::class,
     ];
 
     /** The code the stored figures must come from to answer. */
