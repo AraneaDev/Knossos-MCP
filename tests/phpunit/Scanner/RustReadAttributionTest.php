@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scanner;
 
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Tests\Phpunit\Support\WorkerClients;

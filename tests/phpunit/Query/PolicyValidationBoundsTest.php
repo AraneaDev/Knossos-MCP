@@ -164,7 +164,7 @@ final class PolicyValidationBoundsTest extends KnossosTestCase
     }
 
     /** @param list<array<string, mixed>> $policies */
-    private static function check(PDO $pdo, string $projectId, array $policies): \Knossos\Query\ResultEnvelope
+    private static function check(PDO $pdo, string $projectId, array $policies): \Knossos\Result\ResultEnvelope
     {
         return (new ArchitectureQueryService($pdo))->checkArchitecture($projectId, $policies);
     }

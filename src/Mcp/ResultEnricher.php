@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Knossos\Mcp;
 
 use Closure;
-use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
 use Knossos\Query\StalenessSnapshot;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * Prepares a query result for an agent rather than a human.

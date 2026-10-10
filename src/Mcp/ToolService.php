@@ -10,8 +10,8 @@ use Knossos\Discovery\RootGuard;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Query\ArchitecturePolicyQueryService;
 use Knossos\Query\ArchitectureQueryService;
-use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessSnapshot;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Runtime\ServerEnvironment;
 use Knossos\Scan\ProjectScanner;
 

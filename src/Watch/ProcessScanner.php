@@ -7,7 +7,7 @@ namespace Knossos\Watch;
 use Closure;
 use Knossos\Cancellation\CancellationToken;
 use Knossos\Cancellation\ScanCancelledException;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use RuntimeException;
 
 /**

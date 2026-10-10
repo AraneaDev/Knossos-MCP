@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use Knossos\Discovery\AllowedRoots;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scan\ProjectScanner;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scan\ProjectWriterLock;
-use Knossos\Watch\TreeFingerprint;
+use Knossos\Scan\TreeFingerprint;
 use PDO;
 use Throwable;
 

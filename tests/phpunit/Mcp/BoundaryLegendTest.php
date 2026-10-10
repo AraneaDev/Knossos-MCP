@@ -7,8 +7,8 @@ namespace Knossos\Tests\Phpunit\Mcp;
 use Knossos\Mcp\BoundaryLegend;
 use Knossos\Mcp\NextStepPlanner;
 use Knossos\Mcp\ResultEnricher;
-use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 

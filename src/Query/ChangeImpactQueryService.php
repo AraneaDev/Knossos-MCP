@@ -8,6 +8,7 @@ use Closure;
 use InvalidArgumentException;
 use Knossos\Git\GitHistoryProvider;
 use Knossos\Git\GitWorkingTreeProvider;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scanner\Protocol\RelativePath;
 use Knossos\Store\ChunkedInQuery;
 use PDO;

@@ -249,7 +249,7 @@ final class IncrementalReadsScanTest extends KnossosTestCase
         }
     }
 
-    private function scan(PDO $pdo, ?int $maxFileBytes = null): \Knossos\Query\ResultEnvelope
+    private function scan(PDO $pdo, ?int $maxFileBytes = null): \Knossos\Result\ResultEnvelope
     {
         return (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root, maxFileBytes: $maxFileBytes);
     }

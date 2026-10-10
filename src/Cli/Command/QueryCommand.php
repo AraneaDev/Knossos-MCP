@@ -12,7 +12,7 @@ use Knossos\Git\ProcessGitHistoryProvider;
 use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Query\ArchitecturePolicyQueryService;
 use Knossos\Query\ArchitectureQueryService;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * Every read-only query as a CLI command.

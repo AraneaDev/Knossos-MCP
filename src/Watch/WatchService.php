@@ -6,8 +6,9 @@ namespace Knossos\Watch;
 
 use Knossos\Cancellation\CancellationToken;
 use Knossos\Discovery\AllowedRoots;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scan\ProjectScanner;
+use Knossos\Scan\TreeFingerprint;
 use Throwable;
 
 /**

@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
-use Knossos\Query\ResultEnvelope;
 use Knossos\Reconciliation\ReconciliationResult;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * Builds the envelope a scan returns.

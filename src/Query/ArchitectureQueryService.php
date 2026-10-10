@@ -8,6 +8,7 @@ use Closure;
 use Knossos\Git\GitHistoryProvider;
 use Knossos\Git\GitWorkingTreeProvider;
 use Knossos\Query\Drift\DriftOracle;
+use Knossos\Result\ResultEnvelope;
 use PDO;
 
 /**

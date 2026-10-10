@@ -6,6 +6,7 @@ namespace Knossos\Query;
 
 use Closure;
 use InvalidArgumentException;
+use Knossos\Result\ResultEnvelope;
 use PDO;
 use Throwable;
 

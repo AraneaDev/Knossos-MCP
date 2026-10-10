@@ -8,7 +8,7 @@ use Closure;
 use Error;
 use Knossos\Cancellation\CancellationToken;
 use Knossos\Cancellation\ScanCancelledException;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Watch\ScanTimeoutException;
 use Knossos\Watch\WatchHooks;

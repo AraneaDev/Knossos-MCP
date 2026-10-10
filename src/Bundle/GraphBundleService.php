@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Bundle;
 
 use InvalidArgumentException;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use PDO;
 use Throwable;
 

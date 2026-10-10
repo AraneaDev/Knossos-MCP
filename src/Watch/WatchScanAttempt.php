@@ -7,7 +7,7 @@ namespace Knossos\Watch;
 use Error;
 use Knossos\Cancellation\CancellationToken;
 use Knossos\Cancellation\ScanCancelledException;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scan\ProjectScanner;
 use Knossos\Scanner\Worker\WorkerException;
 use Throwable;

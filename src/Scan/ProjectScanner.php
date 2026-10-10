@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Knossos\Cancellation\CancellationToken;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * Scan entry point consumed by orchestrators such as watch mode. Extracted so

@@ -145,7 +145,7 @@ final class TypescriptFileDiagnosticsTest extends KnossosTestCase
         return $codes->fetchAll(PDO::FETCH_COLUMN);
     }
 
-    private function scan(PDO $pdo): \Knossos\Query\ResultEnvelope
+    private function scan(PDO $pdo): \Knossos\Result\ResultEnvelope
     {
         return (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root);
     }
