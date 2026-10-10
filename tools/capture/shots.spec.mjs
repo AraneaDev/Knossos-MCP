@@ -288,6 +288,10 @@ describe("the slash command list", () => {
         expect(rows(open)).toHaveLength(2);
         expect(rows(open.replace("❯", " "))).toHaveLength(2);
         expect(rows("❯ /knossos \n")).toEqual([]);
+        // The prompt with its space typed, over the rule under it: not a row.
+        const prompt = "❯ /knossos  \n────────\n  ⏸ manual mode on\n";
+        expect(new RegExp(COMMAND_LIST, "m").test(prompt)).toBe(false);
+        expect(new RegExp(COMMAND_LISTED, "m").test(prompt)).toBe(false);
         expect(new RegExp(COMMAND_LISTED, "m").test(open)).toBe(true);
         expect(new RegExp(COMMAND_LISTED, "m").test(open.replace("❯", " "))).toBe(true);
         expect(new RegExp(COMMAND_LISTED, "m").test("❯ /knossos \n")).toBe(false);

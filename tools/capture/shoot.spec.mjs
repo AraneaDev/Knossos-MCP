@@ -149,16 +149,20 @@ describe("promptReady", () => {
 
 describe("submit", () => {
     const step = { expect: "/knossos ", absent: COMMAND_LIST, steps: [{}] };
-    it("clears and retypes a wrong prompt twice, then fails without Enter", async () => {
-        const { calls, session } = fakeSession((argv) =>
-            argv.includes("display-message") ? "11" : screen("/knossso"),
-        );
+    it("clears and retypes a wrong prompt twice, then fails without Enter, showing the screen that failed", async () => {
+        let cleared = false;
+        const { calls, session } = fakeSession((argv) => {
+            if (argv.includes("send-keys")) cleared = argv.at(-1) === "C-u";
+            if (argv.includes("display-message")) return "11";
+            return screen(cleared ? "" : "/knossso");
+        });
         let typed = 0;
-        await expect(
-            submit(session, step, async () => {
-                typed += 1;
-            }),
-        ).rejects.toThrow(/Enter not sent/);
+        const failed = submit(session, step, async () => {
+            typed += 1;
+            cleared = false;
+        });
+        await expect(failed).rejects.toThrow(/Enter not sent/);
+        expect((await failed.catch((e) => e)).lastFrame).toContain("/knossso");
         expect(typed).toBe(3);
         const keys = calls
             .filter((a) => a.includes("send-keys"))
