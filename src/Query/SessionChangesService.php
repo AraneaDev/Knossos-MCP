@@ -116,7 +116,7 @@ final readonly class SessionChangesService
         }
         uksort($files, static fn(string $a, string $b): int => $files[$b]['dependents'] <=> $files[$a]['dependents'] ?: strcmp($a, $b));
         $sources = array_slice(array_values(array_filter(array_keys($files), static fn(string $f): bool => $files[$f]['status'] !== 'deleted')), 0, self::MAX_TEST_SOURCES);
-        $tests = $sources === [] ? ['tests' => [], 'truncated' => false] : FileTestReach::testsOf(new ArchitectureQueryService($this->pdo), $projectId, $sources, self::MAX_TESTS);
+        $tests = $sources === [] ? ['tests' => [], 'truncated' => false] : FileTestReach::testsOf(ArchitectureQueryService::forDatabase($this->pdo), $projectId, $sources, self::MAX_TESTS);
         foreach ((new FileTestReach($this->pdo))->reach($projectId, $sources) as $file => $reached) {
             $files[$file]['tests'] = $reached;
         }

@@ -26,7 +26,7 @@ final class FileMetricsBoundsTest extends KnossosTestCase
     public function testTheDefaultPageIsFiftyFilesFromTheStart(): void
     {
         [$pdo, $project] = $this->files(51);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $page = $queries->fileMetrics($project)->data['files'];
 
@@ -43,7 +43,7 @@ final class FileMetricsBoundsTest extends KnossosTestCase
     public function testTheOffsetCeilingIsAHundredThousand(): void
     {
         [$pdo, $project] = $this->files(1);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         assertSame([], $queries->fileMetrics($project, offset: 100_000)->data['files']);
         assertThrows(fn() => $queries->fileMetrics($project, offset: 100_001), InvalidArgumentException::class);
@@ -58,7 +58,7 @@ final class FileMetricsBoundsTest extends KnossosTestCase
     {
         [$pdo, $project] = $this->files(1);
 
-        $file = (new ArchitectureQueryService($pdo))->fileMetrics($project)->data['files'][0];
+        $file = ArchitectureQueryService::forDatabase($pdo)->fileMetrics($project)->data['files'][0];
 
         assertSame(120, $file['bytes']);
         assertSame(12, $file['line_count']);
@@ -80,7 +80,7 @@ final class FileMetricsBoundsTest extends KnossosTestCase
         self::addFile($pdo, $project, 'src/axb.php');
         self::addFile($pdo, $project, 'src/100%done.php');
 
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         assertSame(
             ['src/a_b.php'],
@@ -101,7 +101,7 @@ final class FileMetricsBoundsTest extends KnossosTestCase
         [$pdo, $project] = $this->files(0);
         self::addFile($pdo, $project, 'src/aaa.php', lineCount: 5);
         self::addFile($pdo, $project, 'src/zzz.php', lineCount: 900);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         assertSame('src/zzz.php', $queries->fileMetrics($project)->data['files'][0]['path'], 'Longest first by default.');
         assertSame('src/aaa.php', $queries->fileMetrics($project, sortBy: 'line_count', order: 'asc')->data['files'][0]['path']);

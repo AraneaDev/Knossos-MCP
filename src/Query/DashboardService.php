@@ -86,7 +86,7 @@ final readonly class DashboardService
         }
         $id = (string) $project['id'];
         $root = (string) $project['root_realpath'];
-        $queries = new ArchitectureQueryService($this->pdo, $this->clock);
+        $queries = ArchitectureQueryService::forDatabase($this->pdo, $this->clock);
         $staleness = (new StalenessProbe($this->pdo))->snapshot($id);
         $probe = $staleness->staleness ?? [];
         $healthResult = $queries->architectureHealth($id, limit: self::TOP, timeoutMs: $this->healthTimeoutMs);

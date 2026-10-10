@@ -194,7 +194,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame([[0, 0], [1, 5], [6, 20], [21, 100], [101, null]], array_map(static fn(array $b): array => [$b['from'], $b['to']], $buckets));
             assertSame(false, $d['in_degree']['truncated']);
             // The health check's own walk, so the buckets add up to what it ranked from: tests and external code left out.
-            $health = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 50)->data;
+            $health = ArchitectureQueryService::forDatabase($pdo)->architectureHealth($projectId, limit: 50)->data;
             assertSame($health['in_degree_histogram'], $buckets);
             $nothing = array_sum(array_map(static fn(array $h): int => $h['metrics']['in_degree'] > 0 ? 1 : 0, $health['hubs']));
             assertSame($nothing, array_sum(array_column(array_slice($buckets, 1), 'components')));
@@ -312,7 +312,7 @@ final class DashboardServiceTest extends KnossosTestCase
             $this->writeCycle($root, 'Bb', 4);
             $this->rescan($pdo, $root);
             $d = (new DashboardService($pdo))->dashboard($root);
-            $health = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 50)->data;
+            $health = ArchitectureQueryService::forDatabase($pdo)->architectureHealth($projectId, limit: 50)->data;
             // The page is fifty, enough for a tall pane: the fixture's every ranked component fits in it.
             assertGreaterThan(10, count($d['hubs']));
             assertLessThanOrEqual(50, count($d['hubs']));
@@ -786,7 +786,7 @@ final class DashboardServiceTest extends KnossosTestCase
                 ['name', 'canonical_name', 'kind', 'boundary', 'reachability', 'confidence', 'path', 'line'],
                 array_keys($d['dead_code'][0]),
             );
-            $health = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 50)->data;
+            $health = ArchitectureQueryService::forDatabase($pdo)->architectureHealth($projectId, limit: 50)->data;
             assertSame(
                 array_map(static fn(array $c): string => $c['component']['canonical_name'], $health['dead_code_candidates']),
                 array_column($d['dead_code'], 'canonical_name'),

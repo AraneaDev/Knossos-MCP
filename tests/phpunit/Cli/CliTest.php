@@ -12,16 +12,16 @@ use Knossos\Cli\CliInputLoader;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\RootGuard;
-use Knossos\Scan\ScanBusyException;
 use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Store\MigrationRunner;
+use Knossos\Store\ScanBusyException;
 use Knossos\Store\SqliteConnection;
 use Knossos\Store\SqliteGraphRepository;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
-use PHPUnit\Framework\Attributes\Group;
 use PDOException;
+use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 
 final class CliTest extends KnossosTestCase

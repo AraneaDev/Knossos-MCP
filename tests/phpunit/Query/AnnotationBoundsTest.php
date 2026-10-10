@@ -209,7 +209,7 @@ final class AnnotationBoundsTest extends KnossosTestCase
             );
         }
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $error = captureThrows(
             fn() => $queries->upsertAnnotation($ids['project'], 'Amb', 'note', 'x', execute: true),
@@ -238,7 +238,7 @@ final class AnnotationBoundsTest extends KnossosTestCase
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
         $this->project = $ids['project'];
-        $this->connected = [$pdo, new ArchitectureQueryService($pdo)];
+        $this->connected = [$pdo, ArchitectureQueryService::forDatabase($pdo)];
 
         return $this->connected;
     }

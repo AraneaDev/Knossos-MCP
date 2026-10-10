@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Knossos\Store;
 
-use Knossos\Reconciliation\ContributionCacheEntry;
-
 /**
  * Persistence contract for the architecture graph.
  *

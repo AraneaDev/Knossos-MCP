@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Reconciliation;
+namespace Knossos\Store;
 
 use InvalidArgumentException;
 use Knossos\Scanner\Protocol\{RelativePath, ScanContribution};

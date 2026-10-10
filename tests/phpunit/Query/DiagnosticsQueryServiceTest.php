@@ -21,7 +21,7 @@ final class DiagnosticsQueryServiceTest extends KnossosTestCase
         $insert->execute(['d2', $ids['project'], $ids['scan'], $ids['file'], 'error', 'TS2322', 'wrong type', 3, 3]);
         $insert->execute(['d3', $ids['project'], $ids['scan'], null, 'info', 'K1', 'note', null, null]);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $all = $queries->listDiagnostics($ids['project']);
         self::assertSame(3, $all->data['total']);

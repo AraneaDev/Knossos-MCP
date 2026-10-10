@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use InvalidArgumentException;
+use Knossos\Result\ResultEnvelope;
 use PDO;
 
 /** The active graph's scan diagnostics: by file and line, filtered by severity and path. */

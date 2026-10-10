@@ -25,7 +25,7 @@ final class LimitsTest extends KnossosTestCase
         $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -150,7 +150,7 @@ final class LimitsTest extends KnossosTestCase
 
         return new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );

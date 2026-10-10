@@ -30,7 +30,7 @@ final class DiagramBoundsTest extends KnossosTestCase
     public function testTheAdvertisedRangesAreAcceptedAndOneStepOutsideIsRefused(): void
     {
         [$pdo, $ids] = $this->graph(2);
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
 
         assertSame(1, $query->exportDiagram($ids['project'], maxNodes: 1)->data['bounds']['max_nodes']);
         assertSame(400, $query->exportDiagram($ids['project'], maxNodes: 400)->data['bounds']['max_nodes']);
@@ -52,7 +52,7 @@ final class DiagramBoundsTest extends KnossosTestCase
     public function testAGraphThatFitsIsRenderedWholeAndUntruncated(): void
     {
         [$pdo, $ids] = $this->graph(3);
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
 
         $whole = $query->exportDiagram($ids['project'], maxNodes: 5);
 
@@ -82,7 +82,7 @@ final class DiagramBoundsTest extends KnossosTestCase
     public function testTheEdgeBudgetIsInclusive(): void
     {
         [$pdo, $ids] = $this->graph(3);
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
 
         $atBound = $query->exportDiagram($ids['project'], maxEdges: 3);
         assertSame(3, $atBound->data['bounds']['edges_exported']);
@@ -100,7 +100,7 @@ final class DiagramBoundsTest extends KnossosTestCase
     {
         [$pdo, $ids] = $this->graph(3);
 
-        $bounds = (new ArchitectureQueryService($pdo))->exportDiagram($ids['project'], maxNodes: 4, maxEdges: 1)->data['bounds'];
+        $bounds = ArchitectureQueryService::forDatabase($pdo)->exportDiagram($ids['project'], maxNodes: 4, maxEdges: 1)->data['bounds'];
 
         assertSame(['node_limit', 'edge_limit'], $bounds['truncation_reasons']);
     }
@@ -111,11 +111,11 @@ final class DiagramBoundsTest extends KnossosTestCase
     {
         [$pdo, $ids] = $this->graph(1);
 
-        $diagram = (new ArchitectureQueryService($pdo))->exportDiagram($ids['project'], format: 'plantuml')->data['diagram'];
+        $diagram = ArchitectureQueryService::forDatabase($pdo)->exportDiagram($ids['project'], format: 'plantuml')->data['diagram'];
 
         assertSame(true, str_contains($diagram, 'component "Checkout (class)" as n1'));
         assertSame(true, str_contains($diagram, 'n1 --> n2 : calls'));
-        assertSame('plantuml', (new ArchitectureQueryService($pdo))->exportDiagram($ids['project'], format: 'plantuml')->data['format']);
+        assertSame('plantuml', ArchitectureQueryService::forDatabase($pdo)->exportDiagram($ids['project'], format: 'plantuml')->data['format']);
     }
 
     /**
@@ -135,7 +135,7 @@ final class DiagramBoundsTest extends KnossosTestCase
         $unfiled = StableId::symbol($ids['project'], 'php', 'class', 'App\\Unfiled');
         $repository->saveNode($unfiled, $ids['project'], 'php', 'class', 'App\\Unfiled', 'Unfiled', null, null, null, null, 'ast', 'certain', [], 'test:unfiled', $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->exportDiagram($ids['project'], maxNodes: 400);
+        $result = ArchitectureQueryService::forDatabase($pdo)->exportDiagram($ids['project'], maxNodes: 400);
 
         assertSame(100, count($result->evidence));
         assertSame(
@@ -175,7 +175,7 @@ final class DiagramBoundsTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $diagram = (new ArchitectureQueryService($pdo))->exportDiagram($ids['project'], maxNodes: 3)->data['diagram'];
+        $diagram = ArchitectureQueryService::forDatabase($pdo)->exportDiagram($ids['project'], maxNodes: 3)->data['diagram'];
 
         assertSame(
             ['flowchart LR', '  n1["Aaa (class)"]', '  n2["Bbb (class)"]', '  n3["Xxx (class)"]'],

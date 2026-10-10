@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Watch;
 
-use Knossos\Scan\CancellationToken;
-use Knossos\Scan\ScanCancelledException;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use Knossos\Watch\ProcessScanner;
 use Knossos\Watch\ScanTimeoutException;

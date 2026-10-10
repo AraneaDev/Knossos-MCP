@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Git\DirtyPathResolver;
 use Knossos\Git\GitHeadResolver;
-use Knossos\Query\ResultEnvelope;
 use Knossos\Reconciliation\{FullScanRequest, GraphReconciler, ReconciliationResult};
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Store\ScanBusyException;
 use Knossos\Store\SqliteGraphRepository;
 use PDO;
 

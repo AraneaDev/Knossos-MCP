@@ -77,7 +77,7 @@ final class Protocol20260728Test extends KnossosTestCase
     {
         $server = new McpDispatcher(
             $this->tools(),
-            resources: new ResourceService(new ArchitectureQueryService($this->database())),
+            resources: new ResourceService(ArchitectureQueryService::forDatabase($this->database())),
             prompts: new PromptService(),
         );
 
@@ -112,7 +112,7 @@ final class Protocol20260728Test extends KnossosTestCase
     #[Group('mcp')]
     public function testResourceNotFoundUsesTheRevisionSpecificErrorCode(): void
     {
-        $resources = new ResourceService(new ArchitectureQueryService($this->database()));
+        $resources = new ResourceService(ArchitectureQueryService::forDatabase($this->database()));
         $server = new McpDispatcher($this->tools(), resources: $resources, prompts: null);
         $missing = ['uri' => 'knossos://project_' . str_repeat('a', 64) . '/summary'];
 
@@ -440,7 +440,7 @@ final class Protocol20260728Test extends KnossosTestCase
 
         return new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
         );
@@ -457,7 +457,7 @@ final class Protocol20260728Test extends KnossosTestCase
             'secret',
             maxRequestBytes: 4096,
             maxResponseBytes: 1_000_000,
-            resources: new ResourceService(new ArchitectureQueryService($this->database())),
+            resources: new ResourceService(ArchitectureQueryService::forDatabase($this->database())),
             prompts: new PromptService(),
         );
         $headers = [

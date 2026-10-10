@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Tests\Phpunit\Scan;
+namespace Knossos\Tests\Phpunit\Store;
 
 use Exception;
-use Knossos\Scan\ScanBusyException;
+use Knossos\Store\ScanBusyException;
 use LogicException;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;

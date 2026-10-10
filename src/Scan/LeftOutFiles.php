@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
-use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scanner\Protocol\{Diagnostic, Evidence, ScanContribution, ScannerManifest};
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Store\ContributionCacheEntry;
 
 /**
  * The files one language left out of the graph in a scan, because each one's

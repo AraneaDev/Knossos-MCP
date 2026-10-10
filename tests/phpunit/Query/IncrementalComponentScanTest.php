@@ -46,7 +46,7 @@ final class IncrementalComponentScanTest extends KnossosTestCase
             file_put_contents($root . '/js/store/index.js', $files['js/store/index.js'] . "// edited\n");
             file_put_contents($root . '/js/app.js', $files['js/app.js'] . "// edited\n");
             $projectId = $service->scan($root, mode: 'incremental')->projectId;
-            $data = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 100)->data;
+            $data = ArchitectureQueryService::forDatabase($pdo)->architectureHealth($projectId, limit: 100)->data;
         } finally {
             $this->removeTempTree($root);
         }

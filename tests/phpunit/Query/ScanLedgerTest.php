@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query;
 
+use Closure;
 use Knossos\Query\ScanLedger;
 use Knossos\Query\ScanLedgerSpan;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;
 use Knossos\Tests\Phpunit\KnossosTestCase;
-use Closure;
 use PDO;
 use PDOStatement;
 use PHPUnit\Framework\Attributes\Group;
@@ -279,7 +279,7 @@ final class ScanLedgerTest extends KnossosTestCase
                         try {
                             $lease = (new Knossos\Scan\ProjectWriterLock($pdo))->acquire('p');
                             break;
-                        } catch (Knossos\Scan\ScanBusyException) {
+                        } catch (Knossos\Store\ScanBusyException) {
                             usleep(random_int(100, 2000));
                         }
                     }

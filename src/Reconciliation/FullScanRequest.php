@@ -11,6 +11,7 @@ use Knossos\Discovery\DiscoveryResult;
 use Knossos\Git\DirtyPathSet;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
+use Knossos\Store\ContributionCacheEntry;
 
 /** Everything reconciliation needs to replace a project's graph in one transaction. */
 final readonly class FullScanRequest

@@ -45,6 +45,8 @@ $approxExecutableLines = static function (string $path): int {
 
     return max(1, $count);
 };
+// Constant-only files: the version, and the CLI entry point that re-exports it.
+$excluded = [$root . '/src/Application.php', $root . '/src/Runtime/Version.php'];
 $expectedFiles = [$root . '/bin/http-router.php' => true];
 foreach ([$root . '/src', $root . '/workers/php/src'] as $sourceDirectory) {
     if (!is_dir($sourceDirectory)) {
@@ -59,7 +61,7 @@ foreach ([$root . '/src', $root . '/workers/php/src'] as $sourceDirectory) {
     }
 }
 foreach (array_keys($expectedFiles) as $expectedFile) {
-    if (isset($merged[$expectedFile]) || $expectedFile === $root . '/src/Application.php') {
+    if (isset($merged[$expectedFile]) || in_array($expectedFile, $excluded, true)) {
         continue;
     }
     $merged[$expectedFile] = array_fill(1, $approxExecutableLines($expectedFile), 0);
@@ -71,7 +73,7 @@ $components = [];
 /** @var array<string, array<int, int>> $cloverFiles per-file line hits for the Clover report */
 $cloverFiles = [];
 foreach ($merged as $file => $lines) {
-    if ($file === $root . '/src/Application.php') {
+    if (in_array($file, $excluded, true)) {
         continue;
     }
     if (count(array_filter($prefixes, static fn(string $prefix): bool => str_starts_with($file, $prefix))) === 0) {
@@ -85,12 +87,17 @@ foreach ($merged as $file => $lines) {
     $cloverFiles[$file] = $lines;
     $relative = str_replace($root . '/', '', $file);
     $component = match (true) {
+        // Moved out of these directories to break namespace cycles; counted
+        // where they always were, so no component's floor shifts.
+        $relative === 'src/Scan/TreeFingerprint.php' => 'bundle-git-watch',
+        $relative === 'src/Store/ContributionCacheEntry.php' => 'reconciliation',
+        $relative === 'src/Store/ScanBusyException.php' => 'scanner-runtime',
         str_starts_with($relative, 'src/Mcp/'), $relative === 'bin/http-router.php' => 'transport',
         str_starts_with($relative, 'src/Store/') => 'storage',
         str_starts_with($relative, 'src/Discovery/'), str_starts_with($relative, 'src/Configuration/') => 'discovery-config',
         str_starts_with($relative, 'src/Reconciliation/') => 'reconciliation',
-        str_starts_with($relative, 'src/Query/'), str_starts_with($relative, 'src/Boundary/'), str_starts_with($relative, 'src/Classification/') => 'query-analysis',
-        str_starts_with($relative, 'src/Scan/'), str_starts_with($relative, 'src/Scanner/') => 'scanner-runtime',
+        str_starts_with($relative, 'src/Query/'), str_starts_with($relative, 'src/Result/'), str_starts_with($relative, 'src/Boundary/'), str_starts_with($relative, 'src/Classification/') => 'query-analysis',
+        str_starts_with($relative, 'src/Scan/'), str_starts_with($relative, 'src/Scanner/'), str_starts_with($relative, 'src/Cancellation/') => 'scanner-runtime',
         str_starts_with($relative, 'workers/php/src/') => 'php-scanner',
         str_starts_with($relative, 'src/Maintenance/'), str_starts_with($relative, 'src/Runtime/') => 'maintenance-runtime',
         default => 'bundle-git-watch',

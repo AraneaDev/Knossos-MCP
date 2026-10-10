@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Mcp;
 
-use Knossos\Scan\CancellationToken;
+use Knossos\Cancellation\CancellationToken;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 

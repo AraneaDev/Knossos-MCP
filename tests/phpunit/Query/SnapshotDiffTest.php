@@ -32,7 +32,7 @@ final class SnapshotDiffTest extends KnossosTestCase
         $repository->saveNode($ids['invoice'], $project, 'php', 'class', 'App\\InvoiceService', 'InvoiceService', null, $file, 3, 17, 'ast', 'certain', [], 'php:file:src/InvoiceService.php', $next);
         $repository->completeScan($project, $next);
 
-        $diff = (new ArchitectureQueryService($pdo))->snapshotDiff($project, $ids['scan']);
+        $diff = ArchitectureQueryService::forDatabase($pdo)->snapshotDiff($project, $ids['scan']);
 
         $counts = $diff->data['changes']['components']['counts'];
         self::assertSame(0, $counts['changed']);

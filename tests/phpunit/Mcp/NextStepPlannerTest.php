@@ -6,7 +6,7 @@ namespace Knossos\Tests\Phpunit\Mcp;
 
 use Knossos\Mcp\NextStepPlanner;
 use Knossos\Mcp\ToolCatalog;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 

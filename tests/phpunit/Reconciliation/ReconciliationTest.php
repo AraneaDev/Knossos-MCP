@@ -167,10 +167,10 @@ final class ReconciliationTest extends KnossosTestCase
         $third = $reconciler->reconcile($retainedRequest);
         assertSame($second->scanId, (string) $pdo->query('SELECT scan_id FROM scan_snapshots')->fetchColumn());
         assertSame(2, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn());
-        $listed = (new ArchitectureQueryService($pdo))->listSnapshots($third->projectId);
+        $listed = ArchitectureQueryService::forDatabase($pdo)->listSnapshots($third->projectId);
         assertSame([$third->scanId, $second->scanId], array_column($listed->data['snapshots'], 'scan_id'));
         assertSame([true, false], array_column($listed->data['snapshots'], 'active'));
-        assertThrows(fn() => (new ArchitectureQueryService($pdo))->listSnapshots($third->projectId, offset: -1), InvalidArgumentException::class);
+        assertThrows(fn() => ArchitectureQueryService::forDatabase($pdo)->listSnapshots($third->projectId, offset: -1), InvalidArgumentException::class);
     }
 
     #[Group('reconciliation')]

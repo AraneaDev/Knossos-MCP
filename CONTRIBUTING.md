@@ -140,7 +140,7 @@ accumulates the changelog and the next version number. Merging **that** PR cuts
 the tag and GitHub Release, and re-runs the full quality profile against the
 released tree.
 
-The version lives in `version.txt` and is mirrored into `src/Application.php`
+The version lives in `version.txt` and is mirrored into `src/Runtime/Version.php`
 and the `Dockerfile` image label by release-please. Do not bump those by hand.
 
 ## Adding a Language Scanner

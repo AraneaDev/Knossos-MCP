@@ -6,7 +6,7 @@ namespace Knossos\Tests\Scan;
 
 use Knossos\Scan\ProjectWriterLease;
 use Knossos\Scan\ProjectWriterLock;
-use Knossos\Scan\ScanBusyException;
+use Knossos\Store\ScanBusyException;
 use PDO;
 use PDOException;
 use PDOStatement;

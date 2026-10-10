@@ -420,7 +420,7 @@ final class SqliteGraphRepository implements GraphRepository
      * Replaced rather than merged: a stale entry would let the next scan reuse facts
      * for a file it should have re-analysed.
      *
-     * @param list<\Knossos\Reconciliation\ContributionCacheEntry> $entries
+     * @param list<\Knossos\Store\ContributionCacheEntry> $entries
      * @param array<string, array<string, ?string>> $readGroups
      */
     public function replaceContributionCache(string $projectId, array $entries, array $readGroups = []): void

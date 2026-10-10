@@ -73,7 +73,7 @@ final class QueryTest extends KnossosTestCase
             $repository->saveClassification(StableId::symbol($ids['project'], 'php', 'role', 'extra' . $index), $ids['project'], $source, 'extra.role' . $index, 'heuristic', 'probable', 'rule.extra', $ids['file'], 20 + $index, 25 + $index, [], $ids['scan']);
         }
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         foreach (['nodes' => 'kind', 'edges' => 'kind', 'files' => 'language', 'classifications' => 'role'] as $table => $column) {
             assertSame($width, $distinct($table, $column), sprintf('%s must sit exactly on the boundary for this test to mean anything.', $table));
@@ -148,7 +148,7 @@ final class QueryTest extends KnossosTestCase
         );
         $repository->completeScan($ids['project'], $next);
 
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
         $diff = $queries->snapshotDiff($ids['project'], $ids['scan']);
         assertSame($ids['scan'], $diff->data['from']['scan_id']);
         assertSame($next, $diff->data['to']['scan_id']);
@@ -227,7 +227,7 @@ final class QueryTest extends KnossosTestCase
             assertSame(true, $scan->data['metrics']['elapsed_ms'] >= 0);
             assertSame(3, $scan->data['metrics']['discovered_files']);
 
-            $queries = new ArchitectureQueryService($pdo);
+            $queries = ArchitectureQueryService::forDatabase($pdo);
             $component = $queries->findComponent($scan->projectId, 'CheckoutService');
             assertSame($scan->snapshotId, $component->snapshotId);
             assertSame('Fixture\\CheckoutService', $component->data['components'][0]['canonical_name']);
@@ -253,7 +253,7 @@ final class QueryTest extends KnossosTestCase
     public function testProjectCatalogueReportsBoundedFreshnessCountsAndPrivateRoots(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $catalogue = $queries->listProjects();
         assertSame('catalog', $catalogue->projectId);
@@ -297,7 +297,7 @@ final class QueryTest extends KnossosTestCase
     public function testTheCatalogueOffsetGuardAcceptsItsLastLegalValueAndRejectsTheNext(): void
     {
         [$pdo] = $this->storeFixture();
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         assertSame([], $queries->listProjects(offset: 100_000)->data['projects']);
         assertThrows(fn() => $queries->listProjects(offset: 100_001), InvalidArgumentException::class);
@@ -320,7 +320,7 @@ final class QueryTest extends KnossosTestCase
         for ($index = 0; $index < 51; ++$index) {
             $repository->saveProject(StableId::project('bulk-' . $index), 'Bulk ' . $index, '/workspace/bulk-' . $index);
         }
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $defaulted = $queries->listProjects();
 
@@ -374,7 +374,7 @@ final class QueryTest extends KnossosTestCase
         $repository->saveBoundaryMembership($boundary, $ids['project'], $ids['checkout'], $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
         $dossier = $queries->inspectComponent($ids['project'], $ids['checkout'], maxRelationships: 1);
         assertSame('App\\Checkout', $dossier->data['component']['canonical_name']);
         assertSame('Backend', $dossier->data['component']['boundaries'][0]['name']);
@@ -404,7 +404,7 @@ final class QueryTest extends KnossosTestCase
         $repository->saveBoundaryMembership($billing, $ids['project'], $ids['invoice'], $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
         $first = $queries->architectureContext(
             $ids['project'],
             'fix checkout billing behavior',

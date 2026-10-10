@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Scan;
+namespace Knossos\Store;
 
 use RuntimeException;
 

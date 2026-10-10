@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use InvalidArgumentException;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * Agent write-backs: durable annotations keyed by canonical name so they

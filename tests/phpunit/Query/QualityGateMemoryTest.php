@@ -34,7 +34,7 @@ final class QualityGateMemoryTest extends KnossosTestCase
     public function testTheGateReadsOnlyTheColumnsItCompares(): void
     {
         [$pdo, $ids] = $this->graphWithHeavyEdges();
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         gc_collect_cycles();
         memory_reset_peak_usage();
@@ -55,7 +55,7 @@ final class QualityGateMemoryTest extends KnossosTestCase
     public function testTrendsReadOnlyTheColumnsTheyCount(): void
     {
         [$pdo, $ids] = $this->graphWithHeavyEdges();
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         gc_collect_cycles();
         memory_reset_peak_usage();

@@ -4,11 +4,12 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Scan;
 
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Configuration\ProjectConfiguration;
 use Knossos\Discovery\DiscoveryResult;
 use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\ProjectUnit;
-use Knossos\Scan\CancellationToken;
 use Knossos\Scan\AnalysisHash;
 use Knossos\Scan\CachedReads;
 use Knossos\Scan\ContributionCacheService;
@@ -17,7 +18,6 @@ use Knossos\Scan\LanguageScanResult;
 use Knossos\Scan\LanguageScanRunner;
 use Knossos\Scan\LanguageWorkerPool;
 use Knossos\Scan\ScanBatchQueue;
-use Knossos\Scan\ScanCancelledException;
 use Knossos\Scan\ScanPlan;
 use Knossos\Scan\ScanPreparation;
 use Knossos\Scan\ScanSnapshotChangedException;

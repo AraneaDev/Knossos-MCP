@@ -14,8 +14,8 @@ use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\Drift\DriftCounts;
 use Knossos\Query\Drift\DriftOracle;
-use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Runtime\ServerEnvironment;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
@@ -135,7 +135,7 @@ final class DiskToolRootsTest extends KnossosTestCase
         $environment = new ServerEnvironment(new AllowedRoots(['/nonexistent-allowed-root']), ':memory:', self::repositoryRoot(), $pdo);
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), ['/nonexistent-allowed-root']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new ResultEnricher(new StalenessProbe($pdo, rootAdmitted: $environment->admitsRoot(...)), new NextStepPlanner()),
             $environment,
@@ -186,7 +186,7 @@ final class DiskToolRootsTest extends KnossosTestCase
             $environment = new ServerEnvironment(new AllowedRoots($allowedRoots($root)), ':memory:', self::repositoryRoot(), $pdo);
             $tools = new ToolService(
                 new ProjectScanService($pdo, self::repositoryRoot(), $allowedRoots($root)),
-                new ArchitectureQueryService($pdo, driftOracle: $counting),
+                ArchitectureQueryService::forDatabase($pdo, driftOracle: $counting),
                 new DatabaseMaintenanceService($pdo, ':memory:'),
                 new ResultEnricher(new StalenessProbe($pdo, oracle: $counting, rootAdmitted: $environment->admitsRoot(...)), new NextStepPlanner()),
                 $environment,
@@ -204,7 +204,7 @@ final class DiskToolRootsTest extends KnossosTestCase
     {
         return new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), $roots),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
             new ServerEnvironment(new AllowedRoots($roots), ':memory:', self::repositoryRoot(), $pdo),

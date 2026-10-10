@@ -183,7 +183,7 @@ jobs:
         # A release-please pull request runs `static` alone, and no coverage
         # jobs. Its diff is
         # version.txt, the manifest, a CHANGELOG entry and the version string
-        # in Dockerfile and Application.php, so every other lane re-verifies
+        # in Dockerfile and Runtime/Version.php, so every other lane re-verifies
         # code byte-identical to the main it was cut from, which had just gone
         # green. `static` still covers what such a pull request can break: the
         # version strings agreeing across the four files, the changelog's
