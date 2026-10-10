@@ -755,12 +755,15 @@ final class FactCollector extends NodeVisitorAbstract
         return [];
     }
 
-    /** Fully-qualified name, honouring the parser's resolved name attribute when present. */
+    /**
+     * Fully-qualified name, honouring the parser's resolved name attribute when
+     * present, with `self`, `static` and `parent` read against the current
+     * class; see {@see ResolvesClassName::resolvedClassNameIn()}.
+     */
     private function resolvedClassName(Name $name): string
     {
         return $this->resolvedClassNameIn($name, $this->currentClass());
     }
-
 
     /**
      * The reference a function call names, deferring the ambiguous case.

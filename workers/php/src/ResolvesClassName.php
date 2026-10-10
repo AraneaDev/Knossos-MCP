@@ -30,7 +30,7 @@ trait ResolvesClassName
         };
     }
 
-    /** The name as written, for evidence where the resolved form would obscure the source. */
+    /** The parser's resolved name when it has one, else the name as written. */
     private function name(Name $name): string
     {
         $resolved = $name->getAttribute('resolvedName');
