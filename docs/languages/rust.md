@@ -51,7 +51,12 @@ for classification. If that path is absent, no node is invented.
 | `returns`    | a method to the type its signature declares          | speculative, see below |
 
 A name that a glob import (`use crate::components::*;`) brings in resolves
-through it, after the names the enclosing module declares.
+through it, after the names the enclosing module declares. A glob source
+provides a name it declares or re-exports with a visible `use`, and the name
+resolves to where it is declared. A name two glob sources provide as
+different items is ambiguous and resolves to nothing. A glob source that
+provides no such name adds nothing, so `Vec` through `use crate::prelude::*;`
+stays the standard library's.
 
 A call whose callee is named in UpperCamelCase builds a value: `Wrapper(1)`
 constructs a tuple struct and `Error::Io(e)` an enum variant. Neither is a
@@ -106,8 +111,12 @@ returns (`state.mode().label()`) resolves through the declared return type. A
 call through a field (`self.walk.facts.edge()`) resolves through the field's
 declared type, also when the struct, its `impl` block and the field's type sit
 in three different files: the declaration index holds every struct's field
-types as the declaring file's own imports resolve them. `#[cfg]` alternatives
-of one struct keep only the field types they agree on.
+types as the declaring file's own imports resolve them. A field type that file
+names only through a glob import (`use crate::prelude::*;`, `use super::*;`) is
+kept as the bare name with the glob's source modules and resolved through the
+whole index when a call looks it up, so the caller's file reads the glob
+sources it consulted. `#[cfg]` alternatives of one struct keep only the field
+types they agree on.
 
 A path that reaches an item through a re-export (`crate::visit::collect()`
 under `pub use cfg::collect;` in `visit`) names the item where it is declared,
@@ -257,10 +266,10 @@ is read.
 - A private `use` re-exports nothing to the index, so a child module reaching
   an imported name through `super::name` is not followed to its declaration.
   A glob re-export (`pub use inner::*;`) is not followed either.
-- Re-exports and field types are resolved through the declaring file's own
-  `use` items, its own declarations and rooted paths only. A field type that
-  file reaches through a glob import (`use super::*;`) gets no type, so calls
-  through that field produce no edge.
+- Re-exports are resolved through the declaring file's own `use` items, its
+  own declarations and rooted paths only. A glob source provides only what it
+  declares or re-exports by name: a name it brings in through a glob of its
+  own, or through a private `use`, is not followed.
 - A type named bare that nothing in scope declares or imports (`Vec`,
   `Option`, `String`, `char`, `u8`) types no receiver, so a method called on
   one produces no edge rather than one to a made-up type of the module. A

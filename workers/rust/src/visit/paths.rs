@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use syn::spanned::Spanned;
 use syn::{Item, Type};
 
+use super::declarations::FieldType;
 use super::placement::mod_child;
 use super::state::Walk;
 use crate::facts::reference;
@@ -322,34 +323,37 @@ impl Walk<'_> {
         // The crate-wide declaration index: an unimported name can still be
         // placed when exactly one file of the project declares it at an
         // address the path could mean. Candidates are tried in Rust scoping
-        // order — the enclosing module first, then the crate root, then the
-        // path as written — so `sign::any_supported_type` from the crate root
-        // resolves to the child-module function, and a same-file name to its
-        // own container. Unlike the container-relative fallback below, an
-        // index hit is trusted outright: the node it names exists in the
-        // graph, even when the declaring file is not this one.
+        // order: the enclosing module first, then what its glob imports
+        // bring in, then the crate root, then the path as written. So
+        // `sign::any_supported_type` from the crate root resolves to the
+        // child-module function, and a same-file name to its own container.
+        // Unlike the container-relative fallback below, an index hit is
+        // trusted outright: the node it names exists in the graph, even when
+        // the declaring file is not this one.
+        let own = format!("{container}::{rendered}");
+        match self.declarations.get(&own) {
+            Some(1) => return Some((own, false)),
+            // Ambiguous across files: guessing would silently prefer one
+            // declaration over another, so the scoping winner must not
+            // fall through to a weaker candidate.
+            Some(_) => return None,
+            None => {}
+        }
+        match self.through_globs(&self.glob_sources(container), &rendered) {
+            Globbed::One(target) => return Some((target, false)),
+            Globbed::Ambiguous => return None,
+            Globbed::Absent => {}
+        }
         // A prelude trait is in scope everywhere, while a crate-root item
         // of that name is in scope only in the crate root: past the module's
         // own declarations and its globs, the prelude wins.
-        let mut candidates = self.index_candidates(container, &rendered);
-        if single_segment && standard_trait(&rendered).is_some() {
-            let own = format!("{container}::{rendered}");
-            let globbed: Vec<String> = self
-                .globs
-                .iter()
-                .filter(|(declared_in, _)| declared_in == container)
-                .map(|(_, glob)| format!("{glob}::{rendered}"))
-                .collect();
-            candidates.retain(|candidate| *candidate == own || globbed.contains(candidate));
-        }
-        for candidate in candidates {
-            match self.declarations.get(&candidate) {
-                Some(1) => return Some((candidate, false)),
-                // Ambiguous across files: guessing would silently prefer one
-                // declaration over another, so the scoping winner must not
-                // fall through to a weaker candidate.
-                Some(_) => return None,
-                None => {}
+        if !(single_segment && standard_trait(&rendered).is_some()) {
+            for candidate in self.index_candidates(container, &rendered) {
+                match self.declarations.get(&candidate) {
+                    Some(1) => return Some((candidate, false)),
+                    Some(_) => return None,
+                    None => {}
+                }
             }
         }
 
@@ -531,19 +535,85 @@ impl Walk<'_> {
 
     /// The declared type of `owner`'s field `field`: from this file when it
     /// declares the struct, else from the declaration index, which holds
-    /// what the declaring file's own imports resolved it to.
+    /// what the declaring file's own imports resolved it to. A type that
+    /// file names only through its glob imports is resolved here, through
+    /// the whole index (see [`Walk::through_globs`]).
     pub(super) fn field_type(&self, owner: &str, field: &str) -> Option<String> {
-        if let Some(fields) = self.struct_fields.get(owner) {
-            return fields.get(field).cloned();
-        }
-        let declared = self.declarations.field_type(owner, field)?;
-        let (mark, held) = match declared.strip_prefix(POINTER_MARK) {
-            Some(held) => (POINTER_MARK, held.to_owned()),
-            None => ("", declared),
+        let (declared, local) = match self.struct_fields.get(owner) {
+            Some(fields) => (fields.get(field)?.clone(), true),
+            None => (self.declarations.field_type(owner, field)?, false),
         };
+        match declared {
+            FieldType::Resolved(target) if local => Some(target),
+            FieldType::Resolved(declared) => {
+                let (mark, held) = match declared.strip_prefix(POINTER_MARK) {
+                    Some(held) => (POINTER_MARK, held.to_owned()),
+                    None => ("", declared),
+                };
+                self.renamed(held)
+                    .map(|target| format!("{mark}{}", self.exported(target)))
+            }
+            FieldType::Globbed {
+                name,
+                pointer,
+                sources,
+            } => match self.through_globs(&sources, &name) {
+                Globbed::One(target) if pointer => Some(format!("{POINTER_MARK}{target}")),
+                Globbed::One(target) => Some(target),
+                Globbed::Absent | Globbed::Ambiguous => None,
+            },
+        }
+    }
 
-        self.renamed(held)
-            .map(|target| format!("{mark}{}", self.exported(target)))
+    /// The type a struct field declares, as [`Walk::receiver_type`] states
+    /// it, or else, for a bare name nothing but this module's glob imports
+    /// could bring in, that name and the globs' sources, to be resolved
+    /// once every file is indexed.
+    pub(super) fn declared_field_type(&self, container: &str, ty: &Type) -> Option<FieldType> {
+        if let Some(target) = self.receiver_type(container, ty) {
+            return Some(FieldType::Resolved(target));
+        }
+        let (name, pointer) = self.glob_named(container, ty)?;
+        let sources = self.glob_sources(container);
+
+        (!sources.is_empty()).then_some(FieldType::Globbed {
+            name,
+            pointer,
+            sources,
+        })
+    }
+
+    /// The bare name a receiver type holds, seen through what
+    /// [`Walk::receiver_type`] sees through, with whether a smart pointer
+    /// holds it, when only the enclosing-module guess places that name: it
+    /// is not a primitive, `Self`, imported, or declared in this file.
+    fn glob_named(&self, container: &str, ty: &Type) -> Option<(String, bool)> {
+        match ty {
+            Type::Reference(reference) => self.glob_named(container, &reference.elem),
+            Type::Paren(inner) => self.glob_named(container, &inner.elem),
+            Type::Path(path) if path.qself.is_none() => match pointee(&path.path) {
+                Some(inner) => self
+                    .glob_named(container, inner)
+                    .map(|(name, _)| (name, true)),
+                None => {
+                    let path = &path.path;
+                    if path.leading_colon.is_some() || path.segments.len() != 1 {
+                        return None;
+                    }
+                    let name = ident_name(&path.segments[0].ident);
+                    if is_primitive(&name) || name == "Self" {
+                        return None;
+                    }
+                    match self.resolve_written(container, path)? {
+                        (target, true) if !self.own_declarations.contains(&target) => {
+                            Some((name, false))
+                        }
+                        _ => None,
+                    }
+                }
+            },
+            _ => None,
+        }
     }
 
     /// A path headed by the crate name of one of the project's libraries,
@@ -560,35 +630,78 @@ impl Walk<'_> {
         self.layout.library_path(path)
     }
 
-    /// The paths an unqualified `rendered` path could name, in scoping order.
-    ///
-    /// A name declared in the enclosing module shadows one a glob import
-    /// brings in, so the globs come right after it; only a glob that module
-    /// itself declares brings anything in.
+    /// The paths past the enclosing module and its globs that an
+    /// unqualified `rendered` path could name, in scoping order: the crate
+    /// root, then the path as written.
     fn index_candidates(&self, container: &str, rendered: &str) -> Vec<String> {
-        let mut candidates = Vec::with_capacity(3 + self.globs.len());
-        let globbed = self
-            .globs
-            .iter()
-            .filter(|(declared_in, _)| declared_in == container)
-            .map(|(_, glob)| format!("{glob}::{rendered}"));
-        for candidate in std::iter::once(format!("{container}::{rendered}"))
-            .chain(globbed)
-            .chain([
-                if container == self.crate_root() {
-                    String::new()
-                } else {
-                    format!("{}::{rendered}", self.crate_root())
-                },
-                rendered.to_owned(),
-            ])
-        {
-            if !candidate.is_empty() && !candidates.contains(&candidate) {
-                candidates.push(candidate);
-            }
+        let mut candidates = Vec::with_capacity(2);
+        if container != self.crate_root() {
+            candidates.push(format!("{}::{rendered}", self.crate_root()));
+        }
+        if rendered != format!("{container}::{rendered}") {
+            candidates.push(rendered.to_owned());
         }
 
         candidates
+    }
+
+    /// The modules the glob imports `container` itself declares import
+    /// from, in the order written: only those bring names into it.
+    fn glob_sources(&self, container: &str) -> Vec<String> {
+        self.globs
+            .iter()
+            .filter(|(declared_in, _)| declared_in == container)
+            .map(|(_, glob)| glob.clone())
+            .collect()
+    }
+
+    /// What an unqualified `rendered` path names through glob imports from
+    /// `sources`, asked of the whole index.
+    ///
+    /// A source provides the path's head when a file declares it there, or
+    /// a visible `use` there re-exports it (followed to where it is
+    /// declared); a path below a type an `impl` there declares a method of
+    /// is provided too. One target is the answer. Several different ones
+    /// are ambiguous, as Rust holds two globs naming one item apart, so
+    /// none of them is guessed. A source providing nothing by that name,
+    /// such as one that does not declare `Vec`, adds nothing, so a standard
+    /// name never becomes a made-up path inside the source. Each source is
+    /// taken through the project's renamed `mod` declarations first, which
+    /// a source recorded before the index was known has not been.
+    fn through_globs(&self, sources: &[String], rendered: &str) -> Globbed {
+        let head = rendered.split("::").next().unwrap_or(rendered);
+        let mut found: Option<String> = None;
+        for source in sources {
+            let Some(source) = self.renamed(source.clone()) else {
+                continue;
+            };
+            let full = format!("{source}::{rendered}");
+            let named = format!("{source}::{head}");
+            let provided = match self.declarations.get(&full) {
+                Some(1) => Some(full.clone()),
+                Some(_) => return Globbed::Ambiguous,
+                None if named == full => None,
+                None => match self.declarations.get(&named) {
+                    Some(1) => Some(full.clone()),
+                    Some(_) => return Globbed::Ambiguous,
+                    None => None,
+                },
+            };
+            let provided = match provided {
+                Some(provided) => provided,
+                None => match self.declarations.export_of(&named) {
+                    Some(Some(_)) => self.exported(full),
+                    Some(None) => return Globbed::Ambiguous,
+                    None => continue,
+                },
+            };
+            match &found {
+                Some(known) if *known != provided => return Globbed::Ambiguous,
+                _ => found = Some(provided),
+            }
+        }
+
+        found.map_or(Globbed::Absent, Globbed::One)
     }
 
     /// The canonical path of an `impl` block's self type, when it names one.
@@ -656,6 +769,16 @@ impl Walk<'_> {
             (target, _) => Some(target),
         }
     }
+}
+
+/// What glob imports bring in under one name (see [`Walk::through_globs`]).
+enum Globbed {
+    /// No source provides it.
+    Absent,
+    /// Every source that provides it names this path.
+    One(String),
+    /// Sources provide it as different items.
+    Ambiguous,
 }
 
 /// The standard library path of a trait the Rust 2021 prelude brings into

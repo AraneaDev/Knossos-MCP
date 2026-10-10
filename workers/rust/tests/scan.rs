@@ -3197,3 +3197,123 @@ pub fn loud(s: &str) { str::shout(s); }
         "{targets:?}"
     );
 }
+
+#[test]
+fn a_field_typed_through_a_glob_import_resolves_through_its_re_export() {
+    // `holder.rs` names `Store` only through `use crate::prelude::*;`, and
+    // the prelude re-exports it from `model`. A call through the field, from
+    // the declaring file and from another file's `impl`, reaches the method
+    // `model` declares. `Vec` comes from no glob source and types nothing,
+    // so `push` on it is no call at all.
+    let files = [
+        (
+            "src/lib.rs",
+            "pub mod holder;\npub mod model;\npub mod prelude;\npub mod user;\n",
+        ),
+        (
+            "src/model.rs",
+            "pub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n}\n",
+        ),
+        ("src/prelude.rs", "pub use crate::model::Store;\n"),
+        (
+            "src/holder.rs",
+            "use crate::prelude::*;\npub struct Holder {\n    pub store: Store,\n    pub items: Vec<u8>,\n}\nimpl Holder {\n    pub fn local(&mut self) {\n        self.store.put();\n        self.items.push(1);\n    }\n}\n",
+        ),
+        (
+            "src/user.rs",
+            "use crate::holder::Holder;\nimpl Holder {\n    pub fn save(&mut self) {\n        self.store.put();\n        self.items.push(2);\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("glob-field-re-export", &files);
+
+    for caller in [
+        "rust:method:crate::holder::Holder::local",
+        "rust:method:crate::holder::Holder::save",
+    ] {
+        assert_eq!(
+            vec![("rust:method:crate::model::Store::put".to_owned(), true)],
+            method_calls(&contributions, caller),
+            "{caller}"
+        );
+    }
+    // The answer rests on what the prelude provides, so the file calling
+    // through the field read the prelude.
+    let walking = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/user.rs")
+        .unwrap();
+    assert!(
+        walking["reads"].get("src/prelude.rs").is_some(),
+        "{}",
+        walking["reads"]
+    );
+}
+
+#[test]
+fn a_field_typed_through_a_super_glob_resolves_in_another_file() {
+    // `child.rs` reaches `Engine` through `use super::*;`, which brings in
+    // what its parent module declares.
+    let files = [
+        ("src/lib.rs", "pub mod parent;\npub mod user;\n"),
+        (
+            "src/parent/mod.rs",
+            "pub mod child;\npub struct Engine;\nimpl Engine {\n    pub fn run(&self) {}\n}\n",
+        ),
+        (
+            "src/parent/child.rs",
+            "use super::*;\npub struct Car {\n    pub engine: Box<Engine>,\n}\n",
+        ),
+        (
+            "src/user.rs",
+            "use crate::parent::child::Car;\nimpl Car {\n    pub fn drive(&self) {\n        self.engine.run();\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("glob-field-super", &files);
+
+    assert_eq!(
+        vec![("rust:method:crate::parent::Engine::run".to_owned(), true)],
+        method_calls(
+            &contributions,
+            "rust:method:crate::parent::child::Car::drive"
+        )
+    );
+}
+
+#[test]
+fn a_name_two_glob_sources_provide_stays_unresolved() {
+    // `a` and `b` both declare `Store`: which one `use crate::a::*;` and
+    // `use crate::b::*;` bring in is ambiguous, so neither is guessed.
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod b;\npub mod holder;\npub mod user;\n"),
+        (
+            "src/a.rs",
+            "pub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n}\n",
+        ),
+        (
+            "src/b.rs",
+            "pub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n}\n",
+        ),
+        (
+            "src/holder.rs",
+            "use crate::a::*;\nuse crate::b::*;\npub struct Holder {\n    pub store: Store,\n}\nimpl Holder {\n    pub fn local(&self) {\n        self.store.put();\n        let other: Store = make();\n        other.put();\n    }\n}\nfn make<T>() -> T {\n    todo!()\n}\n",
+        ),
+        (
+            "src/user.rs",
+            "use crate::holder::Holder;\nimpl Holder {\n    pub fn save(&self) {\n        self.store.put();\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("glob-field-ambiguous", &files);
+
+    for caller in [
+        "rust:method:crate::holder::Holder::local",
+        "rust:method:crate::holder::Holder::save",
+    ] {
+        assert!(
+            method_calls(&contributions, caller)
+                .iter()
+                .all(|(target, _)| !target.ends_with("Store::put")),
+            "{caller}: {:?}",
+            method_calls(&contributions, caller)
+        );
+    }
+}

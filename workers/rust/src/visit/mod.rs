@@ -26,7 +26,7 @@ use calls::{is_foreign_export, is_wasm_bindgen};
 pub use cfg::{collect_test_modules, is_test_module_path, TestModules};
 use cfg::{is_cfg_test, is_test_attribute, item_attrs};
 pub use declarations::{
-    declaration_paths, declared_renames, Declarations, ExportedNames, StructFields,
+    declaration_paths, declared_renames, Declarations, ExportedNames, FieldType, StructFields,
 };
 use placement::mod_child;
 use state::{Calls, Walk};
@@ -84,6 +84,9 @@ pub fn index_facts(
     let mut walker = Walk::new(&mut facts, module, &[], &declarations, layout);
     walker.own_declarations = declaration_paths(module, items);
     walker.collect_uses(module, items);
+    // The glob sources a field type may come through, as this file alone
+    // places them; which one provides a name is asked at lookup.
+    walker.resolve_globs();
     walker.collect_struct_fields(module, items);
 
     (
@@ -663,8 +666,9 @@ impl Walk<'_> {
     }
 
     /// Record the named field types of every struct in `items`, inline
-    /// modules included, resolved through this file's imports. Collected
-    /// before the walk, so an `impl` above its struct still sees them.
+    /// modules included, resolved through this file's imports, or left to
+    /// its glob imports (see [`FieldType::Globbed`]). Collected before the
+    /// walk, so an `impl` above its struct still sees them.
     fn collect_struct_fields(&mut self, container: &str, items: &[Item]) {
         for item in items {
             match item {
@@ -672,7 +676,7 @@ impl Walk<'_> {
                     let mut fields = BTreeMap::new();
                     for field in &node.fields {
                         if let Some(ident) = &field.ident {
-                            if let Some(target) = self.receiver_type(container, &field.ty) {
+                            if let Some(target) = self.declared_field_type(container, &field.ty) {
                                 fields.insert(ident_name(ident), target);
                             }
                         }

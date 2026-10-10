@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::declarations::Declarations;
+use super::declarations::{Declarations, FieldType};
 use crate::facts::Facts;
 use crate::layout::Layout;
 use crate::resolve::Aliases;
@@ -47,7 +47,7 @@ pub(super) struct Walk<'a> {
     pub(super) role_marks: Vec<String>,
     /// The field types of each struct this file declares, by struct then
     /// field name, so `self.walk.facts.edge()` resolves through the fields.
-    pub(super) struct_fields: BTreeMap<String, BTreeMap<String, String>>,
+    pub(super) struct_fields: BTreeMap<String, BTreeMap<String, FieldType>>,
     /// Where the project's crates are, which names each `mod` declaration's
     /// module (see [`mod_child`](super::placement::mod_child)).
     pub(super) layout: &'a Layout,
