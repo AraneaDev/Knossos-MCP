@@ -57,7 +57,7 @@ final readonly class AnnotationService extends AbstractArchitectureQueryService
      *
      * @return array{project: array<string, mixed>, canonical: string, warnings: list<string>, existing: ?array<string, mixed>}
      */
-    private function target(string $projectId, string $component, string $kind, string $value = ''): array
+    private function target(string $projectId, string $component, string $kind, string $value): array
     {
         $project = $this->project($projectId);
         if (!in_array($kind, self::KINDS, true)) {

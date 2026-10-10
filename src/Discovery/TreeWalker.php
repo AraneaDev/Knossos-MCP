@@ -46,16 +46,8 @@ final readonly class TreeWalker
     public function walk(string $requestedRoot, ?CancellationToken $cancellation = null): array
     {
         $root = $this->rootGuard->resolve($requestedRoot);
-        $files = [];
-        $units = [];
-        $unparsedManifestHashes = [];
-        $diagnostics = [];
-        $stack = [$root];
-        $inputCount = 0;
+        $state = new TreeWalkState($root);
         $seen = 0;
-        $gitIgnore = new GitIgnoreRules();
-        /** @var array<string, FileContent> $gitIgnoreReads each `.gitignore` read, kept to hash as its unit */
-        $gitIgnoreReads = [];
 
         /** @var array<string, true> $manifestRoots directories whose listing holds a manifest */
         $manifestRoots = [];
@@ -70,10 +62,10 @@ final readonly class TreeWalker
             },
         );
 
-        while ($stack !== []) {
-            $directory = array_pop($stack);
-            $this->readGitIgnore($root, $directory, $gitIgnore, $gitIgnoreReads);
-            $names = $this->listDirectory($root, $directory, $diagnostics, $manifestRoots);
+        while ($state->stack !== []) {
+            $directory = array_pop($state->stack);
+            $this->readGitIgnore($root, $directory, $state->gitIgnore, $state->gitIgnoreReads);
+            $names = $this->listDirectory($root, $directory, $state->diagnostics, $manifestRoots);
             if ($names !== null && $directory !== $root) {
                 $directories[] = $this->relative($root, $directory);
             }
@@ -94,7 +86,7 @@ final readonly class TreeWalker
                 // id, and one with a control character fails a worker's path
                 // check. Skipping a directory here also skips its children.
                 if (!SourceClassifier::isSupportedPath($relative)) {
-                    $diagnostics[] = new DiscoveryDiagnostic(
+                    $state->diagnostics[] = new DiscoveryDiagnostic(
                         'warning',
                         'DISCOVERY_PATH_UNSUPPORTED',
                         'Skipped a path whose name is not valid UTF-8 or contains a control character: ' . bin2hex($relative),
@@ -102,13 +94,13 @@ final readonly class TreeWalker
                     continue;
                 }
                 if (!SourceClassifier::isConfigurationFile($relative) && $ignoreMatcher->matches($relative)) {
-                    self::reportBuildOutput($ignoreMatcher, $gitIgnore, $entry, $relative, $diagnostics);
+                    self::reportBuildOutput($ignoreMatcher, $state->gitIgnore, $entry, $relative, $state->diagnostics);
                     continue;
                 }
 
-                $inspected = $this->inspectEntry($root, $entry, $absolute, $relative, $gitIgnore, $inputCount, $stack, $diagnostics);
+                $inspected = $this->inspectEntry($state, $entry, $absolute, $relative);
                 if ($inspected !== null) {
-                    $this->recordEntry($inspected, $relative, $absolute, $gitIgnoreReads, $files, $units, $unparsedManifestHashes, $diagnostics);
+                    $this->recordEntry($state, $inspected, $relative, $absolute);
                 }
             }
         }
@@ -119,48 +111,48 @@ final readonly class TreeWalker
 
         return [
             'root' => $root,
-            'files' => $files,
-            'units' => $units,
-            'diagnostics' => $diagnostics,
-            'unparsedManifestHashes' => $unparsedManifestHashes,
+            'files' => $state->files,
+            'units' => $state->units,
+            'diagnostics' => $state->diagnostics,
+            'unparsedManifestHashes' => $state->unparsedManifestHashes,
             'manifestRoots' => $manifestRoots,
             'directories' => $directories,
         ];
     }
 
     /**
-     * What the walk keeps of one entry that passed the path and ignore checks:
-     * its language, unit kind, size and mtime, or null when it is skipped.
+     * What the walk keeps of one entry that has a supported path and that no
+     * configured ignore pattern matched: its language, unit kind, size and
+     * mtime, or null when it is skipped.
      *
-     * A directory the `.gitignore` rules leave in is queued on `$stack` and a
-     * symlink becomes a diagnostic; neither is kept. Every stat-dependent probe
+     * The `.gitignore` rules are applied here. A directory they leave in is
+     * queued on the state's stack and a symlink becomes a diagnostic; neither
+     * is kept. Every stat-dependent probe
      * here (isLink/isDir/isFile/getSize/getMTime) throws RuntimeException when
      * the entry vanishes mid-walk (a concurrent build deleting a temp file).
      * That is treated as an unreadable file: a diagnostic, and the walk keeps
      * going rather than failing the whole scan.
      *
-     * @param list<string> $stack directories still to walk
-     * @param list<DiscoveryDiagnostic> $diagnostics
      * @return ?array{language: ?string, unitKind: ?string, size: int, mtime: int}
      */
-    private function inspectEntry(string $root, SplFileInfo $entry, string $absolute, string $relative, GitIgnoreRules $gitIgnore, int &$inputCount, array &$stack, array &$diagnostics): ?array
+    private function inspectEntry(TreeWalkState $state, SplFileInfo $entry, string $absolute, string $relative): ?array
     {
         try {
             if ($entry->isLink()) {
-                $diagnostics[] = self::symlinkDiagnostic($root, $absolute, $relative);
+                $state->diagnostics[] = self::symlinkDiagnostic($state->root, $absolute, $relative);
                 return null;
             }
 
             if ($entry->isDir()) {
-                if (!$gitIgnore->ignores($relative, true)) {
-                    $stack[] = $absolute;
+                if (!$state->gitIgnore->ignores($relative, true)) {
+                    $state->stack[] = $absolute;
                 }
                 return null;
             }
             if (!$entry->isFile()) {
                 return null;
             }
-            if (!SourceClassifier::isConfigurationFile($relative) && $gitIgnore->ignores($relative, false)) {
+            if (!SourceClassifier::isConfigurationFile($relative) && $state->gitIgnore->ignores($relative, false)) {
                 return null;
             }
 
@@ -170,14 +162,14 @@ final readonly class TreeWalker
                 return null;
             }
 
-            ++$inputCount;
-            if ($inputCount > $this->config->maxFiles) {
+            ++$state->inputCount;
+            if ($state->inputCount > $this->config->maxFiles) {
                 throw new DiscoveryException(sprintf('Discovery file limit exceeded (%d).', $this->config->maxFiles));
             }
 
             $size = $entry->getSize();
             if ($size > $this->config->maxFileBytes) {
-                $diagnostics[] = $this->tooLarge($relative);
+                $state->diagnostics[] = $this->tooLarge($relative);
                 return null;
             }
 
@@ -185,7 +177,7 @@ final readonly class TreeWalker
         } catch (DiscoveryException $error) {
             throw $error;
         } catch (RuntimeException $error) {
-            $diagnostics[] = new DiscoveryDiagnostic(
+            $state->diagnostics[] = new DiscoveryDiagnostic(
                 'warning',
                 'DISCOVERY_FILE_UNREADABLE',
                 sprintf('File could not be inspected: %s', $error->getMessage()),
@@ -201,16 +193,11 @@ final readonly class TreeWalker
      * manifest's hash when it was read but is not a unit.
      *
      * @param array{language: ?string, unitKind: ?string, size: int, mtime: int} $inspected
-     * @param array<string, FileContent> $gitIgnoreReads
-     * @param list<DiscoveredFile> $files
-     * @param list<ProjectUnit> $units
-     * @param array<string, string> $unparsedManifestHashes
-     * @param list<DiscoveryDiagnostic> $diagnostics
      */
-    private function recordEntry(array $inspected, string $relative, string $absolute, array $gitIgnoreReads, array &$files, array &$units, array &$unparsedManifestHashes, array &$diagnostics): void
+    private function recordEntry(TreeWalkState $state, array $inspected, string $relative, string $absolute): void
     {
         ['language' => $language, 'unitKind' => $unitKind] = $inspected;
-        $fingerprinted = $this->fingerprint($unitKind, $relative, $absolute, $gitIgnoreReads, $diagnostics);
+        $fingerprinted = $this->fingerprint($unitKind, $relative, $absolute, $state->gitIgnoreReads, $state->diagnostics);
         if ($fingerprinted === null) {
             return;
         }
@@ -218,7 +205,7 @@ final readonly class TreeWalker
         $contentHash = $fingerprint->contentHash;
 
         if ($language !== null) {
-            $files[] = new DiscoveredFile(
+            $state->files[] = new DiscoveredFile(
                 $relative,
                 $absolute,
                 $language,
@@ -231,13 +218,13 @@ final readonly class TreeWalker
         }
 
         if ($unitKind !== null) {
-            $unit = UnitReader::read($unitKind, $relative, $absolute, $contentHash, $buffer, $diagnostics);
+            $unit = UnitReader::read($unitKind, $relative, $absolute, $contentHash, $buffer, $state->diagnostics);
             if ($unit !== null) {
-                $units[] = $unit;
+                $state->units[] = $unit;
             } elseif ($buffer !== null) {
                 // Read and hashed, but not a unit: a worker can still
                 // read these bytes, so their hash is kept to check it by.
-                $unparsedManifestHashes[$relative] = $contentHash;
+                $state->unparsedManifestHashes[$relative] = $contentHash;
             }
         }
     }

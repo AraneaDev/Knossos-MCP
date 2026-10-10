@@ -323,89 +323,6 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     }
 
     /**
-     * Member names the internal types that implement or extend each of
-     * `$typeIds` carry: those they declare, and those they inherit from the
-     * classes they extend or the traits they use, stopping at the type itself.
-     *
-     * Only direct subtypes are read. A grandchild that redeclares a member its
-     * own parent already declares is reached through that parent, so one level
-     * answers the question this asks: does some implementation carry this
-     * contract? Each subtype's bases are walked, because an implementer may
-     * take the method from the class it extends.
-     *
-     * @param list<string> $typeIds
-     * @return array<string, array<string, true>> type id => member display names
-     */
-    private function subtypeMemberNames(string $projectId, array $typeIds): array
-    {
-        $subtypesOf = [];
-        foreach (ChunkedInQuery::rows(
-            $this->pdo,
-            "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') AND target_id IN (%s)",
-            $typeIds,
-            [$projectId],
-        ) as $row) {
-            $subtypesOf[$row['target_id']][] = $row['source_id'];
-        }
-        if ($subtypesOf === []) {
-            return [];
-        }
-
-        $memberNames = [];
-        $subtypeIds = array_values(array_unique(array_merge(...array_values($subtypesOf))));
-        // A subtype carries what it inherits as well as what it declares: an
-        // implementer may take the method from the class it extends.
-        $basesOf = [];
-        $frontier = $subtypeIds;
-        for ($depth = 0; $depth < 10 && $frontier !== []; ++$depth) {
-            $found = [];
-            foreach (ChunkedInQuery::rows(
-                $this->pdo,
-                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('extends', 'uses_trait') AND source_id IN (%s)",
-                $frontier,
-                [$projectId],
-            ) as $row) {
-                $basesOf[(string) $row['source_id']][] = (string) $row['target_id'];
-                $found[] = (string) $row['target_id'];
-            }
-            $frontier = array_values(array_diff(array_unique($found), array_keys($basesOf), $subtypeIds));
-        }
-        $declaringIds = array_values(array_unique([...$subtypeIds, ...array_merge(...array_values($basesOf) ?: [[]])]));
-        foreach (ChunkedInQuery::rows(
-            $this->pdo,
-            'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
-            "WHERE e.project_id = ? AND e.kind = 'contains' AND e.source_id IN (%s)",
-            $declaringIds,
-            [$projectId],
-        ) as $row) {
-            $memberNames[$row['source_id']][(string) $row['display_name']] = true;
-        }
-
-        $result = [];
-        foreach ($subtypesOf as $typeId => $subtypes) {
-            foreach ($subtypes as $subtypeId) {
-                // The walk stops at the contract type: its own members, and
-                // what it inherits, are not what the subtype implements it with.
-                $seen = [$typeId => true];
-                $stack = [$subtypeId];
-                while ($stack !== []) {
-                    $id = array_pop($stack);
-                    if (isset($seen[$id])) {
-                        continue;
-                    }
-                    $seen[$id] = true;
-                    foreach ($memberNames[$id] ?? [] as $name => $_) {
-                        $result[$typeId][$name] = true;
-                    }
-                    array_push($stack, ...($basesOf[$id] ?? []));
-                }
-            }
-        }
-
-        return $result;
-    }
-
-    /**
      * Resolve, for candidate methods, how dispatch could reach them without
      * leaving a direct inbound edge — in either direction of the hierarchy.
      *
@@ -446,7 +363,6 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
         $classIds = array_values(array_unique(array_values($classOfMethod)));
         $graph = InheritanceGraph::load($this->pdo, $projectId, $classIds);
-        $subtypeMembers = $this->subtypeMemberNames($projectId, $classIds);
         $handedBindings = $this->referencedBindings($projectId, array_keys(array_filter($kindOfClass, static fn(string $kind): bool => $kind === 'variable')));
 
         $result = [];
@@ -456,12 +372,12 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             sort($ancestors, SORT_STRING);
             [$inherited, $externalAncestor] = self::ancestorEvidence($graph, $ancestors, $methodNames[$methodId]);
             if (!$inherited && $classId !== null) {
-                $inherited = $graph->isInheritedViaSubtype($classId, $ancestors, $methodNames[$methodId]);
+                $inherited = $graph->isInheritedViaSubtype($classId, $methodNames[$methodId]);
             }
             $result[$methodId] = [
                 'inherited' => $inherited,
                 'implemented' => $classId !== null
-                    && isset($subtypeMembers[$classId][$methodNames[$methodId]]),
+                    && $graph->isImplementedBySubtype($classId, $methodNames[$methodId]),
                 'declaring_type' => $classId,
                 'external_ancestor' => $externalAncestor,
                 // An object literal passed, returned or nested as a value,

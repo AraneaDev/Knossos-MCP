@@ -14,7 +14,9 @@ use PDO;
  * Holds, for the classes given and the types that inherit their members: the
  * transitive `implements`/`extends`/`returns` parents, the metadata of every
  * ancestor so an external one can be told apart, and the member names of the
- * internal ancestors and of the inheriting subtypes.
+ * internal ancestors and of the inheriting subtypes. Also, for each class,
+ * the member names its direct implementers carry, declared or inherited, so
+ * a declaration an implementation fulfils can be told apart.
  *
  * Split out of DeadCodeAnalysis, where the four chunked reads that build this
  * and the closure walk over it made one 190-line method together with the
@@ -37,12 +39,14 @@ final class InheritanceGraph
      * @param array<string, list<string>> $subtypes type id => ids of the types that inherit its members
      * @param array<string, array<string, mixed>> $meta ancestor id => node row (id, kind, display_name, origin)
      * @param array<string, array<string, true>> $memberNames type id => member display names
+     * @param array<string, array<string, true>> $implemented type id => member names its direct implementers carry
      */
     private function __construct(
         private readonly array $parents,
         private readonly array $subtypes,
         private readonly array $meta,
         private readonly array $memberNames,
+        private readonly array $implemented,
     ) {}
 
     /**
@@ -64,19 +68,9 @@ final class InheritanceGraph
             $meta[$row['id']] = $row;
         }
         $internalAncestors = array_values(array_filter($ancestorIds, static fn(string $id): bool => !self::externalMeta($meta[$id] ?? null)));
-        $memberNames = [];
-        $declaring = array_values(array_unique([...$internalAncestors, ...$subtypeIds]));
-        foreach (ChunkedInQuery::rows(
-            $pdo,
-            'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
-            "WHERE e.project_id = ? AND e.kind = 'contains' AND e.source_id IN (%s)",
-            $declaring,
-            [$projectId],
-        ) as $row) {
-            $memberNames[$row['source_id']][(string) $row['display_name']] = true;
-        }
+        $memberNames = self::memberNamesOf($pdo, $projectId, array_values(array_unique([...$internalAncestors, ...$subtypeIds])));
 
-        return new self($parents, $subtypes, $meta, $memberNames);
+        return new self($parents, $subtypes, $meta, $memberNames, self::implementedMembers($pdo, $projectId, $classIds));
     }
 
     /**
@@ -84,7 +78,7 @@ final class InheritanceGraph
      *
      * @return list<string>
      */
-    public function parents(string $id): array
+    private function parents(string $id): array
     {
         return $this->parents[$id] ?? [];
     }
@@ -94,7 +88,7 @@ final class InheritanceGraph
      *
      * @return list<string>
      */
-    public function subtypesOf(string $id): array
+    private function subtypesOf(string $id): array
     {
         return $this->subtypes[$id] ?? [];
     }
@@ -162,12 +156,10 @@ final class InheritanceGraph
      * contract with the member `$classId` declares: a trait's method, or a
      * base class's, satisfying an interface the using or extending class
      * declares.
-     *
-     * @param list<string> $ancestors the closure of `$classId`
      */
-    public function isInheritedViaSubtype(string $classId, array $ancestors, string $name): bool
+    public function isInheritedViaSubtype(string $classId, string $name): bool
     {
-        $chain = array_flip([$classId, ...$ancestors]);
+        $chain = array_flip([$classId, ...$this->closureOf($classId)]);
         $descendants = array_flip($this->subtypesOf($classId));
         foreach ($this->subtypesOf($classId) as $subtypeId) {
             if (isset($this->memberNames[$subtypeId][$name])) {
@@ -190,6 +182,16 @@ final class InheritanceGraph
         }
 
         return false;
+    }
+
+    /**
+     * Whether an internal type that implements or extends `$typeId` carries a
+     * member named `$name`, declared or inherited: the implementation call
+     * sites reach instead of this declaration.
+     */
+    public function isImplementedBySubtype(string $typeId, string $name): bool
+    {
+        return isset($this->implemented[$typeId][$name]);
     }
 
     /**
@@ -287,6 +289,102 @@ final class InheritanceGraph
             }
             if ($seen !== []) {
                 $result[$typeId] = array_keys($seen);
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * The member names each of `$typeIds` declares.
+     *
+     * @param list<string> $typeIds
+     * @return array<string, array<string, true>> type id => member display names
+     */
+    private static function memberNamesOf(PDO $pdo, string $projectId, array $typeIds): array
+    {
+        $memberNames = [];
+        foreach (ChunkedInQuery::rows(
+            $pdo,
+            'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
+            "WHERE e.project_id = ? AND e.kind = 'contains' AND e.source_id IN (%s)",
+            $typeIds,
+            [$projectId],
+        ) as $row) {
+            $memberNames[$row['source_id']][(string) $row['display_name']] = true;
+        }
+
+        return $memberNames;
+    }
+
+    /**
+     * Member names the internal types that implement or extend each of
+     * `$typeIds` carry: those they declare, and those they inherit from the
+     * classes they extend or the traits they use, stopping at the type itself.
+     *
+     * Only direct subtypes are read. A grandchild that redeclares a member its
+     * own parent already declares is reached through that parent, so one level
+     * answers the question this asks: does some implementation carry this
+     * contract? Each subtype's bases are walked, because an implementer may
+     * take the method from the class it extends.
+     *
+     * @param list<string> $typeIds
+     * @return array<string, array<string, true>> type id => member display names
+     */
+    private static function implementedMembers(PDO $pdo, string $projectId, array $typeIds): array
+    {
+        $subtypesOf = [];
+        foreach (ChunkedInQuery::rows(
+            $pdo,
+            "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') AND target_id IN (%s)",
+            $typeIds,
+            [$projectId],
+        ) as $row) {
+            $subtypesOf[$row['target_id']][] = $row['source_id'];
+        }
+        if ($subtypesOf === []) {
+            return [];
+        }
+
+        $subtypeIds = array_values(array_unique(array_merge(...array_values($subtypesOf))));
+        // A subtype carries what it inherits as well as what it declares: an
+        // implementer may take the method from the class it extends.
+        $basesOf = [];
+        $frontier = $subtypeIds;
+        for ($depth = 0; $depth < self::MAX_SUBTYPE_DEPTH && $frontier !== []; ++$depth) {
+            $found = [];
+            foreach (ChunkedInQuery::rows(
+                $pdo,
+                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('extends', 'uses_trait') AND source_id IN (%s)",
+                $frontier,
+                [$projectId],
+            ) as $row) {
+                $basesOf[(string) $row['source_id']][] = (string) $row['target_id'];
+                $found[] = (string) $row['target_id'];
+            }
+            $frontier = array_values(array_diff(array_unique($found), array_keys($basesOf), $subtypeIds));
+        }
+        $declaringIds = array_values(array_unique([...$subtypeIds, ...array_merge(...array_values($basesOf) ?: [[]])]));
+        $memberNames = self::memberNamesOf($pdo, $projectId, $declaringIds);
+
+        $result = [];
+        foreach ($subtypesOf as $typeId => $subtypes) {
+            foreach ($subtypes as $subtypeId) {
+                // The walk stops at the contract type: its own members, and
+                // what it inherits, are not what the subtype implements it with.
+                $seen = [$typeId => true];
+                $stack = [$subtypeId];
+                while ($stack !== []) {
+                    $id = array_pop($stack);
+                    if (isset($seen[$id])) {
+                        continue;
+                    }
+                    $seen[$id] = true;
+                    foreach ($memberNames[$id] ?? [] as $name => $_) {
+                        $result[$typeId][$name] = true;
+                    }
+                    array_push($stack, ...($basesOf[$id] ?? []));
+                }
             }
         }
 

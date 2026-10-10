@@ -89,7 +89,7 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
     public function exportDiagram(string $projectId, string $format = 'mermaid', ?string $boundary = null, array $edgeKinds = [], string $minConfidence = 'possible', string $direction = 'LR', int $maxNodes = 200, int $maxEdges = 500): ResultEnvelope
     {
         $project = $this->project($projectId);
-        $renderer = self::validatedRenderer($format, $direction, $maxNodes, $maxEdges, $minConfidence);
+        self::validateArguments($format, $direction, $maxNodes, $maxEdges, $minConfidence);
         $edgeKinds = self::selectedEdgeKinds($edgeKinds, self::IMPACT_EDGE_KINDS, 'dependency');
         $boundaryId = $boundary === null ? null : $this->boundaryReferences($projectId)->resolve($boundary);
         $minRank = self::CONFIDENCE_RANK[$minConfidence];
@@ -124,7 +124,7 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
             $projectId,
             $project['active_scan_id'],
             sprintf('Exported %d nodes and %d relationships as %s source.', count($nodes), count($edges), $format),
-            ['format' => $format, 'direction' => $direction, 'boundary_id' => $boundaryId, 'diagram' => self::render($renderer, $direction, $nodes, $edges), 'bounds' => [
+            ['format' => $format, 'direction' => $direction, 'boundary_id' => $boundaryId, 'diagram' => self::renderSlice(self::rendererFor($format), $direction, $nodes, $edges), 'bounds' => [
                 'max_nodes' => $maxNodes, 'max_edges' => $maxEdges, 'nodes_exported' => count($nodes),
                 'edges_exported' => count($edges), 'truncation_reasons' => array_values(array_unique($reasons)),
             ]],
@@ -134,17 +134,12 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
         );
     }
 
-    /**
-     * Check the export arguments, in the order their errors are reported, and
-     * choose the renderer for the format.
-     */
-    private static function validatedRenderer(string $format, string $direction, int $maxNodes, int $maxEdges, string $minConfidence): DiagramRenderer
+    /** Check the export arguments, in the order their errors are reported. */
+    private static function validateArguments(string $format, string $direction, int $maxNodes, int $maxEdges, string $minConfidence): void
     {
-        $renderer = match ($format) {
-            'mermaid' => new MermaidRenderer(),
-            'plantuml' => new PlantUmlRenderer(),
-            default => throw new InvalidArgumentException('format must be mermaid or plantuml.'),
-        };
+        if (!in_array($format, ['mermaid', 'plantuml'], true)) {
+            throw new InvalidArgumentException('format must be mermaid or plantuml.');
+        }
         if (!in_array($direction, ['LR', 'TB'], true)) {
             throw new InvalidArgumentException('direction must be LR or TB.');
         }
@@ -157,8 +152,12 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
         if (!isset(self::CONFIDENCE_RANK[$minConfidence])) {
             throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
         }
+    }
 
-        return $renderer;
+    /** The renderer for a format {@see validateArguments} has accepted. */
+    private static function rendererFor(string $format): DiagramRenderer
+    {
+        return $format === 'mermaid' ? new MermaidRenderer() : new PlantUmlRenderer();
     }
 
     /**
@@ -255,7 +254,7 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
      * @param array<string, array<string, mixed>> $nodes id => node row
      * @param list<array<string, mixed>> $edges
      */
-    private static function render(DiagramRenderer $renderer, string $direction, array $nodes, array $edges): string
+    private static function renderSlice(DiagramRenderer $renderer, string $direction, array $nodes, array $edges): string
     {
         $aliases = [];
         $labels = [];
