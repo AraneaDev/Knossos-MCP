@@ -49,7 +49,10 @@ pub struct Declarations {
 /// `pub(crate) use self::a as b;`) add to the module they are written in, by
 /// that path, mapped to the path each imports, as the file's own imports
 /// resolve it. A glob re-export names nothing and is not here.
-pub type ExportedNames = BTreeMap<String, String>;
+///
+/// `None` marks a name two `use` items of the file bind to different paths,
+/// such as `#[cfg]` alternatives: which one compiles is unknown.
+pub type ExportedNames = BTreeMap<String, Option<String>>;
 
 /// The declared type of each named field of one file's structs, by the
 /// struct's canonical path then field name, resolved through the file's own
@@ -90,7 +93,7 @@ impl Declarations {
     /// map apart resolves to nothing.
     pub fn add_exports(&mut self, exports: &ExportedNames) {
         for (name, target) in exports {
-            merge_rename(&mut self.exports, name, Some(target.clone()));
+            merge_rename(&mut self.exports, name, target.clone());
         }
     }
 
@@ -117,12 +120,26 @@ impl Declarations {
     /// `None` when no prefix is re-exported, or when the one that is maps
     /// apart. The path is remembered as a lookup: the re-exporting file sits
     /// in a module above it.
+    ///
+    /// A re-export whose target lies below the re-exported name itself
+    /// (`pub use parse::parse;` beside `mod parse;`) binds that name only
+    /// in the namespace of the item it imports, a function here, so a
+    /// longer path through it (`crate::x::parse::helper`) goes through the
+    /// module and is not rewritten. Rewriting it would also match again on
+    /// the result, growing the path on every hop.
     pub fn exported(&self, path: &str) -> Option<String> {
         self.lookups.borrow_mut().insert(path.to_owned());
         let (prefix, target) = std::iter::successors(Some(path), |prefix| {
             prefix.rsplit_once("::").map(|(head, _)| head)
         })
-        .find_map(|prefix| Some((prefix, self.exports.get(prefix)?)))?;
+        .find_map(|prefix| {
+            let target = self.exports.get(prefix)?;
+            let through_module = prefix.len() < path.len()
+                && target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with(&format!("{prefix}::")));
+            (!through_module).then_some((prefix, target))
+        })?;
 
         target
             .as_ref()

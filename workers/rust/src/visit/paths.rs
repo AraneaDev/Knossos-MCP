@@ -124,8 +124,16 @@ impl Walk<'_> {
                         // alias, what that name is declared as.
                         self.import(&source, &module, item.span());
                         if !matches!(node.vis, syn::Visibility::Inherited) && leaf.alias != "_" {
-                            self.exports
-                                .insert(format!("{container}::{}", leaf.alias), full.clone());
+                            let name = format!("{container}::{}", leaf.alias);
+                            match self.exports.get(&name) {
+                                Some(Some(existing)) if *existing != full => {
+                                    self.exports.insert(name, None);
+                                }
+                                Some(_) => {}
+                                None => {
+                                    self.exports.insert(name, Some(full.clone()));
+                                }
+                            }
                         }
                         let full = self.exported(full);
                         let key = (container.to_owned(), leaf.alias.clone());
@@ -448,7 +456,15 @@ impl Walk<'_> {
             let Some(next) = self.declarations.exported(&current) else {
                 break;
             };
+            // A target below the path itself (`pub use parse::parse;`) is
+            // where the item is, and following on from it could only match
+            // the same re-export again and grow the path (see
+            // `Declarations::exported`), so the walk ends there.
             match self.renamed(next) {
+                Some(next) if next.starts_with(&format!("{current}::")) => {
+                    current = next;
+                    break;
+                }
                 Some(next) if next != current => current = next,
                 _ => break,
             }
@@ -544,17 +560,42 @@ impl Walk<'_> {
     }
 
     /// The canonical path of a type a receiver holds, seen through `&`,
-    /// `&mut` and parentheses, or None for anything that is not a plain path.
+    /// `&mut`, parentheses and the smart pointers that dereference to what
+    /// they hold (`Box<T>`, `Rc<T>`, `Arc<T>`), or None for anything that is
+    /// not a plain path. Any other generic (`Option<T>`, `Vec<T>`) is the
+    /// type itself, whose methods are not `T`'s.
     pub(super) fn receiver_type(&self, container: &str, ty: &Type) -> Option<String> {
         match ty {
             Type::Reference(reference) => self.receiver_type(container, &reference.elem),
             Type::Paren(inner) => self.receiver_type(container, &inner.elem),
-            Type::Path(path) if path.qself.is_none() => self
-                .resolve_path(container, &path.path)
-                .map(|(target, _)| target),
+            Type::Path(path) if path.qself.is_none() => match pointee(&path.path) {
+                Some(inner) => self.receiver_type(container, inner),
+                None => self
+                    .resolve_path(container, &path.path)
+                    .map(|(target, _)| target),
+            },
             _ => None,
         }
     }
+}
+
+/// The type a `Box<T>`, `Rc<T>` or `Arc<T>` holds, however its path is
+/// qualified (`std::sync::Arc<T>`), or None for any other type.
+fn pointee(path: &syn::Path) -> Option<&Type> {
+    let last = path.segments.last()?;
+    if !matches!(ident_name(&last.ident).as_str(), "Box" | "Rc" | "Arc") {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &last.arguments else {
+        return None;
+    };
+    let mut types = arguments.args.iter().filter_map(|argument| match argument {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    });
+    let inner = types.next()?;
+
+    types.next().is_none().then_some(inner)
 }
 
 /// A `use` path whose head names a `mod` of the module it is written in,

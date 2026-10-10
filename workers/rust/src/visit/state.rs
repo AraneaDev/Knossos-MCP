@@ -73,7 +73,8 @@ pub(super) struct Walk<'a> {
     /// path of the module it is written in, mapped to the path it imports:
     /// what the declaration index follows a re-exported path through (see
     /// [`Declarations::exported`]).
-    pub(super) exports: BTreeMap<String, String>,
+    /// `None` marks a name two `use` items bind to different paths.
+    pub(super) exports: BTreeMap<String, Option<String>>,
 }
 
 /// A `syn` visitor that emits a `calls` edge for every resolvable call

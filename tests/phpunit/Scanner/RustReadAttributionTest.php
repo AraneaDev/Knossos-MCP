@@ -421,6 +421,28 @@ final class RustReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * `user.rs` calls `crate::a::thing()`, which `a.rs` re-exports from `b`,
+     * which re-exports it from `c`: retargeting the middle `pub use` to `d`
+     * reaches `user.rs`, though it never names `b`.
+     */
+    public function testRetargetingTheMiddleOfAReExportChainRescansTheCaller(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod a;\npub mod b;\npub mod c;\npub mod d;\npub mod user;\n");
+        $this->write('src/a.rs', "pub use crate::b::thing;\n");
+        $this->write('src/b.rs', "pub use crate::c::thing;\n");
+        $this->write('src/c.rs', "pub fn thing() {}\n");
+        $this->write('src/d.rs', "pub fn thing() {}\n");
+        $this->write('src/user.rs', "pub fn go() {\n    crate::a::thing();\n}\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('src/b.rs', "pub use crate::d::thing;\n");
+        $this->scan($pdo);
+        self::assertContains('src/user.rs', $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     private function writeCrate(): void
     {
         $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");

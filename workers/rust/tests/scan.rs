@@ -2733,3 +2733,176 @@ fn an_out_of_line_cfg_test_module_is_test_code_down_to_its_module_node() {
 
     assert_eq!(Value::Bool(true), module["attributes"]["test"], "{module}");
 }
+
+#[test]
+fn a_re_export_of_a_child_item_under_its_own_name_does_not_grow_paths() {
+    // `pub use parse::parse;` beside `pub mod parse;` binds `crate::x::parse`
+    // in the value namespace only: `crate::x::parse::helper` goes through the
+    // module, and must not be rewritten through the function's re-export,
+    // over and over.
+    let files = [
+        ("src/lib.rs", "pub mod user;\npub mod x;\n"),
+        ("src/x/mod.rs", "pub mod parse;\npub use parse::parse;\n"),
+        ("src/x/parse.rs", "pub fn parse() {}\npub fn helper() {}\n"),
+        (
+            "src/user.rs",
+            "pub fn go() {\n    crate::x::parse();\n    crate::x::parse::helper();\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("re-export-same-name", &files);
+    let calls = method_calls(&contributions, "rust:function:crate::user::go");
+    let targets: Vec<&str> = calls.iter().map(|(target, _)| target.as_str()).collect();
+
+    assert!(
+        targets.contains(&"rust:function:crate::x::parse::parse"),
+        "{targets:?}"
+    );
+    assert!(
+        targets.contains(&"rust:function:crate::x::parse::helper"),
+        "{targets:?}"
+    );
+    assert!(
+        !targets
+            .iter()
+            .any(|target| target.contains("parse::parse::")),
+        "{targets:?}"
+    );
+}
+
+#[test]
+fn cfg_alternative_re_exports_in_one_file_resolve_to_nothing() {
+    // Two `#[cfg]` alternatives re-export `run` from different modules; which
+    // one compiles is unknown, so neither is chosen.
+    let files = [
+        ("src/lib.rs", "pub mod user;\npub mod x;\n"),
+        (
+            "src/x/mod.rs",
+            "mod a;\nmod b;\n#[cfg(unix)]\npub use a::run;\n#[cfg(not(unix))]\npub use b::run;\n",
+        ),
+        ("src/x/a.rs", "pub fn run() {}\n"),
+        ("src/x/b.rs", "pub fn run() {}\n"),
+        ("src/user.rs", "pub fn go() {\n    crate::x::run();\n}\n"),
+    ];
+    let contributions = scan_fixture("re-export-cfg-alternatives", &files);
+    let calls = method_calls(&contributions, "rust:function:crate::user::go");
+
+    assert!(
+        !calls
+            .iter()
+            .any(|(target, _)| target.ends_with("x::a::run") || target.ends_with("x::b::run")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn a_smart_pointer_field_or_parameter_receives_as_its_pointee() {
+    // `Box<T>`, `Rc<T>` and `Arc<T>` dereference to `T`, so a method called
+    // through one is `T`'s.
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod b;\npub mod c;\n"),
+        (
+            "src/b.rs",
+            "pub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n    pub fn record(&self) {}\n    pub fn flush(&self) {}\n    pub fn own(&self) {}\n}\n",
+        ),
+        (
+            "src/a.rs",
+            "use std::rc::Rc;\nuse std::sync::Arc;\nuse crate::b::Store;\npub struct Holder {\n    pub(crate) boxed: Box<Store>,\n    pub(crate) shared: Rc<Store>,\n    pub(crate) synced: std::sync::Arc<Store>,\n    pub(crate) many: Vec<Store>,\n    pub(crate) other: Arc<Store>,\n}\n",
+        ),
+        (
+            "src/c.rs",
+            "use crate::a::Holder;\nuse crate::b::Store;\nimpl Holder {\n    pub fn save(&self, own: Box<Store>) {\n        self.boxed.put();\n        self.shared.record();\n        self.synced.flush();\n        own.own();\n        self.many.len();\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("smart-pointer-receiver", &files);
+    let calls = method_calls(&contributions, "rust:method:crate::a::Holder::save");
+
+    for method in ["put", "record", "flush", "own"] {
+        let target = format!("rust:method:crate::b::Store::{method}");
+        assert!(
+            calls.contains(&(target.clone(), true)),
+            "{target} in {calls:?}"
+        );
+    }
+    assert!(
+        !calls
+            .iter()
+            .any(|(target, _)| target.contains("Store::len")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn cfg_alternative_structs_with_different_fields_type_no_field() {
+    // `#[cfg(unix)] struct Holder { store: Store }` beside a fieldless
+    // `#[cfg(not(unix))] struct Holder;`: which one compiles is unknown.
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod b;\npub mod c;\n"),
+        ("src/b.rs", "pub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n}\n"),
+        (
+            "src/a.rs",
+            "use crate::b::Store;\n#[cfg(unix)]\npub struct Holder {\n    pub(crate) store: Store,\n}\n#[cfg(not(unix))]\npub struct Holder;\n",
+        ),
+        (
+            "src/c.rs",
+            "use crate::a::Holder;\nimpl Holder {\n    pub fn save(&self) {\n        self.store.put();\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("cfg-alternative-struct-fields", &files);
+
+    assert_eq!(
+        Vec::<(String, bool)>::new(),
+        method_calls(&contributions, "rust:method:crate::a::Holder::save")
+    );
+}
+
+#[test]
+fn a_pattern_binding_shadows_an_outer_receiver_for_its_scope_only() {
+    // A name a nested pattern, a `match` arm or an `if let` binds is a new
+    // binding: the outer `store`'s type does not apply to it, and applies
+    // again once its scope ends. A struct pattern in an arm types its fields.
+    let source = r#"
+pub struct Store;
+impl Store {
+    pub fn put(&self) {}
+    pub fn flush(&self) {}
+    pub fn keep(&self) {}
+}
+pub struct Other;
+impl Other {
+    pub fn put(&self) {}
+}
+pub struct Wrapper { pub pair: (Other, Other), pub inner: Store }
+pub fn run(store: Store, w: Wrapper, maybe: Option<Other>) {
+    match maybe {
+        Some(store) => store.put(),
+        None => {}
+    }
+    if let Some(store) = maybe {
+        store.put();
+    }
+    store.flush();
+    match w {
+        Wrapper { inner, .. } => inner.keep(),
+    }
+    let Wrapper { pair: (store, _), .. } = w;
+    store.put();
+}
+"#;
+    let contributions = scan_fixture("pattern-shadowing", &[("src/lib.rs", source)]);
+    let calls = method_calls(&contributions, "rust:function:crate::run");
+
+    assert!(
+        calls.contains(&("rust:method:crate::Store::flush".to_owned(), true)),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&("rust:method:crate::Store::keep".to_owned(), true)),
+        "{calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|(target, _)| target == "rust:method:crate::Store::put"),
+        "{calls:?}"
+    );
+}

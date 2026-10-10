@@ -662,9 +662,17 @@ impl Walk<'_> {
                             }
                         }
                     }
-                    if !fields.is_empty() {
-                        self.struct_fields
-                            .insert(format!("{container}::{}", ident_name(&node.ident)), fields);
+                    // A struct with no typed field is recorded too, and `#[cfg]`
+                    // alternatives of one struct keep only the fields they
+                    // agree on: which one compiles is unknown.
+                    let owner = format!("{container}::{}", ident_name(&node.ident));
+                    match self.struct_fields.get_mut(&owner) {
+                        Some(known) => {
+                            known.retain(|name, target| fields.get(name) == Some(target));
+                        }
+                        None => {
+                            self.struct_fields.insert(owner, fields);
+                        }
                     }
                 }
                 Item::Mod(node) => {

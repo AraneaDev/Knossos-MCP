@@ -6,6 +6,8 @@
 //! source does not vouch for is deferred until this file's declarations are
 //! known, or emitted as speculative, never invented.
 
+use std::collections::BTreeMap;
+
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
@@ -281,8 +283,15 @@ impl Calls<'_, '_> {
         };
         for field in &pattern.fields {
             let syn::Pat::Ident(binding) = field.pat.as_ref() else {
+                // `inner: Inner { store }` or `pair: (a, b)` binds its own
+                // names, which a nested struct pattern types.
+                self.bind_pattern(&field.pat);
                 continue;
             };
+            if binding.subpat.is_some() {
+                self.bind_pattern(&field.pat);
+                continue;
+            }
             let name = ident_name(&binding.ident);
             let stated = match (&owner, &field.member) {
                 (Some(owner), syn::Member::Named(member)) => {
@@ -298,6 +307,60 @@ impl Calls<'_, '_> {
                     self.receivers.remove(&name);
                 }
             }
+        }
+    }
+
+    /// Every name a pattern binds, as a new binding: typed where the pattern
+    /// states its type (a struct pattern's fields, `name: Type`), forgotten
+    /// otherwise, so an outer binding of the same name lends it no type.
+    /// The alternatives of an or-pattern keep only the types they agree on.
+    fn bind_pattern(&mut self, pattern: &syn::Pat) {
+        match pattern {
+            syn::Pat::Ident(ident) => {
+                self.receivers.remove(&ident_name(&ident.ident));
+                if let Some((_, inner)) = &ident.subpat {
+                    self.bind_pattern(inner);
+                }
+            }
+            syn::Pat::Type(typed) => match typed.pat.as_ref() {
+                syn::Pat::Ident(ident) if ident.subpat.is_none() => {
+                    let name = ident_name(&ident.ident);
+                    match self.walk.receiver_type(&self.container, &typed.ty) {
+                        Some(target) => {
+                            self.receivers.insert(name, target);
+                        }
+                        None => {
+                            self.receivers.remove(&name);
+                        }
+                    }
+                }
+                inner => self.bind_pattern(inner),
+            },
+            syn::Pat::Struct(inner) => self.destructured_receivers(inner),
+            syn::Pat::Tuple(inner) => inner.elems.iter().for_each(|e| self.bind_pattern(e)),
+            syn::Pat::TupleStruct(inner) => inner.elems.iter().for_each(|e| self.bind_pattern(e)),
+            syn::Pat::Slice(inner) => inner.elems.iter().for_each(|e| self.bind_pattern(e)),
+            syn::Pat::Reference(inner) => self.bind_pattern(&inner.pat),
+            syn::Pat::Paren(inner) => self.bind_pattern(&inner.pat),
+            syn::Pat::Or(inner) => {
+                let before = self.receivers.clone();
+                let mut agreed: Option<BTreeMap<String, String>> = None;
+                for case in &inner.cases {
+                    self.receivers = before.clone();
+                    self.bind_pattern(case);
+                    agreed = Some(match agreed {
+                        None => self.receivers.clone(),
+                        Some(known) => known
+                            .into_iter()
+                            .filter(|(name, target)| self.receivers.get(name) == Some(target))
+                            .collect(),
+                    });
+                }
+                if let Some(agreed) = agreed {
+                    self.receivers = agreed;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -459,16 +522,20 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         // so `let p = p.clone()` resolves its receiver through the old `p`.
         syn::visit::visit_local(self, node);
         let (ident, annotation) = match &node.pat {
-            syn::Pat::Struct(pattern) => {
-                self.destructured_receivers(pattern);
+            syn::Pat::Ident(ident) if ident.subpat.is_none() => (ident_name(&ident.ident), None),
+            syn::Pat::Type(typed) => match typed.pat.as_ref() {
+                syn::Pat::Ident(ident) if ident.subpat.is_none() => {
+                    (ident_name(&ident.ident), Some(typed.ty.as_ref()))
+                }
+                _ => {
+                    self.bind_pattern(&node.pat);
+                    return;
+                }
+            },
+            pattern => {
+                self.bind_pattern(pattern);
                 return;
             }
-            syn::Pat::Ident(ident) => (ident_name(&ident.ident), None),
-            syn::Pat::Type(typed) => match typed.pat.as_ref() {
-                syn::Pat::Ident(ident) => (ident_name(&ident.ident), Some(typed.ty.as_ref())),
-                _ => return,
-            },
-            _ => return,
         };
         let stated = match annotation {
             Some(ty) => self.walk.receiver_type(&self.container, ty),
@@ -493,13 +560,53 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
     fn visit_expr_closure(&mut self, node: &syn::ExprClosure) {
         // A closure parameter shadows any outer binding of the same name, and
         // says nothing about its own type, so it is forgotten while inside.
+        // A parameter whose type is written (`|s: &Store|`) is typed.
         let saved = self.receivers.clone();
         for input in &node.inputs {
-            if let syn::Pat::Ident(ident) = input {
-                self.receivers.remove(&ident_name(&ident.ident));
-            }
+            self.bind_pattern(input);
         }
         syn::visit::visit_expr_closure(self, node);
+        self.receivers = saved;
+    }
+
+    fn visit_arm(&mut self, node: &syn::Arm) {
+        // An arm's bindings live for the arm only.
+        let saved = self.receivers.clone();
+        self.bind_pattern(&node.pat);
+        syn::visit::visit_arm(self, node);
+        self.receivers = saved;
+    }
+
+    fn visit_expr_if(&mut self, node: &syn::ExprIf) {
+        // `if let` binds for the `then` block only, not the `else` branch.
+        let saved = self.receivers.clone();
+        self.visit_expr(&node.cond);
+        for pattern in let_patterns(&node.cond) {
+            self.bind_pattern(pattern);
+        }
+        self.visit_block(&node.then_branch);
+        self.receivers = saved;
+        if let Some((_, otherwise)) = &node.else_branch {
+            self.visit_expr(otherwise);
+        }
+    }
+
+    fn visit_expr_while(&mut self, node: &syn::ExprWhile) {
+        let saved = self.receivers.clone();
+        self.visit_expr(&node.cond);
+        for pattern in let_patterns(&node.cond) {
+            self.bind_pattern(pattern);
+        }
+        self.visit_block(&node.body);
+        self.receivers = saved;
+    }
+
+    fn visit_expr_for_loop(&mut self, node: &syn::ExprForLoop) {
+        self.visit_expr(&node.expr);
+        let saved = self.receivers.clone();
+        self.visit_pat(&node.pat);
+        self.bind_pattern(&node.pat);
+        self.visit_block(&node.body);
         self.receivers = saved;
     }
 }
@@ -630,6 +737,21 @@ pub(super) fn is_foreign_export(node: &syn::ItemFn) -> bool {
                         .require_list()
                         .is_ok_and(|list| list.tokens.to_string().contains("no_mangle")))
         })
+}
+
+/// The patterns the `let` conditions of an `if` or `while` bind, through a
+/// chain of `&&` (`if let Some(a) = x && let Ok(b) = y`).
+fn let_patterns(condition: &syn::Expr) -> Vec<&syn::Pat> {
+    match condition {
+        syn::Expr::Let(binding) => vec![binding.pat.as_ref()],
+        syn::Expr::Paren(inner) => let_patterns(&inner.expr),
+        syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::And(_)) => {
+            let mut patterns = let_patterns(&binary.left);
+            patterns.extend(let_patterns(&binary.right));
+            patterns
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// The local a method call's receiver names, seen through `&` and parentheses.
