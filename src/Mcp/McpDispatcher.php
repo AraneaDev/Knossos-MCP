@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace Knossos\Mcp;
 
 use Closure;
-use Knossos\Application;
 use Knossos\Cancellation\CancellationToken;
 use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Mcp\Protocol\ProtocolNegotiator;
 use Knossos\Mcp\Protocol\ProtocolProfile;
 use Knossos\Mcp\Protocol\UnsupportedProtocolVersionException;
+use Knossos\Runtime\Version;
 use Throwable;
 
 /**
@@ -374,7 +374,7 @@ final class McpDispatcher
     {
         return [
             'name' => 'knossos', 'title' => 'Knossos Architecture Intelligence',
-            'version' => Application::VERSION,
+            'version' => Version::CURRENT,
             'description' => 'Evidence-backed architecture graph for PHP and TypeScript projects.',
         ];
     }

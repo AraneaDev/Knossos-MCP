@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Knossos\Runtime;
 
-use Knossos\Application;
 use Knossos\Discovery\AllowedRoots;
 use Knossos\Discovery\RootGuard;
 use PDO;
@@ -52,7 +51,7 @@ final readonly class ServerEnvironment
 
         return [
             'name' => 'knossos',
-            'version' => Application::VERSION,
+            'version' => Version::CURRENT,
             'protocol_versions' => $protocolVersions,
             'legacy_protocol_enabled' => $legacyProtocolEnabled,
             'allowed_roots' => $roots,

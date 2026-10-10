@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Mcp\Protocol;
 
-use Knossos\Application;
+use Knossos\Runtime\Version;
 
 /**
  * MCP `2026-07-28`: the stateless revision.
@@ -89,6 +89,6 @@ final readonly class Profile20260728 implements ProtocolProfile
      */
     private static function serverInfo(): array
     {
-        return ['name' => 'knossos', 'version' => Application::VERSION];
+        return ['name' => 'knossos', 'version' => Version::CURRENT];
     }
 }
