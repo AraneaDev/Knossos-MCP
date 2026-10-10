@@ -474,7 +474,7 @@ export function createRestrictedProgram(
     });
 }
 
-/** The restricted host's getSourceFile: see createRestrictedProgram. */
+/** Parse a file for the restricted program, refusing what the scan may not read and recording what it reads. */
 function restrictedGetSourceFile(
     root,
     reads,
@@ -523,12 +523,16 @@ function restrictedGetSourceFile(
     );
 }
 
-// Resolution realpaths a package's files before the host is asked for
-// them, so a link on that path is walked here, where its name is still
-// known, rather than lost behind the resolved name getSourceFile sees. The
-// walk follows the resolution: a tree that changed in between gives the
-// walk a location other than the name resolution returned, and that answer
-// is recorded as absent, since no single state of the tree describes it.
+/**
+ * Resolve a path for the restricted program, recording the walk through any link on it.
+ *
+ * Resolution realpaths a package's files before the host is asked for
+ * them, so a link on that path is walked here, where its name is still
+ * known, rather than lost behind the resolved name getSourceFile sees. The
+ * walk follows the resolution: a tree that changed in between gives the
+ * walk a location other than the name resolution returned, and that answer
+ * is recorded as absent, since no single state of the tree describes it.
+ */
 function recordingRealpath(host, root, reads, maxFileBytes, file) {
     // An alias exists nowhere on disk: its realpath is the real file's,
     // under the same alias, and the walk is of the real file.

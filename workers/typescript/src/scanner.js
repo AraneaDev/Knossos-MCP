@@ -1,3 +1,11 @@
+/**
+ * The TypeScript scanner's request orchestration: it discovers the configs a
+ * request needs, builds or reuses each program, emits one contribution per
+ * requested file, and attributes every read to the files it was made for.
+ * What a file's facts are is the fact collector's concern
+ * (language-fact-collector.js); how the scan reads the tree is the
+ * project-paths, source-reading and input-reads modules'.
+ */
 import path from "node:path";
 import ts from "typescript";
 import { isStackOverflow } from "./errors.js";
@@ -40,7 +48,6 @@ import {
     validateRequestedFiles,
 } from "./request-validation.js";
 import { parsedContentHashes } from "./source-caches.js";
-export { excludedBy } from "./exclusions.js";
 
 // Every contribution's owner key is this prefix and the file's project path.
 const OWNER_KEY_PREFIX = "knossos.typescript:file:";

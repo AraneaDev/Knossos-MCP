@@ -224,15 +224,3 @@ function shebangRefusalEvidence(absolute, maxFileBytes) {
     if (buffer === undefined || probeNamesJavaScript(buffer)) return null;
     return createHash("sha256").update(buffer).digest("hex");
 }
-
-// Whether a file opens with a shebang, whatever interpreter it names.
-//
-// A shebang means the file is executed rather than imported, which is what
-// dead-code analysis needs to know: nothing in the codebase references a
-// script, so its module having no inbound edge says nothing about whether it is
-// wanted. Unlike the probe above, which decides whether an extensionless file
-// is JavaScript at all, this asks only how the file is entered, so the
-// interpreter is irrelevant. A byte-order mark may precede it.
-export function startsWithShebang(text) {
-    return text.replace(/^\uFEFF/, "").startsWith("#!");
-}

@@ -19,8 +19,6 @@ import {
     containerDeclaration,
     declarationDescriptor,
     declarationKind,
-    evidence,
-    externalPackageName,
     importIsTypeOnly,
     isContextualObjectLiteral,
     isDeclaration,
@@ -34,15 +32,19 @@ import {
 } from "./declaration-kinds.js";
 import { DynamicImportCollector } from "./dynamic-import-collector.js";
 import { FactAccumulator } from "./fact-accumulator.js";
-import { hasMainGuard, importMetaUrlModule } from "./module-entry.js";
+import {
+    hasMainGuard,
+    importMetaUrlModule,
+    startsWithShebang,
+} from "./module-entry.js";
 import { NestJsFactEnricher } from "./nestjs-fact-enricher.js";
+import { nodeBuiltinPackage } from "./node-builtins.js";
 import {
     allowedCompilerPath,
     belowNodeModules,
     normalize,
     relativeInside,
 } from "./project-paths.js";
-import { startsWithShebang } from "./request-validation.js";
 import { componentSources } from "./source-caches.js";
 import {
     isClassicScript,
@@ -1052,4 +1054,45 @@ export class TypeScriptLanguageFactCollector {
             origin,
         );
     }
+}
+
+/**
+ * A name npm can publish: an optional scope and a name of letters, digits,
+ * `-`, `.` and `_`, neither starting with `.`, `_` or `-`. Capitals are
+ * allowed, as older packages have them.
+ */
+const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+
+/**
+ * The package a specifier names, or null when it names none.
+ *
+ * Only a name npm can publish is a package. A specifier nothing resolved
+ * that is not one (`@/components`, `~/stores/user`, `$lib/x`, a bundler's
+ * `virtual:` module) is a path under a name the project's bundler gives it,
+ * and no dependency. A `node:` specifier is named by nodeBuiltinPackage.
+ */
+function externalPackageName(specifier) {
+    if (specifier.startsWith("node:")) return nodeBuiltinPackage(specifier);
+    // A built-in Node also offers bare, `_http_agent` included, which npm's
+    // grammar would refuse for its leading underscore.
+    const builtin = nodeBuiltinPackage(`node:${specifier}`);
+    if (builtin !== null && !builtin.startsWith("node:")) return builtin;
+    const parts = specifier.split("/");
+    const name = specifier.startsWith("@")
+        ? parts.slice(0, 2).join("/")
+        : parts[0];
+    return NPM_PACKAGE_NAME.test(name) ? name : null;
+}
+
+function evidence(sourceFile, relative, node) {
+    const start =
+        sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile))
+            .line + 1;
+    const end =
+        sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+    return {
+        path: relative,
+        start_line: start,
+        end_line: Math.max(start, end),
+    };
 }

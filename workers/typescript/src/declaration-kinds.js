@@ -10,7 +10,6 @@
  */
 
 import ts from "typescript";
-import { nodeBuiltinPackage } from "./node-builtins.js";
 import {
     bindingKeyword,
     declarationModifiers,
@@ -516,45 +515,4 @@ export function unalias(checker, symbol) {
     return (symbol.flags & ts.SymbolFlags.Alias) !== 0
         ? checker.getAliasedSymbol(symbol)
         : symbol;
-}
-
-/**
- * A name npm can publish: an optional scope and a name of letters, digits,
- * `-`, `.` and `_`, neither starting with `.`, `_` or `-`. Capitals are
- * allowed, as older packages have them.
- */
-const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
-
-/**
- * The package a specifier names, or null when it names none.
- *
- * Only a name npm can publish is a package. A specifier nothing resolved
- * that is not one (`@/components`, `~/stores/user`, `$lib/x`, a bundler's
- * `virtual:` module) is a path under a name the project's bundler gives it,
- * and no dependency. A `node:` specifier is named by nodeBuiltinPackage.
- */
-export function externalPackageName(specifier) {
-    if (specifier.startsWith("node:")) return nodeBuiltinPackage(specifier);
-    // A built-in Node also offers bare, `_http_agent` included, which npm's
-    // grammar would refuse for its leading underscore.
-    const builtin = nodeBuiltinPackage(`node:${specifier}`);
-    if (builtin !== null && !builtin.startsWith("node:")) return builtin;
-    const parts = specifier.split("/");
-    const name = specifier.startsWith("@")
-        ? parts.slice(0, 2).join("/")
-        : parts[0];
-    return NPM_PACKAGE_NAME.test(name) ? name : null;
-}
-
-export function evidence(sourceFile, relative, node) {
-    const start =
-        sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile))
-            .line + 1;
-    const end =
-        sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
-    return {
-        path: relative,
-        start_line: start,
-        end_line: Math.max(start, end),
-    };
 }
