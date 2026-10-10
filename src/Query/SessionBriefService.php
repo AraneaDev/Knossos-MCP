@@ -33,7 +33,7 @@ final readonly class SessionBriefService
     private const MAX_ENTRY_POINTS = 4;
     private const MAX_HUBS = 5;
 
-    private GraphTopologyQueryService $topology;
+    private ArchitectureHealthQuery $health;
 
     /**
      * @param string|null $databasePath where the database lives, used only to
@@ -43,7 +43,7 @@ final readonly class SessionBriefService
      *   {@see self::rootStatus()} then treats every path as allowed rather
      *   than raising a warning it has no basis for. A missing database path
      *   is not evidence of a missing root.
-     * @param GraphTopologyQueryService|null $topology the service that owns the
+     * @param ArchitectureHealthQuery|null $health the query that owns the
      *   hub ranking, so this brief and `architecture_health` cannot come to
      *   disagree about what a hub is. Optional because most callers hold a PDO
      *   and nothing else; a caller that already built one (every caller that
@@ -53,9 +53,9 @@ final readonly class SessionBriefService
     public function __construct(
         private PDO $pdo,
         private ?string $databasePath = null,
-        ?GraphTopologyQueryService $topology = null,
+        ?ArchitectureHealthQuery $health = null,
     ) {
-        $this->topology = $topology ?? new GraphTopologyQueryService($pdo);
+        $this->health = $health ?? new ArchitectureHealthQuery($pdo);
     }
 
     /**
@@ -333,7 +333,7 @@ final readonly class SessionBriefService
     /**
      * The components a change is most likely to reach. Graph-derived.
      *
-     * Delegated to {@see GraphTopologyQueryService::hubRanking()} rather than
+     * Delegated to {@see ArchitectureHealthQuery::hubRanking()} rather than
      * ranked here, because a raw edge count is not a hub ranking. Counting
      * every inbound edge over every relationship kind put `assertSame`,
      * `InvalidArgumentException`, `count`, `StableId` and `sprintf` at the head
@@ -358,7 +358,7 @@ final readonly class SessionBriefService
                 $hub['kind'],
                 $hub['degree'],
             ),
-            $this->topology->hubRanking($projectId, self::MAX_HUBS),
+            $this->health->hubRanking($projectId, self::MAX_HUBS),
         );
     }
 }

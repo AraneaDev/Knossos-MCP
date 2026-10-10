@@ -14,10 +14,11 @@ namespace Knossos\Query;
  * suppressed names, annotated false positives — plus the queries needed to
  * establish them.
  *
- * Split out of GraphTopologyQueryService, where it was the largest thing in a
- * 1,456-line file and made architectureHealth a 274-line method up against the
- * repository's own 275-line budget. The topology service asks it a question;
- * how the answer is qualified is this class's own concern.
+ * Split out of the graph query service that preceded ArchitectureHealthQuery,
+ * where it was the largest thing in a 1,456-line file and made
+ * architectureHealth a 274-line method up against the repository's own
+ * 275-line budget. The health query asks it a question; how the answer is
+ * qualified is this class's own concern.
  */
 final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
 {
