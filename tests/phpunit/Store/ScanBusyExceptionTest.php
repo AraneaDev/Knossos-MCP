@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Tests\Phpunit\Scan;
+namespace Knossos\Tests\Phpunit\Store;
 
 use Exception;
 use Knossos\Store\ScanBusyException;
