@@ -8,20 +8,112 @@
     "hooks/mod/*.spec.ts"
   ],
   "boundaries": [
-    { "name": "core", "path_prefix": "src" },
-    { "name": "php-worker", "path_prefix": "workers/php" },
-    { "name": "typescript-worker", "path_prefix": "workers/typescript" },
-    { "name": "python-worker", "path_prefix": "workers/python" },
-    { "name": "rust-worker", "path_prefix": "workers/rust" },
-    { "name": "tooling", "path_prefix": "tools" },
-    { "name": "tests", "path_prefix": "tests" }
+    {
+      "name": "core",
+      "path_prefix": "src"
+    },
+    {
+      "name": "php-worker",
+      "path_prefix": "workers/php"
+    },
+    {
+      "name": "typescript-worker",
+      "path_prefix": "workers/typescript"
+    },
+    {
+      "name": "python-worker",
+      "path_prefix": "workers/python"
+    },
+    {
+      "name": "rust-worker",
+      "path_prefix": "workers/rust"
+    },
+    {
+      "name": "tooling",
+      "path_prefix": "tools"
+    },
+    {
+      "name": "tests",
+      "path_prefix": "tests"
+    },
+    {
+      "name": "ns:Cancellation",
+      "path_prefix": "src/Cancellation"
+    },
+    {
+      "name": "ns:Filesystem",
+      "path_prefix": "src/Filesystem"
+    },
+    {
+      "name": "ns:Result",
+      "path_prefix": "src/Result"
+    },
+    {
+      "name": "ns:Scanner",
+      "path_prefix": "src/Scanner"
+    },
+    {
+      "name": "ns:Bundle",
+      "path_prefix": "src/Bundle"
+    },
+    {
+      "name": "ns:Classification",
+      "path_prefix": "src/Classification"
+    },
+    {
+      "name": "ns:Store",
+      "path_prefix": "src/Store"
+    },
+    {
+      "name": "ns:Discovery",
+      "path_prefix": "src/Discovery"
+    },
+    {
+      "name": "ns:Boundary",
+      "path_prefix": "src/Boundary"
+    },
+    {
+      "name": "ns:Configuration",
+      "path_prefix": "src/Configuration"
+    },
+    {
+      "name": "ns:Git",
+      "path_prefix": "src/Git"
+    },
+    {
+      "name": "ns:Reconciliation",
+      "path_prefix": "src/Reconciliation"
+    },
+    {
+      "name": "ns:Scan",
+      "path_prefix": "src/Scan"
+    },
+    {
+      "name": "ns:Query",
+      "path_prefix": "src/Query"
+    },
+    {
+      "name": "ns:Maintenance",
+      "path_prefix": "src/Maintenance"
+    },
+    {
+      "name": "ns:Runtime",
+      "path_prefix": "src/Runtime"
+    },
+    {
+      "name": "ns:Watch",
+      "path_prefix": "src/Watch"
+    },
+    {
+      "name": "ns:Mcp",
+      "path_prefix": "src/Mcp"
+    },
+    {
+      "name": "ns:Cli",
+      "path_prefix": "src/Cli"
+    }
   ],
   "policies": [
-    {
-      "id": "workers-are-out-of-process",
-      "from_boundary": "php-worker",
-      "deny_targets": ["core"]
-    },
     {
       "id": "core-does-not-reach-into-workers",
       "from_boundary": "core",
@@ -32,6 +124,254 @@
         "rust-worker",
         "tooling",
         "tests"
+      ]
+    },
+    {
+      "id": "foundation-cancellation-stays-below-analysis",
+      "from_boundary": "ns:Cancellation",
+      "deny_targets": [
+        "ns:Discovery",
+        "ns:Boundary",
+        "ns:Configuration",
+        "ns:Git",
+        "ns:Reconciliation",
+        "ns:Scan",
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "foundation-filesystem-stays-below-analysis",
+      "from_boundary": "ns:Filesystem",
+      "deny_targets": [
+        "ns:Discovery",
+        "ns:Boundary",
+        "ns:Configuration",
+        "ns:Git",
+        "ns:Reconciliation",
+        "ns:Scan",
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "foundation-result-stays-below-analysis",
+      "from_boundary": "ns:Result",
+      "deny_targets": [
+        "ns:Discovery",
+        "ns:Boundary",
+        "ns:Configuration",
+        "ns:Git",
+        "ns:Reconciliation",
+        "ns:Scan",
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "foundation-scanner-stays-below-analysis",
+      "from_boundary": "ns:Scanner",
+      "deny_targets": [
+        "ns:Discovery",
+        "ns:Boundary",
+        "ns:Configuration",
+        "ns:Git",
+        "ns:Reconciliation",
+        "ns:Scan",
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "foundation-bundle-stays-below-analysis",
+      "from_boundary": "ns:Bundle",
+      "deny_targets": [
+        "ns:Discovery",
+        "ns:Boundary",
+        "ns:Configuration",
+        "ns:Git",
+        "ns:Reconciliation",
+        "ns:Scan",
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "foundation-classification-stays-below-analysis",
+      "from_boundary": "ns:Classification",
+      "deny_targets": [
+        "ns:Discovery",
+        "ns:Boundary",
+        "ns:Configuration",
+        "ns:Git",
+        "ns:Reconciliation",
+        "ns:Scan",
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "foundation-store-stays-below-analysis",
+      "from_boundary": "ns:Store",
+      "deny_targets": [
+        "ns:Discovery",
+        "ns:Boundary",
+        "ns:Configuration",
+        "ns:Git",
+        "ns:Reconciliation",
+        "ns:Scan",
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "analysis-discovery-stays-below-services",
+      "from_boundary": "ns:Discovery",
+      "deny_targets": [
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "analysis-boundary-stays-below-services",
+      "from_boundary": "ns:Boundary",
+      "deny_targets": [
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "analysis-configuration-stays-below-services",
+      "from_boundary": "ns:Configuration",
+      "deny_targets": [
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "analysis-git-stays-below-services",
+      "from_boundary": "ns:Git",
+      "deny_targets": [
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "analysis-reconciliation-stays-below-services",
+      "from_boundary": "ns:Reconciliation",
+      "deny_targets": [
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "analysis-scan-stays-below-services",
+      "from_boundary": "ns:Scan",
+      "deny_targets": [
+        "ns:Query",
+        "ns:Maintenance",
+        "ns:Runtime",
+        "ns:Watch",
+        "ns:Mcp",
+        "ns:Cli"
+      ]
+    },
+    {
+      "id": "services-query-stays-below-adapters",
+      "from_boundary": "ns:Query",
+      "deny_targets": ["ns:Mcp", "ns:Cli"]
+    },
+    {
+      "id": "services-maintenance-stays-below-adapters",
+      "from_boundary": "ns:Maintenance",
+      "deny_targets": ["ns:Mcp", "ns:Cli"]
+    },
+    {
+      "id": "services-runtime-stays-below-adapters",
+      "from_boundary": "ns:Runtime",
+      "deny_targets": ["ns:Mcp", "ns:Cli"]
+    },
+    {
+      "id": "services-watch-stays-below-adapters",
+      "from_boundary": "ns:Watch",
+      "deny_targets": ["ns:Mcp", "ns:Cli"]
+    },
+    {
+      "id": "php-worker-is-out-of-process",
+      "from_boundary": "php-worker",
+      "deny_targets": [
+        "core",
+        "typescript-worker",
+        "python-worker",
+        "rust-worker"
+      ]
+    },
+    {
+      "id": "typescript-worker-is-out-of-process",
+      "from_boundary": "typescript-worker",
+      "deny_targets": ["core", "php-worker", "python-worker", "rust-worker"]
+    },
+    {
+      "id": "python-worker-is-out-of-process",
+      "from_boundary": "python-worker",
+      "deny_targets": ["core", "php-worker", "typescript-worker", "rust-worker"]
+    },
+    {
+      "id": "rust-worker-is-out-of-process",
+      "from_boundary": "rust-worker",
+      "deny_targets": [
+        "core",
+        "php-worker",
+        "typescript-worker",
+        "python-worker"
       ]
     }
   ],
