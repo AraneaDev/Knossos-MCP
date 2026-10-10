@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Mcp;
 
+use Knossos\Mcp\McpDispatcher;
 use Knossos\Mcp\ResourceService;
 use Knossos\Mcp\StdioServer;
 use Knossos\Mcp\ToolService;
@@ -24,8 +25,8 @@ final class ResourcesPromptsTest extends KnossosTestCase
     {
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
-            $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
-            $init = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+            $server = new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
+            $init = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
             assertSame(['subscribe' => false, 'listChanged' => false], $init['result']['capabilities']['resources']);
             $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
 
@@ -63,7 +64,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
         try {
             $pdo->prepare('UPDATE projects SET name = :name WHERE id = :project')
                 ->execute(['name' => "shop/\xff", 'project' => $projectId]);
-            $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
+            $server = new StdioServer(new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService($pdo))));
 
             $read = $this->runFrames($server, $this->readSession("knossos://{$projectId}/summary"))[1];
 
@@ -85,7 +86,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
             $pdo->exec('ALTER TABLE projects RENAME TO projects_unreadable');
-            $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
+            $server = new StdioServer(new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService($pdo))));
 
             $read = $this->runFrames($server, $this->readSession("knossos://{$projectId}/summary"))[1];
 
@@ -101,7 +102,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
     #[Group('mcp')]
     public function testResourcesBeyondTheFirstHundredProjectsAreReachableByCursor(): void
     {
-        $this->withHundredExtraProjects(function (StdioServer $server): void {
+        $this->withHundredExtraProjects(function (McpDispatcher $server): void {
             $first = $this->listPage($server, null);
             assertSame(300, count($first['resources']));
             assertSame(1, preg_match('/^[A-Za-z0-9_=-]+$/', $first['nextCursor']), 'The cursor is URL-safe base64.');
@@ -127,7 +128,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
     #[Group('mcp')]
     public function testARescanBetweenPagesNeitherSkipsNorRepeatsAProject(): void
     {
-        $this->withHundredExtraProjects(function (StdioServer $server, \PDO $pdo): void {
+        $this->withHundredExtraProjects(function (McpDispatcher $server, \PDO $pdo): void {
             $first = $this->listPage($server, null);
             // What a rescan does to the catalogue: updated_at moves, nothing
             // else. The extra project with the largest id is the one a
@@ -145,7 +146,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
     #[Group('mcp')]
     public function testAddingAndRemovingProjectsBetweenPagesRepeatsNothing(): void
     {
-        $this->withHundredExtraProjects(function (StdioServer $server, \PDO $pdo): void {
+        $this->withHundredExtraProjects(function (McpDispatcher $server, \PDO $pdo): void {
             $first = $this->listPage($server, null);
             $firstListed = explode('/', $first['resources'][0]['uri'])[2];
             $pdo->prepare('DELETE FROM projects WHERE id = ?')->execute([$firstListed]);
@@ -164,7 +165,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
     #[Group('mcp')]
     public function testExactlyAPageOfProjectsHasNoNextCursor(): void
     {
-        $this->withHundredExtraProjects(function (StdioServer $server, \PDO $pdo): void {
+        $this->withHundredExtraProjects(function (McpDispatcher $server, \PDO $pdo): void {
             $pdo->exec("DELETE FROM projects WHERE name = 'extra-1'");
 
             $page = $this->listPage($server, null);
@@ -217,8 +218,8 @@ final class ResourcesPromptsTest extends KnossosTestCase
     {
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
-            $server = new StdioServer($tools);
-            $init = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+            $server = new McpDispatcher($tools);
+            $init = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
             assertSame(false, array_key_exists('resources', $init['result']['capabilities']));
             $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
             $response = $server->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'resources/list', 'params' => []]);
@@ -233,8 +234,8 @@ final class ResourcesPromptsTest extends KnossosTestCase
     {
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
-            $server = new StdioServer($tools, prompts: new \Knossos\Mcp\PromptService());
-            $init = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+            $server = new McpDispatcher($tools, prompts: new \Knossos\Mcp\PromptService());
+            $init = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
             assertSame(['listChanged' => false], $init['result']['capabilities']['prompts']);
             $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
 
@@ -304,7 +305,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
      * projects (101 in all), all created at the same moment so their order,
      * and the page boundary, rests on the id tie-break.
      *
-     * @param \Closure(StdioServer, \PDO): void $test
+     * @param \Closure(McpDispatcher, \PDO): void $test
      */
     private function withHundredExtraProjects(\Closure $test): void
     {
@@ -328,17 +329,17 @@ final class ResourcesPromptsTest extends KnossosTestCase
      *
      * @return array<string, mixed>
      */
-    private function listPage(StdioServer $server, ?string $cursor): array
+    private function listPage(McpDispatcher $server, ?string $cursor): array
     {
         $params = $cursor === null ? [] : ['cursor' => $cursor];
 
         return $server->handle(['jsonrpc' => '2.0', 'id' => 9, 'method' => 'resources/list', 'params' => $params])['result'];
     }
 
-    private function initializedResourceServer(ToolService $tools, \PDO $pdo): StdioServer
+    private function initializedResourceServer(ToolService $tools, \PDO $pdo): McpDispatcher
     {
-        $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
-        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server = new McpDispatcher($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]]);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
 
         return $server;
@@ -354,7 +355,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
         return array_map(
             static fn (array $message): string => json_encode($message, JSON_THROW_ON_ERROR) . "\n",
             [
-                ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]],
+                ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => McpDispatcher::PROTOCOL_VERSION]],
                 ['jsonrpc' => '2.0', 'method' => 'notifications/initialized'],
                 ['jsonrpc' => '2.0', 'id' => 7, 'method' => 'resources/read', 'params' => ['uri' => $uri]],
             ],

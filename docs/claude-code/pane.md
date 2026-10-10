@@ -634,7 +634,7 @@ components only, and the one you open is where the route ends.
 strongest first.` When only the other direction has a route, the pane draws
   that one and says so in the warning colour.
 - **Every route found** lists up to five routes, at most six hops each, every
-  one told from the last component they all share (`… → StdioServer::dispatchMethod → …`)
+  one told from the last component they all share (`… → McpDispatcher::dispatchMethod → …`)
   with its hop count. A press on one draws it.
 - **Route 1** draws the chosen route as boxes down the pane, each framed in its
   boundary's colour with the boundary beside it. Each hop is an arrow labelled
