@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Tests\Phpunit\Query;
+namespace Knossos\Tests\Phpunit\Scan;
 
-use Knossos\Query\ProjectPathResolver;
+use Knossos\Scan\ProjectPathResolver;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 

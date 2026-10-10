@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Knossos\Scan\ProjectPathResolver;
 use PDO;
 
 /**

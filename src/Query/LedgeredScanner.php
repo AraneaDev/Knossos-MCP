@@ -6,9 +6,11 @@ namespace Knossos\Query;
 
 use Knossos\Discovery\AllowedRoots;
 use Knossos\Result\ResultEnvelope;
+use Knossos\Scan\ProjectPathResolver;
 use Knossos\Scan\ProjectScanner;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scan\ProjectWriterLock;
+use Knossos\Scan\ScanLedger;
 use Knossos\Scan\TreeFingerprint;
 use PDO;
 use Throwable;

@@ -139,7 +139,7 @@ there first.
 The turn brief, the Changes tab and the commit note all need to know what a
 scan changed, even when another writer scanned the edits first: the live
 watcher, the pane's rescan, another session. The `scan_ledger` table records
-that, in `src/Query/ScanLedger.php`.
+that, in `src/Scan/ScanLedger.php`.
 
 **Who records.** Every writer scans through `LedgeredScanner`: the turn brief,
 the pane's rescan, `knossos scan` (and so the watcher's scan processes) and the

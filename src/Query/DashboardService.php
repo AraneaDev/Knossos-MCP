@@ -6,6 +6,7 @@ namespace Knossos\Query;
 
 use Closure;
 use Knossos\Query\Drift\DriftCounts;
+use Knossos\Scan\ProjectPathResolver;
 use PDO;
 
 /**

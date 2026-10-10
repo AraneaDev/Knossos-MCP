@@ -6,6 +6,7 @@ namespace Knossos\Query;
 
 use Knossos\Git\GitProcessRunner;
 use Knossos\Git\GitProcessRunnerInterface;
+use Knossos\Scan\ProjectPathResolver;
 use PDO;
 use Throwable;
 

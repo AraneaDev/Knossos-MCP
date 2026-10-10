@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Query;
+namespace Knossos\Scan;
 
 use Closure;
 use PDO;
