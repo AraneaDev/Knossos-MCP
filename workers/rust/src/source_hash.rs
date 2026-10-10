@@ -42,7 +42,7 @@ pub fn compute(root: &Path) -> Option<String> {
         let bytes = fs::read(root.join(name)).ok()?;
         digest.update(name.as_bytes());
         digest.update([0]);
-        digest.update(hex(&Sha256::digest(&bytes)).as_bytes());
+        digest.update(sha256_hex(&bytes).as_bytes());
         digest.update(b"\n");
     }
     Some(hex(&digest.finalize()))
@@ -64,6 +64,12 @@ fn collect(root: &Path, relative: &str, inputs: &mut Vec<String>) {
             inputs.push(name);
         }
     }
+}
+
+/// Lowercase SHA-256 hex of `bytes`, the form discovery records in the core.
+#[must_use]
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
 }
 
 /// Lowercase hex of `bytes`.

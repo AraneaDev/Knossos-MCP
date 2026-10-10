@@ -7,9 +7,15 @@
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 
+mod cargo_manifest;
 pub mod facts;
+mod heartbeat;
+mod index;
 pub mod layout;
+mod nesting;
+mod params;
 pub mod protocol;
+mod reads;
 pub mod resolve;
 pub mod server;
 pub mod source_hash;
