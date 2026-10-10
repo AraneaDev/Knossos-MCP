@@ -482,6 +482,75 @@ final class PythonScannerTest extends KnossosTestCase
     }
 
     /**
+     * An optional collaborator is spelled `exclusions: Exclusions | None =
+     * None` and filled with `self.exclusions = exclusions or Exclusions()`.
+     * Neither the optional annotation nor the `or` default typed the
+     * attribute, so every call through it named no method, and a class split
+     * into its own module read as dead.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerTypesOptionalCollaborators(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-py-optional-' . bin2hex(random_bytes(6));
+        mkdir($root . '/pkg', 0o755, true);
+        $files = [
+            'pkg/__init__.py' => '',
+            'pkg/ex.py' => "class Ex:\n    def excludes(self, parts):\n        return False\n\n    def other(self):\n        return 1\n",
+            'pkg/idx.py' => implode("\n", [
+                'from typing import Optional',
+                '',
+                'from .ex import Ex',
+                '',
+                '',
+                'class Idx:',
+                '    def __init__(self, ex: Ex | None = None, maybe: Optional[Ex] = None, quoted: "Ex | None" = None) -> None:',
+                '        self.ex = ex or Ex()',
+                '        self.maybe = maybe',
+                '        self.quoted = quoted',
+                '        self.mixed = ex or 3',
+                '',
+                '    def run(self):',
+                '        self.ex.excludes(())',
+                '        self.maybe.other()',
+                '        self.quoted.other()',
+                '        self.mixed.unknown()',
+                '',
+            ]),
+        ];
+        foreach ($files as $path => $source) {
+            file_put_contents($root . '/' . $path, $source);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['pkg/idx.py']]));
+            $client->shutdown();
+        } finally {
+            $this->removeTempTree($root);
+        }
+
+        $calls = [];
+        $untyped = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'calls') {
+                    $calls[] = [$edge->sourceReference, $edge->targetReference];
+                }
+            }
+            foreach ($contribution->nodes as $node) {
+                foreach ($node->attributes['unresolved_member_calls'] ?? [] as $name) {
+                    $untyped[] = $name;
+                }
+            }
+        }
+
+        assertArrayContains(['py:method:pkg.idx.Idx::run', 'py:method:pkg.ex.Ex::excludes'], $calls);
+        assertArrayContains(['py:method:pkg.idx.Idx::run', 'py:method:pkg.ex.Ex::other'], $calls);
+        // An `or` whose sides hold different things types nothing.
+        assertSame(['unknown'], $untyped);
+    }
+
+    /**
      * A service module creates one instance at import time
      * (`user_repo = UserRepository()`) and the rest of the codebase imports
      * that instance. Its type was known only inside the declaring module, so
