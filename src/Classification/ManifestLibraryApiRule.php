@@ -15,7 +15,7 @@ use Knossos\Scanner\Protocol\Origin;
  * command are installed by code outside the repository, which calls what
  * they make public; nothing inside has to, so an unused public method read
  * as dead. Discovery names the directories they publish (see
- * ProjectDiscoverer::composerLibraryRoots() and pythonLibraryRoots()); this
+ * ComposerManifest::composerLibraryRoots() and PyprojectManifest::pythonLibraryRoots()); this
  * tags what is public there, with the role {@see LibraryPublicApiRule} gives
  * a JavaScript package's exports. What a library keeps private stays
  * reportable.
