@@ -22,6 +22,9 @@ the call is written in:
 - `$result = $run()` when `$run` holds a closure that declares its return type,
   or one returned by a method of the same file documented as
   `@return \Closure(): Foo`, which is probable
+- `$x = $typed->property`, including a property declared in another file, so
+  that `$x->run()` and `$x->other?->run()` follow the declared property types,
+  which is probable
 
 A closure and an arrow function have their own variables. A typed parameter of
 `fn (Foo $x) => $x->run()` types its calls even when the method around it has a

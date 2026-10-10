@@ -11,7 +11,7 @@ use PhpParser\Node\Expr;
  * What the traversal knows about each local variable, per function-like scope.
  *
  * A variable may carry an inferred class, the call its value came from, the
- * element type of the list it holds, what the closure it holds yields, and the
+ * property it was read from, the element type of the list it holds, what the closure it holds yields, and the
  * namespace a class name built into it starts with. That is what lets
  * `$x = new Foo; $x->bar()` and `new $card` name their target.
  *
@@ -28,14 +28,14 @@ final class VariableTypeScope
      * last: their variables, the bindings a closure captured by reference, and
      * the namespace prefixes held in their variables.
      *
-     * @var list<array{variables: array<string, array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>, by_reference: array<string, ?array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>, prefixes: array<string, string>}>
+     * @var list<array{variables: array<string, array{type: ?string, confidence: string, returned_by?: string, held_in?: string, element?: string, invokes?: string}>, by_reference: array<string, ?array{type: ?string, confidence: string, returned_by?: string, held_in?: string, element?: string, invokes?: string}>, prefixes: array<string, string>}>
      */
     private array $scopes = [];
 
     /**
      * The variables of code no callable encloses.
      *
-     * @var array<string, array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>
+     * @var array<string, array{type: ?string, confidence: string, returned_by?: string, held_in?: string, element?: string, invokes?: string}>
      */
     private array $fileVariables = [];
 
@@ -124,6 +124,19 @@ final class VariableTypeScope
     }
 
     /**
+     * Remember that a variable holds what a property of a typed receiver held,
+     * as the path the reconciler resolves (`Type::$a::$b`).
+     *
+     * Kept instead of a type for the same reason as a return source: the
+     * property is declared in whatever file declares that type.
+     */
+    public function setPropertySource(string $variable, string $path): void
+    {
+        $variables = &$this->variables();
+        $variables[$variable] = ['type' => null, 'confidence' => 'probable', 'held_in' => $path];
+    }
+
+    /**
      * Remember the class a variable's list holds, as its docblock gives it,
      * keeping whatever else is known about the variable and an element type
      * it already has.
@@ -164,6 +177,12 @@ final class VariableTypeScope
     public function returnSource(string $variable): ?string
     {
         return $this->variables()[$variable]['returned_by'] ?? null;
+    }
+
+    /** The property path a variable's value was read from, when its type was not resolvable here. */
+    public function propertySource(string $variable): ?string
+    {
+        return $this->variables()[$variable]['held_in'] ?? null;
     }
 
     /** The class each element of the list a variable holds is, when its docblock says. */
@@ -208,7 +227,7 @@ final class VariableTypeScope
      * A function does not see the file's variables, which is why each
      * callable keeps its own.
      *
-     * @return array<string, array{type: ?string, confidence: string, returned_by?: string, element?: string, invokes?: string}>
+     * @return array<string, array{type: ?string, confidence: string, returned_by?: string, held_in?: string, element?: string, invokes?: string}>
      */
     private function &variables(): array
     {
