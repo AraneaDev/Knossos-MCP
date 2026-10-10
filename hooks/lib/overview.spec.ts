@@ -265,7 +265,8 @@ describe('the overview cards', () => {
 })
 
 describe('the overview pane', () => {
-  it('lays every card out at every width and height, within the width, on a grid of equal columns when wide', () => {
+  // A sweep over every width and height: seconds under coverage, so it gets its own bound rather than the default 5 s.
+  it('lays every card out at every width and height, within the width, on a grid of equal columns when wide', { timeout: 30_000 }, () => {
     for (const columns of WIDTHS) {
       for (const height of HEIGHTS) {
         for (const selected of [0, 3, 8]) {
