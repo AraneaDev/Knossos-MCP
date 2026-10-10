@@ -6,7 +6,7 @@ namespace Knossos\Mcp;
 
 use InvalidArgumentException;
 use Knossos\Query\ArchitecturePolicyQueryService;
-use Knossos\Query\ProjectCatalogQueryService;
+use Knossos\Query\QualityGateQueryService;
 
 /**
  * The argument rules a tool's service would apply, checked before any work.
@@ -31,7 +31,7 @@ final class ToolArgumentPreflight
         // review_diff is left out on purpose: it reports invalid policies or
         // budgets as `not_evaluated` in a successful result rather than failing.
         if ($tool === 'quality_gate' && is_array($arguments['budgets'] ?? null)) {
-            ProjectCatalogQueryService::validateBudgets($arguments['budgets'], is_array($policies) ? $policies : []);
+            QualityGateQueryService::validateBudgets($arguments['budgets'], is_array($policies) ? $policies : []);
         }
         // check_architecture compiles any list it is given (an empty one is an
         // error); the gate compiles its list whenever it is non-empty.

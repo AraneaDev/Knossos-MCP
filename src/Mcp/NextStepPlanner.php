@@ -11,7 +11,7 @@ use Knossos\Query\ResultEnvelope;
  *
  * The `data` key names below are the ones the corresponding query services actually
  * emit (see ComponentQueryService::findComponent/inspectComponent and
- * GraphTopologyQueryService::impactAnalysis/architectureHealth). Synthetic shapes used
+ * ImpactAnalysisQuery::impactAnalysis and ArchitectureHealthQuery::architectureHealth). Synthetic shapes used
  * by unit tests (e.g. a bare `candidates`/`name` pair) are tolerated as well so the
  * planner stays robust to both.
  */

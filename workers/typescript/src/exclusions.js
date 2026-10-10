@@ -99,7 +99,8 @@ export function exclusionRules(input) {
 /**
  * Whether the given `exclusions` rules leave a project-relative path out, as
  * a scan applies them. Exported so the rules can be checked against the
- * core's shared case list without a scan.
+ * core's shared case list without a scan; only that test calls it, which is
+ * why `knossos.json` lists it under `dead_code_suppressions`.
  *
  * @throws {Error} when `exclusions` is not the rules object
  */

@@ -210,6 +210,32 @@ function noteDeclarationFiles(answer, files) {
 }
 
 /**
+ * The state one scan request carries through its programs: what it read, what
+ * it emitted, and which program owns each file.
+ *
+ * @typedef {object} ScanRequest
+ * @property {string} root
+ * @property {number} maxFileBytes
+ * @property {InputReadRecorder} reads
+ * @property {ReadAttribution} attribution
+ * @property {Set<string>} requestedSet
+ * @property {Set<string>} emitted
+ * @property {(contribution: object) => void} emit
+ * @property {unknown} versions
+ * @property {unknown[]} vueProjects
+ * @property {string[]} sourceFiles
+ * @property {string[]} packageDirectories
+ * @property {Map<string, string>} [owners] file to the config that describes it
+ * @property {*} [outputSources]
+ * @property {Map<string, {files: string[], parsed: object | undefined}>} [fallbackMembers]
+ * @property {Map<string, string>} [fallbackGroupOf]
+ * @property {string} [fallbackDirectory]
+ * @property {(relative: string, program: string) => boolean} [ownedByProgram]
+ * @property {string} [owner] the config whose program is being built
+ * @property {string} [program] the key of the program being built
+ */
+
+/**
  * Performs bounded compiler-backed scanning without executing target modules.
  * Instances retain TypeScript programs for incremental reuse.
  */
@@ -516,6 +542,7 @@ export class TypeScriptScanner {
      * the same way, under TS_PROGRAM_FAILED, so one program the compiler cannot
      * handle never discards the facts of the others.
      *
+     * @param {ScanRequest} request
      * @returns {{reused: boolean}|undefined} undefined when the program failed
      */
     #scanProgram(key, parsed, request) {
@@ -644,6 +671,7 @@ export class TypeScriptScanner {
         }
     }
 
+    /** @param {ScanRequest} request */
     #emitProgram(program, request, fallback) {
         const { root, emitted, emit, maxFileBytes, owner } = request;
         // The fallback program emits whatever no config's program did, a
