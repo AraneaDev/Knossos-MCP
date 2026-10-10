@@ -100,8 +100,8 @@ final class FactCollector extends NodeVisitorAbstract
 
         return null;
     }
-    /** Collect whatever facts this node declares as the traversal enters it. */
 
+    /** Collect whatever facts this node declares as the traversal enters it. */
     #[\Override]
     public function enterNode(Node $node): ?int
     {
@@ -190,8 +190,8 @@ final class FactCollector extends NodeVisitorAbstract
             $this->addEdge('references', $this->currentSource(), self::reference('class', $className), $node);
         }
     }
-    /** Unwind scope on the way out, keeping enclosing-class attribution correct. */
 
+    /** Unwind scope on the way out, keeping enclosing-class attribution correct. */
     #[\Override]
     public function leaveNode(Node $node): ?int
     {
@@ -816,9 +816,9 @@ final class FactCollector extends NodeVisitorAbstract
         ];
     }
 
-    /** Record an edge fact, defaulting to `certain` because most edges here are proven by syntax. */
     /**
-     * Record an edge fact with its evidence location.
+     * Record an edge fact with its evidence location, defaulting to `certain`
+     * because most edges here are proven by syntax.
      *
      * @param array<string, mixed> $attributes
      */
@@ -911,23 +911,22 @@ final class FactCollector extends NodeVisitorAbstract
     }
 
     /** Remember a property's declared type for resolving calls on `$this->x`. */
-
     private function setPropertyType(string $property, string $type): void
     {
         if ($this->classes !== []) {
             $this->classes[array_key_last($this->classes)]['properties'][$property] = $type;
         }
     }
-    /** The tracked type for a property, or null when it was never declared. */
 
+    /** The tracked type for a property, or null when it was never declared. */
     private function propertyType(string $property): ?string
     {
         return $this->classes === []
             ? null
             : ($this->classes[array_key_last($this->classes)]['properties'][$property] ?? null);
     }
-    /** Emit a reference edge to a named class, the weakest form of coupling recorded. */
 
+    /** The local id of a declaration: `php:<kind>:<name>`, without a leading backslash. */
     private static function reference(string $kind, string $canonicalName): string
     {
         return 'php:' . $kind . ':' . ltrim($canonicalName, '\\');
