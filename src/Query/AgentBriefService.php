@@ -17,7 +17,7 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
 {
     private const FRAMEWORK_PREFIXES = ['laravel', 'symfony', 'django', 'fastapi', 'nextjs', 'nestjs', 'react', 'vue'];
 
-    public function __construct(PDO $pdo, ?Closure $clock, private GraphTopologyQueryService $topology)
+    public function __construct(PDO $pdo, ?Closure $clock, private ArchitectureHealthQuery $health)
     {
         parent::__construct($pdo, $clock);
     }
@@ -197,7 +197,7 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
      */
     private function hubsSection(string $projectId): ?string
     {
-        $hubs = $this->topology->architectureHealth($projectId, limit: 5)->data['hubs'];
+        $hubs = $this->health->architectureHealth($projectId, limit: 5)->data['hubs'];
         if ($hubs === []) {
             return null;
         }

@@ -24,7 +24,11 @@ final readonly class ArchitectureQueryService
     private PDO $pdo;
     private ProjectCatalogQueryService $catalogQueries;
     private ComponentQueryService $componentQueries;
-    private GraphTopologyQueryService $topologyQueries;
+    private GraphSummaryQuery $summaryQueries;
+    private DependencyCycleQuery $cycleQueries;
+    private ArchitectureHealthQuery $healthQueries;
+    private FlowQuery $flowQueries;
+    private ImpactAnalysisQuery $impactQueries;
     private ArchitecturePolicyQueryService $policyQueries;
     private LocationSuggestionService $locationQueries;
     private ChangeImpactQueryService $changeQueries;
@@ -53,29 +57,33 @@ final readonly class ArchitectureQueryService
         $this->refreshPolicy = $refreshPolicy ?? new RefreshPolicy($pdo);
         $this->policyQueries = new ArchitecturePolicyQueryService($pdo, $clock);
         $this->locationQueries = new LocationSuggestionService($pdo, $clock, $semanticRanker);
-        $this->topologyQueries = new GraphTopologyQueryService($pdo, $clock);
+        $this->summaryQueries = new GraphSummaryQuery($pdo, $clock);
+        $this->cycleQueries = new DependencyCycleQuery($pdo, $clock);
+        $this->healthQueries = new ArchitectureHealthQuery($pdo, $clock, $this->cycleQueries, new DeadCodeCandidates($pdo, $clock));
+        $this->flowQueries = new FlowQuery($pdo, $clock);
+        $this->impactQueries = new ImpactAnalysisQuery($pdo, $clock);
         $this->componentQueries = new ComponentQueryService($pdo, $clock);
         $this->catalogQueries = new ProjectCatalogQueryService($pdo, $clock, $this->policyQueries);
         $this->changeQueries = new ChangeImpactQueryService(
             $pdo,
             $clock,
-            $this->topologyQueries,
+            $this->impactQueries,
             $gitHistory,
             $gitWorkingTree,
         );
         $this->contextQueries = new ArchitectureContextService(
             $pdo,
             $clock,
-            $this->topologyQueries,
+            $this->summaryQueries,
             $this->changeQueries,
             $this->componentQueries,
             $this->locationQueries,
         );
-        $this->reviewQueries = new ReviewDiffService($pdo, $clock, $this->changeQueries, $this->policyQueries, $this->catalogQueries, $this->topologyQueries);
+        $this->reviewQueries = new ReviewDiffService($pdo, $clock, $this->changeQueries, $this->policyQueries, $this->catalogQueries, $this->cycleQueries);
         $this->diagramQueries = new DiagramExportService($pdo, $clock);
         $this->fileMetricsQueries = new FileMetricsQueryService($pdo, $clock);
         $this->stalenessProbe = new StalenessProbe($pdo, $wallClock, $driftOracle);
-        $this->briefQueries = new AgentBriefService($pdo, $clock, $this->topologyQueries);
+        $this->briefQueries = new AgentBriefService($pdo, $clock, $this->healthQueries);
         $this->annotationQueries = new AnnotationService($pdo, $clock);
         $this->fileContextQueries = new FileContextQueryService($pdo, $clock);
         $this->diagnosticsQueries = new DiagnosticsQueryService($pdo, $clock);
@@ -204,10 +212,10 @@ final readonly class ArchitectureQueryService
         return $this->componentQueries->listUsages($projectId, $symbol, $edgeKinds, $minConfidence, $limit);
     }
 
-    /** {@see GraphTopologyQueryService::architectureSummary()} */
+    /** {@see GraphSummaryQuery::architectureSummary()} */
     public function architectureSummary(string $projectId, int $limit = 50): ResultEnvelope
     {
-        return $this->topologyQueries->architectureSummary($projectId, $limit);
+        return $this->summaryQueries->architectureSummary($projectId, $limit);
     }
 
     /** {@see FileMetricsQueryService::fileMetrics()} */
@@ -224,7 +232,7 @@ final readonly class ArchitectureQueryService
     }
 
     /**
-     * {@see GraphTopologyQueryService::dependencyCycles()}
+     * {@see DependencyCycleQuery::dependencyCycles()}
      *
      * @param list<string> $edgeKinds
      */
@@ -238,11 +246,11 @@ final readonly class ArchitectureQueryService
         int $timeoutMs = 1000,
         bool $includeSelfLoops = false,
     ): ResultEnvelope {
-        return $this->topologyQueries->dependencyCycles($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeSelfLoops);
+        return $this->cycleQueries->dependencyCycles($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeSelfLoops);
     }
 
     /**
-     * {@see GraphTopologyQueryService::architectureHealth()}
+     * {@see ArchitectureHealthQuery::architectureHealth()}
      *
      * @param list<string> $edgeKinds
      */
@@ -260,7 +268,7 @@ final readonly class ArchitectureQueryService
         int $candidateOffset = 0,
         int $candidateTimeoutMs = 5000,
     ): ResultEnvelope {
-        return $this->topologyQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests, $candidateConfidence, $candidateOffset, $candidateTimeoutMs);
+        return $this->healthQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests, $candidateConfidence, $candidateOffset, $candidateTimeoutMs);
     }
 
     /**
@@ -410,7 +418,7 @@ final readonly class ArchitectureQueryService
     }
 
     /**
-     * {@see GraphTopologyQueryService::explainFlow()}
+     * {@see FlowQuery::explainFlow()}
      *
      * @param list<string> $edgeKinds
      */
@@ -424,11 +432,11 @@ final readonly class ArchitectureQueryService
         string $minConfidence = 'possible',
         int $timeoutMs = 1000,
     ): ResultEnvelope {
-        return $this->topologyQueries->explainFlow($projectId, $from, $to, $maxDepth, $maxPaths, $edgeKinds, $minConfidence, $timeoutMs);
+        return $this->flowQueries->explainFlow($projectId, $from, $to, $maxDepth, $maxPaths, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
     /**
-     * {@see GraphTopologyQueryService::impactAnalysis()}
+     * {@see ImpactAnalysisQuery::impactAnalysis()}
      *
      * @param list<string> $edgeKinds
      */
@@ -441,13 +449,13 @@ final readonly class ArchitectureQueryService
         string $minConfidence = 'possible',
         int $timeoutMs = 1000,
     ): ResultEnvelope {
-        return $this->topologyQueries->impactAnalysis($projectId, $symbol, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+        return $this->impactQueries->impactAnalysis($projectId, $symbol, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
-    /** {@see GraphTopologyQueryService::listBoundaries()} */
+    /** {@see GraphSummaryQuery::listBoundaries()} */
     public function listBoundaries(string $projectId, ?string $source = null, int $limit = 50, int $offset = 0): ResultEnvelope
     {
-        return $this->topologyQueries->listBoundaries($projectId, $source, $limit, $offset);
+        return $this->summaryQueries->listBoundaries($projectId, $source, $limit, $offset);
     }
 
     /** {@see AgentBriefService::exportAgentBrief()} */
@@ -509,6 +517,6 @@ final readonly class ArchitectureQueryService
      */
     public function sessionBrief(string $path, ?string $databasePath = null): string
     {
-        return (new SessionBriefService($this->pdo, $databasePath, $this->topologyQueries))->brief($path);
+        return (new SessionBriefService($this->pdo, $databasePath, $this->healthQueries))->brief($path);
     }
 }

@@ -34,7 +34,7 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
     /** Most bytes of a Git failure quoted back, which is plenty to name the cause. */
     private const MAX_REASON_BYTES = 500;
 
-    public function __construct(PDO $pdo, ?Closure $clock, private GraphTopologyQueryService $topologyQueries, private ?GitHistoryProvider $gitHistory = null, private ?GitWorkingTreeProvider $gitWorkingTree = null)
+    public function __construct(PDO $pdo, ?Closure $clock, private ImpactAnalysisQuery $impactQueries, private ?GitHistoryProvider $gitHistory = null, private ?GitWorkingTreeProvider $gitWorkingTree = null)
     {
         parent::__construct($pdo, $clock);
     }
@@ -53,7 +53,7 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
             throw new InvalidArgumentException('max_commits must be between 1 and 5000.');
         }
         $project = $this->project($projectId);
-        $impact = $this->topologyQueries->impactAnalysis($projectId, $symbol, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+        $impact = $this->impactQueries->impactAnalysis($projectId, $symbol, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
         $target = $impact->data['target'] ?? null;
         if (!is_array($target)) {
             // Carry through which failure the underlying resolution hit, so the
@@ -153,7 +153,7 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         // could otherwise multiply into minutes of wall time for a single call).
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
         foreach ($direct as $node) {
-            $impact = $this->topologyQueries->impactAnalysis($projectId, $node['id'], $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs, $deadline);
+            $impact = $this->impactQueries->impactAnalysis($projectId, $node['id'], $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs, $deadline);
             foreach ($impact->data['dependants'] ?? [] as $record) {
                 $id = $record['node']['id'];
                 if (!isset($impacted[$id]) || self::nearerOrSurer($record, $impacted[$id])) {
@@ -211,10 +211,7 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         }
         self::assertLimit($limit);
         $minimumRank = $this->confidenceThreshold($timeoutMs, $minConfidence)[$minConfidence];
-        $edgeKinds = $edgeKinds === [] ? self::IMPACT_EDGE_KINDS : array_values(array_unique($edgeKinds));
-        if (count($edgeKinds) > 20 || array_diff($edgeKinds, self::IMPACT_EDGE_KINDS) !== []) {
-            throw new InvalidArgumentException('edge_kinds contains an unsupported impact relationship.');
-        }
+        $edgeKinds = self::selectedEdgeKinds($edgeKinds, self::IMPACT_EDGE_KINDS, 'impact');
         // One deadline for the whole request, Git included.
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
         $changeSet = $this->changeSet($projectId, $files, $workingTree, $baseRef, $timeoutMs);

@@ -81,7 +81,7 @@
     // 2026-09-10/11 runs (ProjectCatalogQueryService listProjects, and
     // LocationSuggestionService's member and edge queries). The pattern matches
     // eight lines in src, and each was read before excluding it: seven slice
-    // with count()/array_slice(), and GraphTopologyQueryService's node query
+    // with count()/array_slice(), and ArchitectureHealthQuery's node query
     // feeds streamBounded(), which stops on the first row past $maxRows and so
     // never reads a second spare row either. Re-check any new match.
     // IncrementInteger only: DecrementInteger turns `+ 1` into `+ 0`, which

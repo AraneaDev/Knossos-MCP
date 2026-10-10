@@ -472,6 +472,30 @@ abstract readonly class AbstractArchitectureQueryService
         $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
         return is_array($decoded) ? $decoded : [];
     }
+    /**
+     * The edge kinds a traversal walks: every supported kind when the caller
+     * named none, otherwise the named ones, deduplicated in the order given.
+     *
+     * An unknown kind is rejected rather than dropped, because a filter that
+     * quietly ignores a typo answers a narrower question than the one asked
+     * and reads as a complete answer to it. `$relationship` names the family
+     * in the message ("dependency", "impact", "flow"), so each tool keeps the
+     * wording it has always reported.
+     *
+     * @param list<string> $requested
+     * @param list<string> $supported
+     * @return list<string>
+     */
+    protected static function selectedEdgeKinds(array $requested, array $supported, string $relationship): array
+    {
+        $edgeKinds = $requested === [] ? $supported : array_values(array_unique($requested));
+        if (count($edgeKinds) > 20 || array_diff($edgeKinds, $supported) !== []) {
+            throw new InvalidArgumentException(sprintf('edge_kinds contains an unsupported %s relationship.', $relationship));
+        }
+
+        return $edgeKinds;
+    }
+
     /** Reject a limit outside its bounds rather than clamping it silently. */
 
     protected static function assertLimit(int $limit): void

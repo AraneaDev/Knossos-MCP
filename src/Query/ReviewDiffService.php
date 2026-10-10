@@ -27,7 +27,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
         private ChangeImpactQueryService $changeQueries,
         private ArchitecturePolicyQueryService $policyQueries,
         private ProjectCatalogQueryService $catalogQueries,
-        private GraphTopologyQueryService $topologyQueries,
+        private DependencyCycleQuery $cycleQueries,
     ) {
         parent::__construct($pdo, $clock);
     }
@@ -128,7 +128,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
         $cycleEvidence = [];
         $touchingCycles = [];
         try {
-            $cycleResult = $this->topologyQueries->dependencyCycles($projectId, [], $minConfidence, 100, 50_000, 100_000, $timeoutMs);
+            $cycleResult = $this->cycleQueries->dependencyCycles($projectId, [], $minConfidence, 100, 50_000, 100_000, $timeoutMs);
             $touchingCycles = array_values(array_filter(
                 $cycleResult->data['cycles'],
                 static function (array $cycle) use ($touched): bool {
