@@ -10,7 +10,7 @@ import type { Preview } from './rows'
 const WIDTHS = [40, 60, 80, 100, 130, 140, 200] as const
 const HEIGHTS = [24, 40, 60] as const
 
-const facts = { name: 'ResultEnvelope', boundary: 'core', figures: componentFigures(42, 240, 1), top: ['src/Mcp/ToolService.php', 'tests/phpunit/Query/ResultEnvelopeTest.php', 'src/Query/ArchitectureQueryService.php', 'src/Fourth.php'] }
+const facts = { name: 'ResultEnvelope', boundary: 'core', figures: componentFigures(42, 240, 1), top: ['src/Mcp/ToolService.php', 'tests/phpunit/Result/ResultEnvelopeTest.php', 'src/Query/ArchitectureQueryService.php', 'src/Fourth.php'] }
 
 const dash: Dashboard = {
   status: 'ok',
@@ -27,7 +27,7 @@ const dash: Dashboard = {
   dead_code_truncated: false,
   cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] },
   trend: [],
-  fan_in: [{ path: 'src/Query/ResultEnvelope.php', dependent_files: 47, boundaries: ['core'], boundary: 'core', top_dependents: ['src/A.php'] }],
+  fan_in: [{ path: 'src/Result/ResultEnvelope.php', dependent_files: 47, boundaries: ['core'], boundary: 'core', top_dependents: ['src/A.php'] }],
   fan_in_truncated: false,
 }
 
@@ -42,7 +42,7 @@ describe('hover cards', () => {
       expect.stringMatching(/^│ ResultEnvelope {2}■ core +│$/),
       expect.stringMatching(/^│ 42 files depend on it · in 240 · out 1 +│$/),
       expect.stringMatching(/^│ ← src\/Mcp\/ToolService\.php +│$/),
-      expect.stringMatching(/^│ ← tests\/phpunit\/Query\/ResultEnvelopeTest\.php +│$/),
+      expect.stringMatching(/^│ ← tests\/phpunit\/Result\/ResultEnvelopeTest\.php +│$/),
       expect.stringMatching(/^│ ← src\/Query\/ArchitectureQueryService\.php +│$/),
       `╰${'─'.repeat(card.width - 2)}╯`,
     ])
