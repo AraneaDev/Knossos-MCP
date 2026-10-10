@@ -85,27 +85,15 @@ final readonly class SnapshotGraphReader
     }
 
     /**
-     * An archived snapshot's rows, in the payload's order.
+     * An archived snapshot's rows, in the payload's order, with the payload read from the store.
      *
      * A compressed payload is decoded and inflated a few kilobytes at a time
      * and its rows are taken off the front as they arrive, each decoded on its
      * own and cut to its columns: neither the payload's JSON, nor its binary
      * form, nor its decoded arrays are ever held whole, and no step's output
-     * depends on how well the payload compresses. Here the stored text is
-     * the caller's string; {@see self::archivedById()} reads it from the store
-     * instead, a piece at a time where the runtime allows. A payload this
-     * reading does not recognise (plain JSON from an earlier version, laid out
-     * another way) is decoded whole instead, which gives the same rows.
-     *
-     * @return array<string, list<array<string, mixed>>>
-     */
-    public function archived(string $storedPayload, string $scanId): array
-    {
-        return $this->read($storedPayload, $scanId, self::COLUMNS);
-    }
-
-    /**
-     * An archived snapshot's rows, as {@see self::archived()} reads them, with the payload read from the store.
+     * depends on how well the payload compresses. A payload this reading does
+     * not recognise (plain JSON from an earlier version, laid out another way)
+     * is decoded whole instead, which gives the same rows.
      *
      * @return array<string, list<array<string, mixed>>>
      */
