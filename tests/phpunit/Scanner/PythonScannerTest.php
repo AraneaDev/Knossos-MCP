@@ -282,6 +282,71 @@ final class PythonScannerTest extends KnossosTestCase
     }
 
     /**
+     * An import under `if TYPE_CHECKING:` never runs: the checker reads it,
+     * the interpreter skips it. Recorded as a plain import, two modules that
+     * name each other's types that way read as a dependency cycle the program
+     * does not have. Marked type-only, it is erased like TypeScript's
+     * `import type`, unless the same module is also imported for real.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerMarksImportsUnderTypeCheckingAsTypeOnly(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-py-type-checking-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/model.py' => "class Model:\n    pass\n",
+            'app/shape.py' => "class Shape:\n    pass\n",
+            'app/view.py' => "class View:\n    pass\n",
+            'app/mixed.py' => "class Mixed:\n    pass\n",
+            'app/user.py' => implode("\n", [
+                'from __future__ import annotations',
+                'import typing',
+                'from typing import TYPE_CHECKING',
+                'from app.mixed import Mixed',
+                '',
+                'if TYPE_CHECKING:',
+                '    from app.model import Model',
+                '    import app.shape',
+                '    from app.mixed import Mixed as AlsoMixed',
+                'else:',
+                '    from app.view import View',
+                '',
+                'if typing.TYPE_CHECKING:',
+                '    from app import shape',
+                '',
+            ]),
+        ];
+        foreach ($files as $path => $source) {
+            file_put_contents($root . '/' . $path, $source);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/user.py']]));
+            $client->shutdown();
+        } finally {
+            $this->removeTempTree($root);
+        }
+
+        $imports = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'imports' && $edge->sourceReference === 'py:module:app.user') {
+                    $imports[$edge->targetReference] = $edge->attributes;
+                }
+            }
+        }
+
+        assertSame(true, $imports['py:module:app.model']['type_only'] ?? null);
+        assertSame(true, $imports['py:module:app.shape']['type_only'] ?? null);
+        // The `else` branch runs.
+        assertSame(false, array_key_exists('type_only', $imports['py:module:app.view']));
+        // Imported for real as well, so the dependency stays.
+        assertSame([false, true], $imports['py:module:app.mixed']['type_only_variants'] ?? null);
+    }
+
+    /**
      * A function handed over by name, returned from a factory
      * (`def make_tool(): def handler(): ...; return handler`) or listed in a
      * registry, is never called where it is named. Only calls were edges, so
