@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::declarations::Declarations;
+use super::declarations::{Declarations, FieldType};
 use crate::facts::Facts;
 use crate::layout::Layout;
 use crate::resolve::Aliases;
@@ -33,6 +33,15 @@ pub(super) struct Walk<'a> {
     /// is scoped to the module that declares it, so sibling modules may bind
     /// one alias to different paths. `None` marks a name bound twice.
     pub(super) module_aliases: BTreeMap<(String, String), Option<String>>,
+    /// Each module's `mod` declarations, by module then name, mapped to the
+    /// module each loads (see [`mod_child`](super::placement::mod_child)):
+    /// what a `use` inside a body of that module reaches a child through.
+    /// `None` marks a name two declarations send to two modules.
+    pub(super) module_children: BTreeMap<String, BTreeMap<String, Option<String>>>,
+    /// The generic type parameters in scope (`T` of `impl<T>`, `fn f<T>`,
+    /// `struct S<T>`), which shadow any type of that name: a receiver of
+    /// one has no type the walk can name.
+    pub(super) type_params: BTreeSet<String>,
     /// Target type of the current impl block, for resolving `Self`.
     pub(super) current_impl_target: Option<String>,
     /// Frameworks the scan request asked this worker to enrich, by short name
@@ -47,7 +56,7 @@ pub(super) struct Walk<'a> {
     pub(super) role_marks: Vec<String>,
     /// The field types of each struct this file declares, by struct then
     /// field name, so `self.walk.facts.edge()` resolves through the fields.
-    pub(super) struct_fields: BTreeMap<String, BTreeMap<String, String>>,
+    pub(super) struct_fields: BTreeMap<String, BTreeMap<String, FieldType>>,
     /// Where the project's crates are, which names each `mod` declaration's
     /// module (see [`mod_child`](super::placement::mod_child)).
     pub(super) layout: &'a Layout,

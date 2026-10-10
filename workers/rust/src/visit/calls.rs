@@ -601,9 +601,12 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
     }
 
     fn visit_block(&mut self, node: &syn::Block) {
-        // A `let` in a block, a loop body or an `unsafe` block ends with it.
+        // A `let` in a block, a loop body or an `unsafe` block ends with it,
+        // and so does what a `use` in it imports.
         let saved = self.receivers.clone();
+        let outer = self.walk.enter_block_uses(&self.container, &node.stmts);
         syn::visit::visit_block(self, node);
+        self.walk.leave_block_uses(outer);
         self.receivers = saved;
     }
 

@@ -26,7 +26,7 @@ use calls::{is_foreign_export, is_wasm_bindgen};
 pub use cfg::{collect_test_modules, is_test_module_path, TestModules};
 use cfg::{is_cfg_test, is_test_attribute, item_attrs};
 pub use declarations::{
-    declaration_paths, declared_renames, Declarations, ExportedNames, StructFields,
+    declaration_paths, declared_renames, Declarations, ExportedNames, FieldType, StructFields,
 };
 use placement::mod_child;
 use state::{Calls, Walk};
@@ -84,6 +84,9 @@ pub fn index_facts(
     let mut walker = Walk::new(&mut facts, module, &[], &declarations, layout);
     walker.own_declarations = declaration_paths(module, items);
     walker.collect_uses(module, items);
+    // The glob sources a field type may come through, as this file alone
+    // places them; which one provides a name is asked at lookup.
+    walker.resolve_globs();
     walker.collect_struct_fields(module, items);
 
     (
@@ -116,6 +119,8 @@ impl<'a> Walk<'a> {
             globs: Vec::new(),
             pending_globs: Vec::new(),
             module_aliases: BTreeMap::new(),
+            module_children: BTreeMap::new(),
+            type_params: BTreeSet::new(),
             current_impl_target: None,
             frameworks,
             declarations,
@@ -247,12 +252,14 @@ impl Walk<'_> {
                 .node_attribute(&canonical, "runtime_invoked", serde_json::Value::Bool(true));
         }
         self.attribute_routes(&canonical, &node.attrs);
+        let outer = self.enter_type_params(&node.sig.generics);
         self.walk_body(
             &reference("function", &canonical),
             container,
             &node.sig,
             &node.block,
         );
+        self.type_params = outer;
         if is_test {
             self.facts.exit_test_scope();
         }
@@ -290,6 +297,7 @@ impl Walk<'_> {
                 }
             }
         }
+        let outer = self.enter_type_params(&node.generics);
         for member in &node.items {
             if let TraitItem::Fn(method) = member {
                 // A trait method with no default body has no block to
@@ -306,6 +314,7 @@ impl Walk<'_> {
                 );
             }
         }
+        self.type_params = outer;
     }
 
     /// Walk an `impl` block's methods onto the type it implements, with the
@@ -412,6 +421,7 @@ impl Walk<'_> {
         // export, the public methods and the constructor, and nothing
         // in Rust has to.
         let exported_impl = node.attrs.iter().any(is_wasm_bindgen);
+        let outer = self.enter_type_params(&node.generics);
         for member in &node.items {
             if let ImplItem::Fn(method) = member {
                 let name = ident_name(&method.sig.ident);
@@ -461,6 +471,7 @@ impl Walk<'_> {
                 );
             }
         }
+        self.type_params = outer;
         self.current_impl_target = old_target;
     }
 
@@ -491,6 +502,7 @@ impl Walk<'_> {
             "method",
             span,
         );
+        let outer = self.enter_type_params(&signature.generics);
         annotate(self, &method_canonical);
         if let Some(block) = block {
             self.walk_body(
@@ -500,6 +512,7 @@ impl Walk<'_> {
                 block,
             );
         }
+        self.type_params = outer;
         self.facts.exit_test_scope_if(is_test);
     }
 
@@ -615,9 +628,11 @@ impl Walk<'_> {
             receivers,
         };
         visitor.visit_signature(signature);
+        let outer = visitor.walk.enter_block_uses(container, &block.stmts);
         for statement in &block.stmts {
             visitor.visit_stmt(statement);
         }
+        visitor.walk.leave_block_uses(outer);
     }
 
     /// Walk what a type declaration names outside any body: its fields'
@@ -663,20 +678,23 @@ impl Walk<'_> {
     }
 
     /// Record the named field types of every struct in `items`, inline
-    /// modules included, resolved through this file's imports. Collected
-    /// before the walk, so an `impl` above its struct still sees them.
+    /// modules included, resolved through this file's imports, or left to
+    /// its glob imports (see [`FieldType::Globbed`]). Collected before the
+    /// walk, so an `impl` above its struct still sees them.
     fn collect_struct_fields(&mut self, container: &str, items: &[Item]) {
         for item in items {
             match item {
                 Item::Struct(node) => {
+                    let outer = self.enter_type_params(&node.generics);
                     let mut fields = BTreeMap::new();
                     for field in &node.fields {
                         if let Some(ident) = &field.ident {
-                            if let Some(target) = self.receiver_type(container, &field.ty) {
+                            if let Some(target) = self.declared_field_type(container, &field.ty) {
                                 fields.insert(ident_name(ident), target);
                             }
                         }
                     }
+                    self.type_params = outer;
                     // A struct with no typed field is recorded too, and `#[cfg]`
                     // alternatives of one struct keep only the fields they
                     // agree on: which one compiles is unknown.
@@ -701,6 +719,15 @@ impl Walk<'_> {
                 _ => {}
             }
         }
+    }
+
+    /// Bring the type parameters `generics` declares into scope, returning
+    /// the ones in scope before, for the caller to restore.
+    fn enter_type_params(&mut self, generics: &syn::Generics) -> BTreeSet<String> {
+        let outer = self.type_params.clone();
+        self.type_params
+            .extend(generics.type_params().map(|param| ident_name(&param.ident)));
+        outer
     }
 
     /// The receiver types a signature states: `self` as the `impl` block's

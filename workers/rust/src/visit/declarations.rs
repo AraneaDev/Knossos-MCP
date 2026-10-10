@@ -42,7 +42,7 @@ pub struct Declarations {
     /// The field types of every struct, by struct then field; `None` for a
     /// struct two files declare, whose fields cannot be told apart. See
     /// [`StructFields`].
-    fields: BTreeMap<String, Option<BTreeMap<String, String>>>,
+    fields: BTreeMap<String, Option<BTreeMap<String, FieldType>>>,
 }
 
 /// The names one file's visible `use` items (`pub use cfg::collect;`,
@@ -58,7 +58,29 @@ pub type ExportedNames = BTreeMap<String, Option<String>>;
 /// struct's canonical path then field name, resolved through the file's own
 /// imports: what a method call through `self.field` in another file's
 /// `impl` block resolves through.
-pub type StructFields = BTreeMap<String, BTreeMap<String, String>>;
+pub type StructFields = BTreeMap<String, BTreeMap<String, FieldType>>;
+
+/// The declared type of one struct field, as far as its own file can tell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FieldType {
+    /// The path the file's own imports, declarations or rooted paths
+    /// resolve the type to, marked when a smart pointer holds it (see
+    /// `Walk::receiver_type`).
+    Resolved(String),
+    /// A type named by one bare segment that the file neither declares nor
+    /// imports by name, so only its glob imports can bring it in. Which
+    /// glob source provides it is known only once every file is indexed, so
+    /// the name is resolved through `sources`, the modules the globs of the
+    /// struct's module import from, when the field is looked up.
+    Globbed {
+        /// The name as written.
+        name: String,
+        /// Whether a `Box`, `Rc` or `Arc` holds the type.
+        pointer: bool,
+        /// The modules the globs import from, in the order written.
+        sources: Vec<String>,
+    },
+}
 
 impl Declarations {
     /// An empty index.
@@ -146,10 +168,19 @@ impl Declarations {
             .map(|target| format!("{target}{}", &path[prefix.len()..]))
     }
 
+    /// What a visible `use` binds the path `name` to, exactly: `Some(None)`
+    /// when two of them bind it apart, `None` when none binds it. Remembered
+    /// as a lookup, like [`Declarations::exported`].
+    #[allow(clippy::option_option)]
+    pub fn export_of(&self, name: &str) -> Option<Option<String>> {
+        self.lookups.borrow_mut().insert(name.to_owned());
+        self.exports.get(name).cloned()
+    }
+
     /// The declared type of `owner`'s field `field`, as the struct's own
     /// file resolved it, remembering that `owner` was asked about: the file
     /// declaring it sits in a module above it.
-    pub fn field_type(&self, owner: &str, field: &str) -> Option<String> {
+    pub fn field_type(&self, owner: &str, field: &str) -> Option<FieldType> {
         self.lookups.borrow_mut().insert(owner.to_owned());
         self.fields.get(owner)?.as_ref()?.get(field).cloned()
     }

@@ -51,7 +51,35 @@ for classification. If that path is absent, no node is invented.
 | `returns`    | a method to the type its signature declares          | speculative, see below |
 
 A name that a glob import (`use crate::components::*;`) brings in resolves
-through it, after the names the enclosing module declares.
+through it, after the names the enclosing module declares. A type the module
+declares shadows the glob for a path below it too (`Widget::new()`), and a
+generic type parameter (`struct Gen<Thing>`) shadows any glob-imported type
+of its name. A glob source provides a name it declares or re-exports with a
+visible `use`, and the name resolves to where it is declared. A glob of a type
+(`use Kind::*;`) brings in its variants, never its associated functions. A name two glob sources provide as
+different items is ambiguous and resolves to nothing. A glob source that
+provides no such name adds nothing, so `Vec` through `use crate::prelude::*;`
+stays the standard library's.
+
+A `use` inside a function body, or inside any block in it, imports for that
+block only. Its names are in scope in the whole block, as Rust has it, over a
+module-level `use` of the same name, and nothing after the block sees them.
+Its path may start from a name the module or the block imports
+(`use Kind::{Big, Small};` under `use crate::model::Kind;`). A path starting
+from an item the block declares itself names nothing the graph holds, so the
+name it binds resolves to nothing in that block. Paths, constructors and
+receiver types inside the block resolve through it, and it emits the same
+`imports` edge a module-level `use` does.
+
+The same holds for a module-level `use`: its path may start from a name
+another `use` of the same module imports, whichever line comes first
+(`use m::W;` beside `use crate::m;` imports `crate::m::W`, and
+`use collections::HashMap;` beside `use std::collections;` imports
+`std::collections::HashMap`), or from an item the module declares
+(`use Kind::A;` beside `enum Kind`). A name a module both declares and imports
+belongs to `#[cfg]` alternatives (`pub use LazyCell as LazyLock;` beside a
+`struct LazyLock` under another `cfg`), so it keeps naming the declared item and
+re-exports nothing.
 
 A call whose callee is named in UpperCamelCase builds a value: `Wrapper(1)`
 constructs a tuple struct and `Error::Io(e)` an enum variant. Neither is a
@@ -106,8 +134,12 @@ returns (`state.mode().label()`) resolves through the declared return type. A
 call through a field (`self.walk.facts.edge()`) resolves through the field's
 declared type, also when the struct, its `impl` block and the field's type sit
 in three different files: the declaration index holds every struct's field
-types as the declaring file's own imports resolve them. `#[cfg]` alternatives
-of one struct keep only the field types they agree on.
+types as the declaring file's own imports resolve them. A field type that file
+names only through a glob import (`use crate::prelude::*;`, `use super::*;`) is
+kept as the bare name with the glob's source modules and resolved through the
+whole index when a call looks it up, so the caller's file reads the glob
+sources it consulted. `#[cfg]` alternatives of one struct keep only the field
+types they agree on.
 
 A path that reaches an item through a re-export (`crate::visit::collect()`
 under `pub use cfg::collect;` in `visit`) names the item where it is declared,
@@ -257,18 +289,22 @@ is read.
 - A private `use` re-exports nothing to the index, so a child module reaching
   an imported name through `super::name` is not followed to its declaration.
   A glob re-export (`pub use inner::*;`) is not followed either.
-- Re-exports and field types are resolved through the declaring file's own
-  `use` items, its own declarations and rooted paths only. A field type that
-  file reaches through a glob import (`use super::*;`) gets no type, so calls
-  through that field produce no edge.
+- Re-exports are resolved through the declaring file's own `use` items, its
+  own declarations and rooted paths only. A glob source provides only what it
+  declares or re-exports by name: a name it brings in through a glob of its
+  own, or through a private `use`, is not followed.
 - A type named bare that nothing in scope declares or imports (`Vec`,
   `Option`, `String`, `char`, `u8`) types no receiver, so a method called on
   one produces no edge rather than one to a made-up type of the module. A
   generic other than `Box`, `Rc` and `Arc` (`Option<T>`, `Vec<T>`,
   `Mutex<T>`) is not unwrapped, so a method called on what it holds
   (`self.items[0].run()`, `self.lock.lock().run()`) is not resolved.
-- A `use` inside a function body is not read, so a name it brings into scope
-  (`use Kind::*;` before a `match`) resolves as if it were absent.
+- Visibility is not checked. A glob source provides every item it declares,
+  private ones included, so a private item of a sibling module reached through
+  its glob can win over the prelude or make a name ambiguous where Rust would
+  not import it.
+- A glob `use` inside a function body (`use Kind::*;` before a `match`) is not
+  read, so a name it brings into scope resolves as if it were absent.
 - A bare `mod foo;` declaration emits only a containment edge. The module's own
   node comes from the file that defines it.
 - A `use` leaf whose parent is a type (`use crate::errors::Error::Io;`, or

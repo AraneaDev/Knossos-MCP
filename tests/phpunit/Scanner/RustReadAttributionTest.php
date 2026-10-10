@@ -443,6 +443,28 @@ final class RustReadAttributionTest extends KnossosTestCase
         $this->assertMatchesAFullScan($pdo);
     }
 
+    /**
+     * `holder.rs` names its field's type only through `use crate::prelude::*;`,
+     * and the prelude re-exports it: retargeting that re-export reaches
+     * `user.rs`, which calls through the field and never names the prelude.
+     */
+    public function testRetargetingWhatAGlobSourceProvidesRescansTheCaller(): void
+    {
+        $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        $this->write('src/lib.rs', "pub mod a;\npub mod b;\npub mod holder;\npub mod prelude;\npub mod user;\n");
+        $this->write('src/a.rs', "pub struct Store;\n\nimpl Store {\n    pub fn record(&self) {}\n}\n");
+        $this->write('src/b.rs', "pub struct Store;\n\nimpl Store {\n    pub fn record(&self) {}\n}\n");
+        $this->write('src/prelude.rs', "pub use crate::a::Store;\n");
+        $this->write('src/holder.rs', "use crate::prelude::*;\n\npub struct Holder {\n    pub(crate) store: Store,\n}\n");
+        $this->write('src/user.rs', "use crate::holder::Holder;\n\nimpl Holder {\n    pub fn save(&self) {\n        self.store.record();\n    }\n}\n");
+        $pdo = $this->scannedAndStamped();
+
+        $this->write('src/prelude.rs', "pub use crate::b::Store;\n");
+        $this->scan($pdo);
+        self::assertContains('src/user.rs', $this->rescannedFiles($pdo));
+        $this->assertMatchesAFullScan($pdo);
+    }
+
     private function writeCrate(): void
     {
         $this->write('Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");

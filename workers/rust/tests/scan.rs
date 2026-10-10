@@ -3197,3 +3197,501 @@ pub fn loud(s: &str) { str::shout(s); }
         "{targets:?}"
     );
 }
+
+#[test]
+fn a_field_typed_through_a_glob_import_resolves_through_its_re_export() {
+    // `holder.rs` names `Store` only through `use crate::prelude::*;`, and
+    // the prelude re-exports it from `model`. A call through the field, from
+    // the declaring file and from another file's `impl`, reaches the method
+    // `model` declares. `Vec` comes from no glob source and types nothing,
+    // so `push` on it is no call at all.
+    let files = [
+        (
+            "src/lib.rs",
+            "pub mod holder;\npub mod model;\npub mod prelude;\npub mod user;\n",
+        ),
+        (
+            "src/model.rs",
+            "pub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n}\n",
+        ),
+        ("src/prelude.rs", "pub use crate::model::Store;\n"),
+        (
+            "src/holder.rs",
+            "use crate::prelude::*;\npub struct Holder {\n    pub store: Store,\n    pub items: Vec<u8>,\n}\nimpl Holder {\n    pub fn local(&mut self) {\n        self.store.put();\n        self.items.push(1);\n    }\n}\n",
+        ),
+        (
+            "src/user.rs",
+            "use crate::holder::Holder;\nimpl Holder {\n    pub fn save(&mut self) {\n        self.store.put();\n        self.items.push(2);\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("glob-field-re-export", &files);
+
+    for caller in [
+        "rust:method:crate::holder::Holder::local",
+        "rust:method:crate::holder::Holder::save",
+    ] {
+        assert_eq!(
+            vec![("rust:method:crate::model::Store::put".to_owned(), true)],
+            method_calls(&contributions, caller),
+            "{caller}"
+        );
+    }
+    // The answer rests on what the prelude provides, so the file calling
+    // through the field read the prelude.
+    let walking = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/user.rs")
+        .unwrap();
+    assert!(
+        walking["reads"].get("src/prelude.rs").is_some(),
+        "{}",
+        walking["reads"]
+    );
+}
+
+#[test]
+fn a_field_typed_through_a_super_glob_resolves_in_another_file() {
+    // `child.rs` reaches `Engine` through `use super::*;`, which brings in
+    // what its parent module declares.
+    let files = [
+        ("src/lib.rs", "pub mod parent;\npub mod user;\n"),
+        (
+            "src/parent/mod.rs",
+            "pub mod child;\npub struct Engine;\nimpl Engine {\n    pub fn run(&self) {}\n}\n",
+        ),
+        (
+            "src/parent/child.rs",
+            "use super::*;\npub struct Car {\n    pub engine: Box<Engine>,\n}\n",
+        ),
+        (
+            "src/user.rs",
+            "use crate::parent::child::Car;\nimpl Car {\n    pub fn drive(&self) {\n        self.engine.run();\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("glob-field-super", &files);
+
+    assert_eq!(
+        vec![("rust:method:crate::parent::Engine::run".to_owned(), true)],
+        method_calls(
+            &contributions,
+            "rust:method:crate::parent::child::Car::drive"
+        )
+    );
+}
+
+#[test]
+fn a_name_two_glob_sources_provide_stays_unresolved() {
+    // `a` and `b` both declare `Store`: which one `use crate::a::*;` and
+    // `use crate::b::*;` bring in is ambiguous, so neither is guessed.
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod b;\npub mod holder;\npub mod user;\n"),
+        (
+            "src/a.rs",
+            "pub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n}\n",
+        ),
+        (
+            "src/b.rs",
+            "pub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n}\n",
+        ),
+        (
+            "src/holder.rs",
+            "use crate::a::*;\nuse crate::b::*;\npub struct Holder {\n    pub store: Store,\n}\nimpl Holder {\n    pub fn local(&self) {\n        self.store.put();\n        let other: Store = make();\n        other.put();\n    }\n}\nfn make<T>() -> T {\n    todo!()\n}\n",
+        ),
+        (
+            "src/user.rs",
+            "use crate::holder::Holder;\nimpl Holder {\n    pub fn save(&self) {\n        self.store.put();\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("glob-field-ambiguous", &files);
+
+    for caller in [
+        "rust:method:crate::holder::Holder::local",
+        "rust:method:crate::holder::Holder::save",
+    ] {
+        assert!(
+            method_calls(&contributions, caller)
+                .iter()
+                .all(|(target, _)| !target.ends_with("Store::put")),
+            "{caller}: {:?}",
+            method_calls(&contributions, caller)
+        );
+    }
+}
+
+#[test]
+fn a_use_in_a_function_body_applies_to_its_block_only() {
+    // A `use` inside a body brings its names into that block: it shadows
+    // the module's own `use` of the same name there, and nothing after the
+    // block sees it.
+    let declares = "pub struct Y;\nimpl Y {\n    pub fn new() -> Self {\n        Y\n    }\n    pub fn go(&self) {}\n}\npub fn helper() {}\n";
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod b;\npub mod user;\n"),
+        ("src/a.rs", declares),
+        ("src/b.rs", declares),
+        (
+            "src/user.rs",
+            "use crate::b::Y;\npub fn scoped() {\n    {\n        use crate::a::{helper, Y};\n        let y = Y::new();\n        y.go();\n        helper();\n    }\n    let z = Y::new();\n    z.go();\n}\npub fn top() {\n    use crate::a::helper;\n    helper();\n}\npub fn after() {\n    helper();\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("body-use-scope", &files);
+
+    assert_eq!(
+        vec![
+            ("rust:function:crate::a::helper".to_owned(), true),
+            ("rust:method:crate::a::Y::go".to_owned(), true),
+            ("rust:method:crate::a::Y::new".to_owned(), true),
+            ("rust:method:crate::b::Y::go".to_owned(), true),
+            ("rust:method:crate::b::Y::new".to_owned(), true),
+        ],
+        method_calls(&contributions, "rust:function:crate::user::scoped")
+    );
+    assert_eq!(
+        vec![("rust:function:crate::a::helper".to_owned(), true)],
+        method_calls(&contributions, "rust:function:crate::user::top")
+    );
+    assert_eq!(
+        Vec::<(String, bool)>::new(),
+        method_calls(&contributions, "rust:function:crate::user::after")
+    );
+}
+
+#[test]
+fn a_use_in_a_function_body_starts_from_a_name_in_scope() {
+    // `use Kind::{Big, Small};` in a body names the `Kind` the module
+    // imports, as any path may since the 2018 edition, not a crate `Kind`.
+    let files = [
+        ("src/lib.rs", "pub mod model;\npub mod user;\n"),
+        (
+            "src/model.rs",
+            "pub enum Kind {\n    Big(u8),\n    Small(u8),\n}\npub struct Store;\nimpl Store {\n    pub fn put(&self) {}\n}\n",
+        ),
+        (
+            "src/user.rs",
+            "use crate::model;\nuse crate::model::Kind;\npub fn pick(kind: Kind) -> u8 {\n    use model::Store;\n    use Kind::{Big, Small};\n    let store: Store = Store;\n    store.put();\n    match kind {\n        Big(n) | Small(n) => n,\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("body-use-in-scope-head", &files);
+    let targets: Vec<String> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["edges"].as_array().unwrap().clone())
+        .filter(|edge| edge["source"] == "rust:function:crate::user::pick")
+        .map(|edge| edge["target"].as_str().unwrap().to_owned())
+        .collect();
+
+    assert!(
+        targets.contains(&"rust:class:crate::model::Kind::Big".to_owned()),
+        "{targets:?}"
+    );
+    assert!(
+        targets.contains(&"rust:method:crate::model::Store::put".to_owned()),
+        "{targets:?}"
+    );
+    assert!(
+        !targets
+            .iter()
+            .any(|target| target.contains(":Kind::") && !target.contains("crate::model::Kind")),
+        "{targets:?}"
+    );
+}
+
+/// Every edge of `kind` leaving `source`, by target.
+fn targets_of(contributions: &[Value], kind: &str, source: &str) -> Vec<String> {
+    let mut targets: Vec<String> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["edges"].as_array().unwrap().clone())
+        .filter(|edge| edge["kind"] == kind && edge["source"] == source)
+        .map(|edge| edge["target"].as_str().unwrap().to_owned())
+        .collect();
+    targets.sort();
+    targets
+}
+
+#[test]
+fn a_generic_type_parameter_is_not_a_glob_imported_type() {
+    // `Gen<Thing>` declares its own `Thing`, which shadows the `Thing`
+    // `use crate::a::*;` brings in, for its fields and in a generic
+    // function's signature alike.
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod imp;\npub mod s;\n"),
+        (
+            "src/a.rs",
+            "pub struct Thing;\nimpl Thing {\n    pub fn go(&self) {}\n}\n",
+        ),
+        (
+            "src/s.rs",
+            "use crate::a::*;\npub struct Gen<Thing> {\n    pub x: Thing,\n}\nimpl<Thing> Gen<Thing> {\n    pub fn local(&self, other: Thing) {\n        self.x.go();\n        other.go();\n    }\n}\npub fn generic<Thing>(t: Thing) {\n    t.go();\n}\n",
+        ),
+        (
+            "src/imp.rs",
+            "use crate::s::Gen;\nimpl<T> Gen<T> {\n    pub fn f(&self) {\n        self.x.go();\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("glob-generic-parameter", &files);
+
+    for caller in [
+        "rust:method:crate::s::Gen::local",
+        "rust:method:crate::s::Gen::f",
+        "rust:function:crate::s::generic",
+    ] {
+        assert_eq!(
+            Vec::<(String, bool)>::new(),
+            method_calls(&contributions, caller),
+            "{caller}"
+        );
+    }
+}
+
+#[test]
+fn a_use_starting_from_a_name_another_use_imports_expands_through_it() {
+    // `use m::W;` under `use crate::m;` names `crate::m::W`, whichever line
+    // comes first, at module level and in a block; `use Kind::A;` beside
+    // `enum Kind` names this module's `Kind`. None of them is a crate.
+    let files = [
+        ("src/lib.rs", "pub mod body;\npub mod k;\npub mod m;\npub mod r;\n"),
+        (
+            "src/m.rs",
+            "pub struct W;\nimpl W {\n    pub fn new() -> W {\n        W\n    }\n}\n",
+        ),
+        (
+            "src/k.rs",
+            "use crate::m;\nuse m::W;\nuse std::collections;\nuse collections::HashMap;\npub enum Kind {\n    A,\n    B,\n}\nuse Kind::A;\npub fn f() {\n    W::new();\n    let _ = A;\n}\n",
+        ),
+        (
+            "src/r.rs",
+            "use m::W;\nuse crate::m;\npub fn f() {\n    W::new();\n}\n",
+        ),
+        (
+            "src/body.rs",
+            "pub fn chain() {\n    use crate::m;\n    use m::W;\n    W::new();\n}\npub fn chain_std() {\n    use collections::HashMap;\n    use std::collections;\n    let _h: HashMap<u8, u8> = HashMap::new();\n}\npub fn local_enum() {\n    enum Kind {\n        A,\n    }\n    use Kind::A;\n    let _ = A;\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("use-head-bound-by-use", &files);
+
+    for (caller, module) in [
+        ("rust:function:crate::k::f", "rust:module:crate::k"),
+        ("rust:function:crate::r::f", "rust:module:crate::r"),
+        (
+            "rust:function:crate::body::chain",
+            "rust:module:crate::body",
+        ),
+    ] {
+        assert_eq!(
+            vec![("rust:method:crate::m::W::new".to_owned(), true)],
+            method_calls(&contributions, caller),
+            "{caller}"
+        );
+        let imports = targets_of(&contributions, "imports", module);
+        assert!(
+            imports
+                .iter()
+                .all(|target| target.starts_with("rust:module:crate")
+                    || target.starts_with("rust:module:std")),
+            "{module}: {imports:?}"
+        );
+    }
+    assert!(
+        targets_of(
+            &contributions,
+            "calls",
+            "rust:function:crate::body::chain_std"
+        )
+        .contains(&"rust:method:std::collections::HashMap::new".to_owned()),
+        "{:?}",
+        targets_of(
+            &contributions,
+            "calls",
+            "rust:function:crate::body::chain_std"
+        )
+    );
+    assert!(
+        targets_of(&contributions, "references", "rust:module:crate::k")
+            .contains(&"rust:class:crate::k::Kind".to_owned()),
+        "{:?}",
+        targets_of(&contributions, "references", "rust:module:crate::k")
+    );
+    let local = targets_of(
+        &contributions,
+        "references",
+        "rust:function:crate::body::local_enum",
+    );
+    assert!(
+        local.iter().all(|target| !target.contains(":Kind")),
+        "{local:?}"
+    );
+}
+
+#[test]
+fn a_type_the_module_declares_beats_a_glob_for_a_path_below_it() {
+    // `d` declares its own `Widget`, so `Widget::new()` there never names
+    // the `Widget` `use crate::a::*;` brings in.
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod d;\n"),
+        (
+            "src/a.rs",
+            "pub struct Widget;\nimpl Widget {\n    pub fn new() -> Self {\n        Widget\n    }\n}\n",
+        ),
+        (
+            "src/d.rs",
+            "use crate::a::*;\npub struct Widget;\npub fn bare() {\n    Widget::new();\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("glob-own-type-wins", &files);
+
+    assert_eq!(
+        Vec::<(String, bool)>::new(),
+        method_calls(&contributions, "rust:function:crate::d::bare")
+    );
+}
+
+#[test]
+fn a_glob_of_an_enum_does_not_import_its_methods() {
+    // `use crate::a::Kind::*;` brings in the variants of `Kind`, never its
+    // associated functions, so a bare `helper()` does not name one.
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod e;\n"),
+        (
+            "src/a.rs",
+            "pub enum Kind {\n    Big,\n}\nimpl Kind {\n    pub fn helper() {}\n}\n",
+        ),
+        (
+            "src/e.rs",
+            "use crate::a::Kind::*;\npub fn g() {\n    helper();\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("glob-enum-methods", &files);
+
+    assert_eq!(
+        Vec::<(String, bool)>::new(),
+        method_calls(&contributions, "rust:function:crate::e::g")
+    );
+}
+
+#[test]
+fn an_explicit_import_or_own_declaration_beats_a_glob_for_a_field() {
+    // `c` imports `b::Widget` by name and `d` declares its own `Widget`, so
+    // a field of either, looked up from another file, never takes the
+    // `Widget` `use crate::a::*;` brings in.
+    let declares = "pub struct Widget;\nimpl Widget {\n    pub fn run(&self) {}\n}\n";
+    let files = [
+        ("src/lib.rs", "pub mod a;\npub mod b;\npub mod c;\npub mod d;\npub mod user;\n"),
+        ("src/a.rs", declares),
+        ("src/b.rs", declares),
+        (
+            "src/c.rs",
+            "use crate::a::*;\nuse crate::b::Widget;\npub struct Holder {\n    pub w: Widget,\n}\n",
+        ),
+        (
+            "src/d.rs",
+            "use crate::a::*;\npub struct Widget;\nimpl Widget {\n    pub fn run(&self) {}\n}\npub struct Holder {\n    pub w: Widget,\n}\n",
+        ),
+        (
+            "src/user.rs",
+            "impl crate::c::Holder {\n    pub fn f(&self) {\n        self.w.run();\n    }\n}\nimpl crate::d::Holder {\n    pub fn f(&self) {\n        self.w.run();\n    }\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("glob-field-explicit-wins", &files);
+
+    assert_eq!(
+        vec![("rust:method:crate::b::Widget::run".to_owned(), true)],
+        method_calls(&contributions, "rust:method:crate::c::Holder::f")
+    );
+    assert_eq!(
+        vec![("rust:method:crate::d::Widget::run".to_owned(), true)],
+        method_calls(&contributions, "rust:method:crate::d::Holder::f")
+    );
+}
+
+#[test]
+fn a_body_use_reaches_nested_functions_closures_and_earlier_statements() {
+    // A `use` in a block is in scope in the whole block: in a function item
+    // nested there, in a closure, and before the `use` itself.
+    let files = [
+        ("src/lib.rs", "pub mod body;\npub mod m;\npub mod n;\n"),
+        ("src/m.rs", "pub fn hi() {}\n"),
+        ("src/n.rs", "pub fn hi() {}\n"),
+        (
+            "src/body.rs",
+            "use crate::n::hi;\npub fn nested_fn() {\n    use crate::m::hi;\n    fn inner() {\n        hi();\n    }\n    inner();\n}\npub fn closure() {\n    let c = || {\n        use crate::m::hi;\n        hi();\n    };\n    c();\n    hi();\n}\npub fn late() {\n    hi();\n    use crate::m::hi;\n}\n",
+        ),
+    ];
+    let contributions = scan_fixture("body-use-reach", &files);
+    let m_hi = ("rust:function:crate::m::hi".to_owned(), true);
+    let n_hi = ("rust:function:crate::n::hi".to_owned(), true);
+
+    assert_eq!(
+        vec![m_hi.clone()],
+        method_calls(&contributions, "rust:function:crate::body::nested_fn")
+            .into_iter()
+            .filter(|(target, _)| target.ends_with("::hi"))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        vec![m_hi.clone(), n_hi],
+        method_calls(&contributions, "rust:function:crate::body::closure")
+    );
+    assert_eq!(
+        vec![m_hi],
+        method_calls(&contributions, "rust:function:crate::body::late")
+    );
+}
+
+#[test]
+fn a_use_binding_a_name_its_own_path_starts_from_binds_no_other_leaf() {
+    // `use alloc::alloc::{alloc, dealloc};` binds the function `alloc`, but
+    // its own path starts from the crate `alloc`, so the crate is what
+    // `dealloc`'s path starts from too, not the function.
+    let source =
+        "use alloc::alloc::{alloc, dealloc};\npub fn free() {\n    dealloc();\n    alloc();\n}\n";
+    let contributions = scan_fixture("use-self-binding-head", &[("src/lib.rs", source)]);
+
+    assert_eq!(
+        vec![
+            ("rust:function:alloc::alloc::alloc".to_owned(), false),
+            ("rust:function:alloc::alloc::dealloc".to_owned(), false),
+        ],
+        method_calls(&contributions, "rust:function:crate::free")
+    );
+}
+
+#[test]
+fn a_use_of_an_item_the_module_declares_imports_no_module() {
+    // `pub use LazyCell as LazyLock;` names this module's own `LazyCell`:
+    // the module does not import itself. `use std::fmt::Write as _;` in a
+    // body binds no name, yet still imports `std::fmt`.
+    let source = "pub struct LazyCell;\npub use LazyCell as LazyLock;\npub fn go() {\n    use std::fmt::Write as _;\n}\n";
+    let contributions = scan_fixture("use-own-item-alias", &[("src/lib.rs", source)]);
+
+    assert_eq!(
+        vec!["rust:module:std::fmt".to_owned()],
+        targets_of(&contributions, "imports", "rust:module:crate")
+    );
+}
+
+#[test]
+fn a_name_the_module_declares_and_imports_under_cfg_keeps_its_declaration() {
+    // `LazyLock` is a re-export of `LazyCell` under one `cfg` and a struct
+    // of its own under the other: its `impl` blocks belong to the struct,
+    // never to `LazyCell`.
+    let source = "pub struct LazyCell;\nimpl LazyCell {\n    pub fn new() -> Self {\n        LazyCell\n    }\n}\n#[cfg(not(feature = \"atomics\"))]\npub use LazyCell as LazyLock;\n#[cfg(feature = \"atomics\")]\npub struct LazyLock;\n#[cfg(feature = \"atomics\")]\nimpl LazyLock {\n    pub fn make() -> Self {\n        LazyLock\n    }\n}\n#[cfg(feature = \"atomics\")]\nunsafe impl Send for LazyLock {}\n";
+    let contributions = scan_fixture("cfg-declared-and-imported", &[("src/lib.rs", source)]);
+    let methods: Vec<String> = contributions[0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["kind"] == "method")
+        .map(|node| node["canonical_name"].as_str().unwrap().to_owned())
+        .collect();
+
+    assert!(
+        methods.contains(&"crate::LazyLock::make".to_owned()),
+        "{methods:?}"
+    );
+    assert!(
+        !methods.iter().any(|m| m.ends_with("LazyCell::make")),
+        "{methods:?}"
+    );
+    assert_eq!(
+        vec!["rust:interface:std::marker::Send".to_owned()],
+        targets_of(&contributions, "implements", "rust:class:crate::LazyLock")
+    );
+}
