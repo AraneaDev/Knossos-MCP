@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use InvalidArgumentException;
+use Knossos\Store\ChunkedInQuery;
 
 /**
  * Dependency cycles: the strongly connected components of the selected dependency graph.
@@ -337,12 +338,8 @@ final readonly class DependencyCycleQuery extends AbstractArchitectureQueryServi
     private function rowsByIds(string $sql, array $ids): array
     {
         $rows = [];
-        foreach (array_chunk(array_values(array_unique($ids)), 500) as $chunk) {
-            $statement = $this->pdo->prepare(sprintf($sql, implode(',', array_fill(0, count($chunk), '?'))));
-            $statement->execute($chunk);
-            foreach ($statement->fetchAll() as $row) {
-                $rows[$row['id']] = $row;
-            }
+        foreach (ChunkedInQuery::rows($this->pdo, $sql, array_values(array_unique($ids))) as $row) {
+            $rows[$row['id']] = $row;
         }
 
         return $rows;

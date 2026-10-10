@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Knossos\Store\ChunkedInQuery;
+
 /**
  * Decides which components with no inbound reference are worth reporting.
  *
@@ -337,16 +339,13 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     private function subtypeMemberNames(string $projectId, array $typeIds): array
     {
         $subtypesOf = [];
-        foreach (array_chunk($typeIds, 500) as $chunk) {
-            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-            $statement = $this->pdo->prepare(
-                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') " .
-                sprintf('AND target_id IN (%s)', $placeholders),
-            );
-            $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll() as $row) {
-                $subtypesOf[$row['target_id']][] = $row['source_id'];
-            }
+        foreach (ChunkedInQuery::rows(
+            $this->pdo,
+            "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') AND target_id IN (%s)",
+            $typeIds,
+            [$projectId],
+        ) as $row) {
+            $subtypesOf[$row['target_id']][] = $row['source_id'];
         }
         if ($subtypesOf === []) {
             return [];
@@ -360,32 +359,26 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $frontier = $subtypeIds;
         for ($depth = 0; $depth < 10 && $frontier !== []; ++$depth) {
             $found = [];
-            foreach (array_chunk($frontier, 500) as $chunk) {
-                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-                $statement = $this->pdo->prepare(
-                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('extends', 'uses_trait') " .
-                    sprintf('AND source_id IN (%s)', $placeholders),
-                );
-                $statement->execute([$projectId, ...$chunk]);
-                foreach ($statement->fetchAll() as $row) {
-                    $basesOf[(string) $row['source_id']][] = (string) $row['target_id'];
-                    $found[] = (string) $row['target_id'];
-                }
+            foreach (ChunkedInQuery::rows(
+                $this->pdo,
+                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('extends', 'uses_trait') AND source_id IN (%s)",
+                $frontier,
+                [$projectId],
+            ) as $row) {
+                $basesOf[(string) $row['source_id']][] = (string) $row['target_id'];
+                $found[] = (string) $row['target_id'];
             }
             $frontier = array_values(array_diff(array_unique($found), array_keys($basesOf), $subtypeIds));
         }
         $declaringIds = array_values(array_unique([...$subtypeIds, ...array_merge(...array_values($basesOf) ?: [[]])]));
-        foreach (array_chunk($declaringIds, 500) as $chunk) {
-            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-            $statement = $this->pdo->prepare(
-                'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
-                "WHERE e.project_id = ? AND e.kind = 'contains' " .
-                sprintf('AND e.source_id IN (%s)', $placeholders),
-            );
-            $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll() as $row) {
-                $memberNames[$row['source_id']][(string) $row['display_name']] = true;
-            }
+        foreach (ChunkedInQuery::rows(
+            $this->pdo,
+            'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
+            "WHERE e.project_id = ? AND e.kind = 'contains' AND e.source_id IN (%s)",
+            $declaringIds,
+            [$projectId],
+        ) as $row) {
+            $memberNames[$row['source_id']][(string) $row['display_name']] = true;
         }
 
         $result = [];
@@ -442,169 +435,28 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
         $classOfMethod = [];
         $kindOfClass = [];
-        foreach (array_chunk($methodIds, 500) as $chunk) {
-            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-            $statement = $this->pdo->prepare(
-                "SELECT e.source_id, e.target_id, n.kind FROM edges e JOIN nodes n ON n.id = e.source_id WHERE e.project_id = ? AND e.kind = 'contains' " .
-                sprintf('AND e.target_id IN (%s)', $placeholders),
-            );
-            $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll() as $row) {
-                $classOfMethod[$row['target_id']] = $row['source_id'];
-                $kindOfClass[$row['source_id']] = (string) $row['kind'];
-            }
+        foreach (ChunkedInQuery::rows(
+            $this->pdo,
+            "SELECT e.source_id, e.target_id, n.kind FROM edges e JOIN nodes n ON n.id = e.source_id WHERE e.project_id = ? AND e.kind = 'contains' AND e.target_id IN (%s)",
+            $methodIds,
+            [$projectId],
+        ) as $row) {
+            $classOfMethod[$row['target_id']] = $row['source_id'];
+            $kindOfClass[$row['source_id']] = (string) $row['kind'];
         }
-        // Walk the extends/implements closure transitively (bounded depth) so a
-        // method overriding a grandparent's member is recognized as inherited,
-        // not just one overriding a direct parent's.
-        $parents = [];
-        $edgesResolved = [];
-        // The subtypes that inherit each class's members, whose own contracts
-        // those members may fulfil: walked for their ancestors too.
-        $subtypesOf = $this->inheritingSubtypes($projectId, array_values(array_unique(array_values($classOfMethod))));
-        $frontier = array_values(array_unique([...array_values($classOfMethod), ...array_merge(...array_values($subtypesOf) ?: [[]])]));
-        $maxAncestorDepth = 20;
-        for ($depth = 0; $depth < $maxAncestorDepth && $frontier !== []; $depth++) {
-            $pending = array_values(array_filter($frontier, static fn(string $id): bool => !isset($edgesResolved[$id])));
-            if ($pending === []) {
-                break;
-            }
-            $discovered = [];
-            foreach (array_chunk($pending, 500) as $chunk) {
-                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-                // `returns` joins the walk because a factory returning an object
-                // literal is how a language without classes writes an
-                // implementation: the literal's members are contained by the
-                // FUNCTION, and a call site typed as the interface resolves to
-                // the interface's member, so the literal's member has no inbound
-                // edge and reads as dead. The function's declared return type is
-                // the contract it satisfies, which is exactly what `extends` and
-                // `implements` say for a class. Only a function carries a
-                // `returns` edge, so the class case is untouched.
-                $statement = $this->pdo->prepare(
-                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends', 'returns') " .
-                    sprintf('AND source_id IN (%s)', $placeholders),
-                );
-                $statement->execute([$projectId, ...$chunk]);
-                foreach ($statement->fetchAll() as $row) {
-                    $parents[$row['source_id']][] = $row['target_id'];
-                    $discovered[] = $row['target_id'];
-                }
-            }
-            foreach ($pending as $id) {
-                $edgesResolved[$id] = true;
-            }
-            $frontier = array_values(array_unique($discovered));
-        }
-        $ancestorIds = array_values(array_unique(array_merge(...array_values($parents) ?: [[]])));
-        $ancestorMeta = [];
-        foreach (array_chunk($ancestorIds, 500) as $chunk) {
-            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-            $statement = $this->pdo->prepare(
-                sprintf('SELECT id, kind, display_name, origin FROM nodes WHERE project_id = ? AND id IN (%s)', $placeholders),
-            );
-            $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll() as $row) {
-                $ancestorMeta[$row['id']] = $row;
-            }
-        }
-        $internalAncestors = array_values(array_filter(
-            $ancestorIds,
-            static fn(string $id): bool => isset($ancestorMeta[$id])
-                && !str_starts_with((string) $ancestorMeta[$id]['kind'], 'external_')
-                && !in_array($ancestorMeta[$id]['origin'], ['external', 'unresolved'], true),
-        ));
-        $memberNames = [];
-        $internalSet = array_flip($internalAncestors);
-        $declaring = array_values(array_unique([...$internalAncestors, ...array_merge(...array_values($subtypesOf) ?: [[]])]));
-        foreach (array_chunk($declaring, 500) as $chunk) {
-            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-            $statement = $this->pdo->prepare(
-                'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
-                "WHERE e.project_id = ? AND e.kind = 'contains' " .
-                sprintf('AND e.source_id IN (%s)', $placeholders),
-            );
-            $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll() as $row) {
-                $memberNames[$row['source_id']][(string) $row['display_name']] = true;
-            }
-        }
-
-        // Iterative transitive-closure of ancestors for a class, memoized.
-        $closureCache = [];
-        $closureOf = static function (string $classId) use ($parents, &$closureCache): array {
-            if (isset($closureCache[$classId])) {
-                return $closureCache[$classId];
-            }
-            $seen = [];
-            $stack = $parents[$classId] ?? [];
-            while ($stack !== []) {
-                $id = array_pop($stack);
-                if (isset($seen[$id])) {
-                    continue;
-                }
-                $seen[$id] = true;
-                foreach ($parents[$id] ?? [] as $parentId) {
-                    if (!isset($seen[$parentId])) {
-                        $stack[] = $parentId;
-                    }
-                }
-            }
-            $closureCache[$classId] = array_keys($seen);
-            return $closureCache[$classId];
-        };
-
-        $subtypeMembers = $this->subtypeMemberNames($projectId, array_values(array_unique(array_values($classOfMethod))));
+        $classIds = array_values(array_unique(array_values($classOfMethod)));
+        $graph = InheritanceGraph::load($this->pdo, $projectId, $classIds);
+        $subtypeMembers = $this->subtypeMemberNames($projectId, $classIds);
         $handedBindings = $this->referencedBindings($projectId, array_keys(array_filter($kindOfClass, static fn(string $kind): bool => $kind === 'variable')));
 
         $result = [];
         foreach ($methodIds as $methodId) {
             $classId = $classOfMethod[$methodId] ?? null;
-            $ancestors = $classId === null ? [] : $closureOf($classId);
-            $inherited = false;
-            $externalAncestor = null;
+            $ancestors = $classId === null ? [] : $graph->closureOf($classId);
             sort($ancestors, SORT_STRING);
-            foreach ($ancestors as $ancestorId) {
-                $meta = $ancestorMeta[$ancestorId] ?? null;
-                $isExternal = $meta === null
-                    || str_starts_with((string) $meta['kind'], 'external_')
-                    || in_array($meta['origin'], ['external', 'unresolved'], true);
-                if ($isExternal) {
-                    $externalAncestor ??= $meta === null ? 'an unresolved type' : (string) $meta['display_name'];
-                    continue;
-                }
-                if (isset($memberNames[$ancestorId][$methodNames[$methodId]])) {
-                    $inherited = true;
-                    break;
-                }
-            }
-            // A subtype that does not override this member may fulfil its own
-            // contract with it: a trait's method, or a base class's, satisfying
-            // an interface the using or extending class declares.
+            [$inherited, $externalAncestor] = self::ancestorEvidence($graph, $ancestors, $methodNames[$methodId]);
             if (!$inherited && $classId !== null) {
-                $name = $methodNames[$methodId];
-                $chain = array_flip([$classId, ...$ancestors]);
-                $descendants = array_flip($subtypesOf[$classId] ?? []);
-                foreach ($subtypesOf[$classId] ?? [] as $subtypeId) {
-                    if (isset($memberNames[$subtypeId][$name])) {
-                        continue;
-                    }
-                    $subtypeAncestors = $closureOf($subtypeId);
-                    // A descendant between this subtype and the method's type
-                    // that overrides it is what the subtype inherits instead.
-                    foreach ($subtypeAncestors as $ancestorId) {
-                        if (isset($descendants[$ancestorId], $memberNames[$ancestorId][$name])) {
-                            continue 2;
-                        }
-                    }
-                    foreach ($subtypeAncestors as $ancestorId) {
-                        if (!isset($chain[$ancestorId]) && !isset($descendants[$ancestorId])
-                            && isset($internalSet[$ancestorId], $memberNames[$ancestorId][$name])) {
-                            $inherited = true;
-                            break 2;
-                        }
-                    }
-                }
+                $inherited = $graph->isInheritedViaSubtype($classId, $ancestors, $methodNames[$methodId]);
             }
             $result[$methodId] = [
                 'inherited' => $inherited,
@@ -625,50 +477,28 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     }
 
     /**
-     * The types that inherit each of `$typeIds`' members, at any depth: a class
-     * extending it, or a class using it as a trait.
+     * What a method's ancestors, in id order, say about it: whether one
+     * declares a member of the same name, and the first external ancestor met
+     * before that one, whose members are not statically visible.
      *
-     * @param list<string> $typeIds
-     * @return array<string, list<string>> type id => subtype ids
+     * @param list<string> $ancestors
+     * @return array{0: bool, 1: ?string}
      */
-    private function inheritingSubtypes(string $projectId, array $typeIds): array
+    private static function ancestorEvidence(InheritanceGraph $graph, array $ancestors, string $name): array
     {
-        $direct = [];
-        $frontier = $typeIds;
-        for ($depth = 0; $depth < 10 && $frontier !== []; ++$depth) {
-            $found = [];
-            foreach (array_chunk($frontier, 500) as $chunk) {
-                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-                $statement = $this->pdo->prepare(
-                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('extends', 'uses_trait') " .
-                    sprintf('AND target_id IN (%s)', $placeholders),
-                );
-                $statement->execute([$projectId, ...$chunk]);
-                foreach ($statement->fetchAll() as $row) {
-                    $direct[(string) $row['target_id']][(string) $row['source_id']] = true;
-                    $found[] = (string) $row['source_id'];
-                }
+        $externalAncestor = null;
+        foreach ($ancestors as $ancestorId) {
+            if ($graph->isExternal($ancestorId)) {
+                $meta = $graph->meta($ancestorId);
+                $externalAncestor ??= $meta === null ? 'an unresolved type' : (string) $meta['display_name'];
+                continue;
             }
-            $frontier = array_values(array_diff(array_unique($found), array_keys($direct)));
-        }
-        $result = [];
-        foreach ($typeIds as $typeId) {
-            $seen = [];
-            $stack = array_keys($direct[$typeId] ?? []);
-            while ($stack !== []) {
-                $id = array_pop($stack);
-                if (isset($seen[$id]) || $id === $typeId) {
-                    continue;
-                }
-                $seen[$id] = true;
-                array_push($stack, ...array_keys($direct[$id] ?? []));
-            }
-            if ($seen !== []) {
-                $result[$typeId] = array_keys($seen);
+            if (isset($graph->memberNames($ancestorId)[$name])) {
+                return [true, $externalAncestor];
             }
         }
 
-        return $result;
+        return [false, $externalAncestor];
     }
 
     /**
@@ -684,33 +514,27 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     private function referencedBindings(string $projectId, array $bindingIds): array
     {
         $reads = [];
-        foreach (array_chunk($bindingIds, 500) as $chunk) {
-            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-            $statement = $this->pdo->prepare(
-                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind = 'references' " .
-                sprintf('AND target_id IN (%s)', $placeholders),
-            );
-            $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll() as $row) {
-                $reads[] = [(string) $row['source_id'], (string) $row['target_id']];
-            }
+        foreach (ChunkedInQuery::rows(
+            $this->pdo,
+            "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind = 'references' AND target_id IN (%s)",
+            $bindingIds,
+            [$projectId],
+        ) as $row) {
+            $reads[] = [(string) $row['source_id'], (string) $row['target_id']];
         }
         // Each reader's enclosing declarations, up the `contains` chain.
         $parentOf = [];
         $frontier = array_values(array_unique(array_column($reads, 0)));
         for ($depth = 0; $depth < 20 && $frontier !== []; ++$depth) {
             $found = [];
-            foreach (array_chunk($frontier, 500) as $chunk) {
-                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-                $statement = $this->pdo->prepare(
-                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind = 'contains' " .
-                    sprintf('AND target_id IN (%s)', $placeholders),
-                );
-                $statement->execute([$projectId, ...$chunk]);
-                foreach ($statement->fetchAll() as $row) {
-                    $parentOf[(string) $row['target_id']] = (string) $row['source_id'];
-                    $found[] = (string) $row['source_id'];
-                }
+            foreach (ChunkedInQuery::rows(
+                $this->pdo,
+                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind = 'contains' AND target_id IN (%s)",
+                $frontier,
+                [$projectId],
+            ) as $row) {
+                $parentOf[(string) $row['target_id']] = (string) $row['source_id'];
+                $found[] = (string) $row['source_id'];
             }
             $frontier = array_values(array_diff(array_unique($found), array_keys($parentOf)));
         }
@@ -774,35 +598,30 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $reachability = [];
         $kinds = implode(',', array_fill(0, count($edgeKinds), '?'));
         $testRole = $this->pdo->quote(ReportableComponent::TEST_ROLE);
-        foreach (array_chunk($containerIds, 500) as $chunk) {
-            $containers = implode(',', array_fill(0, count($chunk), '?'));
-            // The join order and the indexes are fixed (`CROSS JOIN` keeps
-            // `members` outside): without planner statistics, which a freshly
-            // scanned store has none of, SQLite put the edge table outside and
-            // walked every edge of the project for each member, so a project
-            // of 25,000 containers took half a second per chunk.
-            $statement = $this->pdo->prepare(
-                'WITH RECURSIVE members(container_id, member_id) AS (' .
-                'SELECT source_id, target_id FROM edges INDEXED BY edges_project_source_idx WHERE project_id = ? AND kind = \'contains\' AND source_id IN (' . $containers . ') ' .
-                'UNION ' .
-                'SELECT members.container_id, child.target_id FROM members CROSS JOIN edges child INDEXED BY edges_project_source_idx ON child.project_id = ? AND child.kind = \'contains\' AND child.source_id = members.member_id' .
-                ') ' .
-                'SELECT members.container_id, COUNT(*) AS any_reference, ' .
-                'MAX(CASE WHEN NOT EXISTS (SELECT 1 FROM classifications c WHERE c.node_id = usage.source_id AND c.role = ' . $testRole . ') THEN 1 ELSE 0 END) AS production_reference ' .
-                'FROM members CROSS JOIN edges usage INDEXED BY edges_project_target_idx ON usage.project_id = ? AND usage.target_id = members.member_id ' .
-                sprintf('AND usage.kind IN (%s) ', $kinds) .
-                "AND CASE usage.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
-                'WHERE usage.source_id <> members.container_id ' .
-                'AND NOT EXISTS (SELECT 1 FROM members internal WHERE internal.container_id = members.container_id AND internal.member_id = usage.source_id) ' .
-                'GROUP BY members.container_id',
-            );
-            $statement->execute([$projectId, ...$chunk, $projectId, $projectId, ...$edgeKinds, $minConfidenceRank]);
-            foreach ($statement->fetchAll() as $row) {
-                $reachability[(string) $row['container_id']] = [
-                    'any' => (int) $row['any_reference'] > 0,
-                    'production' => (int) $row['production_reference'] > 0,
-                ];
-            }
+        // The join order and the indexes are fixed (`CROSS JOIN` keeps
+        // `members` outside): without planner statistics, which a freshly
+        // scanned store has none of, SQLite put the edge table outside and
+        // walked every edge of the project for each member, so a project
+        // of 25,000 containers took half a second per chunk. The container
+        // list is the `%s` the chunked query fills in.
+        $sql = 'WITH RECURSIVE members(container_id, member_id) AS (' .
+            'SELECT source_id, target_id FROM edges INDEXED BY edges_project_source_idx WHERE project_id = ? AND kind = \'contains\' AND source_id IN (%s) ' .
+            'UNION ' .
+            'SELECT members.container_id, child.target_id FROM members CROSS JOIN edges child INDEXED BY edges_project_source_idx ON child.project_id = ? AND child.kind = \'contains\' AND child.source_id = members.member_id' .
+            ') ' .
+            'SELECT members.container_id, COUNT(*) AS any_reference, ' .
+            'MAX(CASE WHEN NOT EXISTS (SELECT 1 FROM classifications c WHERE c.node_id = usage.source_id AND c.role = ' . $testRole . ') THEN 1 ELSE 0 END) AS production_reference ' .
+            'FROM members CROSS JOIN edges usage INDEXED BY edges_project_target_idx ON usage.project_id = ? AND usage.target_id = members.member_id ' .
+            'AND usage.kind IN (' . $kinds . ') ' .
+            "AND CASE usage.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
+            'WHERE usage.source_id <> members.container_id ' .
+            'AND NOT EXISTS (SELECT 1 FROM members internal WHERE internal.container_id = members.container_id AND internal.member_id = usage.source_id) ' .
+            'GROUP BY members.container_id';
+        foreach (ChunkedInQuery::rows($this->pdo, $sql, $containerIds, [$projectId], [$projectId, $projectId, ...$edgeKinds, $minConfidenceRank]) as $row) {
+            $reachability[(string) $row['container_id']] = [
+                'any' => (int) $row['any_reference'] > 0,
+                'production' => (int) $row['production_reference'] > 0,
+            ];
         }
 
         return $reachability;

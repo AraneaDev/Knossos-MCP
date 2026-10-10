@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Knossos\Store\ChunkedInQuery;
 use PDO;
 
 /**
@@ -112,12 +113,8 @@ final readonly class BlastRadiusService
     private function roles(array $ids): array
     {
         $roles = [];
-        foreach (array_chunk($ids, 500) as $chunk) {
-            $statement = $this->pdo->prepare('SELECT node_id, role FROM classifications WHERE node_id IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')');
-            $statement->execute($chunk);
-            foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$node, $role]) {
-                $roles[(string) $node][] = (string) $role;
-            }
+        foreach (ChunkedInQuery::rows($this->pdo, 'SELECT node_id, role FROM classifications WHERE node_id IN (%s)', $ids, mode: PDO::FETCH_NUM) as [$node, $role]) {
+            $roles[(string) $node][] = (string) $role;
         }
 
         return $roles;
@@ -210,14 +207,9 @@ final readonly class BlastRadiusService
      */
     private function hasDependents(string $projectId, array $ids, array $kinds): bool
     {
-        foreach (array_chunk($ids, 400) as $chunk) {
-            $statement = $this->pdo->prepare(
-                'SELECT 1 FROM edges WHERE project_id = ? AND target_id IN (' . implode(',', array_fill(0, count($chunk), '?')) . ') AND kind IN (' . implode(',', array_fill(0, count($kinds), '?')) . ') LIMIT 1',
-            );
-            $statement->execute([$projectId, ...$chunk, ...$kinds]);
-            if ($statement->fetchColumn() !== false) {
-                return true;
-            }
+        $sql = 'SELECT 1 FROM edges WHERE project_id = ? AND target_id IN (%s) AND kind IN (' . implode(',', array_fill(0, count($kinds), '?')) . ') LIMIT 1';
+        foreach (ChunkedInQuery::rows($this->pdo, $sql, $ids, [$projectId], $kinds, size: 400) as $_) {
+            return true;
         }
 
         return false;
@@ -260,14 +252,9 @@ final readonly class BlastRadiusService
     private function places(array $ids): array
     {
         $places = [];
-        foreach (array_chunk($ids, 500) as $chunk) {
-            $statement = $this->pdo->prepare(
-                'SELECT n.id, n.display_name, n.canonical_name, n.kind, f.relative_path, n.start_line FROM nodes n LEFT JOIN files f ON f.id = n.file_id WHERE n.id IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')',
-            );
-            $statement->execute($chunk);
-            foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$node, $display, $canonical, $kind, $file, $line]) {
-                $places[(string) $node] = ['display_name' => (string) $display, 'canonical_name' => (string) $canonical, 'kind' => (string) $kind, 'path' => $file === null ? null : (string) $file, 'line' => $line === null ? null : (int) $line];
-            }
+        $sql = 'SELECT n.id, n.display_name, n.canonical_name, n.kind, f.relative_path, n.start_line FROM nodes n LEFT JOIN files f ON f.id = n.file_id WHERE n.id IN (%s)';
+        foreach (ChunkedInQuery::rows($this->pdo, $sql, $ids, mode: PDO::FETCH_NUM) as [$node, $display, $canonical, $kind, $file, $line]) {
+            $places[(string) $node] = ['display_name' => (string) $display, 'canonical_name' => (string) $canonical, 'kind' => (string) $kind, 'path' => $file === null ? null : (string) $file, 'line' => $line === null ? null : (int) $line];
         }
 
         return $places;
