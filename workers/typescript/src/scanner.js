@@ -30,17 +30,17 @@ import {
     offeredPath,
     relativeInside,
     sourceFilesFrom,
+    validatedInside,
     validateRoot,
+    walk,
 } from "./project-paths.js";
 import {
-    configFilesForScan,
     maxFileBytesFrom,
     readableAsItself,
     validateRequestedFiles,
 } from "./request-validation.js";
 import { parsedContentHashes } from "./source-caches.js";
 export { excludedBy } from "./exclusions.js";
-export { discoverConfigFiles } from "./request-validation.js";
 
 // Every contribution's owner key is this prefix and the file's project path.
 const OWNER_KEY_PREFIX = "knossos.typescript:file:";
@@ -1006,4 +1006,45 @@ function fallbackConfig(root, remaining, config, directory = root) {
         // the config's own program (`#shared/*` naming its `dist`).
         projectReferences: config?.projectReferences,
     };
+}
+
+function configFilesForScan(root, requested) {
+    if (requested !== undefined) {
+        if (
+            !Array.isArray(requested) ||
+            requested.some((item) => typeof item !== "string")
+        ) {
+            throw new Error(
+                "TypeScript config_files must be a list of project-relative paths.",
+            );
+        }
+        return requested.map((item) =>
+            normalize(path.relative(root, validatedInside(root, item))),
+        );
+    }
+    return discoverConfigFiles(root);
+}
+
+/**
+ * Return sorted project-relative tsconfig paths below a validated root.
+ *
+ * Walking is the fallback, not the norm: the core names `config_files` on every
+ * scan it plans, so this runs only for a request that supplied none.
+ *
+ * @param {string} root Absolute, already-validated project root.
+ * @returns {string[]} Project-relative tsconfig paths, sorted.
+ */
+export function discoverConfigFiles(root) {
+    const configs = [];
+    walk(root, root, (absolute, relative) => {
+        const basename = path.basename(relative).toLowerCase();
+        if (
+            basename === "tsconfig.json" ||
+            (basename.startsWith("tsconfig.") && basename.endsWith(".json"))
+        ) {
+            configs.push(relative);
+        }
+    });
+
+    return configs.sort();
 }

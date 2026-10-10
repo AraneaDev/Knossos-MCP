@@ -1,12 +1,12 @@
 /**
  * Validating a scan request before any program is built.
  *
- * Which config files a request scans, the limits it sets, and whether each
- * requested file can be scanned at all: inside the root and still resolving
- * to itself, a regular file within the byte cap, with a source or component
- * extension or, when it has no extension, a shebang that names JavaScript.
- * A file refused here is reported per file; only a request that cannot be
- * interpreted at all is fatal.
+ * The limits a request sets, and whether each requested file can be scanned
+ * at all: inside the root and still resolving to itself, a regular file
+ * within the byte cap, with a source or component extension or, when it has
+ * no extension, a shebang that names JavaScript. A file refused here is
+ * reported per file; only a request that cannot be interpreted at all is
+ * fatal.
  */
 
 import { createHash } from "node:crypto";
@@ -20,53 +20,11 @@ import {
     normalize,
     SOURCE_EXTENSIONS,
     validatedInside,
-    walk,
     walkPath,
 } from "./project-paths.js";
 
 // Bytes read when probing an extensionless file's shebang; one short line is enough.
 const SHEBANG_PROBE_BYTES = 256;
-
-export function configFilesForScan(root, requested) {
-    if (requested !== undefined) {
-        if (
-            !Array.isArray(requested) ||
-            requested.some((item) => typeof item !== "string")
-        ) {
-            throw new Error(
-                "TypeScript config_files must be a list of project-relative paths.",
-            );
-        }
-        return requested.map((item) =>
-            normalize(path.relative(root, validatedInside(root, item))),
-        );
-    }
-    return discoverConfigFiles(root);
-}
-
-/**
- * Return sorted project-relative tsconfig paths below a validated root.
- *
- * Walking is the fallback, not the norm: the core names `config_files` on every
- * scan it plans, so this runs only for a request that supplied none.
- *
- * @param {string} root Absolute, already-validated project root.
- * @returns {string[]} Project-relative tsconfig paths, sorted.
- */
-export function discoverConfigFiles(root) {
-    const configs = [];
-    walk(root, root, (absolute, relative) => {
-        const basename = path.basename(relative).toLowerCase();
-        if (
-            basename === "tsconfig.json" ||
-            (basename.startsWith("tsconfig.") && basename.endsWith(".json"))
-        ) {
-            configs.push(relative);
-        }
-    });
-
-    return configs.sort();
-}
 
 export function maxFileBytesFrom(limits) {
     return Number.isInteger(limits?.max_file_bytes)
