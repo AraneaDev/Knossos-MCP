@@ -43,7 +43,7 @@ final class DiagramTest extends KnossosTestCase
         $repository->saveBoundaryMembership($billing, $ids['project'], $ids['invoice'], $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $mermaid = $query->exportDiagram($ids['project']);
         assertContains("flowchart LR\n", $mermaid->data['diagram']);
         assertContains('Checkout &quot;API&quot; &lt;unsafe&gt;', $mermaid->data['diagram']);
@@ -114,7 +114,7 @@ final class DiagramTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $diagram = (new ArchitectureQueryService($pdo))->exportDiagram($ids['project'], maxNodes: 2);
+        $diagram = ArchitectureQueryService::forDatabase($pdo)->exportDiagram($ids['project'], maxNodes: 2);
 
         assertSame(2, $diagram->data['bounds']['nodes_exported']);
         assertContains('Hub', $diagram->data['diagram']);
@@ -171,7 +171,7 @@ final class DiagramTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $diagram = (new ArchitectureQueryService($pdo))->exportDiagram($ids['project'], maxNodes: 4);
+        $diagram = ArchitectureQueryService::forDatabase($pdo)->exportDiagram($ids['project'], maxNodes: 4);
 
         assertSame(4, $diagram->data['bounds']['nodes_exported']);
         // Four nodes drawn from one hub's neighbourhood: three arrows, not none.

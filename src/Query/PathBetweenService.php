@@ -47,7 +47,7 @@ final readonly class PathBetweenService
         }
         $id = (string) $project['id'];
         $envelope = ['project_id' => $id, 'snapshot_id' => $project['active_scan_id']] + $envelope;
-        $queries = new ArchitectureQueryService($this->pdo);
+        $queries = ArchitectureQueryService::forDatabase($this->pdo);
         $flow = $queries->explainFlow($id, $from, $to, self::DEPTH, self::ROUTES, timeoutMs: self::TIMEOUT_MS);
         foreach (['from' => $from, 'to' => $to] as $end => $asked) {
             $candidates = $flow->data[$end]['candidates'] ?? null;

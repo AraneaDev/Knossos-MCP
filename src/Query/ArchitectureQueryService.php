@@ -22,76 +22,30 @@ use PDO;
  */
 final readonly class ArchitectureQueryService
 {
-    private PDO $pdo;
-    private ProjectCatalogQueryService $catalogQueries;
-    private SnapshotDiffQuery $diffQueries;
-    private QualityGateQueryService $gateQueries;
-    private ComponentQueryService $componentQueries;
-    private GraphSummaryQuery $summaryQueries;
-    private DependencyCycleQuery $cycleQueries;
-    private ArchitectureHealthQuery $healthQueries;
-    private FlowQuery $flowQueries;
-    private ImpactAnalysisQuery $impactQueries;
-    private ArchitecturePolicyQueryService $policyQueries;
-    private LocationSuggestionService $locationQueries;
-    private ChangeImpactQueryService $changeQueries;
-    private ArchitectureContextService $contextQueries;
-    private ReviewDiffService $reviewQueries;
-    private DiagramExportService $diagramQueries;
-    private FileMetricsQueryService $fileMetricsQueries;
-    private StalenessProbe $stalenessProbe;
-    private AgentBriefService $briefQueries;
-    private AnnotationService $annotationQueries;
-    private FileContextQueryService $fileContextQueries;
-    private DiagnosticsQueryService $diagnosticsQueries;
-    private RefreshPolicy $refreshPolicy;
-
+    /**
+     * @param PDO $pdo the graph database the services read; the facade reads project roots from it itself
+     * @param QueryServices $services the services every method delegates to
+     */
     public function __construct(
+        private PDO $pdo,
+        private QueryServices $services,
+    ) {}
+
+    /**
+     * The facade over every query service wired against `$pdo`; see
+     * {@see QueryServices::wire()} for what each optional collaborator does.
+     * A caller that needs a different wall clock or refresh policy wires the
+     * services itself and passes them to the constructor.
+     */
+    public static function forDatabase(
         PDO $pdo,
         ?Closure $clock = null,
         ?SemanticRanker $semanticRanker = null,
         ?GitHistoryProvider $gitHistory = null,
         ?GitWorkingTreeProvider $gitWorkingTree = null,
-        ?Closure $wallClock = null,
-        ?RefreshPolicy $refreshPolicy = null,
         ?DriftOracle $driftOracle = null,
-    ) {
-        $this->pdo = $pdo;
-        $this->refreshPolicy = $refreshPolicy ?? new RefreshPolicy($pdo);
-        $this->policyQueries = new ArchitecturePolicyQueryService($pdo, $clock);
-        $this->locationQueries = new LocationSuggestionService($pdo, $clock, $semanticRanker);
-        $this->summaryQueries = new GraphSummaryQuery($pdo, $clock);
-        $this->cycleQueries = new DependencyCycleQuery($pdo, $clock);
-        $this->healthQueries = new ArchitectureHealthQuery($pdo, $clock, $this->cycleQueries, new DeadCodeCandidates($pdo, $clock));
-        $this->flowQueries = new FlowQuery($pdo, $clock);
-        $this->impactQueries = new ImpactAnalysisQuery($pdo, $clock);
-        $this->componentQueries = new ComponentQueryService($pdo, $clock);
-        $this->catalogQueries = new ProjectCatalogQueryService($pdo, $clock);
-        $this->diffQueries = new SnapshotDiffQuery($pdo, $clock);
-        $this->gateQueries = new QualityGateQueryService($pdo, $clock, $this->policyQueries, $this->catalogQueries, $this->diffQueries);
-        $this->changeQueries = new ChangeImpactQueryService(
-            $pdo,
-            $clock,
-            $this->impactQueries,
-            $gitHistory,
-            $gitWorkingTree,
-        );
-        $this->contextQueries = new ArchitectureContextService(
-            $pdo,
-            $clock,
-            $this->summaryQueries,
-            $this->changeQueries,
-            $this->componentQueries,
-            $this->locationQueries,
-        );
-        $this->reviewQueries = new ReviewDiffService($pdo, $clock, $this->changeQueries, $this->policyQueries, $this->gateQueries, $this->cycleQueries);
-        $this->diagramQueries = new DiagramExportService($pdo, $clock);
-        $this->fileMetricsQueries = new FileMetricsQueryService($pdo, $clock);
-        $this->stalenessProbe = new StalenessProbe($pdo, $wallClock, $driftOracle);
-        $this->briefQueries = new AgentBriefService($pdo, $clock, $this->healthQueries);
-        $this->annotationQueries = new AnnotationService($pdo, $clock);
-        $this->fileContextQueries = new FileContextQueryService($pdo, $clock);
-        $this->diagnosticsQueries = new DiagnosticsQueryService($pdo, $clock);
+    ): self {
+        return new self($pdo, QueryServices::wire($pdo, $clock, $semanticRanker, $gitHistory, $gitWorkingTree, driftOracle: $driftOracle));
     }
 
     /**
@@ -102,7 +56,7 @@ final readonly class ArchitectureQueryService
      */
     public function stalenessSnapshot(string $projectId): \Knossos\Query\StalenessSnapshot
     {
-        return $this->stalenessProbe->snapshot($projectId);
+        return $this->services->stalenessProbe->snapshot($projectId);
     }
 
     /** Root path recorded at scan time; used by the MCP layer to self-heal stale graphs. */
@@ -125,7 +79,7 @@ final readonly class ArchitectureQueryService
      */
     public function refreshDecision(string $projectId, \Knossos\Query\Drift\DriftCounts $drift): RefreshDecision
     {
-        return $this->refreshPolicy->decide($projectId, $drift);
+        return $this->services->refreshPolicy->decide($projectId, $drift);
     }
 
     /**
@@ -135,25 +89,25 @@ final readonly class ArchitectureQueryService
      */
     public function projectsInCreationOrder(int $limit, ?string $afterCreatedAt = null, ?string $afterId = null): array
     {
-        return $this->catalogQueries->projectsInCreationOrder($limit, $afterCreatedAt, $afterId);
+        return $this->services->catalogQueries->projectsInCreationOrder($limit, $afterCreatedAt, $afterId);
     }
 
     /** {@see ProjectCatalogQueryService::listProjects()} */
     public function listProjects(int $limit = 50, int $offset = 0, bool $includeRoots = false): ResultEnvelope
     {
-        return $this->catalogQueries->listProjects($limit, $offset, $includeRoots);
+        return $this->services->catalogQueries->listProjects($limit, $offset, $includeRoots);
     }
 
     /** {@see ProjectCatalogQueryService::listSnapshots()} */
     public function listSnapshots(string $projectId, int $limit = 20, int $offset = 0): ResultEnvelope
     {
-        return $this->catalogQueries->listSnapshots($projectId, $limit, $offset);
+        return $this->services->catalogQueries->listSnapshots($projectId, $limit, $offset);
     }
 
     /** {@see SnapshotDiffQuery::snapshotDiff()} */
     public function snapshotDiff(string $projectId, string $fromSnapshot, string $toSnapshot = 'active', int $maxChanges = 25): ResultEnvelope
     {
-        return $this->diffQueries->snapshotDiff($projectId, $fromSnapshot, $toSnapshot, $maxChanges);
+        return $this->services->diffQueries->snapshotDiff($projectId, $fromSnapshot, $toSnapshot, $maxChanges);
     }
 
     /**
@@ -164,7 +118,7 @@ final readonly class ArchitectureQueryService
      */
     public function branchComparison(string $projectId, string $baseSnapshot, array $policies, int $limit = 8): array
     {
-        return $this->gateQueries->branchComparison($projectId, $baseSnapshot, $policies, $limit);
+        return $this->services->gateQueries->branchComparison($projectId, $baseSnapshot, $policies, $limit);
     }
 
     /**
@@ -181,19 +135,19 @@ final readonly class ArchitectureQueryService
         bool $sarif = false,
         bool $proposeBaseline = false,
     ): ResultEnvelope {
-        return $this->gateQueries->qualityGate($projectId, $baselineSnapshot, $budgets, $policies, $sarif, $proposeBaseline);
+        return $this->services->gateQueries->qualityGate($projectId, $baselineSnapshot, $budgets, $policies, $sarif, $proposeBaseline);
     }
 
     /** {@see QualityGateQueryService::architectureTrends()} */
     public function architectureTrends(string $projectId, int $limit = 10, ?string $releaseFrom = null): ResultEnvelope
     {
-        return $this->gateQueries->architectureTrends($projectId, $limit, $releaseFrom);
+        return $this->services->gateQueries->architectureTrends($projectId, $limit, $releaseFrom);
     }
 
     /** {@see ComponentQueryService::findComponent()} */
     public function findComponent(string $projectId, string $name, int $limit = 20): ResultEnvelope
     {
-        return $this->componentQueries->findComponent($projectId, $name, $limit);
+        return $this->services->componentQueries->findComponent($projectId, $name, $limit);
     }
 
     /** {@see ComponentQueryService::inspectComponent()} */
@@ -204,7 +158,7 @@ final readonly class ArchitectureQueryService
         int $maxChildren = 25,
         string $minConfidence = 'possible',
     ): ResultEnvelope {
-        return $this->componentQueries->inspectComponent($projectId, $component, $maxRelationships, $maxChildren, $minConfidence);
+        return $this->services->componentQueries->inspectComponent($projectId, $component, $maxRelationships, $maxChildren, $minConfidence);
     }
 
     /**
@@ -214,13 +168,13 @@ final readonly class ArchitectureQueryService
      */
     public function listUsages(string $projectId, string $symbol, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 100): ResultEnvelope
     {
-        return $this->componentQueries->listUsages($projectId, $symbol, $edgeKinds, $minConfidence, $limit);
+        return $this->services->componentQueries->listUsages($projectId, $symbol, $edgeKinds, $minConfidence, $limit);
     }
 
     /** {@see GraphSummaryQuery::architectureSummary()} */
     public function architectureSummary(string $projectId, int $limit = 50): ResultEnvelope
     {
-        return $this->summaryQueries->architectureSummary($projectId, $limit);
+        return $this->services->summaryQueries->architectureSummary($projectId, $limit);
     }
 
     /** {@see FileMetricsQueryService::fileMetrics()} */
@@ -233,7 +187,7 @@ final readonly class ArchitectureQueryService
         int $limit = 50,
         int $offset = 0,
     ): ResultEnvelope {
-        return $this->fileMetricsQueries->fileMetrics($projectId, $pathContains, $language, $sortBy, $order, $limit, $offset);
+        return $this->services->fileMetricsQueries->fileMetrics($projectId, $pathContains, $language, $sortBy, $order, $limit, $offset);
     }
 
     /**
@@ -251,7 +205,7 @@ final readonly class ArchitectureQueryService
         int $timeoutMs = 1000,
         bool $includeSelfLoops = false,
     ): ResultEnvelope {
-        return $this->cycleQueries->dependencyCycles($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeSelfLoops);
+        return $this->services->cycleQueries->dependencyCycles($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeSelfLoops);
     }
 
     /**
@@ -273,7 +227,7 @@ final readonly class ArchitectureQueryService
         int $candidateOffset = 0,
         int $candidateTimeoutMs = 5000,
     ): ResultEnvelope {
-        return $this->healthQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests, $candidateConfidence, $candidateOffset, $candidateTimeoutMs);
+        return $this->services->healthQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests, $candidateConfidence, $candidateOffset, $candidateTimeoutMs);
     }
 
     /**
@@ -291,7 +245,7 @@ final readonly class ArchitectureQueryService
         int $timeoutMs = 1000,
         array $sourceFiles = [],
     ): ResultEnvelope {
-        return $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs, $sourceFiles);
+        return $this->services->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs, $sourceFiles);
     }
 
     /** {@see LocationSuggestionService::suggestLocation()} */
@@ -304,7 +258,7 @@ final readonly class ArchitectureQueryService
         int $timeoutMs = 1000,
         string $rankingMode = 'deterministic',
     ): ResultEnvelope {
-        return $this->locationQueries->suggestLocation($projectId, $featureDescription, $limit, $maxMembers, $maxEdges, $timeoutMs, $rankingMode);
+        return $this->services->locationQueries->suggestLocation($projectId, $featureDescription, $limit, $maxMembers, $maxEdges, $timeoutMs, $rankingMode);
     }
 
     /**
@@ -323,7 +277,7 @@ final readonly class ArchitectureQueryService
         string $minConfidence = 'possible',
         int $timeoutMs = 1000,
     ): ResultEnvelope {
-        return $this->changeQueries->changeImpact($projectId, $symbol, $sinceDays, $maxCommits, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+        return $this->services->changeQueries->changeImpact($projectId, $symbol, $sinceDays, $maxCommits, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
     /**
@@ -343,7 +297,7 @@ final readonly class ArchitectureQueryService
         string $minConfidence = 'possible',
         int $timeoutMs = 1000,
     ): ResultEnvelope {
-        return $this->changeQueries->changedFilesImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+        return $this->services->changeQueries->changedFilesImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
     /**
@@ -363,7 +317,7 @@ final readonly class ArchitectureQueryService
         string $minConfidence = 'possible',
         int $timeoutMs = 1000,
     ): ResultEnvelope {
-        return $this->changeQueries->testImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+        return $this->services->changeQueries->testImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
     /**
@@ -385,7 +339,7 @@ final readonly class ArchitectureQueryService
         string $minConfidence = 'possible',
         int $timeoutMs = 1000,
     ): ResultEnvelope {
-        return $this->reviewQueries->reviewDiff($projectId, $baseRef, $files, $policies, $budgets, $baselineSnapshot, $maxDepth, $limit, $minConfidence, $timeoutMs);
+        return $this->services->reviewQueries->reviewDiff($projectId, $baseRef, $files, $policies, $budgets, $baselineSnapshot, $maxDepth, $limit, $minConfidence, $timeoutMs);
     }
 
     /**
@@ -401,7 +355,7 @@ final readonly class ArchitectureQueryService
         int $timeoutMs = 1500,
         bool $includeSource = false,
     ): ResultEnvelope {
-        return $this->contextQueries->architectureContext($projectId, $taskDescription, $files, $maxChars, $timeoutMs, $includeSource);
+        return $this->services->contextQueries->architectureContext($projectId, $taskDescription, $files, $maxChars, $timeoutMs, $includeSource);
     }
 
     /**
@@ -419,7 +373,7 @@ final readonly class ArchitectureQueryService
         int $maxNodes = 200,
         int $maxEdges = 500,
     ): ResultEnvelope {
-        return $this->diagramQueries->exportDiagram($projectId, $format, $boundary, $edgeKinds, $minConfidence, $direction, $maxNodes, $maxEdges);
+        return $this->services->diagramQueries->exportDiagram($projectId, $format, $boundary, $edgeKinds, $minConfidence, $direction, $maxNodes, $maxEdges);
     }
 
     /**
@@ -437,7 +391,7 @@ final readonly class ArchitectureQueryService
         string $minConfidence = 'possible',
         int $timeoutMs = 1000,
     ): ResultEnvelope {
-        return $this->flowQueries->explainFlow($projectId, $from, $to, $maxDepth, $maxPaths, $edgeKinds, $minConfidence, $timeoutMs);
+        return $this->services->flowQueries->explainFlow($projectId, $from, $to, $maxDepth, $maxPaths, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
     /**
@@ -454,19 +408,19 @@ final readonly class ArchitectureQueryService
         string $minConfidence = 'possible',
         int $timeoutMs = 1000,
     ): ResultEnvelope {
-        return $this->impactQueries->impactAnalysis($projectId, $symbol, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+        return $this->services->impactQueries->impactAnalysis($projectId, $symbol, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
     /** {@see GraphSummaryQuery::listBoundaries()} */
     public function listBoundaries(string $projectId, ?string $source = null, int $limit = 50, int $offset = 0): ResultEnvelope
     {
-        return $this->summaryQueries->listBoundaries($projectId, $source, $limit, $offset);
+        return $this->services->summaryQueries->listBoundaries($projectId, $source, $limit, $offset);
     }
 
     /** {@see AgentBriefService::exportAgentBrief()} */
     public function exportAgentBrief(string $projectId, int $maxChars = 4000): ResultEnvelope
     {
-        return $this->briefQueries->exportAgentBrief($projectId, $maxChars);
+        return $this->services->briefQueries->exportAgentBrief($projectId, $maxChars);
     }
 
     /**
@@ -487,37 +441,37 @@ final readonly class ArchitectureQueryService
         int $limit = 20,
         int $offset = 0,
     ): ResultEnvelope {
-        return $this->componentQueries->searchArchitecture($projectId, $query, $kinds, $roles, $boundaryIds, $confidences, $limit, $offset);
+        return $this->services->componentQueries->searchArchitecture($projectId, $query, $kinds, $roles, $boundaryIds, $confidences, $limit, $offset);
     }
 
     /** {@see AnnotationService::upsertAnnotation()} */
     public function upsertAnnotation(string $projectId, string $component, string $kind, string $value = '', bool $execute = false): ResultEnvelope
     {
-        return $this->annotationQueries->upsertAnnotation($projectId, $component, $kind, $value, $execute);
+        return $this->services->annotationQueries->upsertAnnotation($projectId, $component, $kind, $value, $execute);
     }
 
     /** {@see AnnotationService::removeAnnotation()} */
     public function removeAnnotation(string $projectId, string $component, string $kind, string $value = '', bool $execute = false): ResultEnvelope
     {
-        return $this->annotationQueries->removeAnnotation($projectId, $component, $kind, $value, $execute);
+        return $this->services->annotationQueries->removeAnnotation($projectId, $component, $kind, $value, $execute);
     }
 
     /** {@see FileContextQueryService::fileContext()} */
     public function fileContext(string $projectId, string $path): ResultEnvelope
     {
-        return $this->fileContextQueries->fileContext($projectId, $path);
+        return $this->services->fileContextQueries->fileContext($projectId, $path);
     }
 
     /** {@see DiagnosticsQueryService::listDiagnostics()} */
     public function listDiagnostics(string $projectId, ?string $severity = null, ?string $pathPrefix = null, int $limit = 100, int $offset = 0): ResultEnvelope
     {
-        return $this->diagnosticsQueries->listDiagnostics($projectId, $severity, $pathPrefix, $limit, $offset);
+        return $this->services->diagnosticsQueries->listDiagnostics($projectId, $severity, $pathPrefix, $limit, $offset);
     }
 
     /** {@see AnnotationService::listAnnotations()} */
     public function listAnnotations(string $projectId, ?string $component = null, ?string $kind = null, int $limit = 100, int $offset = 0): ResultEnvelope
     {
-        return $this->annotationQueries->listAnnotations($projectId, $component, $kind, $limit, $offset);
+        return $this->services->annotationQueries->listAnnotations($projectId, $component, $kind, $limit, $offset);
     }
 
     /**
@@ -528,6 +482,6 @@ final readonly class ArchitectureQueryService
      */
     public function sessionBrief(string $path, ?string $databasePath = null): string
     {
-        return (new SessionBriefService($this->pdo, $databasePath, $this->healthQueries))->brief($path);
+        return (new SessionBriefService($this->pdo, $databasePath, $this->services->healthQueries))->brief($path);
     }
 }

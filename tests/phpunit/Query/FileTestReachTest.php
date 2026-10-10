@@ -60,7 +60,7 @@ final class FileTestReachTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
         try {
-            $queries = new ArchitectureQueryService($pdo);
+            $queries = ArchitectureQueryService::forDatabase($pdo);
             // Two searches: fifty copies of the caller, then the greeter.
             $files = [...array_fill(0, ChangeImpactQueryService::MAX_FILES, 'src/Edge/Caller.php'), 'src/Core/Greeter.php'];
             $all = FileTestReach::testsOf($queries, $projectId, $files, 10);

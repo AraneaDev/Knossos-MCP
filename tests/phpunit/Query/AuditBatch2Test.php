@@ -43,7 +43,7 @@ final class AuditBatch2Test extends KnossosTestCase
         $repository->saveBoundaryMembership($billing, $ids['project'], $ids['invoice'], $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         // Checkout (Backend) calls InvoiceService (Billing) and Worker (@unassigned).
         $policies = [
             ['id' => 'deny-billing', 'from_boundary' => $backend, 'deny_targets' => [$billing], 'edge_kinds' => ['calls']],
@@ -84,7 +84,7 @@ final class AuditBatch2Test extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $next);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $policies = [['id' => 'no-billing', 'from_boundary' => $backend, 'deny_targets' => [$billing], 'edge_kinds' => ['calls']]];
         $gate = $query->qualityGate($ids['project'], $ids['scan'], ['boundary_violations' => 100], $policies);
         assertSame(101, $gate->data['metrics']['boundary_violations']);
@@ -154,7 +154,7 @@ final class AuditBatch2Test extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $impact = $query->impactAnalysis($ids['project'], $hub, maxDepth: 1, limit: 100);
         assertSame(1, count($impact->data['dependants']));
         assertSame(true, $impact->truncated);
@@ -182,7 +182,7 @@ final class AuditBatch2Test extends KnossosTestCase
         $repository->saveEdge(StableId::edge($ids['project'], 'calls', $x, $b, 'xb'), $ids['project'], 'calls', $x, $b, $ids['file'], 5, 5, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $impact = $query->impactAnalysis($ids['project'], $t, maxDepth: 3);
         $origin = null;
         foreach ($impact->data['dependants'] as $record) {
@@ -202,7 +202,7 @@ final class AuditBatch2Test extends KnossosTestCase
         $repository->saveEdge(StableId::edge($ids['project'], 'calls', $node, $node, 'self'), $ids['project'], 'calls', $node, $node, $ids['file'], 5, 5, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $flow = $query->explainFlow($ids['project'], 'App\\SelfCaller', 'App\\SelfCaller');
         assertSame(true, count($flow->data['paths']) >= 1);
         assertSame(1, count($flow->data['paths'][0]['hops']));
@@ -235,7 +235,7 @@ final class AuditBatch2Test extends KnossosTestCase
         $repository->saveEdge(StableId::edge($ids['project'], 'extends', $b, $a, 'ba'), $ids['project'], 'extends', $b, $a, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $data = ArchitectureQueryService::forDatabase($pdo)->architectureHealth($ids['project'])->data;
         $candidateNames = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
         assertSame(false, in_array('App\\C::run', $candidateNames, true));
     }
@@ -251,7 +251,7 @@ final class AuditBatch2Test extends KnossosTestCase
         $repository->saveNode($dupIface, $ids['project'], 'php', 'interface', 'App\\Dup', 'Dup', null, $ids['file'], 3, 4, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $first = $query->searchArchitecture($ids['project'], 'App\\Dup', limit: 1, offset: 0);
         $second = $query->searchArchitecture($ids['project'], 'App\\Dup', limit: 1, offset: 1);
         $firstId = $first->data['results'][0]['id'];
@@ -286,7 +286,7 @@ final class AuditBatch2Test extends KnossosTestCase
         $repository->saveNode($poison, $ids['project'], 'php', 'class', 'App\\Poison', 'Poison', null, $ids['file'], 1, 2, 'ast', 'certain', ['status' => 'truncated'], 'php:file:src/Checkout.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $result = $query->architectureContext($ids['project'], files: ['src/Checkout.php']);
         assertSame(false, $result->truncated);
     }
@@ -305,7 +305,7 @@ final class AuditBatch2Test extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
 
         foreach ([4000, 12_000, 30_000] as $maxChars) {
             $result = $query->architectureContext(
@@ -352,7 +352,7 @@ final class AuditBatch2Test extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->architectureContext(
+        $result = ArchitectureQueryService::forDatabase($pdo)->architectureContext(
             $ids['project'],
             'checkout billing invoice',
             maxChars: 4000,
@@ -368,7 +368,7 @@ final class AuditBatch2Test extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
 
         $message = null;
         try {

@@ -38,7 +38,7 @@ final class ImpactEntryPointsTest extends KnossosTestCase
         }
         $repository->completeScan($project, $ids['scan']);
 
-        $impact = (new ArchitectureQueryService($pdo))->impactAnalysis($project, 'App\\T');
+        $impact = ArchitectureQueryService::forDatabase($pdo)->impactAnalysis($project, 'App\\T');
 
         self::assertCount(3, $impact->data['dependants'], 'All three callers are dependants; only the entry-point judgement differs.');
         $names = array_map(static fn(array $r): string => $r['node']['canonical_name'], $impact->data['entry_points']);

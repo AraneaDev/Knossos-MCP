@@ -39,7 +39,7 @@ final readonly class McpServerAssembly
         AllowedRoots $allowedRoots,
         ?DatabaseMaintenanceService $maintenance = null,
     ) {
-        $this->queries = new ArchitectureQueryService(
+        $this->queries = ArchitectureQueryService::forDatabase(
             $pdo,
             gitHistory: new ProcessGitHistoryProvider(),
             gitWorkingTree: new ProcessGitWorkingTreeProvider(),

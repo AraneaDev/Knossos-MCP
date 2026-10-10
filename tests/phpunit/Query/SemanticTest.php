@@ -26,7 +26,7 @@ final class SemanticTest extends KnossosTestCase
         $repository->saveBoundaryMembership($billing, $ids['project'], $ids['invoice'], $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $deterministicQuery = new ArchitectureQueryService($pdo);
+        $deterministicQuery = ArchitectureQueryService::forDatabase($pdo);
         $deterministic = $deterministicQuery->suggestLocation($ids['project'], 'checkout service');
         $unavailable = $deterministicQuery->suggestLocation($ids['project'], 'checkout service', rankingMode: 'semantic_if_available');
         assertSame($deterministic->data['candidates'], $unavailable->data['candidates']);
@@ -46,7 +46,7 @@ final class SemanticTest extends KnossosTestCase
                 return [$this->billing => 1.0, $this->backend => 0.0];
             }
         };
-        $semantic = (new ArchitectureQueryService($pdo, semanticRanker: $ranker))->suggestLocation(
+        $semantic = ArchitectureQueryService::forDatabase($pdo, semanticRanker: $ranker)->suggestLocation(
             $ids['project'],
             'checkout service',
             rankingMode: 'semantic_if_available',
@@ -66,7 +66,7 @@ final class SemanticTest extends KnossosTestCase
                 return [$candidates[0]['id'] => 2.0];
             }
         };
-        $invalid = (new ArchitectureQueryService($pdo, semanticRanker: $invalidRanker))->suggestLocation(
+        $invalid = ArchitectureQueryService::forDatabase($pdo, semanticRanker: $invalidRanker)->suggestLocation(
             $ids['project'],
             'checkout service',
             rankingMode: 'semantic_if_available',
@@ -84,7 +84,7 @@ final class SemanticTest extends KnossosTestCase
                 throw new RuntimeException('offline');
             }
         };
-        $failed = (new ArchitectureQueryService($pdo, semanticRanker: $failingRanker))->suggestLocation(
+        $failed = ArchitectureQueryService::forDatabase($pdo, semanticRanker: $failingRanker)->suggestLocation(
             $ids['project'],
             'checkout service',
             rankingMode: 'semantic_if_available',

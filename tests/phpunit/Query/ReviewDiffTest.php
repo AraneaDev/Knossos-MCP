@@ -23,7 +23,7 @@ final class ReviewDiffTest extends KnossosTestCase
         $repository->saveBoundaryMembership($backend, $ids['project'], $ids['checkout'], $ids['scan']);
         $repository->saveBoundaryMembership($billing, $ids['project'], $ids['invoice'], $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $policies = [['id' => 'no-billing', 'from_boundary' => $backend, 'deny_targets' => [$billing]]];
         $result = $queries->reviewDiff($ids['project'], files: ['src/Checkout.php'], policies: $policies);
@@ -58,7 +58,7 @@ final class ReviewDiffTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         // root_realpath (/workspace/fixture-shop) does not exist on disk:
         // config loading fails soft, sections degrade, envelope still returns.
-        $result = (new ArchitectureQueryService($pdo))->reviewDiff($ids['project'], files: ['src/Checkout.php']);
+        $result = ArchitectureQueryService::forDatabase($pdo)->reviewDiff($ids['project'], files: ['src/Checkout.php']);
         assertSame('not_evaluated', $result->data['policy_check']['status']);
         assertSame('not_evaluated', $result->data['quality_gate']['status']);
         assertSame('evaluated', $result->data['change']['status']);
@@ -70,7 +70,7 @@ final class ReviewDiffTest extends KnossosTestCase
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
         assertThrows(
-            fn() => (new ArchitectureQueryService($pdo))->reviewDiff($ids['project'], baseRef: 'main', files: ['src/Checkout.php']),
+            fn() => ArchitectureQueryService::forDatabase($pdo)->reviewDiff($ids['project'], baseRef: 'main', files: ['src/Checkout.php']),
             InvalidArgumentException::class,
         );
     }
@@ -88,7 +88,7 @@ final class ReviewDiffTest extends KnossosTestCase
         $repository->createScan($scan2, $ids['project'], 'full', hash('sha256', 'scanner-set'));
         $repository->completeScan($ids['project'], $scan2);
 
-        $result = (new ArchitectureQueryService($pdo))->reviewDiff(
+        $result = ArchitectureQueryService::forDatabase($pdo)->reviewDiff(
             $ids['project'],
             files: ['src/Checkout.php'],
             budgets: ['new_cycles' => 0],
@@ -104,7 +104,7 @@ final class ReviewDiffTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $tools = new \Knossos\Mcp\ToolService(
             new \Knossos\Scan\ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new \Knossos\Maintenance\DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );

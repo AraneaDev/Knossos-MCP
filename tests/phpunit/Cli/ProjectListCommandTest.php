@@ -42,7 +42,7 @@ final class ProjectListCommandTest extends KnossosTestCase
             $repository->saveNode(StableId::symbol($ids['project'], 'php', 'class', $name), $ids['project'], 'php', 'class', $name, 'Orphan' . $i, null, $ids['file'], 100 + $i, 100 + $i, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         }
         $repository->completeScan($ids['project'], $ids['scan']);
-        (new ArchitectureQueryService($this->pdo()))->upsertAnnotation($ids['project'], 'App\\Orphan000', 'intentional', 'parked', execute: true);
+        ArchitectureQueryService::forDatabase($this->pdo())->upsertAnnotation($ids['project'], 'App\\Orphan000', 'intentional', 'parked', execute: true);
 
         $out = $this->runList('dead-code', [$ids['project']], ['json' => ['1']]);
         $names = array_column(array_column($out['candidates'], 'component'), 'canonical_name');

@@ -35,7 +35,7 @@ final class BoundaryTest extends KnossosTestCase
                     ['name' => 'Frontend', 'path_prefix' => 'frontend'],
                 ],
             );
-            $query = new ArchitectureQueryService($pdo);
+            $query = ArchitectureQueryService::forDatabase($pdo);
             $explicit = $query->listBoundaries($scan->projectId, 'explicit');
             assertSame(2, count($explicit->data['boundaries']));
             assertSame(['Backend', 'Frontend'], array_column($explicit->data['boundaries'], 'name'));

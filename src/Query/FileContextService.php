@@ -62,7 +62,7 @@ final readonly class FileContextService
         $projectId = (string) $detail['project_id'];
         $relative = (string) $file['path'];
         $root = substr((string) $detail['path'], 0, -strlen($relative) - 1);
-        $tests = (new ArchitectureQueryService($this->pdo))->testImpact($projectId, [$relative], limit: self::NAMED, timeoutMs: self::TESTS_TIMEOUT_MS);
+        $tests = ArchitectureQueryService::forDatabase($this->pdo)->testImpact($projectId, [$relative], limit: self::NAMED, timeoutMs: self::TESTS_TIMEOUT_MS);
         $listed = array_map(static fn(array $t): array => ['path' => (string) $t['path'], 'distance' => (int) $t['distance']], $tests->data['test_files'] ?? []);
 
         return ['file' => [

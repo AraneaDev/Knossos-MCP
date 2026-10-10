@@ -59,7 +59,7 @@ final class SuggestionTest extends KnossosTestCase
             throw new RuntimeException('Unable to read location evaluation set.');
         }
         $evaluation = json_decode($evaluationJson, true, 32, JSON_THROW_ON_ERROR);
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         foreach ($evaluation as $case) {
             $first = $query->suggestLocation($ids['project'], $case['feature_description']);
             $second = $query->suggestLocation($ids['project'], $case['feature_description']);
@@ -85,7 +85,7 @@ final class SuggestionTest extends KnossosTestCase
         assertThrows(fn() => $query->suggestLocation($ids['project'], 'a i u'), InvalidArgumentException::class);
 
         $time = 0;
-        $timedQuery = new ArchitectureQueryService($pdo, function () use (&$time): int {
+        $timedQuery = ArchitectureQueryService::forDatabase($pdo, function () use (&$time): int {
             $time += 2_000_000;
             return $time;
         });
@@ -99,7 +99,7 @@ final class SuggestionTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
 
         $result = $query->suggestLocation($ids['project'], 'A new exporter that renders the graph as DOT source');
 
@@ -130,7 +130,7 @@ final class SuggestionTest extends KnossosTestCase
         ]);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->suggestLocation($ids['project'], 'ndjson channel');
+        $result = ArchitectureQueryService::forDatabase($pdo)->suggestLocation($ids['project'], 'ndjson channel');
         $byName = [];
         foreach ($result->data['candidates'] as $candidate) {
             $byName[$candidate['boundary']['name']] = $candidate;
@@ -161,7 +161,7 @@ final class SuggestionTest extends KnossosTestCase
         ]);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->suggestLocation($ids['project'], 'Éclair service');
+        $result = ArchitectureQueryService::forDatabase($pdo)->suggestLocation($ids['project'], 'Éclair service');
         $byName = [];
         foreach ($result->data['candidates'] as $candidate) {
             $byName[$candidate['boundary']['name']] = $candidate;
@@ -191,7 +191,7 @@ final class SuggestionTest extends KnossosTestCase
         $this->boundaryWithMembers($repository, $ids, 'omnibus', $wide);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->suggestLocation($ids['project'], 'worker process');
+        $result = ArchitectureQueryService::forDatabase($pdo)->suggestLocation($ids['project'], 'worker process');
 
         assertSame('alpha', $result->data['candidates'][0]['boundary']['name']);
     }
@@ -234,7 +234,7 @@ final class SuggestionTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
 
         // Every word is either a stop word or shorter than three characters;
         // the fallback keeps the >= 2-char tokens instead of erroring.

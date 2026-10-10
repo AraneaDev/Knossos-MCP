@@ -37,7 +37,7 @@ final class BranchComparisonIdentityTest extends KnossosTestCase
         $this->boundary($repository, $ids, $next, 'Libs', [$package]);
         $repository->completeScan($project, $next);
 
-        $comparison = (new ArchitectureQueryService($pdo))->branchComparison($project, $ids['scan'], []);
+        $comparison = ArchitectureQueryService::forDatabase($pdo)->branchComparison($project, $ids['scan'], []);
 
         $pairs = array_map(static fn(array $c): string => $c['source']['canonical_name'] . '->' . $c['target']['kind'], $comparison['crossing']['items']);
         self::assertSame(['App\\A->package'], $pairs);
@@ -68,7 +68,7 @@ final class BranchComparisonIdentityTest extends KnossosTestCase
         }
         $repository->completeScan($project, $next);
 
-        $comparison = (new ArchitectureQueryService($pdo))->branchComparison($project, $ids['scan'], []);
+        $comparison = ArchitectureQueryService::forDatabase($pdo)->branchComparison($project, $ids['scan'], []);
 
         $grown = array_map(static fn(array $h): array => [$h['component']['kind'], $h['before'], $h['after']], $comparison['hubs']['items']);
         self::assertSame([['package', 10, 15], ['module', 10, 12]], $grown, 'One name, two components, each with its own growth.');

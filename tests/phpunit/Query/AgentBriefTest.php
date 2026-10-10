@@ -19,7 +19,7 @@ final class AgentBriefTest extends KnossosTestCase
         $repository->saveBoundary($backend, $ids['project'], 'Backend', ['path_prefix' => 'src'], 'explicit', $ids['scan']);
         $repository->saveBoundaryMembership($backend, $ids['project'], $ids['checkout'], $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $result = $queries->exportAgentBrief($ids['project']);
         $markdown = $result->data['markdown'];
@@ -44,7 +44,7 @@ final class AgentBriefTest extends KnossosTestCase
             $repository->saveBoundaryMembership($boundary, $ids['project'], $ids['checkout'], $ids['scan']);
         }
         $repository->completeScan($ids['project'], $ids['scan']);
-        $result = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'], 1000);
+        $result = ArchitectureQueryService::forDatabase($pdo)->exportAgentBrief($ids['project'], 1000);
         assertSame(true, strlen($result->data['markdown']) <= 1000);
         assertSame(true, str_contains($result->data['markdown'], 'scan_project')); // closing line always kept
         assertSame(true, array_key_exists('omitted_sections', $result->data));
@@ -60,7 +60,7 @@ final class AgentBriefTest extends KnossosTestCase
         $repository->saveClassification(StableId::classification($ids['project'], $helper, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $helper, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $ids['file'], 40, 44, [], $ids['scan']);
         $repository->saveEdge(StableId::edge($ids['project'], 'calls', $ids['invoice'], $helper, 'h1'), $ids['project'], 'calls', $ids['invoice'], $helper, $ids['file'], 25, 25, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $markdown = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+        $markdown = ArchitectureQueryService::forDatabase($pdo)->exportAgentBrief($ids['project'])->data['markdown'];
         assertSame(false, str_contains($markdown, 'assertWidgets'));
     }
 
@@ -87,7 +87,7 @@ final class AgentBriefTest extends KnossosTestCase
         $repository->saveClassification(StableId::classification($ids['project'], $real, 'application.command', 'rule.command'), $ids['project'], $real, 'application.command', 'derived', 'probable', 'rule.command', $ids['file'], 50, 54, [], $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $markdown = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+        $markdown = ArchitectureQueryService::forDatabase($pdo)->exportAgentBrief($ids['project'])->data['markdown'];
 
         assertSame(false, str_contains($markdown, 'FakeCommand'));
         assertSame(true, str_contains($markdown, 'ShipCommand'));
@@ -110,7 +110,7 @@ final class AgentBriefTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $markdown = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+        $markdown = ArchitectureQueryService::forDatabase($pdo)->exportAgentBrief($ids['project'])->data['markdown'];
 
         assertSame(false, str_contains($markdown, '## Entry points'));
     }
@@ -122,7 +122,7 @@ final class AgentBriefTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $tools = new \Knossos\Mcp\ToolService(
             new \Knossos\Scan\ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new \Knossos\Maintenance\DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -142,14 +142,14 @@ final class AgentBriefTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $whole = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+        $whole = ArchitectureQueryService::forDatabase($pdo)->exportAgentBrief($ids['project'])->data['markdown'];
         // Late from the edge walk on, then late from the slice's first deadline check on.
         foreach ([2, 1] as $onTime) {
             $reads = 0;
             $clock = static function () use (&$reads, $onTime): int {
                 return ++$reads <= $onTime ? 0 : PHP_INT_MAX >> 1;
             };
-            $queries = new ArchitectureQueryService($pdo, $clock);
+            $queries = ArchitectureQueryService::forDatabase($pdo, $clock);
 
             $markdown = $queries->exportAgentBrief($ids['project'])->data['markdown'];
 

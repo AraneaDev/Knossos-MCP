@@ -83,7 +83,7 @@ final readonly class PaneQueries
         $id = (string) $project['id'];
         $envelope = ['project_id' => $id, 'snapshot_id' => $project['active_scan_id']] + $envelope;
         try {
-            $queries = new ArchitectureQueryService($this->pdo);
+            $queries = ArchitectureQueryService::forDatabase($this->pdo);
             $result = $remove
                 ? $queries->removeAnnotation($id, $component, $kind, $value, $execute)
                 : $queries->upsertAnnotation($id, $component, $kind, $value, $execute);

@@ -180,7 +180,7 @@ names whichever cut the read.
 offline, reproducible, inspectable and always available.
 
 Library integrators can inject an implementation of
-`Knossos\Query\SemanticRanker` into `ArchitectureQueryService` and request
+`Knossos\Query\SemanticRanker` into `ArchitectureQueryService::forDatabase()` and request
 `semantic_if_available` through the MCP tool or the service. The provider
 receives only the bounded feature text and candidate boundary text, and must
 return one finite normalized score from 0 through 1 for every candidate within

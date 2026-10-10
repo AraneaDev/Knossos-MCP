@@ -188,7 +188,7 @@ final class ChangeImpactRankingTest extends KnossosTestCase
             }
         };
 
-        $fromTree = (new ArchitectureQueryService($this->pdo, gitWorkingTree: $tree))->changedFilesImpact($this->ids['project'], workingTree: true);
+        $fromTree = ArchitectureQueryService::forDatabase($this->pdo, gitWorkingTree: $tree)->changedFilesImpact($this->ids['project'], workingTree: true);
         assertSame(true, $fromTree->data['git']['truncated']);
         assertSame(true, $fromTree->truncated);
 
@@ -291,7 +291,7 @@ final class ChangeImpactRankingTest extends KnossosTestCase
 
     private function queries(?GitHistoryProvider $history = null): ArchitectureQueryService
     {
-        return new ArchitectureQueryService($this->pdo, gitHistory: $history);
+        return ArchitectureQueryService::forDatabase($this->pdo, gitHistory: $history);
     }
 
     private function done(): void
