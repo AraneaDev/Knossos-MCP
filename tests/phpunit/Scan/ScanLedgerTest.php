@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Tests\Phpunit\Query;
+namespace Knossos\Tests\Phpunit\Scan;
 
 use Closure;
-use Knossos\Query\ScanLedger;
-use Knossos\Query\ScanLedgerSpan;
+use Knossos\Scan\ScanLedger;
+use Knossos\Scan\ScanLedgerSpan;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;
 use Knossos\Tests\Phpunit\KnossosTestCase;
@@ -273,7 +273,7 @@ final class ScanLedgerTest extends KnossosTestCase
                 [, , $database, $writer, $count] = $argv;
                 $pdo = Knossos\Store\SqliteConnection::open($database);
                 $pdo->exec('PRAGMA foreign_keys = OFF');
-                $ledger = new Knossos\Query\ScanLedger($pdo);
+                $ledger = new Knossos\Scan\ScanLedger($pdo);
                 for ($i = 1; $i <= (int) $count; ++$i) {
                     for (;;) {
                         try {

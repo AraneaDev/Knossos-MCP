@@ -83,7 +83,7 @@ final readonly class ProjectDatabaseLocator
     /**
      * The `.knossos/knossos.sqlite` at the target, or the nearest one above it.
      *
-     * The walk mirrors {@see \Knossos\Query\ProjectPathResolver}, which already
+     * The walk mirrors {@see \Knossos\Scan\ProjectPathResolver}, which already
      * walks parents to resolve a subdirectory to its project: a session started
      * in `src/` of a scanned repository must reach the repository's own graph,
      * and a database path that stopped at the target would find nothing there

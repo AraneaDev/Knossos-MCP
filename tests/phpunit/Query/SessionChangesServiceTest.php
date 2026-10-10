@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Query;
 
 use Knossos\Query\LedgeredScanner;
-use Knossos\Query\ScanLedger;
+use Knossos\Scan\ScanLedger;
 use Knossos\Query\SessionChangesService;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;

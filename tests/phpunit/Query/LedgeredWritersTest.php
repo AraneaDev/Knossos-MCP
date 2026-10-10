@@ -6,7 +6,7 @@ namespace Knossos\Tests\Phpunit\Query;
 
 use Knossos\Discovery\AllowedRoots;
 use Knossos\Mcp\McpServerAssembly;
-use Knossos\Query\ScanLedger;
+use Knossos\Scan\ScanLedger;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scan\ProjectWriterLock;
 use Knossos\Store\SqliteConnection;

@@ -332,11 +332,6 @@ export function paneStatus(d: Dashboard, refresh: RefreshState, rescan: RescanSt
   return { tone: state === 'fresh' ? 'ok' : 'warn', text: aged(state) }
 }
 
-/** Whether a rescan would change anything: the snapshot is stale or files drifted since it. */
-export function needsRescan(d: Dashboard): boolean {
-  return d.freshness.state !== 'fresh' || d.freshness.drift_files > 0
-}
-
 const LANGUAGES: Record<string, string> = { php: 'PHP', javascript: 'JS', typescript: 'TS', python: 'PY', rust: 'RS', go: 'GO', ruby: 'RB', java: 'JAVA' }
 
 /** The project's languages as the summary line names them, most files first; empty when the dashboard does not say. */
@@ -461,8 +456,10 @@ export function paneInput(
   return {
     project: baseName(d.project_root ?? d.path) || (d.project_root ?? d.path),
     status: paneStatus(d, refresh, rescan, now, live),
-    // A watcher that is scanning already does what a rescan would.
-    canRescan: rescan.phase !== 'scanning' && live.phase !== 'scanning' && needsRescan(d),
+    // Always on offer, fresh or not: freshness is the snapshot's own account,
+    // and a person who knows the code moved should not have to wait for it to
+    // agree. Only a scan already running, a rescan or the watcher's, holds it back.
+    canRescan: rescan.phase !== 'scanning' && live.phase !== 'scanning',
     summary,
     languages: languagesOf(d),
     tab: view.tab,
@@ -649,7 +646,7 @@ function pill(status: PaneStatus): Segment {
  * checkout stands (branch and short commit, dim; nothing without git) and
  * the languages as small chips, then against the right edge why the status
  * is what it is, the status as a pill in its colour and the rescan action
- * when a rescan would change anything. In a detail the name becomes the way
+ * whenever no scan is running. In a detail the name becomes the way
  * back: `project › Tab › what is shown`. As the width shrinks the chips go
  * first, then the commit, the branch and the reason; then the name is cut,
  * never below four cells, then the pill's words. Narrow, the name, the
@@ -657,6 +654,9 @@ function pill(status: PaneStatus): Segment {
  */
 export function titleRow(input: PaneInput, columns: number, tier: Tier): Row {
   const rescan: Segment[] = input.canRescan ? [{ text: '  ' }, button('rescan', 'rescan', 'r', { dim: false })] : []
+  // Where the header is short of room the label goes before the reason does;
+  // the hotkey stays, on a twin drawn out of sight, as a tab's digit does.
+  const rescanKey: Segment[] = input.canRescan ? [{ text: '', hidden: true, press: { id: 'rescan', label: 'rescan', hotkey: 'r' } }] : []
   const note: Segment[] = input.status.note === undefined ? [] : [{ text: `${input.status.note}  `, dim: true }]
   const name: Segment = { text: input.project, bold: true, color: HEADING }
   const crumbs: Segment[] =
@@ -677,19 +677,22 @@ export function titleRow(input: PaneInput, columns: number, tier: Tier): Row {
     [[...crumbs, ...(away ? [] : where)], [...note, pill(input.status), ...rescan]],
     [[...crumbs, ...(!away && input.git?.branch ? [{ text: `  ${input.git.branch}`, dim: true }] : [])], [...note, pill(input.status), ...rescan]],
     [crumbs, [...note, pill(input.status), ...rescan]],
+    [crumbs, [...note, pill(input.status), ...rescanKey]],
     [crumbs, [pill(input.status), ...rescan]],
+    [crumbs, [pill(input.status), ...rescanKey]],
   ]
   for (const [left, right] of variants) {
     if (segmentsWidth(left) + 1 + segmentsWidth(right) <= columns) return spread('title', left, right, columns)
   }
   // Nothing fits whole: the right side first, then the way back cut from its middle, then the pill's words cut.
-  const right: Segment[] = [pill(input.status), ...rescan]
+  // The rescan label is the first thing given up; its hotkey stays.
+  const right: Segment[] = [pill(input.status), ...rescanKey]
   const room = columns - 1 - segmentsWidth(right)
   if (room >= Math.min(4, cells(input.project))) return spread('title', cutCrumbs(crumbs, room), right, columns)
-  const keep = Math.max(0, columns - 1 - segmentsWidth(rescan) - Math.min(4, cells(input.project)))
+  const keep = Math.max(0, columns - 1 - Math.min(4, cells(input.project)))
   const shortPill: Segment = { ...pill(input.status), text: fit(pill(input.status).text, keep) }
-  const left = cutCrumbs(crumbs, Math.max(0, columns - 1 - cells(shortPill.text) - segmentsWidth(rescan)))
-  return spread('title', left, keep >= 4 ? [shortPill, ...rescan] : clip(rescan.slice(1), columns), columns)
+  const left = cutCrumbs(crumbs, Math.max(0, columns - 1 - cells(shortPill.text)))
+  return spread('title', left, keep >= 4 ? [shortPill, ...rescanKey] : rescanKey, columns)
 }
 
 /** The header's left side cut to `room`: a detail's label first, then the tab between, then the project's name. */
@@ -836,7 +839,7 @@ const KEY_HELP: [string, string][] = [
   ['p', "in a component's detail: pick another component in the finder and draw the route between them"],
   ['m', "in a component's detail: add a note to it; knossos checks it first, and y records it"],
   ['n s x', 'on Hubs: narrow the list (type, then Enter), sort by in, out or cross, clear the narrowing or the in-degree range'],
-  ['r', 'rescan a stale snapshot'],
+  ['r', 'rescan the project now, fresh or not'],
   ['a', 'allow a refused root (asks first)'],
 ]
 const KEY_WIDTH = Math.max(...KEY_HELP.map(([k]) => cells(k))) + 2

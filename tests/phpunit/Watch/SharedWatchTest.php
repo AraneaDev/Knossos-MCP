@@ -6,7 +6,7 @@ namespace Knossos\Tests\Phpunit\Watch;
 
 use Knossos\Cancellation\CancellationToken;
 use Knossos\Discovery\AllowedRoots;
-use Knossos\Query\ScanLedger;
+use Knossos\Scan\ScanLedger;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;
