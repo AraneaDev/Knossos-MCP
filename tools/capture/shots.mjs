@@ -308,7 +308,8 @@ export const SHOTS = {
         "branch",
         [
             press("7"),
-            wait("branch", String.raw`Against the merge base`, {
+            // Not the head card's title: it is drawn while the comparison still loads.
+            wait("branch", String.raw`Files this branch touched`, {
                 timeoutMs: 60000,
             }),
         ],
