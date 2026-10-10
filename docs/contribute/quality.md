@@ -59,6 +59,25 @@ floors nothing earns.
 
 Mutation testing is in no profile, see [adversarial testing](adversarial-testing.md).
 
+### The layering it holds
+
+`knossos.json` makes each namespace under `src/` a boundary and puts the
+namespaces in four tiers. A namespace may depend on its own tier and the tiers
+below it, never on one above:
+
+| Tier       | Namespaces                                                               |
+| ---------- | ------------------------------------------------------------------------ |
+| foundation | Cancellation, Filesystem, Result, Scanner, Bundle, Classification, Store |
+| analysis   | Discovery, Boundary, Configuration, Git, Reconciliation, Scan            |
+| services   | Query, Maintenance, Runtime, Watch                                       |
+| adapters   | Mcp, Cli (and `Application` above them)                                  |
+
+Each language worker also may not depend on core or on another worker. A
+dependency that breaks either rule is a `boundary_violations` finding, so the
+`gate` lane fails on it. When a new dependency is the right design, move the
+namespace to the tier it belongs in and say why in the change, rather than
+denying less.
+
 ### What the `gate` lane enforces
 
 The lane scans two trees, the commit the change is measured against and the
