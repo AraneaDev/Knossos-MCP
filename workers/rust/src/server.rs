@@ -1,22 +1,19 @@
 //! The newline-delimited JSON-RPC loop. Mirrors `workers/php/src/WorkerServer.php`.
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
-use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+use crate::cargo_manifest::cargo_crates;
 use crate::facts::Facts;
+use crate::heartbeat::Heartbeat;
+use crate::index::{index_project, Prepared, ProjectIndex};
 use crate::layout::Layout;
+use crate::params::ScanRequest;
 use crate::protocol::{Contribution, Manifest};
-use crate::visit::Declarations;
-
-/// Default cap on one scanned file, overridden by `params.limits.max_file_bytes`.
-const DEFAULT_MAX_FILE_BYTES: u64 = 2_000_000;
-
-/// Default cap on files in one request, overridden by `params.limits.max_files`.
-const DEFAULT_MAX_FILES: usize = 100_000;
+use crate::reads::FileReads;
+use crate::visit::{Declarations, TestModules};
 
 /// Serialized bytes one `scan/input_hashes` notification carries at most, well
 /// under the core's 1,000,000-byte line cap, and the same as the packaged PHP,
@@ -25,85 +22,6 @@ const INPUT_HASHES_PART_BYTES: usize = 256_000;
 
 /// The result's path maps a `scan/input_hashes` part may carry a piece of.
 const READ_MAP_FIELDS: [&str; 3] = ["input_hashes", "reads", "unattributed_reads"];
-
-/// How long the worker may go without writing during a request before it
-/// sends a `scan/heartbeat`, well inside the core's inactivity timeout.
-const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// What one file gives the declaration index.
-#[derive(Clone, Debug)]
-struct FileIndex {
-    /// Every path the file declares, see [`crate::visit::declaration_paths`].
-    declarations: BTreeSet<String>,
-    /// Every out-of-line `#[cfg(test)] mod name;` the file declares.
-    test_modules: crate::visit::TestModules,
-    /// Every `mod name;` the file declares at a path other than the module
-    /// it loads, see [`crate::visit::declared_renames`].
-    renames: BTreeMap<String, Option<String>>,
-}
-
-impl FileIndex {
-    /// The index entries of `relative`, placed in `module`. A file the index
-    /// does not answer for (see [`Layout::is_indexed`]) declares nothing to
-    /// it, no names and no renamed modules, though its test modules still
-    /// count.
-    fn of(relative: &str, module: &str, items: &[syn::Item], layout: &Layout) -> Self {
-        let mut test_modules = crate::visit::TestModules::new();
-        crate::visit::collect_test_modules(relative, module, items, layout, &mut test_modules);
-        let indexed = layout.is_indexed(relative, module);
-        Self {
-            declarations: if indexed {
-                crate::visit::declaration_paths(module, items)
-            } else {
-                BTreeSet::new()
-            },
-            test_modules,
-            renames: if indexed {
-                crate::visit::declared_renames(relative, module, items, layout)
-            } else {
-                BTreeMap::new()
-            },
-        }
-    }
-}
-
-/// The index entries of every file the last request read, by the file's path
-/// and the hash of its bytes; `None` for bytes that do not parse. With the
-/// [`Layout`] they were collected under, both decide the entries, so a hit is
-/// what parsing would give.
-type IndexMemo = HashMap<(String, String), Option<FileIndex>>;
-
-thread_local! {
-    /// The worker lives across the requests of a scan, and each request
-    /// indexes the whole project: parsing only bytes it has not seen keeps
-    /// a large workspace's later batches as cheap as reading it. The memo is
-    /// kept for the layout it was built under and dropped when it changes.
-    static INDEX_MEMO: RefCell<(Layout, IndexMemo)> = RefCell::new((Layout::default(), HashMap::new()));
-}
-
-/// Sends `scan/heartbeat` when the request has been quiet for
-/// [`HEARTBEAT_EVERY`].
-struct Heartbeat {
-    /// When the last heartbeat went out, or the request began.
-    last: std::time::Instant,
-}
-
-impl Heartbeat {
-    /// Start counting from now.
-    fn new() -> Self {
-        Self {
-            last: std::time::Instant::now(),
-        }
-    }
-
-    /// Send a heartbeat through `emit` if the request has been quiet too long.
-    fn beat(&mut self, emit: &mut dyn FnMut(&Value)) {
-        if self.last.elapsed() >= HEARTBEAT_EVERY {
-            emit(&json!({"jsonrpc": "2.0", "method": "scan/heartbeat"}));
-            self.last = std::time::Instant::now();
-        }
-    }
-}
 
 /// Read requests until stdin ends or `shutdown` arrives, writing replies to `output`.
 ///
@@ -198,30 +116,6 @@ pub fn handle(request: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, St
     }
 }
 
-/// One file awaiting its walk: parsed successfully, or already reduced to a
-/// diagnostic-only contribution (unreadable, oversized, escaping, or
-/// unparsable — each failure costs only its own file).
-enum Prepared {
-    /// Read, validated, and parsed; ready to walk.
-    Parsed {
-        /// Project-relative path.
-        relative: String,
-        /// The parsed syntax tree.
-        parsed: syn::File,
-        /// SHA-256 hex of the raw bytes `parsed` came from.
-        content_hash: String,
-    },
-    /// A failed file, reduced to its final (diagnostic-only) contribution.
-    Err {
-        /// The diagnostic-only contribution itself.
-        contribution: Contribution,
-        /// Whether the filesystem refused the read (gone, not a regular file,
-        /// over the byte cap, or resolving outside the root), as opposed to
-        /// bytes that were read and failed to parse.
-        read_failed: bool,
-    },
-}
-
 /// Parse a bounded file set, emitting one owned contribution per input.
 ///
 /// The request is scanned in three passes. Every Rust file of the project is
@@ -234,116 +128,43 @@ enum Prepared {
 /// in the sorted order the batch was accepted in, with the files its facts
 /// were read from (see [`FileReads`]).
 fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
-    let root = safe_root(params.get("root"))?;
-    let limits = params.get("limits");
-    let max_files = limit_of(limits, "max_files", DEFAULT_MAX_FILES as u64)? as usize;
-    let max_file_bytes = limit_of(limits, "max_file_bytes", DEFAULT_MAX_FILE_BYTES)?;
-    let files = params
-        .get("files")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "Rust scan files must be a bounded list.".to_owned())?;
-    if files.len() > max_files {
-        return Err("Rust scan files must be a bounded list.".to_owned());
-    }
-
-    let mut relatives: Vec<String> = Vec::with_capacity(files.len());
-    for value in files {
-        // A malformed path stays fatal: it names no file, so there is nothing to
-        // attribute a diagnostic to, and echoing it into a contribution would
-        // emit an owner id the graph rejects anyway.
-        relatives.push(assert_scannable_path(value)?);
-    }
-    relatives.sort();
-    relatives.dedup();
-
-    let frameworks = string_list(params.get("frameworks"), "frameworks")?;
-    let config_files = string_list(params.get("config_files"), "config_files")?;
-    for config in &config_files {
-        assert_scannable_str(config)?;
-    }
-    let source_files = string_list(params.get("source_files"), "source_files")?;
-    for source in &source_files {
-        assert_scannable_str(source)?;
-    }
+    let request = ScanRequest::parse(params)?;
     let mut input_hashes: BTreeMap<String, Option<String>> = BTreeMap::new();
-    let layout = cargo_crates(&root, &config_files, max_file_bytes, &mut input_hashes);
-
-    // Pass 1: read every Rust file of the project and index it. Without
-    // `source_files` the project is the batch, as it always was. An
-    // unrequested file's tree is dropped once indexed, so the whole project
-    // is never held parsed at once.
-    let requested: BTreeSet<&str> = relatives.iter().map(String::as_str).collect();
-    let project: BTreeSet<&str> = source_files
-        .iter()
-        .map(String::as_str)
-        .chain(requested.iter().copied())
-        .collect();
-    let mut prepared: Vec<Prepared> = Vec::with_capacity(relatives.len());
-    let mut declarations = Declarations::new();
-    let mut test_modules = crate::visit::TestModules::new();
-    let mut memo = INDEX_MEMO.with(|memo| {
-        let (built_under, memo) = std::mem::take(&mut *memo.borrow_mut());
-        if built_under == layout {
-            memo
-        } else {
-            HashMap::new()
-        }
-    });
-    let mut kept: IndexMemo = HashMap::new();
+    let layout = cargo_crates(
+        &request.root,
+        &request.config_files,
+        request.max_file_bytes,
+        &mut input_hashes,
+    );
     let mut heartbeat = Heartbeat::new();
-    for relative in project {
-        heartbeat.beat(emit);
-        let module = layout.module_of(relative);
-        let (value, index) = if requested.contains(relative) {
-            let item = prepare_one(&root, relative, max_file_bytes);
-            let index = match &item {
-                Prepared::Parsed { parsed, .. } => {
-                    Some(FileIndex::of(relative, &module, &parsed.items, &layout))
-                }
-                Prepared::Err { .. } => None,
-            };
-            let value = read_value(&item);
-            prepared.push(item);
-            (value, index)
-        } else {
-            // An unrequested file is read and hashed on every request, as
-            // its read must be recorded, but parsed only when this worker
-            // has not indexed those bytes in that module before.
-            match read_safely(&root, relative, max_file_bytes) {
-                Ok(bytes) => {
-                    let hash = sha256_hex(&bytes);
-                    let index = match memo.remove(&(relative.to_owned(), hash.clone())) {
-                        Some(index) => index,
-                        None => parse_source(&bytes)
-                            .ok()
-                            .map(|parsed| FileIndex::of(relative, &module, &parsed.items, &layout)),
-                    };
-                    (Some(hash), index)
-                }
-                Err(_) => (None, None),
-            }
-        };
-        if let Some(index) = &index {
-            declarations.add_file(&index.declarations);
-            declarations.add_renames(&index.renames);
-            test_modules.extend(index.test_modules.iter().cloned());
-        }
-        if let Some(hash) = &value {
-            kept.insert((relative.to_owned(), hash.clone()), index);
-        }
-        record_read(&mut input_hashes, relative, value);
-    }
-    // Only what this request indexed is kept, so the memo follows the
-    // project rather than every version of it this process has seen.
-    INDEX_MEMO.with(|memo| *memo.borrow_mut() = (layout.clone(), kept));
+    let index = index_project(&request, &layout, &mut input_hashes, &mut heartbeat, emit);
+    let walked = walk_requested(
+        &request,
+        &layout,
+        index,
+        &mut input_hashes,
+        &mut heartbeat,
+        emit,
+    );
 
-    // Pass 2: walk each requested file, noting what its facts were read from.
-    let mut reads = FileReads {
-        root: &root,
-        max_file_bytes,
-        layout: &layout,
-        by_module: BTreeMap::new(),
-    };
+    emit_contributions(&request, walked, input_hashes, emit)
+}
+
+/// Pass 2: walk each requested file, noting what its facts were read from.
+fn walk_requested(
+    request: &ScanRequest,
+    layout: &Layout,
+    index: ProjectIndex,
+    input_hashes: &mut BTreeMap<String, Option<String>>,
+    heartbeat: &mut Heartbeat,
+    emit: &mut dyn FnMut(&Value),
+) -> Vec<(Contribution, BTreeSet<String>)> {
+    let mut reads = FileReads::new(&request.root, request.max_file_bytes, layout);
+    let ProjectIndex {
+        prepared,
+        declarations,
+        test_modules,
+    } = index;
     let mut walked: Vec<(Contribution, BTreeSet<String>)> = Vec::with_capacity(prepared.len());
     for item in prepared {
         heartbeat.beat(emit);
@@ -361,21 +182,32 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
                     &module,
                     &parsed,
                     content_hash,
-                    &frameworks,
+                    &request.frameworks,
                     &declarations,
                     &test_modules,
-                    &layout,
+                    layout,
                 );
                 let lookups = declarations.take_lookups();
-                let keys = reads.of_file(&relative, &module, &lookups, &placed, &mut input_hashes);
+                let keys = reads.of_file(&relative, &module, &lookups, &placed, input_hashes);
                 (contribution, keys)
             }
         });
     }
 
-    // Pass 3: emit, each read carrying the value `input_hashes` holds for it.
-    let mut named: BTreeSet<String> = relatives.iter().cloned().collect();
-    let shared: BTreeMap<String, Option<String>> = config_files
+    walked
+}
+
+/// Pass 3: emit, each read carrying the value `input_hashes` holds for it,
+/// and return the request's result.
+fn emit_contributions(
+    request: &ScanRequest,
+    walked: Vec<(Contribution, BTreeSet<String>)>,
+    input_hashes: BTreeMap<String, Option<String>>,
+    emit: &mut dyn FnMut(&Value),
+) -> Result<Value, String> {
+    let mut named: BTreeSet<String> = request.relatives.iter().cloned().collect();
+    let shared: BTreeMap<String, Option<String>> = request
+        .config_files
         .iter()
         .filter_map(|config| Some((config.clone(), input_hashes.get(config)?.clone())))
         .collect();
@@ -419,7 +251,7 @@ fn walk_one(
     content_hash: String,
     frameworks: &[String],
     declarations: &Declarations,
-    test_modules: &crate::visit::TestModules,
+    test_modules: &TestModules,
     layout: &Layout,
 ) -> (Contribution, BTreeSet<String>) {
     let display = module.rsplit("::").next().unwrap_or(module).to_owned();
@@ -463,553 +295,16 @@ fn walk_one(
     (facts.finish(), placed)
 }
 
-/// What one prepared file puts in `input_hashes`: the hash of the bytes read,
-/// or `None` when the filesystem refused the read. A file whose read failed is
-/// not what discovery hashed right now, and a requested one's contribution
-/// stands in for its facts empty: null makes the core fail the scan for a
-/// discovered path rather than keep a graph without them.
-fn read_value(item: &Prepared) -> Option<String> {
-    match item {
-        Prepared::Parsed { content_hash, .. } => Some(content_hash.clone()),
-        Prepared::Err {
-            read_failed: true, ..
-        } => None,
-        Prepared::Err { contribution, .. } => contribution.content_hash.clone(),
-    }
+/// A JSON-RPC error reply carrying the caller's id.
+fn error_reply(id: &Value, message: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": message}})
 }
 
-/// The files each requested file's facts were read from.
-///
-/// A file's facts depend on other files in three ways, and each is a read:
-///
-/// - Its module path follows from which packages are crates: a file under a
-///   package's `src/` reads that package's `src/lib.rs` and `src/main.rs`,
-///   whose presence decides it. So does the module each of its `mod`
-///   declarations names, from the path of the file it loads.
-/// - Whether it is test code follows from a `#[cfg(test)] mod name;` in a
-///   module above it, so it reads every file of every module above its own.
-/// - Every name its walk asked the declaration index about, found or not,
-///   follows from the files of every module above that name.
-///
-/// "The files of a module" are every path a file there could have (see
-/// [`crate::layout::module_files`]), which are exactly the files the index
-/// holds there: one that is missing is recorded as `None`, so adding it
-/// reaches the reader. A path the project does not hold is read from disk as
-/// any other file is, within the byte cap, and recorded in `input_hashes`. Everything recorded
-/// here is a direct read: what a declaring file itself read is its own.
-struct FileReads<'a> {
-    /// The canonical project root.
-    root: &'a Path,
-    /// The byte cap a probed file is read within.
-    max_file_bytes: u64,
-    /// The project's crates, see [`Layout`].
-    layout: &'a Layout,
-    /// The files of each module asked about so far, so each is probed once.
-    by_module: BTreeMap<String, Vec<String>>,
-}
-
-impl FileReads<'_> {
-    /// The files `relative`, placed in `module`, read beyond itself after a
-    /// walk that asked the index about `lookups` and placed the files its
-    /// `mod` declarations load (`placed`). Every path returned is in
-    /// `input_hashes`.
-    fn of_file(
-        &mut self,
-        relative: &str,
-        module: &str,
-        lookups: &BTreeSet<String>,
-        placed: &BTreeSet<String>,
-        input_hashes: &mut BTreeMap<String, Option<String>>,
-    ) -> BTreeSet<String> {
-        let mut modules: BTreeSet<&str> =
-            crate::layout::modules_above(module).into_iter().collect();
-        for name in lookups {
-            modules.extend(crate::layout::modules_above(name));
-        }
-        let mut keys = BTreeSet::new();
-        for (directory, _) in &self.layout.packages {
-            let source = format!("{directory}src/");
-            if std::iter::once(relative)
-                .chain(placed.iter().map(String::as_str))
-                .any(|file| file.starts_with(&source))
-            {
-                for root_file in ["src/lib.rs", "src/main.rs"] {
-                    keys.insert(format!("{directory}{root_file}"));
-                }
-            }
-        }
-        for module in modules {
-            keys.extend(self.of_module(module).iter().cloned());
-        }
-        keys.remove(relative);
-        for key in &keys {
-            if !input_hashes.contains_key(key) {
-                let value = read_safely(self.root, key, self.max_file_bytes)
-                    .ok()
-                    .map(|bytes| sha256_hex(&bytes));
-                record_read(input_hashes, key, value);
-            }
-        }
-
-        keys
-    }
-
-    /// Every path a file placed in `module` could have.
-    fn of_module(&mut self, module: &str) -> &[String] {
-        self.by_module.entry(module.to_owned()).or_insert_with(|| {
-            let mut files = self.layout.module_files(module);
-            files.retain(|file| assert_scannable_str(file).is_ok());
-            files
-        })
-    }
-}
-
-/// Record one read for `input_hashes`: a path already recorded with a different
-/// value (two differing hashes, or a hash and a failed read or absent probe)
-/// becomes `None`, since at least one of those reads disagrees with discovery
-/// and either may have fed facts.
-fn record_read(
-    input_hashes: &mut BTreeMap<String, Option<String>>,
-    relative: &str,
-    value: Option<String>,
-) {
-    let value = match input_hashes.get(relative) {
-        Some(existing) if *existing != value => None,
-        _ => value,
-    };
-    input_hashes.insert(relative.to_owned(), value);
-}
-
-/// Read, validate, and parse one file into a [`Prepared`].
-///
-/// Every failure is per file. Aborting the request would discard the facts
-/// every other file in the batch contributes, so one unreadable or
-/// unparsable file costs only its own contribution.
-fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
-    let mut facts = Facts::new(relative);
-    let bytes = match read_safely(root, relative, max_file_bytes) {
-        Ok(bytes) => bytes,
-        Err(message) => {
-            facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &message, 1);
-            return Prepared::Err {
-                contribution: facts.finish(),
-                read_failed: true,
-            };
-        }
-    };
-    let content_hash = sha256_hex(&bytes);
-    facts.set_content_hash(content_hash.clone());
-    match parse_source(&bytes) {
-        Ok(parsed) => Prepared::Parsed {
-            relative: relative.to_owned(),
-            parsed,
-            content_hash,
-        },
-        Err((code, message, line)) => {
-            facts.diagnostic("error", code, &message, line);
-            Prepared::Err {
-                contribution: facts.finish(),
-                read_failed: false,
-            }
-        }
-    }
-}
-
-/// Parse a file's bytes, or the diagnostic code, message and line saying why
-/// they do not parse: not UTF-8, nested past [`MAX_NESTING`], or not Rust.
-fn parse_source(bytes: &[u8]) -> Result<syn::File, (&'static str, String, usize)> {
-    let source =
-        std::str::from_utf8(bytes).map_err(|e| ("RS_UNSCANNABLE_FILE", e.to_string(), 1))?;
-    if let Some(depth) = nesting_beyond(source, MAX_NESTING) {
-        return Err((
-            "RS_TOO_DEEP",
-            format!("Delimiters nest {depth} levels deep, past the limit of {MAX_NESTING}."),
-            1,
-        ));
-    }
-    syn::parse_file(source).map_err(|error| {
-        let line = error.span().start().line.max(1);
-        ("RS_SYNTAX_ERROR", error.to_string(), line)
-    })
-}
-
-/// The raw bytes of one project file, or why the filesystem refused them:
-/// gone, not a regular file, over the byte cap, or resolving outside the root.
-///
-/// Mirrors `safe_file` in `workers/python/bin/knossos_python/safe_io.py`:
-/// `assert_scannable_path` only checked the path's shape, so a symlink inside
-/// the project that points outside it would otherwise be resolved untouched.
-/// Canonicalising and re-checking containment here, at the point the file is
-/// first opened, is what actually catches that. `safe_root` canonicalises
-/// `root`, so a plain `starts_with` comparison is enough.
-///
-/// Bytes, not a string: the hash must be of exactly what is on disk, and a
-/// file that is not UTF-8 is still a file whose bytes were read. Bounded to
-/// one byte past the cap, which is how the cap is enforced: a size checked
-/// beforehand could belong to a file replaced before this read, and a
-/// replacement must not be read unbounded.
-fn read_safely(root: &Path, relative: &str, max_file_bytes: u64) -> Result<Vec<u8>, String> {
-    let canonical = std::fs::canonicalize(root.join(relative)).map_err(|e| e.to_string())?;
-    if !canonical.starts_with(root) {
-        return Err("Scan path escapes the project root.".to_owned());
-    }
-    if !std::fs::metadata(&canonical)
-        .map_err(|e| e.to_string())?
-        .is_file()
-    {
-        return Err("Scan path is not a regular file.".to_owned());
-    }
-    let bytes = read_bounded(&canonical, max_file_bytes).map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > max_file_bytes {
-        return Err("File exceeds the scan byte limit.".to_owned());
-    }
-
-    Ok(bytes)
-}
-
-/// Deepest delimiter nesting a file may have before it is not parsed.
-///
-/// Parsing, walking and dropping a syntax tree recurse once per level, and
-/// running out of stack aborts the process instead of unwinding, so a file
-/// nested far past real code would take every other file of the scan with it.
-/// The pre-scan counts `(`, `[` and `{` only. Other recursion (generic angle
-/// brackets, unary chains, long `else if` chains) is covered by the 64 MB
-/// worker stack, not by the pre-scan.
-const MAX_NESTING: usize = 256;
-
-/// The depth of `(`, `[` and `{` nesting in `source` once it passes `limit`,
-/// or `None` while it stays within it.
-///
-/// A small state machine skips comments (block comments nest), string, raw
-/// string and character literals, and lifetimes, so delimiters inside them do
-/// not count. It may over-count on odd input; the limit sits far above real code.
-fn nesting_beyond(source: &str, limit: usize) -> Option<usize> {
-    let bytes = source.as_bytes();
-    let mut depth = 0usize;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' | b'[' | b'{' => {
-                depth += 1;
-                if depth > limit {
-                    return Some(depth);
-                }
-            }
-            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-                continue;
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                let mut level = 1usize;
-                i += 2;
-                while i < bytes.len() && level > 0 {
-                    if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
-                        level += 1;
-                        i += 2;
-                    } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
-                        level -= 1;
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                continue;
-            }
-            b'"' => {
-                i = skip_quoted(bytes, i + 1, b'"');
-                continue;
-            }
-            b'r' if is_raw_string_start(bytes, i) => {
-                let mut hashes = 0;
-                let mut j = i + 1;
-                while bytes.get(j) == Some(&b'#') {
-                    hashes += 1;
-                    j += 1;
-                }
-                // `j` is the opening quote; look for a quote plus as many hashes.
-                j += 1;
-                while j < bytes.len() {
-                    if bytes[j] == b'"' && (1..=hashes).all(|k| bytes.get(j + k) == Some(&b'#')) {
-                        j += 1 + hashes;
-                        break;
-                    }
-                    j += 1;
-                }
-                i = j;
-                continue;
-            }
-            b'\'' => {
-                let next = bytes.get(i + 1).copied();
-                let is_lifetime = next.is_some_and(|c| c == b'_' || c.is_ascii_alphabetic())
-                    && bytes.get(i + 2) != Some(&b'\'');
-                if !is_lifetime {
-                    i = skip_quoted(bytes, i + 1, b'\'');
-                    continue;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Whether the `r` at `at` opens a raw string (`r"`, `r#"`), not an identifier.
-fn is_raw_string_start(bytes: &[u8], at: usize) -> bool {
-    let after_ident = at > 0 && (bytes[at - 1] == b'_' || bytes[at - 1].is_ascii_alphanumeric());
-    // A `b` prefix (`br"..."`) still opens a raw string.
-    if after_ident && !(bytes[at - 1] == b'b' && !(at > 1 && is_ident_byte(bytes[at - 2]))) {
-        return false;
-    }
-    let mut j = at + 1;
-    while bytes.get(j) == Some(&b'#') {
-        j += 1;
-    }
-    bytes.get(j) == Some(&b'"')
-}
-
-/// Whether `byte` can be part of an identifier.
-fn is_ident_byte(byte: u8) -> bool {
-    byte == b'_' || byte.is_ascii_alphanumeric()
-}
-
-/// The index after the `quote` that closes a literal whose body starts at
-/// `from`, honouring backslash escapes. An unterminated literal ends the source.
-fn skip_quoted(bytes: &[u8], from: usize, quote: u8) -> usize {
-    let mut i = from;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            byte if byte == quote => return i + 1,
-            _ => i += 1,
-        }
-    }
-    bytes.len()
-}
-
-/// Read at most `max_file_bytes + 1` bytes of `path`, so a caller can tell a
-/// file over the cap from one at it without reading the rest.
-fn read_bounded(path: &Path, max_file_bytes: u64) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(max_file_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    Ok(bytes)
-}
-
-/// Lowercase SHA-256 hex, the form discovery records in the core.
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    use std::fmt::Write;
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
-}
-
-/// The crate roots and names declared by the request's manifest `config_files`.
-///
-/// The crate name comes from a `[package]` table, read without a TOML parser
-/// (the same leaf parse the PHP core gives Cargo.toml), and the name other
-/// crates write for its library from `[lib]`, else the crate name. The crate's package
-/// node is attached to its library root `src/lib.rs`, or its binary root
-/// `src/main.rs` when there is no library — the two files whose module path
-/// is `crate` — via ordinary filesystem existence, matching where the file
-/// vertices sit in the batch.
-///
-/// That existence check decides facts: whether a package node attaches, and
-/// whether `src/main.rs` is the crate root or a binary beside a library, and
-/// whether the files under the package's `src/` belong to a crate at all. It
-/// is recorded where it is used, as a read of every file below that `src/`
-/// (see [`FileReads`]), so a root that appears, disappears or changes reaches
-/// exactly those files. The manifests are read by every file of the request.
-fn cargo_crates(
-    root: &Path,
-    config_files: &[String],
-    max_file_bytes: u64,
-    input_hashes: &mut BTreeMap<String, Option<String>>,
-) -> Layout {
-    let mut cargo = Layout::default();
-    for config in config_files {
-        // The manifest names the crate, so its bytes feed facts: recorded by
-        // the hash of the raw bytes read, or null when the read failed or went
-        // over the cap. Discovery hashes a Cargo.toml as a project unit, so
-        // the core checks the entry.
-        let bytes = match read_bounded(&root.join(config), max_file_bytes) {
-            Ok(bytes) if bytes.len() as u64 <= max_file_bytes => bytes,
-            _ => {
-                record_read(input_hashes, config, None);
-                continue;
-            }
-        };
-        record_read(input_hashes, config, Some(sha256_hex(&bytes)));
-        let Ok(contents) = String::from_utf8(bytes) else {
-            continue;
-        };
-        let Some(name) = manifest_crate_name(&contents) else {
-            continue;
-        };
-        let directory = match config.rsplit_once('/') {
-            Some((directory, _)) => format!("{directory}/"),
-            None => String::new(),
-        };
-        for candidate in [
-            format!("{directory}src/lib.rs"),
-            format!("{directory}src/main.rs"),
-        ] {
-            if root.join(&candidate).is_file() {
-                cargo.crates.push((candidate, name.clone()));
-            }
-        }
-        let crate_name = name.replace('-', "_");
-        let library = manifest_table_name(&contents, "[lib]")
-            .map_or_else(|| crate_name.clone(), |name| name.replace('-', "_"));
-        let root = if directory.is_empty() {
-            "crate".to_owned()
-        } else {
-            crate_name.clone()
-        };
-        cargo.libraries.insert(library, root);
-        cargo.packages.push((directory, crate_name));
-    }
-
-    cargo
-}
-
-/// The crate name from a Cargo.toml `[package]` table, or `None` for a
-/// virtual workspace manifest. Scoped to that one table so a `name` under
-/// `[[bin]]` or `[dependencies.foo]` is never mistaken for the crate's own.
-fn manifest_crate_name(contents: &str) -> Option<String> {
-    manifest_table_name(contents, "[package]")
-}
-
-/// The `name` key of one Cargo.toml table (`[package]`, `[lib]`), read
-/// without a TOML parser, or `None` when the table or its name is absent.
-fn manifest_table_name(contents: &str, table: &str) -> Option<String> {
-    let mut in_package = false;
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_package = trimmed.starts_with(table);
-            continue;
-        }
-        if !in_package {
-            continue;
-        }
-        let Some(after_name) = trimmed.strip_prefix("name") else {
-            continue;
-        };
-        let Some(value) = after_name.trim_start().strip_prefix('=') else {
-            continue;
-        };
-        let value = value.trim();
-        let name = value
-            .strip_prefix('"')
-            .and_then(|rest| rest.split('"').next())
-            .or_else(|| {
-                value
-                    .strip_prefix('\'')
-                    .and_then(|rest| rest.split('\'').next())
-            })
-            .unwrap_or("");
-        if !name.is_empty() {
-            return Some(name.to_owned());
-        }
-    }
-
-    None
-}
-
-/// A bounded list of non-empty strings from a params field.
-fn string_list(value: Option<&Value>, name: &str) -> Result<Vec<String>, String> {
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-    if value.is_null() {
-        return Ok(Vec::new());
-    }
-    let Some(items) = value.as_array() else {
-        return Err(format!("{name} must be a list of non-empty strings."));
-    };
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        let text = item
-            .as_str()
-            .filter(|text| !text.is_empty())
-            .ok_or_else(|| format!("{name} must be a list of non-empty strings."))?;
-        out.push(text.to_owned());
-    }
-
-    Ok(out)
-}
-
-/// The scan root as an existing, canonical, absolute directory.
-fn safe_root(value: Option<&Value>) -> Result<PathBuf, String> {
-    let raw = value
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-        .ok_or_else(|| "A project root is required.".to_owned())?;
-
-    std::fs::canonicalize(raw).map_err(|error| format!("Unusable project root: {error}"))
-}
-
-/// One `limits` entry, or `fallback` when absent.
-fn limit_of(limits: Option<&Value>, key: &str, fallback: u64) -> Result<u64, String> {
-    match limits.and_then(|value| value.get(key)) {
-        None | Some(Value::Null) => Ok(fallback),
-        Some(value) => value
-            .as_u64()
-            .ok_or_else(|| format!("Limit {key} must be a non-negative integer.")),
-    }
-}
-
-/// A requested path, refused unless it is a normalized, project-relative path.
-///
-/// This is the trust boundary. The core sends project-relative paths; anything
-/// absolute, NUL-containing, or backslash-containing is a caller that is broken
-/// or hostile, and neither is served by scanning it. Backslashes are refused
-/// outright rather than translated to `/`: on this platform `\` is not a path
-/// separator, so `Path::components()` would parse `..\escape.rs` as one opaque
-/// `Normal` segment, passing every structural check, and only turn into a real
-/// `../escape.rs` traversal once the caller normalizes it afterwards. For the
-/// same reason the segment check below splits the raw string itself rather than
-/// walking `Path::components()`: that iterator silently collapses a leading
-/// `./` and a doubled `/` before a `.` or empty segment would ever be seen,
-/// which would let `./x` and `x//y` slip past unnoticed. This mirrors
-/// `assert_scannable_path` in `workers/python/bin/knossos_python/safe_io.py`:
-/// the two workers must refuse exactly the same shapes.
-fn assert_scannable_path(value: &Value) -> Result<String, String> {
-    let raw = value
-        .as_str()
-        .filter(|text| !text.is_empty())
-        .ok_or_else(|| "A scan path must be a non-empty string.".to_owned())?;
-
-    assert_scannable_str(raw)
-}
-
-/// The string form of [`assert_scannable_path`], for values already known to
-/// be strings.
-fn assert_scannable_str(raw: &str) -> Result<String, String> {
-    if raw.contains('\0') || raw.contains('\\') {
-        return Err(format!("Refusing an unnormalized scan path: {raw}"));
-    }
-    if Path::new(raw).is_absolute() {
-        return Err(format!("Refusing an absolute scan path: {raw}"));
-    }
-    if raw
-        .split('/')
-        .any(|segment| matches!(segment, "" | "." | ".."))
-    {
-        return Err(format!("Refusing an unsafe scan path: {raw}"));
-    }
-
-    Ok(raw.to_owned())
+/// Write one JSON message followed by a newline, the protocol's only framing.
+fn write_line(output: &mut impl Write, message: &Value) -> std::io::Result<()> {
+    serde_json::to_writer(&mut *output, message)?;
+    output.write_all(b"\n")?;
+    output.flush()
 }
 
 /// Split one path map of a result (`input_hashes`, `reads` or
@@ -1046,23 +341,10 @@ fn split_read_map(result: &mut Value, field: &str, part_bytes: usize) -> Vec<Val
     parts.into_iter().map(Value::Object).collect()
 }
 
-/// A JSON-RPC error reply carrying the caller's id.
-fn error_reply(id: &Value, message: &str) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": message}})
-}
-
-/// Write one JSON message followed by a newline, the protocol's only framing.
-fn write_line(output: &mut impl Write, message: &Value) -> std::io::Result<()> {
-    serde_json::to_writer(&mut *output, message)?;
-    output.write_all(b"\n")?;
-    output.flush()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{read_bounded, record_read, split_read_map};
+    use super::split_read_map;
     use serde_json::json;
-    use std::collections::BTreeMap;
 
     #[test]
     fn input_hashes_split_into_parts_that_fit_their_budget() {
@@ -1104,109 +386,5 @@ mod tests {
         let mut other = json!({"status": "bye"});
         assert!(split_read_map(&mut other, "input_hashes", 1).is_empty());
         assert_eq!(json!({"status": "bye"}), other);
-    }
-
-    #[test]
-    fn repeated_reads_that_agree_keep_their_value() {
-        let mut map = BTreeMap::new();
-        record_read(&mut map, "src/lib.rs", Some("a".to_owned()));
-        record_read(&mut map, "src/lib.rs", Some("a".to_owned()));
-        record_read(&mut map, "src/gone.rs", None);
-        record_read(&mut map, "src/gone.rs", None);
-
-        assert_eq!(Some(&Some("a".to_owned())), map.get("src/lib.rs"));
-        assert_eq!(Some(&None), map.get("src/gone.rs"));
-    }
-
-    #[test]
-    fn reads_that_disagree_become_null_in_either_order() {
-        let mut map = BTreeMap::new();
-        record_read(&mut map, "probe-then-read.rs", None);
-        record_read(&mut map, "probe-then-read.rs", Some("a".to_owned()));
-        record_read(&mut map, "read-then-probe.rs", Some("a".to_owned()));
-        record_read(&mut map, "read-then-probe.rs", None);
-        record_read(&mut map, "two-hashes.rs", Some("a".to_owned()));
-        record_read(&mut map, "two-hashes.rs", Some("b".to_owned()));
-        record_read(&mut map, "two-hashes.rs", Some("a".to_owned()));
-
-        assert_eq!(Some(&None), map.get("probe-then-read.rs"));
-        assert_eq!(Some(&None), map.get("read-then-probe.rs"));
-        assert_eq!(Some(&None), map.get("two-hashes.rs"));
-    }
-
-    #[test]
-    fn a_bounded_read_stops_one_byte_past_the_cap() {
-        let path = std::env::temp_dir().join("knossos-rust-read-bounded.rs");
-        std::fs::write(&path, b"0123456789").unwrap();
-
-        let over = read_bounded(&path, 4).unwrap();
-        let at = read_bounded(&path, 10).unwrap();
-        let _ = std::fs::remove_file(&path);
-
-        assert_eq!(b"01234".to_vec(), over);
-        assert_eq!(b"0123456789".to_vec(), at);
-    }
-}
-
-#[cfg(test)]
-mod nesting_tests {
-    use super::nesting_beyond;
-
-    /// Nesting limit low enough to write each case by hand.
-    const LIMIT: usize = 3;
-
-    #[test]
-    fn the_limit_itself_passes_and_one_past_it_trips() {
-        assert_eq!(None, nesting_beyond("(((x)))", LIMIT));
-        assert_eq!(Some(4), nesting_beyond("((((x))))", LIMIT));
-        assert_eq!(Some(4), nesting_beyond("{[({x})]}", LIMIT));
-    }
-
-    #[test]
-    fn a_lifetime_is_not_a_character_literal() {
-        assert_eq!(None, nesting_beyond("fn f<'a>(x:&'a str){((x))}", LIMIT));
-        assert_eq!(Some(4), nesting_beyond("fn f<'a>(((( x))))", LIMIT));
-    }
-
-    #[test]
-    fn character_literals_hide_their_delimiters() {
-        let source = "fn f(){ let a='{'; let b='\\''; let c='\"'; ((x)) }";
-        assert_eq!(None, nesting_beyond(source, LIMIT));
-        assert_eq!(Some(4), nesting_beyond("{ let a='x'; ((((x)))) }", LIMIT));
-    }
-
-    #[test]
-    fn string_literals_hide_their_delimiters() {
-        assert_eq!(None, nesting_beyond("{ let s = \"\\\"((((\"; (x) }", LIMIT));
-        assert_eq!(Some(4), nesting_beyond("{ let s = \"a\"; (((x))) }", LIMIT));
-    }
-
-    #[test]
-    fn raw_strings_hide_their_delimiters() {
-        assert_eq!(None, nesting_beyond("{ r#\"((\"((\"#; (x) }", LIMIT));
-        assert_eq!(None, nesting_beyond("{ br\"((((\"; (x) }", LIMIT));
-        assert_eq!(Some(4), nesting_beyond("{ r#\"a\"#; (((x))) }", LIMIT));
-    }
-
-    #[test]
-    fn an_identifier_r_does_not_open_a_raw_string() {
-        assert_eq!(
-            Some(4),
-            nesting_beyond("{ let r = 1; let var = r; (((x))) }", LIMIT)
-        );
-    }
-
-    #[test]
-    fn comments_hide_their_delimiters_and_block_comments_nest() {
-        assert_eq!(None, nesting_beyond("{ // ((((\n (x) }", LIMIT));
-        assert_eq!(None, nesting_beyond("{ /* ((((( */ (x) }", LIMIT));
-        assert_eq!(None, nesting_beyond("{ /* /* ((( */ ((( */ (x) }", LIMIT));
-        assert_eq!(Some(4), nesting_beyond("/* a */ ((((x))))", LIMIT));
-    }
-
-    #[test]
-    fn unbalanced_closers_do_not_go_below_zero() {
-        assert_eq!(None, nesting_beyond("))))))(((x)))", LIMIT));
-        assert_eq!(None, nesting_beyond("}}}}{((x))", LIMIT));
     }
 }

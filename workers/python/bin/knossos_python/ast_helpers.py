@@ -90,6 +90,17 @@ def router_constructors(tree: ast.Module) -> set[str]:
     return names
 
 
+def is_type_checking_guard(test: ast.expr) -> bool:
+    """Whether an ``if`` test is ``TYPE_CHECKING`` or ``typing.TYPE_CHECKING``, true only to a type checker."""
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return (
+        isinstance(test, ast.Attribute)
+        and test.attr == "TYPE_CHECKING"
+        and dotted(test.value) in ("typing", "typing_extensions")
+    )
+
+
 def is_protocol_base(base: ast.expr) -> bool:
     """Whether a class base is ``Protocol``, generic (``Protocol[T]``) or not."""
     named = base.value if isinstance(base, ast.Subscript) else base

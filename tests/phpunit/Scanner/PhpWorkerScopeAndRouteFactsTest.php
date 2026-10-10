@@ -98,6 +98,60 @@ final class PhpWorkerScopeAndRouteFactsTest extends KnossosTestCase
         ], $references, 'an arrow function parameter shadows a captured prefix');
     }
 
+    /**
+     * A class name prefix belongs to the scope that built it: a closure sees
+     * only what it captures, nested closures and arrow functions pass a
+     * capture inward, a by-reference capture rebound inside a closure does not
+     * reach the code around it, and a function body never sees the file's.
+     */
+    public function testClassPrefixesStayInTheirScope(): void
+    {
+        $this->write('src/Cards.php', <<<'PHP'
+            <?php
+            namespace App;
+            class Svc {
+                public function m(string $name, string $q): void {
+                    $p = 'App\\Cards\\' . $name;
+                    $c1 = function () use (&$p, $q) {
+                        $p = 'App\\Other\\' . $q;
+                        $own = 'App\\Own\\' . $q;
+                        new $p();
+                        $inner = function () use ($p) { new $p(); };
+                        $arrow = fn () => fn () => new $p();
+                    };
+                    new $p();
+                    $c2 = function () use ($p) { new $p(); };
+                    $c3 = function () { new $p(); };
+                    $c4 = function () use ($own) { new $own(); };
+                    $nested = fn () => (function () use ($p) { new $p(); })();
+                }
+            }
+            $f = 'App\\Scripts\\' . $argv[1];
+            $g = function () use ($f) { new $f(); };
+            function inner(): void { new $f(); }
+            new $f();
+            PHP);
+        [, $edges] = $this->scan(['src/Cards.php']);
+
+        $prefixes = [];
+        foreach ($edges as $edge) {
+            if (str_starts_with($edge->targetReference, 'php:class_prefix:')) {
+                $prefixes[] = $edge->evidence->startLine . ' ' . $edge->targetReference;
+            }
+        }
+        sort($prefixes);
+        self::assertSame([
+            '10 php:class_prefix:App\\Other',
+            '11 php:class_prefix:App\\Other',
+            '13 php:class_prefix:App\\Cards',
+            '14 php:class_prefix:App\\Cards',
+            '17 php:class_prefix:App\\Cards',
+            '21 php:class_prefix:App\\Scripts',
+            '23 php:class_prefix:App\\Scripts',
+            '9 php:class_prefix:App\\Other',
+        ], $prefixes);
+    }
+
     /** A class naming itself in another case is not a use of it, and its return types match in any case. */
     public function testNamesInAnotherCaseWithinOneFile(): void
     {

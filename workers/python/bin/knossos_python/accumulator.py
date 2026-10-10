@@ -46,17 +46,34 @@ class PythonFactAccumulator:
     def add_edge(
         self, kind: str, source: str, target: str, node: ast.AST, attributes: dict[str, Any] | None = None
     ) -> None:
-        item = {
+        added: dict[str, Any] = attributes or {}
+        item: dict[str, Any] = {
             "kind": kind,
             "source": source,
             "target": target,
             "origin": "ast",
             "confidence": "certain",
             "evidence": evidence(self.relative, node),
-            "attributes": attributes or {},
+            "attributes": added,
         }
         key = json.dumps([kind, source, target], sort_keys=True)
-        self.edges.setdefault(key, item)
+        existing = self.edges.get(key)
+        if existing is None:
+            self.edges[key] = item
+            return
+        # Two statements between the same pair are one edge, and the first
+        # one's attributes stand. When either is type-only, which kinds were
+        # seen is kept, so one runtime import keeps the dependency real
+        # whichever came first. A missing marker is a runtime import.
+        kept: dict[str, Any] = existing["attributes"]
+        if kind == "imports" and ("type_only" in kept or "type_only" in added):
+            kept["type_only_variants"] = sorted(
+                {
+                    kept.get("type_only", False),
+                    *kept.get("type_only_variants", []),
+                    added.get("type_only", False),
+                }
+            )
 
     def add_diagnostic(self, code: str, message: str, node: ast.AST) -> None:
         self.diagnostics.append(
