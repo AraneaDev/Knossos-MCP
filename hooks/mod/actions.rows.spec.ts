@@ -111,23 +111,23 @@ describe('opening a row', () => {
     })
 
     it('leaves out a flag set to false', async () => {
-        list([item('src/a.ts', { canonical: 'src/a.ts', file: false, changed: false } as Partial<Openable>)])
+        list([item('src/a.ts', { canonical: 'src/a.ts', file: false })])
         const { io } = port()
         await press(io, 'row:0')
         expect(vi.mocked(showComponent).mock.calls[0]![1]).toEqual({ name: 'src/a.ts', label: 'src/a.ts' })
     })
 
     it('switches to the tab a chart bar jumps to, and opens nothing', async () => {
-        list([item('bar', { jump: { tab: 'boundaries', selected: 3, degree: 2, target: 'App\\Core' } } as Partial<Openable>)])
+        list([item('bar', { jump: { tab: 'boundaries', selected: 3, degree: { from: 2, to: 9 }, target: 'App\\Core' } })])
         const { io, view } = port({ filtering: true, drift: true } as Partial<KnossosView>)
         await press(io, 'row:0')
-        expect(view()).toMatchObject({ tab: 'boundaries', selected: 3, degree: 2, target: 'App\\Core', filtering: false, drift: false })
+        expect(view()).toMatchObject({ tab: 'boundaries', selected: 3, degree: { from: 2, to: 9 }, target: 'App\\Core', filtering: false, drift: false })
         expect(showComponent).not.toHaveBeenCalled()
     })
 
     it('starts a jump on the first row with no degree when the bar names neither', async () => {
         list([item('Hubs'), item('bar', { jump: { tab: 'changes' } } as Partial<Openable>)])
-        const { io, view } = port({ selected: 0, filtering: true, drift: true, degree: 4 } as Partial<KnossosView>)
+        const { io, view } = port({ selected: 0, filtering: true, drift: true, degree: { from: 4, to: null } })
         await press(io, 'row:1')
         expect(view()).toMatchObject({ tab: 'changes', selected: 0, degree: null, filtering: false, drift: false })
         expect(view().target).toBeUndefined()
