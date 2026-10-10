@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Knossos\Query\Diagram\DiagramRenderer;
 use Knossos\Query\Diagram\MermaidRenderer;
 use Knossos\Query\Diagram\PlantUmlRenderer;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * Renders a slice of the graph as Mermaid or PlantUML source.

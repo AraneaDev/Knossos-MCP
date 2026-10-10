@@ -118,7 +118,7 @@ final class LaravelTest extends KnossosTestCase
                 $statement->execute(['role' => $role]);
                 assertSame(true, (int) $statement->fetchColumn() >= 1);
             }
-            $architecture = new ArchitectureQueryService($pdo);
+            $architecture = ArchitectureQueryService::forDatabase($pdo);
             $flow = $architecture->explainFlow(
                 $result->projectId,
                 'GET /shop/checkout',

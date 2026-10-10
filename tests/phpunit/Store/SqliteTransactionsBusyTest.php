@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Store;
 
-use Knossos\Scan\ScanBusyException;
+use Knossos\Store\ScanBusyException;
 use Knossos\Store\SqliteConnection;
 use Knossos\Store\SqliteTransactions;
 use Knossos\Tests\Phpunit\KnossosTestCase;

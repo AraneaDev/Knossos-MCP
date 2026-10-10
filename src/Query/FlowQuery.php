@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use InvalidArgumentException;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * How one component can reach another: `explain_flow`'s bounded path search.

@@ -6,7 +6,7 @@ namespace Knossos\Maintenance;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scan\ProjectWriterLease;
 use Knossos\Scan\ProjectWriterLock;
 use PDO;

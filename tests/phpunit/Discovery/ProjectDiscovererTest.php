@@ -4,14 +4,14 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Discovery;
 
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\DiscoveryConfig;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\DiscoveryResult;
 use Knossos\Discovery\ProjectDiscoverer;
 use Knossos\Discovery\ProjectUnit;
-use Knossos\Scan\CancellationToken;
-use Knossos\Scan\ScanCancelledException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 

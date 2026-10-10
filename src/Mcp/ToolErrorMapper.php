@@ -6,9 +6,9 @@ namespace Knossos\Mcp;
 
 use InvalidArgumentException;
 use Knossos\Discovery\DiscoveryException;
-use Knossos\Scan\ScanBusyException;
 use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Store\ScanBusyException;
 use Throwable;
 
 /**

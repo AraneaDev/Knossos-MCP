@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Watch;
 
 use Error;
-use Knossos\Query\ResultEnvelope;
-use Knossos\Scan\CancellationToken;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scan\ProjectScanner;
-use Knossos\Scan\ScanCancelledException;
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Watch\ScanTimeoutException;
 use Knossos\Watch\WatchScanAttempt;

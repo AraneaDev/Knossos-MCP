@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scan;
 
-use Knossos\Scan\CancellationToken;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use Knossos\Scan\ProjectScanService;
-use Knossos\Scan\ScanCancelledException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;

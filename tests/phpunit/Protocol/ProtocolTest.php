@@ -7,7 +7,7 @@ namespace Knossos\Tests\Phpunit\Protocol;
 use InvalidArgumentException;
 use Knossos\Application;
 use Knossos\Mcp\HttpSessionStore;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\EdgeFact;

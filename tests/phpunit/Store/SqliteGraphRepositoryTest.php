@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Store;
 
 use InvalidArgumentException;
-use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
 use Knossos\Scanner\Protocol\ScanContribution;
+use Knossos\Store\ContributionCacheEntry;
 use Knossos\Store\GraphRepository;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;

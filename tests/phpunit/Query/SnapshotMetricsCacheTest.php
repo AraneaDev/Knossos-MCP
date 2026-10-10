@@ -42,7 +42,7 @@ final class SnapshotMetricsCacheTest extends KnossosTestCase
     {
         return array_map(
             static fn(array $s): array => [$s['scan_id'], $s['active'], $s['counts'], $s['metrics']],
-            (new ArchitectureQueryService($pdo))->architectureTrends($project, 5)->data['series'],
+            ArchitectureQueryService::forDatabase($pdo)->architectureTrends($project, 5)->data['series'],
         );
     }
 

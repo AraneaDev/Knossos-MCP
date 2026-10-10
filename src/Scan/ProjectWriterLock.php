@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Closure;
+use Knossos\Store\ScanBusyException;
 use Knossos\Store\SqliteBusy;
 use PDO;
 use PDOException;

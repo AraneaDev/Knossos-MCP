@@ -246,7 +246,7 @@ final class LocationScoringTest extends KnossosTestCase
             return ++$ticks * 1_000_000;
         };
 
-        $result = (new ArchitectureQueryService($pdo, $clock))->suggestLocation($project, 'billing parts', timeoutMs: 1);
+        $result = ArchitectureQueryService::forDatabase($pdo, $clock)->suggestLocation($project, 'billing parts', timeoutMs: 1);
 
         assertSame(true, in_array('time_limit', $result->data['bounds']['truncation_reasons'], true));
         assertSame(true, $result->truncated);
@@ -261,7 +261,7 @@ final class LocationScoringTest extends KnossosTestCase
      */
     private static function candidateNamed(PDO $pdo, string $projectId, string $description, string $name): array
     {
-        $result = (new ArchitectureQueryService($pdo))->suggestLocation($projectId, $description);
+        $result = ArchitectureQueryService::forDatabase($pdo)->suggestLocation($projectId, $description);
         foreach ($result->data['candidates'] as $candidate) {
             if ($candidate['boundary']['name'] === $name) {
                 return $candidate;

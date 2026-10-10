@@ -128,7 +128,7 @@ final class TypescriptGlobalEditTest extends KnossosTestCase
         assertSame($this->graphSignature($full), $this->graphSignature($pdo));
     }
 
-    private function scan(PDO $pdo): \Knossos\Query\ResultEnvelope
+    private function scan(PDO $pdo): \Knossos\Result\ResultEnvelope
     {
         return (new ProjectScanService($pdo, self::repositoryRoot(), [$this->root]))->scan($this->root);
     }

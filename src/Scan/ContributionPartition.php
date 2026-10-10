@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
-use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scanner\Protocol\ScanContribution;
+use Knossos\Store\ContributionCacheEntry;
 
 /**
  * The split an incremental scan starts from: what was reused, what must be scanned.

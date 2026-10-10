@@ -67,7 +67,7 @@ final class FlowTest extends KnossosTestCase
         );
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $flow = $query->explainFlow($ids['project'], 'GET /checkout', 'InvoiceService', maxPaths: 1);
         assertSame(1, count($flow->data['paths']));
         assertSame(2, count($flow->data['paths'][0]['hops']));
@@ -94,7 +94,7 @@ final class FlowTest extends KnossosTestCase
         assertThrows(fn() => $query->explainFlow($ids['project'], $route, $ids['invoice'], maxDepth: 9), InvalidArgumentException::class);
         assertThrows(fn() => $query->explainFlow($ids['project'], $route, $ids['invoice'], timeoutMs: 0), InvalidArgumentException::class);
         $time = 0;
-        $timedQuery = new ArchitectureQueryService($pdo, function () use (&$time): int {
+        $timedQuery = ArchitectureQueryService::forDatabase($pdo, function () use (&$time): int {
             $time += 2_000_000;
             return $time;
         });
@@ -116,7 +116,7 @@ final class FlowTest extends KnossosTestCase
         $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $send, $ids['invoice'], 'construct'), $ids['project'], 'constructs', $send, $ids['invoice'], $ids['file'], 7, 7, 'ast', 'certain', [], 'php:file:src/Api.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         // Class -> class, reachable only by descending Api into Api::send first.
         $flow = $query->explainFlow($ids['project'], 'App\\Api', 'App\\InvoiceService');
 
@@ -168,7 +168,7 @@ final class FlowTest extends KnossosTestCase
         $call($middle, $target, 40);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $flow = (new ArchitectureQueryService($pdo))
+        $flow = ArchitectureQueryService::forDatabase($pdo)
             ->explainFlow($ids['project'], 'App\\Entry::run', 'App\\Target::finish', maxPaths: 2);
 
         $signatures = array_column($flow->data['paths'], 'signature');
@@ -230,7 +230,7 @@ final class FlowTest extends KnossosTestCase
         $call($middle, $target, 501);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $flow = (new ArchitectureQueryService($pdo))
+        $flow = ArchitectureQueryService::forDatabase($pdo)
             ->explainFlow($ids['project'], 'App\\Entry::run', 'App\\Target::finish', maxPaths: 2);
 
         assertSame([1, 2], array_map(
@@ -251,7 +251,7 @@ final class FlowTest extends KnossosTestCase
         $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $send, $ids['invoice'], 'construct'), $ids['project'], 'constructs', $send, $ids['invoice'], $ids['file'], 7, 7, 'ast', 'certain', [], 'php:file:src/ApiInterface.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         // Interface -> class, reachable only by descending ApiInterface into
         // ApiInterface::send first (mirrors the class-endpoint expansion test).
         $flow = $query->explainFlow($ids['project'], 'App\\ApiInterface', 'App\\InvoiceService');
@@ -274,7 +274,7 @@ final class FlowTest extends KnossosTestCase
         }
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $flow = $query->explainFlow($ids['project'], 'App\\BigApi', 'App\\InvoiceService');
 
         assertSame(true, $flow->truncated);
@@ -292,7 +292,7 @@ final class FlowTest extends KnossosTestCase
         $billing = StableId::symbol($ids['project'], 'php', 'class', 'App\\Billing\\InvoiceService');
         $repository->saveNode($billing, $ids['project'], 'php', 'class', 'App\\Billing\\InvoiceService', 'InvoiceService', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Billing/InvoiceService.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
 
         $missingFrom = $query->explainFlow($ids['project'], 'NoSuchService', 'App\\Checkout');
         assertContains('No component matched "NoSuchService"', $missingFrom->summary);

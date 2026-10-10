@@ -418,7 +418,7 @@ trait Fixtures
         [$pdo, $projectId, $root] = $this->scanTempFixture($fixture);
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(
                 new \Knossos\Query\StalenessProbe($pdo),
@@ -445,7 +445,7 @@ trait Fixtures
         $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -553,7 +553,7 @@ trait Fixtures
 
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), []),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );

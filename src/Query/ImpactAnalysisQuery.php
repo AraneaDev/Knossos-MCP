@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use InvalidArgumentException;
+use Knossos\Result\ResultEnvelope;
 
 /**
  * What depends on a component: `impact_analysis`'s conservative static blast radius.

@@ -26,7 +26,7 @@ final class HttpTest extends KnossosTestCase
         $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -120,7 +120,7 @@ final class HttpTest extends KnossosTestCase
         $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -172,7 +172,7 @@ final class HttpTest extends KnossosTestCase
             ['127.0.0.1:8080'],
             ['http://127.0.0.1:8080'],
             'secret',
-            resources: new \Knossos\Mcp\ResourceService(new ArchitectureQueryService($brokenPdo)),
+            resources: new \Knossos\Mcp\ResourceService(ArchitectureQueryService::forDatabase($brokenPdo)),
         );
         $authHeaders = $headers + ['Authorization' => 'Bearer secret'];
         $init = $backstop->handle('POST', $authHeaders, $initialize);
@@ -350,7 +350,7 @@ final class HttpTest extends KnossosTestCase
         $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );
@@ -397,7 +397,7 @@ final class HttpTest extends KnossosTestCase
         (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
         $tools = new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
         );

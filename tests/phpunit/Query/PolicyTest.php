@@ -64,7 +64,7 @@ final class PolicyTest extends KnossosTestCase
             ['id' => 'backend-deny-billing', 'from_boundary' => $backend, 'deny_targets' => [$billing], 'edge_kinds' => ['calls']],
             ['id' => 'backend-no-unassigned', 'from_boundary' => $backend, 'deny_targets' => ['@unassigned'], 'edge_kinds' => ['calls']],
         ];
-        $query = new ArchitectureQueryService($pdo);
+        $query = ArchitectureQueryService::forDatabase($pdo);
         $result = $query->checkArchitecture($ids['project'], $policies);
         assertSame(4, count($result->data['violations']));
         $policyCounts = array_count_values(array_column($result->data['violations'], 'policy_id'));
@@ -107,7 +107,7 @@ final class PolicyTest extends KnossosTestCase
         ]]), InvalidArgumentException::class);
 
         $time = 0;
-        $timedQuery = new ArchitectureQueryService($pdo, function () use (&$time): int {
+        $timedQuery = ArchitectureQueryService::forDatabase($pdo, function () use (&$time): int {
             $time += 2_000_000;
             return $time;
         });

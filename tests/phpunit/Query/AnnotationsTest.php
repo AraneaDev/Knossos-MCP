@@ -17,7 +17,7 @@ final class AnnotationsTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $preview = $queries->upsertAnnotation($ids['project'], 'App\\Checkout', 'note', 'core flow');
         assertSame(false, $preview->data['executed']);
@@ -55,7 +55,7 @@ final class AnnotationsTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $queries->upsertAnnotation($ids['project'], 'App\\Checkout', 'note', str_repeat('界', 2000), execute: true);
         assertSame(str_repeat('界', 2000), $queries->listAnnotations($ids['project'])->data['annotations'][0]['value']);
@@ -72,7 +72,7 @@ final class AnnotationsTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
         try {
-            $queries = new ArchitectureQueryService($pdo);
+            $queries = ArchitectureQueryService::forDatabase($pdo);
             // Confirmed against tests/Fixtures/mixed/src/CheckoutService.php,
             // which declares `namespace Fixture;`.
             $queries->upsertAnnotation($projectId, 'Fixture\\CheckoutService', 'confirmed_dead', 'checked by hand', execute: true);
@@ -93,7 +93,7 @@ final class AnnotationsTest extends KnossosTestCase
         $orphan = \Knossos\Store\StableId::symbol($ids['project'], 'php', 'class', 'App\\Orphan');
         $repository->saveNode($orphan, $ids['project'], 'php', 'class', 'App\\Orphan', 'Orphan', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $before = $queries->architectureHealth($ids['project'])->data;
         $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $before['dead_code_candidates']);
@@ -129,7 +129,7 @@ final class AnnotationsTest extends KnossosTestCase
             $repository->saveNode($node, $ids['project'], 'php', 'class', $name, 'Orphan' . $index, null, $ids['file'], 50 + $index, 60 + $index, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         }
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
         foreach ($orphans as $name) {
             $queries->upsertAnnotation($ids['project'], $name, 'false_positive', 'constructed via DI config', execute: true);
         }
@@ -158,7 +158,7 @@ final class AnnotationsTest extends KnossosTestCase
             $repository->saveNode($node, $ids['project'], 'php', 'class', $name, 'Orphan' . $index, null, $ids['file'], 50 + $index, 60 + $index, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         }
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $queries->upsertAnnotation($ids['project'], 'App\\Parked', 'intentional', 'route parked until the MVP', execute: true);
         // On one component a false positive wins: the graph was wrong there.
@@ -179,7 +179,7 @@ final class AnnotationsTest extends KnossosTestCase
         $orphan = \Knossos\Store\StableId::symbol($ids['project'], 'php', 'class', 'App\\Orphan');
         $repository->saveNode($orphan, $ids['project'], 'php', 'class', 'App\\Orphan', 'Orphan', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         // Both annotations land on the same canonical name; false_positive
         // must win regardless of write order.
@@ -199,7 +199,7 @@ final class AnnotationsTest extends KnossosTestCase
         $orphan = \Knossos\Store\StableId::symbol($ids['project'], 'php', 'class', 'App\\Orphan');
         $repository->saveNode($orphan, $ids['project'], 'php', 'class', 'App\\Orphan', 'Orphan', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
         $queries->upsertAnnotation($ids['project'], 'App\\Orphan', 'confirmed_dead', 'delete next sprint', execute: true);
 
         $health = $queries->architectureHealth($ids['project'])->data;
@@ -222,7 +222,7 @@ final class AnnotationsTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
-        $queries = new ArchitectureQueryService($pdo);
+        $queries = ArchitectureQueryService::forDatabase($pdo);
 
         $result = $queries->upsertAnnotation($ids['project'], 'App\\Invoice', 'false_positive', execute: true);
 
@@ -240,7 +240,7 @@ final class AnnotationsTest extends KnossosTestCase
         [$pdo, $repository, $ids] = $this->storeFixture();
         $repository->completeScan($ids['project'], $ids['scan']);
 
-        $result = (new ArchitectureQueryService($pdo))->upsertAnnotation($ids['project'], 'Checkout', 'note', 'entry', execute: true);
+        $result = ArchitectureQueryService::forDatabase($pdo)->upsertAnnotation($ids['project'], 'Checkout', 'note', 'entry', execute: true);
 
         self::assertSame('App\\Checkout', $result->data['component']);
         self::assertSame([], $result->warnings);

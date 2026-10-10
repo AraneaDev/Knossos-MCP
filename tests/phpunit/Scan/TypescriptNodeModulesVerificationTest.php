@@ -4,14 +4,14 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scan;
 
-use Knossos\Scan\CancellationToken;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Discovery\UnitInputSet;
+use Knossos\Query\StalenessProbe;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\LanguageDescriptor;
 use Knossos\Scan\LanguageScanRunner;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scan\ScanSnapshotChangedException;
-use Knossos\Discovery\UnitInputSet;
-use Knossos\Query\StalenessProbe;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 use ReflectionClass;

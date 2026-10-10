@@ -6,10 +6,10 @@ namespace Knossos\Tests\Phpunit\Maintenance;
 
 use InvalidArgumentException;
 use Knossos\Maintenance\DatabaseMaintenanceService;
-use Knossos\Query\ResultEnvelope;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scan\ProjectWriterLock;
-use Knossos\Scan\ScanBusyException;
 use Knossos\Store\MigrationRunner;
+use Knossos\Store\ScanBusyException;
 use Knossos\Store\SqliteConnection;
 use PDO;
 use PDOException;

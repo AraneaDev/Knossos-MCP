@@ -173,7 +173,7 @@ final class HttpLegacySessionTest extends KnossosTestCase
             ['127.0.0.1:8080'],
             ['http://127.0.0.1:8080'],
             'secret',
-            resources: new ResourceService(new ArchitectureQueryService($pdo)),
+            resources: new ResourceService(ArchitectureQueryService::forDatabase($pdo)),
         );
         $initialize = $endpoint->handle('POST', self::HEADERS, $this->body(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
             'protocolVersion' => Profile20251125::VERSION, 'capabilities' => [], 'clientInfo' => ['name' => 'test', 'version' => '1'],

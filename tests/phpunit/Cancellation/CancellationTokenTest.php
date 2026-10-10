@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Knossos\Tests\Phpunit\Scan;
+namespace Knossos\Tests\Phpunit\Cancellation;
 
-use Knossos\Scan\CancellationToken;
-use Knossos\Scan\ScanCancelledException;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Cancellation\ScanCancelledException;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;

@@ -10,7 +10,7 @@ use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scan\ProjectWriterLease;
 use Knossos\Scan\ProjectWriterLock;
-use Knossos\Scan\ScanBusyException;
+use Knossos\Store\ScanBusyException;
 use PDO;
 use Throwable;
 
@@ -128,7 +128,7 @@ final readonly class TurnBriefService
         // Policy looks only at what the turn itself edited: a checkout, a formatter or a shell command
         // can change many files at once, and their old violations are not the model's to fix.
         $edited = array_values(array_intersect($live, $reported));
-        $queries = new ArchitectureQueryService($this->pdo, gitWorkingTree: new ProcessGitWorkingTreeProvider());
+        $queries = ArchitectureQueryService::forDatabase($this->pdo, gitWorkingTree: new ProcessGitWorkingTreeProvider());
         $tests = $live === [] ? ['tests' => [], 'truncated' => false] : FileTestReach::testsOf($queries, $projectId, $live, self::MAX_TESTS);
         return [
             'status' => 'ok',

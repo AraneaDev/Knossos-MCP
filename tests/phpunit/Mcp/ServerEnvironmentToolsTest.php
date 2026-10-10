@@ -208,7 +208,7 @@ final class ServerEnvironmentToolsTest extends KnossosTestCase
 
         return new ToolService(
             new ProjectScanService($pdo, self::repositoryRoot(), $roots ?? []),
-            new ArchitectureQueryService($pdo),
+            ArchitectureQueryService::forDatabase($pdo),
             new DatabaseMaintenanceService($pdo, ':memory:'),
             new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
             $environment,

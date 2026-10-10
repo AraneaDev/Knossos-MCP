@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scan;
 
-use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scan\ContributionPartition;
+use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
-use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\ScanContribution;
+use Knossos\Store\ContributionCacheEntry;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 

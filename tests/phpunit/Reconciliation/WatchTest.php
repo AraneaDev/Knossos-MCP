@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Reconciliation;
 
 use InvalidArgumentException;
-use Knossos\Query\ResultEnvelope;
-use Knossos\Scan\CancellationToken;
+use Knossos\Cancellation\CancellationToken;
+use Knossos\Result\ResultEnvelope;
 use Knossos\Scan\ProjectScanner;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scanner\Worker\WorkerException;

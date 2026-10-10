@@ -39,7 +39,7 @@
  * somewhere a refactor can move it; change it here, once, when it does.
  */
 export const FIXTURE = {
-    // A top hub: the class in src/Query/ResultEnvelope.php, third on the Hubs tab
+    // A top hub: the class in src/Result/ResultEnvelope.php, third on the Hubs tab
     // sorted by in-degree (so two `j` mark it). Its blast radius has three rings.
     hub: "ResultEnvelope",
     // Letters of the hub's name the finder is given; ResultEnvelope must be the first match.

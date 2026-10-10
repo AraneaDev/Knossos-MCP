@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Knossos\Scanner\Worker;
 
 use InvalidArgumentException;
-use Knossos\Discovery\ProjectDiscoverer;
 use Knossos\Scanner\Protocol\RelativePath;
 
 /**
@@ -54,7 +53,7 @@ final class InputHashesMap
             // one discovery skipped because its name is not valid UTF-8 or
             // holds a control character. The graph cannot name that file, so
             // its read is dropped; refusing it would cost the whole response.
-            if (!ProjectDiscoverer::isSupportedPath($path)) {
+            if (!RelativePath::isSupported($path)) {
                 continue;
             }
             try {

@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
-use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Store\ContributionCacheEntry;
 
 /**
  * Contributions reused from the cache whose program's global declarations

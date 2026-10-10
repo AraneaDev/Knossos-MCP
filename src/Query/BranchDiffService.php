@@ -97,7 +97,7 @@ final readonly class BranchDiffService
         if ($base === null) {
             return ['status' => 'no-snapshot'] + $envelope;
         }
-        $comparison = (new ArchitectureQueryService($this->pdo))->branchComparison($id, $base['snapshot_id'], FileViolationQuery::policies($root, null), self::LIMIT);
+        $comparison = ArchitectureQueryService::forDatabase($this->pdo)->branchComparison($id, $base['snapshot_id'], FileViolationQuery::policies($root, null), self::LIMIT);
 
         return ['status' => $base['match'] === 'after' ? 'no-snapshot' : 'ok', 'comparison' => $comparison] + $envelope;
     }
