@@ -79,5 +79,7 @@ final class TomlTest extends TestCase
         assertSame(['fastapi[all]>=1', 'httpx', 'skip'], Toml::stringLists($block, null));
         assertSame(['x', 'y', 'z'], Toml::stringLists("a = [\"x\"]\nb = [\n  \"y\",\n  \"z\",\n]\n", null));
         assertSame([], Toml::stringLists("a = 1\n", null));
+        // A list whose key is not asked for is stepped over, not the end of the read.
+        assertSame(['x'], Toml::stringLists("other = [\"skip\"]\ndependencies = [\"x\"]\n", ['dependencies']));
     }
 }

@@ -153,6 +153,18 @@ final class SourceClassifierTest extends TestCase
         self::assertNull(SourceClassifier::languageFor('missing', $this->directory . '/missing'));
     }
 
+    /** The interpreter in a shebang is matched without regard to case. */
+    public function testLanguageForReadsAShebangInAnyCase(): void
+    {
+        file_put_contents($this->directory . '/upper-php', "#!/usr/bin/env PHP\n");
+        file_put_contents($this->directory . '/upper-node', "#!/usr/bin/env NODE\n");
+        file_put_contents($this->directory . '/upper-python', "#!/usr/bin/env Python3\n");
+
+        assertSame('php', SourceClassifier::languageFor('upper-php', $this->directory . '/upper-php'));
+        assertSame('javascript', SourceClassifier::languageFor('upper-node', $this->directory . '/upper-node'));
+        assertSame('python', SourceClassifier::languageFor('upper-python', $this->directory . '/upper-python'));
+    }
+
     /** A name a stable id cannot carry: invalid UTF-8 or a control character. */
     public function testIsSupportedPathRejectsInvalidUtf8AndControlCharacters(): void
     {
