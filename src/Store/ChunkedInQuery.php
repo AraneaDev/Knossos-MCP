@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Store;
 
 use Generator;
+use InvalidArgumentException;
 use PDO;
 
 /**
@@ -28,7 +29,7 @@ final readonly class ChunkedInQuery
      * Yield every row `$sql` returns across the chunks of `$values`.
      *
      * `$sql` carries exactly one `%s`, where the chunk's placeholder list
-     * goes, so it must not contain any other `%`. Each statement binds
+     * goes; any other `%` in it is left as written. Each statement binds
      * `$before`, then the chunk, then `$after`, matching the order the
      * placeholders appear in.
      *
@@ -36,12 +37,19 @@ final readonly class ChunkedInQuery
      * @param list<mixed> $before
      * @param list<mixed> $after
      * @param int<1, max> $size
-     * @return Generator<int, array<int|string, mixed>>
+     * @return Generator<int, mixed>
+     *
+     * @throws InvalidArgumentException when `$sql` does not carry exactly one `%s`
      */
     public static function rows(PDO $pdo, string $sql, array $values, array $before = [], array $after = [], int $mode = PDO::FETCH_ASSOC, int $size = self::SIZE): Generator
     {
+        // Replaced as text rather than through sprintf, so a `%` in a quoted
+        // constant cannot be read as a conversion and corrupt the statement.
+        if (substr_count($sql, '%s') !== 1) {
+            throw new InvalidArgumentException('A chunked IN query must carry exactly one %s placeholder list.');
+        }
         foreach (array_chunk($values, $size) as $chunk) {
-            $statement = $pdo->prepare(sprintf($sql, implode(',', array_fill(0, count($chunk), '?'))));
+            $statement = $pdo->prepare(str_replace('%s', implode(',', array_fill(0, count($chunk), '?')), $sql));
             $statement->execute([...$before, ...$chunk, ...$after]);
             foreach ($statement->fetchAll($mode) as $row) {
                 yield $row;

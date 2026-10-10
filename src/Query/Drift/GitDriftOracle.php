@@ -8,6 +8,7 @@ use Knossos\Discovery\FileFingerprint;
 use Knossos\Git\DirtyPathSet;
 use Knossos\Git\GitProcessRunner;
 use Knossos\Git\GitProcessRunnerInterface;
+use Knossos\Store\ChunkedInQuery;
 use PDO;
 use Throwable;
 
@@ -385,11 +386,9 @@ final readonly class GitDriftOracle implements DriftOracle
             return $this->hashRows(self::HASH_SQL, [$projectId, $activeScanId]);
         }
         $hashes = [];
-        foreach (array_chunk($paths, self::PLACEHOLDERS_PER_QUERY) as $chunk) {
-            $hashes += $this->hashRows(
-                self::HASH_SQL . ' AND relative_path IN (' . implode(',', array_fill(0, count($chunk), '?')) . ')',
-                array_merge([$projectId, $activeScanId], $chunk),
-            );
+        // A path is one row per project, so a path named twice reads the same hash twice.
+        foreach (ChunkedInQuery::rows($this->pdo, self::HASH_SQL . ' AND relative_path IN (%s)', $paths, [$projectId, $activeScanId], size: self::PLACEHOLDERS_PER_QUERY) as $row) {
+            $hashes[(string) $row['relative_path']] = (string) $row['content_hash'];
         }
 
         return $hashes;

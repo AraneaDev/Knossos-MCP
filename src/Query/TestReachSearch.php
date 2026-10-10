@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use Closure;
+use Knossos\Store\ChunkedInQuery;
 use PDO;
 use PDOStatement;
 
@@ -127,15 +128,15 @@ final readonly class TestReachSearch extends AbstractArchitectureQueryService
     private function markTests(string $projectId, array $nodeIds, int $distance, array &$tests): void
     {
         sort($nodeIds, SORT_STRING);
-        foreach (array_chunk($nodeIds, self::CHUNK) as $chunk) {
-            $statement = $this->pdo->prepare(sprintf(
-                'SELECT node_id FROM classifications WHERE project_id = ? AND role = ? AND node_id IN (%s) GROUP BY node_id ORDER BY node_id',
-                implode(',', array_fill(0, count($chunk), '?')),
-            ));
-            $statement->execute([$projectId, ReportableComponent::TEST_ROLE, ...$chunk]);
-            while (($id = $statement->fetchColumn()) !== false) {
-                $tests[(string) $id] = $distance;
-            }
+        foreach (ChunkedInQuery::rows(
+            $this->pdo,
+            'SELECT node_id FROM classifications WHERE project_id = ? AND role = ? AND node_id IN (%s) GROUP BY node_id ORDER BY node_id',
+            $nodeIds,
+            [$projectId, ReportableComponent::TEST_ROLE],
+            mode: PDO::FETCH_COLUMN,
+            size: self::CHUNK,
+        ) as $id) {
+            $tests[(string) $id] = $distance;
         }
     }
 
