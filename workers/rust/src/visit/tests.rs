@@ -487,7 +487,7 @@ fn a_drop_impl_marks_its_method_as_runtime_invoked() {
 #[test]
 fn a_cfg_predicate_requires_test_only_where_every_build_that_meets_it_is_a_test() {
     let requires = |predicate: &str| {
-        super::requires_test(&syn::parse_str::<syn::Meta>(predicate).expect("parses"))
+        super::cfg::requires_test(&syn::parse_str::<syn::Meta>(predicate).expect("parses"))
     };
     for test_only in [
         "test",
