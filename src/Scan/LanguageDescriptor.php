@@ -140,7 +140,9 @@ final readonly class LanguageDescriptor
                 ['python'],
                 ['python3', '-I', '-B', '-W', 'ignore::SyntaxWarning', $installationRoot . '/workers/python/bin/worker.py'],
                 'scanner_python',
-                analysisInputs: ['workers/python/bin/worker.py'],
+                // The script keeps the protocol; the analysis lives in the
+                // package beside it, which it imports.
+                analysisInputs: ['workers/python/bin/worker.py', 'workers/python/bin/knossos_python/**'],
                 // `src/__init__.py` decides whether `src/` is a source root
                 // (the src layout), so deleting it renames every module below
                 // it and moves imports elsewhere, and none of those files
