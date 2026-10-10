@@ -244,7 +244,7 @@ final class BoundaryInferenceTest extends TestCase
     public function testInferWithExplicitPathPrefixExcludesExternalPackages(): void
     {
         // The TypeScript scanner records an external package's evidence at the import
-        // site (workers/typescript/src/scanner.js), so node:fs carries the path of
+        // site (workers/typescript/src/language-fact-collector.js), so node:fs carries the path of
         // whichever file imported it first. A path prefix describes where code lives,
         // so it must not let that file's boundary claim the package: otherwise
         // node:fs joins "engines" and every other boundary importing fs looks like it
