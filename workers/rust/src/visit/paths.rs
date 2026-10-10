@@ -336,6 +336,16 @@ impl Walk<'_> {
             }
         }
 
+        // A standard trait named bare that nothing in scope declares or
+        // imports is the standard library's: `impl From<u8> for Str` in
+        // `crate::util` implements `std::convert::From`, never a
+        // `crate::util::From` the fallback below would guess.
+        if single_segment {
+            if let Some(standard) = standard_trait(&rendered) {
+                return Some((standard.to_owned(), false));
+            }
+        }
+
         Some((format!("{container}::{rendered}"), true))
     }
 
@@ -577,6 +587,49 @@ impl Walk<'_> {
             _ => None,
         }
     }
+}
+
+/// The standard library path of a trait commonly named without an import,
+/// through the prelude or a derive's habit, by its bare name.
+fn standard_trait(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "AsMut" => "std::convert::AsMut",
+        "AsRef" => "std::convert::AsRef",
+        "From" => "std::convert::From",
+        "Into" => "std::convert::Into",
+        "TryFrom" => "std::convert::TryFrom",
+        "TryInto" => "std::convert::TryInto",
+        "Clone" => "std::clone::Clone",
+        "Copy" => "std::marker::Copy",
+        "Send" => "std::marker::Send",
+        "Sized" => "std::marker::Sized",
+        "Sync" => "std::marker::Sync",
+        "Unpin" => "std::marker::Unpin",
+        "Debug" => "std::fmt::Debug",
+        "Display" => "std::fmt::Display",
+        "Default" => "std::default::Default",
+        "Eq" => "std::cmp::Eq",
+        "Ord" => "std::cmp::Ord",
+        "PartialEq" => "std::cmp::PartialEq",
+        "PartialOrd" => "std::cmp::PartialOrd",
+        "Hash" => "std::hash::Hash",
+        "DoubleEndedIterator" => "std::iter::DoubleEndedIterator",
+        "ExactSizeIterator" => "std::iter::ExactSizeIterator",
+        "Extend" => "std::iter::Extend",
+        "FromIterator" => "std::iter::FromIterator",
+        "IntoIterator" => "std::iter::IntoIterator",
+        "Iterator" => "std::iter::Iterator",
+        "Deref" => "std::ops::Deref",
+        "DerefMut" => "std::ops::DerefMut",
+        "Drop" => "std::ops::Drop",
+        "Fn" => "std::ops::Fn",
+        "FnMut" => "std::ops::FnMut",
+        "FnOnce" => "std::ops::FnOnce",
+        "ToOwned" => "std::borrow::ToOwned",
+        "ToString" => "std::string::ToString",
+        "FromStr" => "std::str::FromStr",
+        _ => return None,
+    })
 }
 
 /// The type a `Box<T>`, `Rc<T>` or `Arc<T>` holds, however its path is

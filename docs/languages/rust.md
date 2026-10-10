@@ -113,6 +113,10 @@ Any visible `use` re-exports, `pub(crate)` and `pub(super)` included, and a
 chain of them is followed to its end. The `imports` edge still names the module
 the source wrote.
 
+A standard trait named bare (`impl From<u8> for Str`, `trait Named: Display`)
+that nothing in scope declares or imports is the standard library's
+(`std::convert::From`), never a trait of the enclosing module.
+
 ## Frameworks
 
 The core reads your Cargo manifests and tells the worker which of `axum`,

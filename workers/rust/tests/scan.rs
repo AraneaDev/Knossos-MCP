@@ -2906,3 +2906,43 @@ pub fn run(store: Store, w: Wrapper, maybe: Option<Other>) {
         "{calls:?}"
     );
 }
+
+#[test]
+fn a_prelude_trait_that_nothing_declares_is_the_standard_library_trait() {
+    // `impl From<u8> for Str` names the prelude's `From`, not a `From` the
+    // module would declare: the fallback that places an unknown name in the
+    // enclosing module made a certain `implements` edge to `crate::util::From`.
+    let files = [
+        ("src/lib.rs", "pub mod util;\n"),
+        (
+            "src/util.rs",
+            "pub struct Str;\npub trait Display {}\nimpl From<u8> for Str {\n    fn from(_: u8) -> Self {\n        Str\n    }\n}\nimpl Clone for Str {\n    fn clone(&self) -> Self {\n        Str\n    }\n}\nimpl Display for Str {}\n",
+        ),
+    ];
+    let contributions = scan_fixture("prelude-trait-impl", &files);
+    let implements: Vec<String> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["edges"].as_array().unwrap().clone())
+        .filter(|edge| edge["kind"] == "implements")
+        .map(|edge| edge["target"].as_str().unwrap().to_owned())
+        .collect();
+
+    assert!(
+        implements.contains(&"rust:interface:std::convert::From".to_owned()),
+        "{implements:?}"
+    );
+    assert!(
+        implements.contains(&"rust:interface:std::clone::Clone".to_owned()),
+        "{implements:?}"
+    );
+    assert!(
+        implements.contains(&"rust:interface:crate::util::Display".to_owned()),
+        "{implements:?}"
+    );
+    assert!(
+        !implements
+            .iter()
+            .any(|target| target.ends_with("util::From") || target.ends_with("util::Clone")),
+        "{implements:?}"
+    );
+}
