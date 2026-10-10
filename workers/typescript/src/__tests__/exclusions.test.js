@@ -3,7 +3,8 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { TypeScriptScanner, excludedBy } from "../scanner.js";
+import { excludedBy } from "../exclusions.js";
+import { TypeScriptScanner } from "../scanner.js";
 
 const created = [];
 
