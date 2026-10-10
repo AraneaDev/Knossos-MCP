@@ -61,6 +61,24 @@ final readonly class FileFanInQuery extends AbstractArchitectureQueryService
     }
 
     /**
+     * Those of `$paths` the graph holds, in the order given.
+     *
+     * @param list<string> $paths
+     * @return list<string>
+     */
+    public function held(string $projectId, array $paths): array
+    {
+        if ($paths === []) {
+            return [];
+        }
+        $statement = $this->pdo->prepare('SELECT relative_path FROM files WHERE project_id = ? AND relative_path IN (' . implode(',', array_fill(0, count($paths), '?')) . ')');
+        $statement->execute([$projectId, ...$paths]);
+        $held = array_flip(array_map('strval', $statement->fetchAll(\PDO::FETCH_COLUMN)));
+
+        return array_values(array_filter($paths, static fn(string $path): bool => isset($held[$path])));
+    }
+
+    /**
      * The rows with each file's own boundary label added as `boundary`.
      *
      * @param array<string, array{path: string, dependent_files: int, boundaries: list<string>}> $rows

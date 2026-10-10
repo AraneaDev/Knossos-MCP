@@ -9,6 +9,7 @@ const ROOT = '/work/app'
 const d = { status: 'ok', path: ROOT, project_root: ROOT, project_id: 'p1', snapshot_id: 's9', freshness: { state: 'fresh', age_seconds: 1, drift_files: 0 }, hubs: [], hubs_truncated: false, hubs_truncation_reasons: [], hotspots: [], dead_code_candidates: 0, dead_code_truncated: false, cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] }, trend: [], fan_in: [], fan_in_truncated: false } as Dashboard
 const view = (over: Partial<KnossosView> = {}): KnossosView => ({ inspect: null, isBandHidden: false, tab: 'branch', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in', ...over })
 const item = (name: string, boundary: string | null = 'core', kind = 'class') => ({ name, canonical_name: `App\\${name}`, kind, path: `src/${name}.php`, line: 7, boundary })
+const touched = (n: number, count = n + 3) => ({ count, items: Array.from({ length: n }, (_, i) => ({ path: `src/Touched${i}.php`, added: 12 - i, deleted: i, dependents: 40 - i, boundary: 'core' })) })
 const answer = (over: Partial<BranchDiff> = {}, n = 2): BranchDiff => ({
   status: 'ok',
   branch: 'feat/a-rather-long-branch-name-for-the-pane',
@@ -23,6 +24,7 @@ const answer = (over: Partial<BranchDiff> = {}, n = 2): BranchDiff => ({
     dead_code: { count: n, items: Array.from({ length: n }, (_, i) => item(`Unused${i}`, null, 'method')) },
     violations: { count: n, truncated: false, items: Array.from({ length: n }, (_, i) => ({ policy_id: 'core-stays-out', source: `App\\Core\\Greeter${i}::greet`, source_kind: 'method', target: `App\\Edge\\Caller${i}`, target_kind: 'class' })) },
   },
+  files: touched(n),
   ...over,
 })
 const pane = (a: BranchDiff | null, v = view(), phase: 'loading' | 'done' = 'done') => paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, v, 0, true, null, null, undefined, null, undefined, { branch: { snapshot: 's9', phase, answer: a } })
@@ -50,7 +52,7 @@ describe('the Branch tab', () => {
   it('lists what is new, each component a row that opens, and counts it all on the tab', () => {
     const input = branchInput({ snapshot: 's9', phase: 'done', answer: answer() }, ROOT)
     expect(branchCount(input)).toBe(6 + 2 + 2 + 2 + 2)
-    expect(branchList(input).map(o => o.canonical)).toEqual([
+    expect(branchList(input).slice(0, 10).map(o => o.canonical)).toEqual([
       'App\\GreeterWithAnUnreasonablyLongName0', 'App\\GreeterWithAnUnreasonablyLongName1', 'App\\A0', 'App\\A1', 'App\\Hub0', 'App\\Hub1', 'App\\Unused0', 'App\\Unused1', 'App\\Core\\Greeter0::greet', 'App\\Core\\Greeter1::greet',
     ])
     expect(branchList(input)[4]?.loc).toEqual({ path: `${ROOT}/src/Hub0.php`, line: 7 })
@@ -81,19 +83,37 @@ describe('the Branch tab', () => {
   })
 })
 
-describe('the Branch tab with room to spare', () => {
-  const churn = { head: 'h', phase: 'done' as const, answer: { status: 'ok' as const, days: 30, commits: 9, files: Array.from({ length: 8 }, (_, i) => ({ path: `src/Hot${i}.php`, commits: 9 - i, dependents: 40 - i, score: (9 - i) * (40 - i), boundary: 'core' })) } }
-  const clean = answer({ comparison: { crossing: { count: 0, items: [] }, cycles: { count: 0, items: [] }, hubs: { count: 0, items: [] }, dead_code: { count: 0, items: [] }, violations: null } })
-  const at = (columns: number, height: number) => paneLayout(paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, view(), 0, true, null, null, undefined, null, undefined, { branch: { snapshot: 's9', phase: 'done', answer: clean }, churn }), columns, height).body
-  it('gives it to the files changed most that much depends on, as links that open them, never walked', () => {
-    for (const columns of [100, 140, 200]) {
-      const rows = at(columns, 60)
-      expect(rows.some(r => r.key.includes('churn-extra-head')), `${columns}`).toBe(true)
-      const first = rows.find(r => r.key.includes('churn-extra-0'))!
-      expect(first.segments.some(s => s.link !== undefined)).toBe(true)
-      expect(first.segments.some(s => s.press !== undefined)).toBe(false)
-    }
-    // A short pane keeps the comparison and leaves them out.
-    expect(at(100, 24).some(r => r.key.includes('churn-extra-head'))).toBe(false)
+describe('the files the branch touched', () => {
+  const none = { crossing: { count: 0, items: [] }, cycles: { count: 0, items: [] }, hubs: { count: 0, items: [] }, dead_code: { count: 0, items: [] }, violations: null }
+  it('lists them after what is new, each a row that opens as its file, never counted on the tab', () => {
+    const input = branchInput({ snapshot: 's9', phase: 'done', answer: answer() }, ROOT)
+    expect(branchCount(input)).toBe(6 + 2 + 2 + 2 + 2)
+    expect(branchList(input).slice(-2)).toEqual([
+      { name: 'src/Touched0.php', canonical: 'src/Touched0.php', loc: { path: `${ROOT}/src/Touched0.php`, line: null }, file: true },
+      { name: 'src/Touched1.php', canonical: 'src/Touched1.php', loc: { path: `${ROOT}/src/Touched1.php`, line: null }, file: true },
+    ])
+    const t = text(answer())
+    expect(t).toMatch(/Files this branch touched +5 files/)
+    expect(t).toMatch(/src\/Touched0\.php .*\+12 −0 +40 deps/)
+    expect(t).toContain('+3 not listed')
+    const rows = paneLayout(pane(answer(), view({ selected: 11 })), 100, 60).body
+    const second = rows.find(r => r.key.includes('branch-files-1'))!
+    expect(second.segments.find(s => s.press !== undefined)?.press?.id).toBe('row:11')
+    expect(plainText(second)).toMatch(/›/)
+  })
+
+  it('needs no snapshot: with nothing to compare, they are still listed and walked', () => {
+    const input = branchInput({ snapshot: 's9', phase: 'done', answer: answer({ status: 'no-snapshot', base: null, comparison: null }) }, ROOT)
+    expect(branchList(input).map(o => o.canonical)).toEqual(['src/Touched0.php', 'src/Touched1.php'])
+    const rows = paneLayout(pane(answer({ status: 'no-snapshot', base: null, comparison: null })), 100, 60).body
+    expect(rows.find(r => r.key.includes('branch-files-0'))?.segments.find(s => s.press !== undefined)?.press?.id).toBe('row:0')
+    expect(text(answer({ comparison: none, files: { count: 0, items: [] } }))).toMatch(/Files this branch touched +none/)
+    expect(text(answer({ status: 'on-default', branch: 'main', comparison: null, files: null }))).not.toContain('Files this branch touched')
+  })
+
+  it('leaves the churn hotspots to the Churn tab', () => {
+    const churn = { head: 'h', phase: 'done' as const, answer: { status: 'ok' as const, days: 30, commits: 9, files: Array.from({ length: 8 }, (_, i) => ({ path: `src/Hot${i}.php`, commits: 9 - i, dependents: 40 - i, score: (9 - i) * (40 - i), boundary: 'core' })) } }
+    const rows = paneLayout(paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, view(), 0, true, null, null, undefined, null, undefined, { branch: { snapshot: 's9', phase: 'done', answer: answer({ comparison: none }) }, churn }), 200, 60).body
+    expect(rows.some(r => r.key.includes('churn'))).toBe(false)
   })
 })

@@ -7,8 +7,9 @@
  * branch, its merge base, and how near to it the snapshot compared with
  * is, said plainly when none near it is kept), then what is new since:
  * dependencies crossing from one boundary into another, cycles, hubs more
- * depended on, dead code, and policy violations. Every listed component is
- * a row the marker walks and `o` opens as its detail.
+ * depended on, dead code, and policy violations; last the files the branch
+ * touched, which need no snapshot. Every listed component and file is a row
+ * the marker walks and `o` opens as its detail.
  */
 import type { BranchDiff, BranchItem, BranchState } from '../../types'
 import { stamp } from './changes'
@@ -24,6 +25,9 @@ import type { Openable } from './views'
 /** One component the Branch tab lists: what it shows, what it opens, where it is. */
 export type BranchLine = { name: string; canonical: string; boundary: string | null; place: string; loc: Loc | null }
 
+/** A file the branch touched: the lines it added and deleted, and how many files depend on it. */
+export type BranchFile = { path: string; added: number; deleted: number; dependents: number; loc: Loc | null }
+
 /** The Branch tab's view of the comparison. */
 export type BranchInput = {
   /** Where the comparison stands, as sentences: the branch and its merge base, the snapshot compared with, or why there is none. */
@@ -37,6 +41,8 @@ export type BranchInput = {
   dead: { count: number; items: BranchLine[] } | null
   /** Null when the project declares no policies, or the comparison holds no check. */
   violations: { count: number; items: { policy: string; source: BranchLine; target: string }[]; truncated: boolean } | null
+  /** Null on the default branch, or when git could not say. */
+  files: { count: number; items: BranchFile[] } | null
 }
 
 /** A git commit as the tab names it: its first seven characters. */
@@ -75,15 +81,17 @@ function standing(answer: BranchDiff): { said: string[]; warn: boolean } {
 
 /** The tab's view of the stored comparison; `root` places each component on disk. */
 export function branchInput(state: BranchState | null, root: string | null): BranchInput {
-  const none = { crossing: null, cycles: null, hubs: null, dead: null, violations: null }
+  const none = { crossing: null, cycles: null, hubs: null, dead: null, violations: null, files: null }
   // A comparison for a newer graph on its way keeps the last one on show, saying so.
   const loading = state === null || state.phase === 'loading'
   const answer = state?.answer ?? null
   if (answer === null && loading) return { said: ['Comparing the branch with its merge base…'], warn: false, loading: true, ...none }
   if (answer === null) return { said: ['knossos did not answer; the tab asks again when the graph moves.'], warn: true, loading: false, ...none }
   const { said, warn } = standing(answer)
+  const f = answer.files ?? null
+  const files = f === null ? null : { count: f.count, items: f.items.map(i => ({ path: i.path, added: i.added, deleted: i.deleted, dependents: i.dependents, loc: locIn(root, i.path) })) }
   const c = answer.comparison ?? null
-  if (c === null) return { said, warn, loading, ...none }
+  if (c === null) return { said, warn, loading, ...none, files }
   const line = (item: BranchItem) => lineOf(item, root)
   return {
     said,
@@ -97,15 +105,16 @@ export function branchInput(state: BranchState | null, root: string | null): Bra
       c.violations === null
         ? null
         : { count: c.violations.count, truncated: c.violations.truncated, items: c.violations.items.map(v => ({ policy: v.policy_id, source: { name: shortName(v.source), canonical: v.source, boundary: null, place: '', loc: null }, target: shortName(v.target) })) },
+    files,
   }
 }
 
-/** How many new things the comparison found: what the tab's badge counts. */
+/** How many new things the comparison found: what the tab's badge counts (the touched files are no finding). */
 export function branchCount(input: BranchInput): number {
   return (input.crossing?.count ?? 0) + (input.cycles?.count ?? 0) + (input.hubs?.count ?? 0) + (input.dead?.count ?? 0) + (input.violations?.count ?? 0)
 }
 
-/** The components the tab walks, card by card: crossing sources, each cycle's first member, grown hubs, new dead code, violation sources. */
+/** The components the tab walks, card by card: crossing sources, each cycle's first member, grown hubs, new dead code, violation sources, then the touched files. */
 export function branchList(input: BranchInput): Openable[] {
   const open = (l: BranchLine): Openable => ({ name: l.name, canonical: l.canonical, loc: l.loc })
   return [
@@ -114,6 +123,7 @@ export function branchList(input: BranchInput): Openable[] {
     ...(input.hubs?.items ?? []).map(i => open(i.component)),
     ...(input.dead?.items ?? []).map(open),
     ...(input.violations?.items ?? []).map(i => open(i.source)),
+    ...(input.files?.items ?? []).map(f => ({ name: f.path, canonical: f.path, loc: f.loc, file: true })),
   ]
 }
 
@@ -128,8 +138,12 @@ function itemRow(key: string, marked: boolean, mark: Segment, content: Segment[]
   return { key, segments: tinted([...kept, ...(used < columns ? [{ text: spaces(columns - used) }] : [])], SELECTED_BG), tint: SELECTED_BG }
 }
 
-/** A list card: its rows `limit` long around the marker (`offset` is its first row's place in the walk), its count, one line when empty. */
-function listBlock<T>(key: string, title: string, list: { count: number; items: T[] } | null, offset: number, selected: number, row: (item: T, i: number, columns: number) => Row, extra: Segment[] = []): Block {
+/**
+ * A list card: its rows `limit` long around the marker (`offset` is its first
+ * row's place in the walk), its count, one line when empty. A finding's count
+ * is a warning; `counted` says another count plainly.
+ */
+function listBlock<T>(key: string, title: string, list: { count: number; items: T[] } | null, offset: number, selected: number, row: (item: T, i: number, columns: number) => Row, extra: Segment[] = [], counted?: (count: number) => string): Block {
   return {
     key,
     grow: { length: list?.items.length ?? 0, min: LIST_MIN },
@@ -140,7 +154,8 @@ function listBlock<T>(key: string, title: string, list: { count: number; items: 
       const body = list.items.slice(window.start, window.end).map((item, n) => row(item, window.start + n, columns))
       body.push(...moreRows(`${key}-window`, window, list.items.length, columns, offset))
       if (list.count > list.items.length) body.push(dimRow(`${key}-more`, `   +${grouped(list.count - list.items.length)} not listed`, columns))
-      const note: Segment[] = list.count === 0 ? [{ text: '✓ 0', color: STATUS_COLOURS.ok }] : [{ text: `▲ ${grouped(list.count)}`, color: STATUS_COLOURS.warn }, ...extra]
+      const note: Segment[] =
+        counted !== undefined ? (list.count === 0 ? [] : noteOf(counted(list.count))) : list.count === 0 ? [{ text: '✓ 0', color: STATUS_COLOURS.ok }] : [{ text: `▲ ${grouped(list.count)}`, color: STATUS_COLOURS.warn }, ...extra]
       const section: Section = { key, title, note, body, empty: 'none' }
       return section
     },
@@ -157,8 +172,8 @@ function named(line: BranchLine, press: string, width: number, hues: Hues): Segm
 
 /**
  * The Branch tab's cards: where the comparison stands across the pane, then
- * the five lists on a grid of equal rows when wide (empty ones as short rows
- * first), one column narrower.
+ * the lists on a grid of equal rows when wide (empty ones as short rows
+ * first), one column narrower; with nothing compared, the touched files alone.
  */
 export function branchArrangement(input: BranchInput, selected: number, hues: Hues = NO_HUES): Arrangement {
   const head: Block = {
@@ -172,11 +187,29 @@ export function branchArrangement(input: BranchInput, selected: number, hues: Hu
       ),
     }),
   }
-  if (input.crossing === null) return { left: [head] }
-  const offsets = [0, input.crossing.items.length]
+  const offsets = [0, input.crossing?.items.length ?? 0]
   offsets.push(offsets[1]! + (input.cycles?.items.length ?? 0))
   offsets.push(offsets[2]! + (input.hubs?.items.length ?? 0))
   offsets.push(offsets[3]! + (input.dead?.items.length ?? 0))
+  offsets.push(offsets[4]! + (input.violations?.items.length ?? 0))
+  const files = listBlock(
+    'branch-files',
+    'Files this branch touched',
+    input.files,
+    offsets[5]!,
+    selected,
+    (f, n, columns) => {
+      const lines: Segment[] = [{ text: `+${grouped(f.added)}`, color: STATUS_COLOURS.ok }, { text: ' ' }, { text: `−${grouped(f.deleted)}`, color: STATUS_COLOURS.alert }]
+      const deps = `${grouped(f.dependents)} deps`
+      const room = Math.max(8, columns - 3 - segmentsWidth(lines) - cells(deps) - 4)
+      const path = fit(f.path, room)
+      return itemRow(`branch-files-${n}`, offsets[5]! + n === selected, { text: ' ' }, [button(`row:${offsets[5]! + n}`, path), { text: spaces(Math.max(1, room - cells(path) + 1)) }, ...lines, { text: '  ' }, { text: deps, dim: true }], columns)
+    },
+    [],
+    count => plural(count, 'file', 'files'),
+  )
+  const touched = input.files === null ? [] : [files]
+  if (input.crossing === null) return touched.length === 0 ? { left: [head] } : { top: [head], left: touched, order: [head, ...touched] }
   const crossing = listBlock('crossing', 'New cross-boundary dependencies', input.crossing, offsets[0]!, selected, (i, n, columns) => {
     const half = Math.max(8, Math.floor((columns - 7) / 2))
     return itemRow(`crossing-${n}`, offsets[0]! + n === selected, { text: ' ' }, [...named(i.source, `row:${offsets[0]! + n}`, half, hues), { text: ' → ', dim: true }, ...chip(i.target.boundary, hues), { text: ` ${fit(i.target.name, Math.max(1, columns - half - 8 - cells(i.target.boundary ?? '')))}` }], columns)
@@ -210,6 +243,6 @@ export function branchArrangement(input: BranchInput, selected: number, hues: Hu
     },
     input.violations?.truncated === true ? [{ text: ' · check cut short', dim: true }] : [],
   )
-  const lists = [crossing, cycles, hubs, dead, ...(input.violations === null ? [] : [violations])]
+  const lists = [crossing, cycles, hubs, dead, ...(input.violations === null ? [] : [violations]), ...touched]
   return { top: [head], left: lists, rows: issueGrid(lists), order: [head, ...lists] }
 }

@@ -94,11 +94,13 @@ describe('the keyed loader', () => {
     await request(port.io, 'churn')
     expect(port.pending()).toBe(0)
     expect(port.runs).toHaveLength(1)
-    // Another tab: no churn to read.
-    port.values.set('view', view({ tab: 'hubs' }))
-    port.values.set('gitHead', { rev: 'c', branch: 'main' })
-    await request(port.io, 'churn')
-    expect(port.pending()).toBe(0)
+    // Another tab, the Branch tab among them: no churn to read.
+    for (const tab of ['hubs', 'branch'] as const) {
+      port.values.set('view', view({ tab }))
+      port.values.set('gitHead', { rev: `c-${tab}`, branch: 'main' })
+      await request(port.io, 'churn')
+      expect(port.pending(), tab).toBe(0)
+    }
   })
 
   it('drops an answer for what the cell no longer wants', async () => {

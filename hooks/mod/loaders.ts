@@ -258,17 +258,15 @@ export const LOADERS = {
     landed: (c, w, parsed) => (c !== null && c.snapshot === w.snapshot ? { snapshot: w.snapshot, phase: 'done', answer: parsed } : c),
   } satisfies Loader<BranchState, { snapshot: string | null; root: string | undefined }, NonNullable<ReturnType<typeof parseBranchDiff>>>,
   /**
-   * The churn hotspots while the Churn or the Branch tab is open, for the
-   * commit the checkout is at: the history is kept per commit, so a new
-   * commit, not a new scan, reads it again. The last answer stays on show
-   * meanwhile.
+   * The churn hotspots while the Churn tab is open, for the commit the
+   * checkout is at: the history is kept per commit, so a new commit, not a
+   * new scan, reads it again. The last answer stays on show meanwhile.
    */
   churn: {
     cell: io => io.state.churn,
     want: async io => {
       const v = await io.state.view.read()
-      // The Branch tab shows the hotspots too, where it has room.
-      if ((v.tab !== 'churn' && v.tab !== 'branch') || v.inspect !== null || (v.route ?? null) !== null) return null
+      if (v.tab !== 'churn' || v.inspect !== null || (v.route ?? null) !== null) return null
       const d = await io.state.dashboard.read()
       if (d?.status !== 'ok') return null
       return { head: (await io.state.gitHead.read())?.rev ?? null, root: d.project_root ?? undefined }

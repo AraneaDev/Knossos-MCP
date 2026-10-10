@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countLabel, detailLines, fileDetailLines, parseAllowRoot, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseRescan, parseSessionHead, parseTurnBrief, rescanReason } from './envelopes'
+import { countLabel, detailLines, fileDetailLines, parseAllowRoot, parseBranchDiff, parseComponentDetail, parseCouplings, parseDashboard, parseFileDetail, parseRescan, parseSessionHead, parseTurnBrief, rescanReason } from './envelopes'
 
 describe('envelopes', () => {
   it('a path carrying an escape sequence is drawn inert', () =>
@@ -195,5 +195,26 @@ describe('parseCouplings', () => {
     expect(parseCouplings(JSON.stringify({ status: 'ok', edges: 9, couplings: [{ ...pair, edges: '3' }] }))).toBeNull()
     expect(parseCouplings(JSON.stringify({ status: 'ok', edges: 9, couplings: [{ ...pair, source: null }] }))).toBeNull()
     expect(parseCouplings(JSON.stringify({ status: 'ok', couplings: [] }))).toBeNull()
+  })
+})
+
+describe('parseBranchDiff', () => {
+  const at = (over: Record<string, unknown>) => parseBranchDiff(JSON.stringify({ status: 'no-snapshot', comparison: null, ...over }))
+  it('reads the touched files, with or without a comparison', () => {
+    const files = { count: 3, items: [{ path: 'src/A.php', added: 4, deleted: 1, dependents: 9, boundary: null }] }
+    expect(at({ files })?.files).toEqual(files)
+    expect(at({ files: null })?.files).toBeNull()
+    expect(at({})?.status).toBe('no-snapshot')
+  })
+  it('a touched file without its figures is no data', () => {
+    expect(at({ files: { count: 1, items: [{ path: 'src/A.php', added: 4 }] } })).toBeNull()
+    expect(at({ files: { items: [] } })).toBeNull()
+    expect(at({ files: 'x' })).toBeNull()
+  })
+  it('a comparison list that names nothing is no data', () => {
+    const empty = { count: 0, items: [] }
+    expect(at({ status: 'ok', comparison: { crossing: empty, cycles: empty, hubs: empty, dead_code: empty, violations: null } })?.status).toBe('ok')
+    expect(at({ status: 'ok', comparison: { crossing: { count: 1, items: [{ source: {} }] }, cycles: empty, hubs: empty, dead_code: empty, violations: null } })).toBeNull()
+    expect(at({ status: 'ok', comparison: { crossing: empty, cycles: empty, hubs: empty, violations: null } })).toBeNull()
   })
 })

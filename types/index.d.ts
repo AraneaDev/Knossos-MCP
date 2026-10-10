@@ -369,6 +369,9 @@ export type BranchItem = { name: string; canonical_name: string; kind: string; p
  * branch. `base.match`: `exact`, `before` (`commits` before the merge base)
  * or `after` (`commits` of the branch already in it: a partial comparison,
  * status `no-snapshot`). Each list counts all and names the first few.
+ * `files`: what the branch's commits touched since the merge base, the
+ * files the graph holds the most depended on first; it needs no snapshot,
+ * and is null on the default branch or when git cannot say.
  */
 export type BranchDiff = {
   status: 'ok' | 'no-snapshot' | 'on-default' | 'no-git' | 'no-default' | 'unscanned' | 'error' | 'no-binary'
@@ -384,6 +387,7 @@ export type BranchDiff = {
     dead_code: { count: number; items: BranchItem[] }
     violations: { count: number; items: { policy_id: string; source: string; source_kind: string; target: string; target_kind: string }[]; truncated: boolean } | null
   } | null
+  files?: { count: number; items: { path: string; added: number; deleted: number; dependents: number; boundary: string | null }[] } | null
 }
 
 /** The Branch tab's comparison as last read, for the snapshot it was read at; loading until it lands. */

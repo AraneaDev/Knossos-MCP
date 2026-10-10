@@ -199,6 +199,8 @@ const BRANCH = new Set(['ok', 'no-snapshot', 'on-default', 'no-git', 'no-default
 /** The Branch tab's comparison from the wrapper's stdout; null for silence or anything unexpected (a list item that names nothing). */
 export function parseBranchDiff(stdout: string): BranchDiff | null {
   const parsed = parse(stdout, BRANCH, [], []) as BranchDiff | null
+  const f = parsed?.files
+  if (f !== undefined && f !== null && !(typeof f === 'object' && typeof f.count === 'number' && Array.isArray(f.items) && f.items.every(i => typeof i.path === 'string' && typeof i.added === 'number' && typeof i.deleted === 'number' && typeof i.dependents === 'number'))) return null
   const c = parsed?.comparison
   if (parsed === null || c === undefined || c === null) return parsed
   const lists = [c.crossing, c.cycles, c.hubs, c.dead_code]
